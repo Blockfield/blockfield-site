@@ -101,7 +101,13 @@ const features = [
   </head>
   <body>
     <header class="nav">
-      <a class="nav__mark" href="/">BLOCKFIELD</a>
+      <a class="nav__mark" href="/">
+        <svg class="nav__logo" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M6 6h13a5 5 0 0 1 0 10H6z" fill="var(--amber)" />
+          <path d="M6 16h14a5 5 0 0 1 0 10H6z" fill="currentColor" />
+        </svg>
+        BLOCKFIELD
+      </a>
       <nav class="nav__links">
         <a href="#game">ИГРА</a>
         <a href="#download">СКАЧАТЬ</a>
@@ -373,10 +379,19 @@ const features = [
       }
 
       .nav__mark {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.42em;
         font-family: var(--display);
         font-weight: 800;
         font-size: clamp(22px, 1.75vw, 27px);
         letter-spacing: 0.02em;
+      }
+
+      .nav__logo {
+        flex: none;
+        width: 1.08em;
+        height: 1.08em;
       }
 
       .nav__links {
@@ -769,6 +784,7 @@ const features = [
         cursor: pointer;
         font-family: var(--mono);
         font-weight: 500;
+        position: relative;
         font-size: clamp(18px, 1.9vw, 29px);
         letter-spacing: -0.01em;
         margin: clamp(12px, 1.3vw, 20px) 0 0;
@@ -788,6 +804,12 @@ const features = [
       }
 
       .server__copied {
+        position: absolute;
+        left: 100%;
+        top: 50%;
+        transform: translateY(-50%);
+        margin-left: 0.4em;
+        white-space: nowrap;
         font-family: var(--text);
         font-size: 0.3em;
         font-weight: 600;
@@ -921,14 +943,7 @@ const features = [
         }
 
         .nav__cta {
-          padding: 0.7em 0.85em;
-          font-size: 0;
-          gap: 0;
-        }
-
-        .nav__cta .i {
-          width: 18px;
-          height: 18px;
+          display: none;
         }
 
         .hero h1 {
@@ -969,6 +984,19 @@ const features = [
         .server__address {
           font-size: clamp(15px, 4.6vw, 21px);
           overflow-wrap: anywhere;
+        }
+
+        /* Справа от адреса бейдж упирается в край экрана, поэтому уходит под него;
+           запас у подписи держится всегда, иначе её дёргало бы при копировании. */
+        .server__copied {
+          left: 0;
+          top: 100%;
+          transform: none;
+          margin: 2px 0 0;
+        }
+
+        .server__note {
+          margin-top: 1.9em;
         }
       }
     </style>
