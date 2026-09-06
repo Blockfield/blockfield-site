@@ -78,7 +78,7 @@ const features = [
       content="Захват точек, классы и техника в Minecraft 1.21.1 на Fabric. Лаунчер ставит модпак сам."
     />
     <meta name="twitter:image" content="https://modpack.nether.pp.ua/og.jpg" />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/logo.svg" type="image/svg+xml" />
     <script
       type="application/ld+json"
       set:html={JSON.stringify({
@@ -102,10 +102,7 @@ const features = [
   <body>
     <header class="nav">
       <a class="nav__mark" href="/">
-        <svg class="nav__logo" viewBox="0 0 32 32" aria-hidden="true">
-          <path d="M6 6h13a5 5 0 0 1 0 10H6z" fill="var(--amber)" />
-          <path d="M6 16h14a5 5 0 0 1 0 10H6z" fill="currentColor" />
-        </svg>
+        <img class="mark" src="/logo.svg" alt="" width="64" height="64" />
         BLOCKFIELD
       </a>
       <nav class="nav__links">
@@ -228,7 +225,10 @@ const features = [
     </section>
 
     <footer class="footer">
-      <span class="footer__mark">BLOCKFIELD</span>
+      <span class="footer__mark">
+        <img class="mark" src="/logo.svg" alt="" width="64" height="64" />
+        BLOCKFIELD
+      </span>
       <nav>
         <a href="https://github.com/netherg-io/blockfield-releases">Релизы клиента</a>
         <a href={RELEASES}>Релизы лаунчера</a>
@@ -381,17 +381,17 @@ const features = [
       .nav__mark {
         display: inline-flex;
         align-items: center;
-        gap: 0.42em;
+        gap: 0.5em;
         font-family: var(--display);
         font-weight: 800;
         font-size: clamp(22px, 1.75vw, 27px);
         letter-spacing: 0.02em;
       }
 
-      .nav__logo {
+      .mark {
         flex: none;
-        width: 1.08em;
-        height: 1.08em;
+        width: 1.5em;
+        height: 1.5em;
       }
 
       .nav__links {
@@ -837,6 +837,9 @@ const features = [
       }
 
       .footer__mark {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5em;
         font-family: var(--display);
         font-weight: 800;
         font-size: clamp(18px, 1.45vw, 22px);
@@ -955,6 +958,8 @@ const features = [
         }
 
         .button {
+          width: 100%;
+          justify-content: center;
           font-size: 13px;
           padding: 0 14px;
         }
