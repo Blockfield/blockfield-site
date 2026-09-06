@@ -8,6 +8,9 @@ import { brand, ui } from '../lib/icons';
 
 const launcher = await latestLauncher();
 
+// Иначе браузер эвристически закэширует документ и покажет вчерашнюю версию лаунчера.
+Astro.response.headers.set('Cache-Control', 'no-cache');
+
 const manual = [
   {
     href: 'https://modpack.nether.pp.ua/Blockfield-client.zip',
