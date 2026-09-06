@@ -112,7 +112,7 @@ const features = [
       </nav>
       <a class="nav__cta" href={launcher.windows}>
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
-        СКАЧАТЬ ЛАУНЧЕР
+        СКАЧАТЬ
       </a>
     </header>
 
@@ -155,7 +155,7 @@ const features = [
         </p>
         <a class="button button--amber" href={launcher.windows}>
           <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
-          <span>СКАЧАТЬ ЛАУНЧЕР</span>
+          <span>УСТАНОВИТЬ ЛАУНЧЕР</span>
         </a>
         <p class="platforms">
           <a href={launcher.windows}>
@@ -220,7 +220,7 @@ const features = [
       </div>
       <a class="button button--amber" href={launcher.windows}>
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
-        <span>СКАЧАТЬ ЛАУНЧЕР</span>
+        <span>СКАЧАТЬ И В БОЙ</span>
       </a>
     </section>
 
@@ -863,8 +863,79 @@ const features = [
         color: var(--dim);
       }
 
+      /* Ниже 900px диагональ первого экрана душит заголовок, а две колонки «пути» —
+         карточки. Дальше планшет и телефон расходятся: у них разные первые экраны. */
       @media (max-width: 900px) {
+        .hero h1 span {
+          white-space: normal;
+        }
+
+        .path {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      /* ——— планшет ——— */
+      @media (min-width: 601px) and (max-width: 900px) {
+        /* Картинка остаётся фоном: полоса под текстом выглядела бы случайной вставкой. */
+        .hero {
+          min-height: clamp(470px, 62vw, 600px);
+        }
+
+        .hero__art {
+          inset: 0;
+        }
+
+        .hero__art img {
+          object-position: 78% 52%;
+        }
+
+        .hero__art::after {
+          background:
+            linear-gradient(90deg, var(--bg) 0%, rgb(7 6 4 / 0.78) 40%, rgb(7 6 4 / 0.12) 82%),
+            linear-gradient(0deg, rgb(7 6 4 / 0.85), rgb(7 6 4 / 0) 58%);
+        }
+
+        .hero__plate,
+        .hero__edge {
+          display: none;
+        }
+
+        .hero__copy {
+          width: min(74%, 540px);
+          padding: clamp(30px, 4vw, 44px) clamp(24px, 3.4vw, 36px);
+        }
+
+        .hero h1 {
+          font-size: clamp(40px, 6.6vw, 58px);
+        }
+
+        .hero__cta {
+          width: auto;
+        }
+
+        /* Во всю ширину карточки становятся строчками текста с пустотой справа. */
+        .rows,
+        .game__grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+
+      /* Ссылки в шапке требуют места: ниже они не влезают рядом с кнопкой. */
+      @media (max-width: 760px) {
         .nav__links {
+          display: none;
+        }
+      }
+
+      /* ——— телефон ——— */
+      @media (max-width: 600px) {
+        .nav {
+          gap: 12px;
+          padding: 0 12px;
+        }
+
+        .nav__cta {
           display: none;
         }
 
@@ -872,10 +943,6 @@ const features = [
           min-height: 0;
           display: grid;
           grid-template-columns: minmax(0, 1fr);
-        }
-
-        .hero h1 span {
-          white-space: normal;
         }
 
         .hero__art {
@@ -913,18 +980,13 @@ const features = [
           position: relative;
           width: auto;
           order: 1;
-          padding: clamp(26px, 7vw, 46px) 20px clamp(30px, 8vw, 50px);
+          padding: clamp(26px, 7vw, 46px) 14px clamp(30px, 8vw, 50px);
         }
 
         .hero h1 {
-          font-size: clamp(38px, 8.6vw, 66px);
+          font-size: clamp(28px, 8.8vw, 44px);
         }
 
-        .hero__cta {
-          width: 100%;
-        }
-
-        .path,
         .game__grid {
           grid-template-columns: 1fr;
         }
@@ -936,21 +998,6 @@ const features = [
 
         .footer small {
           margin-left: 0;
-        }
-      }
-
-      @media (max-width: 560px) {
-        .nav {
-          gap: 12px;
-          padding: 0 12px;
-        }
-
-        .nav__cta {
-          display: none;
-        }
-
-        .hero h1 {
-          font-size: clamp(28px, 8.8vw, 44px);
         }
 
         .hero__sub {
@@ -968,11 +1015,6 @@ const features = [
         .game,
         .server,
         .footer {
-          padding-left: 14px;
-          padding-right: 14px;
-        }
-
-        .hero__copy {
           padding-left: 14px;
           padding-right: 14px;
         }
