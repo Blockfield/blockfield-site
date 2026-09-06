@@ -1,0 +1,983 @@
+---
+import '@fontsource-variable/inter';
+import '@fontsource/ibm-plex-mono/400.css';
+import '@fontsource/ibm-plex-mono/500.css';
+import '@fontsource/ibm-plex-mono/600.css';
+import { latestLauncher, RELEASES } from '../lib/launcher';
+import { brand, ui } from '../lib/icons';
+
+const launcher = await latestLauncher();
+
+const manual = [
+  {
+    href: 'https://modpack.nether.pp.ua/Blockfield-client.zip',
+    title: 'Модпак ZIP',
+    note: 'Распаковать в папку игры',
+    icon: ui.file_archive,
+  },
+  {
+    href: 'https://modpack.nether.pp.ua/Blockfield.mrpack',
+    title: 'Модпак mrpack',
+    note: 'Для совместимых лаунчеров',
+    icon: ui.package,
+  },
+  {
+    href: 'https://modpack.nether.pp.ua/Blockfield-prism.zip',
+    title: 'Инстанс Prism',
+    note: 'Обновляется сам перед запуском',
+    icon: ui.refresh_cw,
+  },
+  {
+    href: 'https://github.com/netherg-io/blockfield-releases',
+    title: 'GitHub',
+    note: 'Сборки клиента и SHA256SUMS',
+    icon: brand.github,
+    fill: true,
+  },
+];
+
+const features = [
+  { code: '01', icon: ui.flag, title: 'Захват точек', text: 'Две команды, контрольные точки и счёт билетов. Держишь точки — выигрываешь матч.' },
+  { code: '02', icon: ui.swords, title: 'Классы и оружие', text: 'Штурмовик, марксман, инженер, снайпер и оператор FPV. У каждого своё снаряжение и роль в бою.' },
+  { code: '03', icon: ui.truck, title: 'Техника и паркур', text: 'Наземная и воздушная техника, подвижный бой и паркур поверх обычной механики Minecraft.' },
+];
+---
+
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BLOCKFIELD — командный шутер в Minecraft 1.21.1 (Fabric)</title>
+    <meta
+      name="description"
+      content="Blockfield — командные бои в Minecraft 1.21.1 на Fabric: захват точек, классы, оружие и техника. Скачай лаунчер, он сам поставит модпак и заведёт тебя на сервер."
+    />
+    <link rel="canonical" href="https://modpack.nether.pp.ua/" />
+    <meta name="theme-color" content="#070604" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Blockfield" />
+    <meta property="og:locale" content="ru_RU" />
+    <meta property="og:url" content="https://modpack.nether.pp.ua/" />
+    <meta property="og:title" content="BLOCKFIELD — командный шутер в Minecraft" />
+    <meta
+      property="og:description"
+      content="Захват точек, классы и техника в Minecraft 1.21.1 на Fabric. Лаунчер ставит модпак сам."
+    />
+    <meta property="og:image" content="https://modpack.nether.pp.ua/og.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Отряд Blockfield в ночном рейде и кнопка «Скачать лаунчер»" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="BLOCKFIELD — командный шутер в Minecraft" />
+    <meta
+      name="twitter:description"
+      content="Захват точек, классы и техника в Minecraft 1.21.1 на Fabric. Лаунчер ставит модпак сам."
+    />
+    <meta name="twitter:image" content="https://modpack.nether.pp.ua/og.jpg" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script
+      type="application/ld+json"
+      set:html={JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'VideoGame',
+        name: 'Blockfield',
+        url: 'https://modpack.nether.pp.ua/',
+        inLanguage: 'ru',
+        gamePlatform: 'PC',
+        applicationCategory: 'Game',
+        operatingSystem: 'Windows, Linux',
+        description:
+          'Командный шутер в Minecraft 1.21.1 на Fabric: захват точек, классы, оружие и техника.',
+        image: 'https://modpack.nether.pp.ua/og.jpg',
+        publisher: { '@type': 'Organization', name: 'Blockfield', url: 'https://github.com/netherg-io' },
+        downloadUrl: launcher.windows,
+        softwareVersion: launcher.version || undefined,
+      })}
+    />
+  </head>
+  <body>
+    <header class="nav">
+      <a class="nav__mark" href="/">BLOCKFIELD</a>
+      <nav class="nav__links">
+        <a href="#game">ИГРА</a>
+        <a href="#download">СКАЧАТЬ</a>
+        <a href="https://github.com/netherg-io/blockfield-releases">GITHUB</a>
+      </nav>
+      <a class="nav__cta" href={launcher.windows}>
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
+        СКАЧАТЬ ЛАУНЧЕР
+      </a>
+    </header>
+
+    <section class="hero">
+      <div class="hero__art">
+        <img src="/plates/hero-art.webp" alt="Отряд Blockfield в ночном рейде по блочной крепости" fetchpriority="high" />
+      </div>
+      <div class="hero__edge"></div>
+      <div class="hero__plate voxel"></div>
+      <div class="hero__copy">
+        <p class="tag"><span class="tag__dot"></span>MINECRAFT 1.21.1 · FABRIC</p>
+        <h1><span>Врывайся</span><span>в Blockfield</span></h1>
+        <p class="hero__sub">Командные бои в Minecraft.<br />Захватывай точки. Играй своим классом.</p>
+        <a class="button button--amber hero__cta" href={launcher.windows}>
+          <span>СКАЧАТЬ ЛАУНЧЕР</span>
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
+        </a>
+        <p class="platforms">
+          <a href={launcher.windows}>
+            <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.windows} />
+            Windows
+          </a>
+          <span class="platforms__sep" aria-hidden="true"></span>
+          <a href={launcher.linux}>
+            <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.linux} />
+            Linux
+          </a>
+          {launcher.version && <span class="platforms__version">версия {launcher.version}</span>}
+        </p>
+      </div>
+    </section>
+
+    <section class="path" id="download">
+      <div class="path__launcher">
+        <p class="rule"><span class="rule__square"></span><span class="rule__label">Твой путь в игру</span><span class="rule__line"></span><span class="rule__code">INSTALL</span></p>
+        <h2>Лаунчер — простой старт</h2>
+        <p class="path__text">
+          Установи наш лаунчер — он сам загрузит и настроит весь модпак, подберёт версию Minecraft и Fabric.
+          Нажми «Играть» — и ты в бою.
+        </p>
+        <a class="button button--amber" href={launcher.windows}>
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
+          <span>СКАЧАТЬ ЛАУНЧЕР</span>
+        </a>
+        <p class="platforms">
+          <a href={launcher.windows}>
+            <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.windows} />
+            Windows
+          </a>
+          <span class="platforms__sep" aria-hidden="true"></span>
+          <a href={launcher.linux}>
+            <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.linux} />
+            Linux
+          </a>
+        </p>
+      </div>
+
+      <div class="path__manual">
+        <p class="rule"><span class="rule__square"></span><span class="rule__label">Ручная установка</span><span class="rule__line"></span><span class="rule__code">MANUAL</span></p>
+        <ul class="rows">
+          {manual.map((item) => (
+            <li>
+              <a href={item.href}>
+                <span class="rows__kind">
+                  <svg class:list={['i', item.fill && 'i--fill']} viewBox="0 0 24 24" aria-hidden="true" set:html={item.icon} />
+                </span>
+                <span class="rows__text">
+                  <strong>{item.title}</strong>
+                  <small>{item.note}</small>
+                </span>
+                <svg class="i rows__out" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.external_link} />
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </section>
+
+    <section class="game voxel" id="game">
+      <p class="rule"><span class="rule__square"></span><span class="rule__label">Игра</span><span class="rule__line"></span><span class="rule__code">BRIEFING</span></p>
+      <h2>Что тебя ждёт</h2>
+      <ul class="game__grid">
+        {features.map((item) => (
+          <li>
+            <p class="game__code">
+              <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={item.icon} />
+              {item.code}
+            </p>
+            <h3>{item.title}</h3>
+            <p>{item.text}</p>
+          </li>
+        ))}
+      </ul>
+    </section>
+
+    <section class="server voxel">
+      <div class="server__info">
+        <p class="rule"><span class="rule__square"></span><span class="rule__label">Сервер</span><span class="rule__line"></span><span class="rule__code">ONLINE</span></p>
+        <button class="server__address" type="button" data-copy="minecraft.play.nether.pp.ua">
+          minecraft.play.nether.pp.ua
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.copy} />
+          <span class="server__copied" hidden>Скопировано</span>
+        </button>
+        <p class="server__note">Minecraft 1.21.1 · Fabric · порт 25565. Лаунчер подключит тебя сам.</p>
+      </div>
+      <a class="button button--amber" href={launcher.windows}>
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
+        <span>СКАЧАТЬ ЛАУНЧЕР</span>
+      </a>
+    </section>
+
+    <footer class="footer">
+      <span class="footer__mark">BLOCKFIELD</span>
+      <nav>
+        <a href="https://github.com/netherg-io/blockfield-releases">Релизы клиента</a>
+        <a href={RELEASES}>Релизы лаунчера</a>
+        <a href="https://modpack.nether.pp.ua/pack.toml">packwiz-пак</a>
+      </nav>
+      <small>Minecraft 1.21.1 · Fabric. Проект не связан с Mojang и Microsoft.</small>
+    </footer>
+
+    <style is:global>
+      /* Палитра — та же, что в лаунчере (src/styles/theme.css), менять только вместе с ним. */
+      :root {
+        --bg: #070604;
+        --bg-2: #0b0906;
+        --panel: #11100d;
+        --panel-2: #18130d;
+        --line: #2a2116;
+        --line-2: #3a2c1d;
+        --amber: #f5a524;
+        --amber-hi: #ffc861;
+        --amber-dim: #8a571c;
+        --cream: #f3e7d0;
+        --sand: #c7ae86;
+        --muted: #8e7a5e;
+        --dim: #5e5040;
+        --ok: #82d66b;
+        --display: 'Inter Variable', system-ui, sans-serif;
+        --text: 'Inter Variable', system-ui, sans-serif;
+        --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      /* Ниже 320px верстку не сжимаем: страница честно уезжает в горизонтальный скролл. */
+      body {
+        margin: 0;
+        min-width: 320px;
+        background: var(--bg);
+        color: var(--cream);
+        font-family: var(--text);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      h1,
+      h2,
+      h3 {
+        font-family: var(--display);
+        font-weight: 800;
+        text-transform: uppercase;
+        margin: 0;
+        line-height: 1;
+        letter-spacing: -0.02em;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      /* Lucide рисуется скруглённой обводкой, Simple Icons — заливкой. */
+      .i {
+        width: 1em;
+        height: 1em;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .i--fill {
+        fill: currentColor;
+        stroke: none;
+      }
+
+      /* Блочная сетка вместо текстурной плашки: 16px — тексель Minecraft, 96px — шесть блоков. */
+      .voxel {
+        position: relative;
+        isolation: isolate;
+      }
+
+      .voxel::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgb(245 165 36 / 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgb(245 165 36 / 0.035) 1px, transparent 1px),
+          linear-gradient(rgb(245 165 36 / 0.075) 1px, transparent 1px),
+          linear-gradient(90deg, rgb(245 165 36 / 0.075) 1px, transparent 1px);
+        background-size: 16px 16px, 16px 16px, 96px 96px, 96px 96px;
+      }
+
+      /* ——— подпись секции, как SectionHeader лаунчера ——— */
+      .rule {
+        display: flex;
+        align-items: center;
+        gap: clamp(8px, 0.9vw, 14px);
+        margin: 0;
+        min-width: 0;
+      }
+
+      .rule__square {
+        flex: none;
+        width: 6px;
+        height: 6px;
+        background: var(--amber);
+      }
+
+      .rule__label {
+        font-family: var(--mono);
+        font-size: clamp(10px, 0.8vw, 12px);
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--cream);
+        white-space: nowrap;
+      }
+
+      .rule__line {
+        height: 1px;
+        flex: 1 1 12px;
+        min-width: 12px;
+        background: var(--line);
+      }
+
+      .rule__code {
+        font-family: var(--mono);
+        flex: none;
+        font-size: clamp(9px, 0.7vw, 11px);
+        letter-spacing: 0.28em;
+        color: var(--dim);
+      }
+
+      /* ——— навигация ——— */
+      .nav {
+        min-width: 0;
+        height: clamp(64px, 6.64vw, 102px);
+        background: var(--bg);
+        border-bottom: 1px solid var(--line);
+        color: var(--cream);
+        display: flex;
+        align-items: center;
+        gap: clamp(20px, 3vw, 46px);
+        padding: 0 clamp(16px, 1.6vw, 26px) 0 clamp(20px, 2.1vw, 32px);
+      }
+
+      .nav__mark {
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: clamp(22px, 1.75vw, 27px);
+        letter-spacing: 0.02em;
+      }
+
+      .nav__links {
+        display: flex;
+        gap: clamp(18px, 2.4vw, 37px);
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: clamp(12px, 0.95vw, 14px);
+        letter-spacing: 0.14em;
+        color: var(--sand);
+      }
+
+      .nav__links a {
+        transition: color 0.15s ease;
+      }
+
+      .nav__links a:hover {
+        color: var(--amber);
+      }
+
+      .nav__cta {
+        margin-left: auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6em;
+        background: var(--amber);
+        color: var(--bg);
+        font-family: var(--display);
+        font-weight: 700;
+        font-size: clamp(12px, 0.92vw, 14px);
+        letter-spacing: 0.1em;
+        padding: 0.95em 1.6em;
+        transition: background 0.15s ease, transform 0.15s ease;
+      }
+
+      .nav__cta:hover {
+        background: var(--amber-hi);
+        transform: translateY(-1px);
+      }
+
+      /* ——— первый экран ——— */
+      .hero {
+        position: relative;
+        display: grid;
+        align-items: center;
+        min-height: clamp(520px, 43vw, 660px);
+        background: var(--bg);
+        overflow: hidden;
+        isolation: isolate;
+      }
+
+      .hero__art {
+        position: absolute;
+        inset: 0 0 0 38%;
+      }
+
+      .hero__art img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: 50% 44%;
+        display: block;
+        filter: saturate(0.95) brightness(0.92);
+      }
+
+      .hero__art::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(90deg, var(--bg) 0%, rgb(7 6 4 / 0.35) 26%, rgb(7 6 4 / 0) 70%),
+          linear-gradient(0deg, rgb(7 6 4 / 0.7), rgb(7 6 4 / 0) 42%);
+      }
+
+      /* Плашка сдвинута на 2px внутрь, из-под неё видна янтарная кромка диагонали. */
+      .hero__edge {
+        position: absolute;
+        inset: 0;
+        background: var(--amber);
+        opacity: 0.32;
+        clip-path: polygon(0 0, 57% 0, 45% 100%, 0 100%);
+      }
+
+      .hero__plate {
+        position: absolute;
+        inset: 0;
+        background: var(--bg-2);
+        clip-path: polygon(0 0, calc(57% - 2px) 0, calc(45% - 2px) 100%, 0 100%);
+      }
+
+      .hero__plate::before {
+        z-index: 0;
+      }
+
+      .hero__copy {
+        position: relative;
+        z-index: 2;
+        width: min(62vw, 950px);
+        padding: clamp(32px, 3.6vw, 56px) clamp(20px, 4.5vw, 70px);
+      }
+
+      .tag {
+        font-family: var(--mono);
+        display: inline-flex;
+        align-items: center;
+        gap: 0.7em;
+        margin: 0 0 clamp(14px, 1.6vw, 24px);
+        font-size: clamp(10px, 0.8vw, 12px);
+        letter-spacing: 0.24em;
+        color: var(--muted);
+      }
+
+      .tag__dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--ok);
+        box-shadow: 0 0 6px rgb(130 214 107 / 0.7);
+      }
+
+      .hero h1 span {
+        display: block;
+        white-space: nowrap;
+      }
+
+      .hero h1 {
+        font-size: clamp(40px, 6.3vw, 96px);
+        color: var(--cream);
+      }
+
+      .hero__sub {
+        margin: clamp(12px, 1.4vw, 21px) 0 0;
+        font-size: clamp(15px, 1.36vw, 21px);
+        line-height: 1.45;
+        max-width: 30em;
+        color: var(--sand);
+      }
+
+      .hero__cta {
+        margin-top: clamp(16px, 1.9vw, 30px);
+        width: clamp(260px, 30.3vw, 466px);
+        max-width: 100%;
+      }
+
+      .platforms {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: clamp(10px, 1.1vw, 17px);
+        margin: clamp(12px, 1.3vw, 20px) 0 0;
+        font-size: clamp(13px, 1.05vw, 16px);
+        color: var(--sand);
+      }
+
+      .platforms a {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.55em;
+        transition: color 0.15s ease;
+      }
+
+      .platforms a:hover {
+        color: var(--amber);
+      }
+
+      .platforms__sep {
+        width: 1px;
+        height: 1.1em;
+        background: var(--line-2);
+      }
+
+      .platforms__version {
+        font-family: var(--mono);
+        font-size: clamp(10px, 0.8vw, 12px);
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+
+      /* ——— кнопки ——— */
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1em;
+        font-family: var(--display);
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        padding: 0 clamp(18px, 1.7vw, 26px);
+        height: clamp(48px, 3.9vw, 58px);
+        font-size: clamp(13px, 1.05vw, 15px);
+        transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+      }
+
+      .button .i {
+        flex: none;
+        width: 1.35em;
+        height: 1.35em;
+        stroke-width: 2.2;
+      }
+
+      .button--amber {
+        background: var(--amber);
+        color: var(--bg);
+        justify-content: flex-start;
+        gap: 0.7em;
+        box-shadow: 0 0.3em 1.6em rgb(245 165 36 / 0.16);
+      }
+
+      .button--amber:hover {
+        background: var(--amber-hi);
+        transform: translateY(-2px);
+        box-shadow: 0 0.5em 1.8em rgb(245 165 36 / 0.26);
+      }
+
+      .hero__cta {
+        justify-content: space-between;
+      }
+
+      /* ——— путь в игру ——— */
+      .path {
+        display: grid;
+        grid-template-columns: 1fr 0.88fr;
+        gap: clamp(28px, 4vw, 62px);
+        padding: clamp(48px, 5vw, 82px) clamp(20px, 4.5vw, 70px);
+        align-items: start;
+        background: var(--bg-2);
+        border-top: 1px solid var(--line);
+      }
+
+      .path h2 {
+        margin-top: clamp(14px, 1.6vw, 24px);
+        font-size: clamp(24px, 2.4vw, 36px);
+        color: var(--amber);
+      }
+
+      .path__text {
+        margin: clamp(12px, 1.3vw, 20px) 0 0;
+        font-size: clamp(15px, 1.17vw, 18px);
+        line-height: 1.6;
+        max-width: 34em;
+        color: var(--sand);
+      }
+
+      .path__launcher .button {
+        margin-top: clamp(18px, 2.1vw, 32px);
+      }
+
+      .rows {
+        list-style: none;
+        margin: clamp(16px, 1.8vw, 28px) 0 0;
+        padding: 0;
+        display: grid;
+        gap: clamp(10px, 0.85vw, 13px);
+      }
+
+      .rows a {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: clamp(12px, 1.2vw, 19px);
+        border: 1px solid var(--line);
+        background: linear-gradient(160deg, var(--panel), var(--bg-2));
+        padding: clamp(10px, 0.85vw, 13px) clamp(12px, 1.15vw, 18px);
+        transition: border-color 0.15s ease, transform 0.15s ease;
+      }
+
+      .rows a:hover {
+        border-color: var(--amber);
+        transform: translateX(3px);
+      }
+
+      .rows__kind {
+        display: grid;
+        place-items: center;
+        flex: none;
+        width: clamp(34px, 2.9vw, 44px);
+        height: clamp(34px, 2.9vw, 44px);
+        border: 1px solid var(--line-2);
+        background: var(--panel-2);
+        color: var(--amber);
+        font-size: clamp(17px, 1.4vw, 21px);
+      }
+
+      .rows__text {
+        display: grid;
+        gap: 2px;
+        min-width: 0;
+      }
+
+      .rows__text strong {
+        font-family: var(--display);
+        font-weight: 700;
+        text-transform: uppercase;
+        font-size: clamp(14px, 1.05vw, 16px);
+        letter-spacing: 0.06em;
+        color: var(--cream);
+      }
+
+      .rows__text small {
+        font-size: clamp(12px, 0.92vw, 14px);
+        color: var(--muted);
+      }
+
+      .rows__out {
+        width: clamp(16px, 1.2vw, 19px);
+        height: clamp(16px, 1.2vw, 19px);
+        color: var(--dim);
+      }
+
+      /* ——— что тебя ждёт ——— */
+      .game {
+        background: var(--bg);
+        border-top: 1px solid var(--line);
+        padding: clamp(48px, 5.5vw, 86px) clamp(20px, 4.5vw, 70px);
+      }
+
+      .game h2 {
+        margin-top: clamp(16px, 1.8vw, 28px);
+        font-size: clamp(28px, 3.2vw, 48px);
+        color: var(--cream);
+      }
+
+      .game__grid {
+        list-style: none;
+        margin: clamp(28px, 3vw, 46px) 0 0;
+        padding: 0;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: clamp(20px, 2.4vw, 38px);
+      }
+
+      .game__grid li {
+        border-top: 2px solid var(--amber);
+        background: linear-gradient(180deg, rgb(245 165 36 / 0.05), transparent 60%);
+        padding: clamp(14px, 1.4vw, 22px) clamp(12px, 1.1vw, 18px) 0 0;
+      }
+
+      .game__code {
+        display: flex;
+        align-items: center;
+        gap: 0.6em;
+        margin: 0;
+        font-family: var(--mono);
+        font-weight: 600;
+        color: var(--amber);
+        font-size: clamp(12px, 0.95vw, 14px);
+        letter-spacing: 0.2em;
+      }
+
+      .game__grid h3 {
+        margin-top: 0.5em;
+        font-size: clamp(19px, 1.6vw, 24px);
+        color: var(--cream);
+      }
+
+      .game__grid p:last-child {
+        margin: 0.8em 0 0;
+        font-size: clamp(14px, 1.1vw, 17px);
+        line-height: 1.6;
+        color: var(--sand);
+      }
+
+      /* ——— сервер ——— */
+      .server {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: clamp(20px, 2.5vw, 38px);
+        background: var(--panel);
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        padding: clamp(36px, 4vw, 62px) clamp(20px, 4.5vw, 70px);
+      }
+
+      .server__info {
+        min-width: 0;
+      }
+
+      .server__address {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4em;
+        background: none;
+        border: 0;
+        padding: 0;
+        color: var(--cream);
+        cursor: pointer;
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: clamp(18px, 1.9vw, 29px);
+        letter-spacing: -0.01em;
+        margin: clamp(12px, 1.3vw, 20px) 0 0;
+        letter-spacing: 0.01em;
+        text-align: left;
+      }
+
+      .server__address .i {
+        width: 0.55em;
+        height: 0.55em;
+        color: var(--amber);
+        opacity: 0.75;
+      }
+
+      .server__address:hover .i {
+        opacity: 1;
+      }
+
+      .server__copied {
+        font-family: var(--text);
+        font-size: 0.3em;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--ok);
+      }
+
+      .server__note {
+        margin: 0.6em 0 0;
+        font-size: clamp(14px, 1.1vw, 17px);
+        color: var(--muted);
+      }
+
+      /* ——— подвал ——— */
+      .footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: clamp(14px, 2vw, 32px);
+        background: var(--bg);
+        color: var(--muted);
+        padding: clamp(28px, 3vw, 46px) clamp(20px, 4.5vw, 70px);
+        font-size: clamp(13px, 1vw, 15px);
+      }
+
+      .footer__mark {
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: clamp(18px, 1.45vw, 22px);
+        letter-spacing: 0.02em;
+        color: var(--cream);
+        text-transform: uppercase;
+      }
+
+      .footer nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: clamp(12px, 1.6vw, 25px);
+      }
+
+      .footer nav a:hover {
+        color: var(--amber);
+      }
+
+      .footer small {
+        margin-left: auto;
+        color: var(--dim);
+      }
+
+      @media (max-width: 900px) {
+        .nav__links {
+          display: none;
+        }
+
+        .hero {
+          min-height: 0;
+          display: grid;
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .hero h1 span {
+          white-space: normal;
+        }
+
+        .hero__art {
+          position: relative;
+          inset: auto;
+          height: 46vw;
+          min-height: 220px;
+          order: 2;
+        }
+
+        .hero__art img {
+          object-position: 68% 52%;
+        }
+
+        .hero__art::after {
+          background: linear-gradient(0deg, rgb(7 6 4 / 0.9), rgb(7 6 4 / 0) 55%);
+        }
+
+        .hero__edge {
+          position: relative;
+          inset: auto;
+          order: 1;
+          height: 2px;
+          clip-path: none;
+        }
+
+        .hero__plate {
+          position: absolute;
+          inset: 0 0 auto 0;
+          height: 100%;
+          clip-path: none;
+        }
+
+        .hero__copy {
+          position: relative;
+          width: auto;
+          order: 1;
+          padding: clamp(26px, 7vw, 46px) 20px clamp(30px, 8vw, 50px);
+        }
+
+        .hero h1 {
+          font-size: clamp(38px, 8.6vw, 66px);
+        }
+
+        .hero__cta {
+          width: 100%;
+        }
+
+        .path,
+        .game__grid {
+          grid-template-columns: 1fr;
+        }
+
+        .server {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+
+        .footer small {
+          margin-left: 0;
+        }
+      }
+
+      @media (max-width: 560px) {
+        .nav {
+          gap: 12px;
+          padding: 0 12px;
+        }
+
+        .nav__cta {
+          padding: 0.7em 0.85em;
+          font-size: 0;
+          gap: 0;
+        }
+
+        .nav__cta .i {
+          width: 18px;
+          height: 18px;
+        }
+
+        .hero h1 {
+          font-size: clamp(28px, 8.8vw, 44px);
+        }
+
+        .hero__sub {
+          font-size: 15px;
+        }
+
+        .button {
+          font-size: 13px;
+          padding: 0 14px;
+        }
+
+        .path,
+        .game,
+        .server,
+        .footer {
+          padding-left: 14px;
+          padding-right: 14px;
+        }
+
+        .hero__copy {
+          padding-left: 14px;
+          padding-right: 14px;
+        }
+
+        .rows a {
+          gap: 10px;
+          padding: 10px 12px;
+        }
+
+        .rows__text strong {
+          font-size: 14px;
+        }
+
+        .server__address {
+          font-size: clamp(15px, 4.6vw, 21px);
+          overflow-wrap: anywhere;
+        }
+      }
+    </style>
+
+    <script>
+      document.querySelector('[data-copy]')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget as HTMLButtonElement;
+        await navigator.clipboard.writeText(button.dataset.copy!);
+        const badge = button.querySelector('.server__copied') as HTMLElement;
+        badge.hidden = false;
+        setTimeout(() => (badge.hidden = true), 1600);
+      });
+    </script>
+  </body>
+</html>
