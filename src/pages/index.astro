@@ -1158,6 +1158,14 @@ const features = [
         }
       }
 
+      /* Параллакс арта: сдвиг считает скрипт, здесь только гейт по motion и ширине. На телефоне арт стоит отдельно. */
+      @media (prefers-reduced-motion: no-preference) and (min-width: 601px) {
+        .hero__art img {
+          transform: scale(1.22) translateY(var(--parallax, -9%));
+          will-change: transform;
+        }
+      }
+
       /* Шторка: диагональ уезжает влево и открывает арт. Ниже 900px плашки нет, там и шторки нет. */
       @media (prefers-reduced-motion: no-preference) and (min-width: 901px) {
         .hero__edge {
@@ -1209,6 +1217,24 @@ const features = [
         { rootMargin: '0px 0px -12% 0px' },
       );
       document.querySelectorAll('[data-reveal]').forEach((el) => reveal.observe(el));
+
+      const hero = document.querySelector('.hero') as HTMLElement;
+      const art = document.querySelector('.hero__art img') as HTMLElement;
+      let ticking = false;
+      const parallax = () => {
+        ticking = false;
+        const t = Math.min(scrollY / hero.offsetHeight, 1);
+        art.style.setProperty('--parallax', `${-9 + 18 * t}%`);
+      };
+      addEventListener(
+        'scroll',
+        () => {
+          if (!ticking) requestAnimationFrame(parallax);
+          ticking = true;
+        },
+        { passive: true },
+      );
+      parallax();
 
       document.querySelector('[data-copy]')?.addEventListener('click', async (event) => {
         const button = event.currentTarget as HTMLButtonElement;
