@@ -306,7 +306,7 @@ const features = [
         stroke: none;
       }
 
-      /* Блочная сетка вместо текстурной плашки: 16px — тексель Minecraft, 96px — шесть блоков. */
+      /* Точечная сетка вместо линий: линии сливались в полосы. 16px — тексель Minecraft, 96px — шесть блоков. */
       .voxel {
         position: relative;
         isolation: isolate;
@@ -319,11 +319,10 @@ const features = [
         z-index: -1;
         pointer-events: none;
         background-image:
-          linear-gradient(rgb(245 165 36 / 0.035) 1px, transparent 1px),
-          linear-gradient(90deg, rgb(245 165 36 / 0.035) 1px, transparent 1px),
-          linear-gradient(rgb(245 165 36 / 0.075) 1px, transparent 1px),
-          linear-gradient(90deg, rgb(245 165 36 / 0.075) 1px, transparent 1px);
-        background-size: 16px 16px, 16px 16px, 96px 96px, 96px 96px;
+          radial-gradient(rgb(245 165 36 / 0.11) 1px, transparent 1.5px),
+          radial-gradient(rgb(245 165 36 / 0.22) 1.5px, transparent 2px);
+        background-size: 16px 16px, 96px 96px;
+        background-position: 8px 8px, 8px 8px;
       }
 
       /* ——— подпись секции, как SectionHeader лаунчера ——— */
@@ -729,7 +728,7 @@ const features = [
       .game__grid li {
         border-top: 2px solid var(--amber);
         background: linear-gradient(180deg, rgb(245 165 36 / 0.05), transparent 60%);
-        padding: clamp(14px, 1.4vw, 22px) clamp(12px, 1.1vw, 18px) 0 0;
+        padding: clamp(14px, 1.4vw, 22px) clamp(12px, 1.1vw, 18px) clamp(18px, 1.8vw, 28px);
       }
 
       .game__code {
@@ -1155,7 +1154,7 @@ const features = [
         .hero__art img {
           animation: parallax linear both;
           animation-timeline: scroll(root);
-          animation-range: 0 100vh;
+          animation-range: 0 70vh;
         }
       }
 
@@ -1174,11 +1173,11 @@ const features = [
 
       @keyframes parallax {
         from {
-          transform: scale(1.08) translateY(-3%);
+          transform: scale(1.14) translateY(-5%);
         }
 
         to {
-          transform: scale(1.08) translateY(4%);
+          transform: scale(1.14) translateY(6%);
         }
       }
     </style>
