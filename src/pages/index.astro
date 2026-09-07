@@ -175,7 +175,7 @@ const features = [
         <p class="rule"><span class="rule__square"></span><span class="rule__label">Ручная установка</span><span class="rule__line"></span><span class="rule__code">MANUAL</span></p>
         <ul class="rows">
           {manual.map((item) => (
-            <li>
+            <li data-reveal>
               <a href={item.href}>
                 <span class="rows__kind">
                   <svg class:list={['i', item.fill && 'i--fill']} viewBox="0 0 24 24" aria-hidden="true" set:html={item.icon} />
@@ -1054,8 +1054,28 @@ const features = [
           scroll-behavior: smooth;
         }
 
-        .hero__copy {
-          animation: rise 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+        .hero__copy > * {
+          animation: rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+        }
+
+        .hero__copy > :nth-child(2) {
+          animation-delay: 80ms;
+        }
+
+        .hero__copy > :nth-child(3) {
+          animation-delay: 160ms;
+        }
+
+        .hero__copy > :nth-child(4) {
+          animation-delay: 240ms;
+        }
+
+        .hero__copy > :nth-child(5) {
+          animation-delay: 320ms;
+        }
+
+        .tag__dot {
+          animation: pulse 2.4s ease-in-out infinite;
         }
 
         .js [data-reveal] {
@@ -1069,12 +1089,73 @@ const features = [
           transform: none;
         }
 
-        .game__grid li:nth-child(2) {
-          transition-delay: 90ms;
+        .game__grid li:nth-child(2),
+        .rows li:nth-child(2) {
+          transition-delay: 80ms;
         }
 
-        .game__grid li:nth-child(3) {
-          transition-delay: 180ms;
+        .game__grid li:nth-child(3),
+        .rows li:nth-child(3) {
+          transition-delay: 160ms;
+        }
+
+        .rows li:nth-child(4) {
+          transition-delay: 240ms;
+        }
+
+        /* Реакции на наведение поверх обычных transition. */
+        .nav__links a {
+          position: relative;
+        }
+
+        .nav__links a::after {
+          content: '';
+          position: absolute;
+          left: 0;
+          right: 0;
+          bottom: -6px;
+          height: 2px;
+          background: var(--amber);
+          transform: scaleX(0);
+          transform-origin: left;
+          transition: transform 0.2s cubic-bezier(0.2, 0.7, 0.2, 1);
+        }
+
+        .nav__links a:hover::after {
+          transform: scaleX(1);
+        }
+
+        .hero__cta .i,
+        .rows__out {
+          transition: transform 0.2s ease, color 0.15s ease;
+        }
+
+        .hero__cta:hover .i {
+          transform: translateY(2px);
+        }
+
+        .rows a:hover .rows__out {
+          color: var(--amber);
+          transform: translate(2px, -2px);
+        }
+
+        .game__grid li {
+          transition: transform 0.25s cubic-bezier(0.2, 0.7, 0.2, 1), border-color 0.25s ease, background 0.25s ease;
+        }
+
+        .game__grid li.is-in:hover {
+          transform: translateY(-3px);
+          border-color: var(--amber-hi);
+          background: linear-gradient(180deg, rgb(245 165 36 / 0.1), transparent 60%);
+        }
+      }
+
+      /* Параллакс арта на scroll-timeline: где не поддерживается — просто нет. На телефоне арт стоит отдельно. */
+      @media (prefers-reduced-motion: no-preference) and (min-width: 601px) {
+        .hero__art img {
+          animation: parallax linear both;
+          animation-timeline: scroll(root);
+          animation-range: 0 100vh;
         }
       }
 
@@ -1082,6 +1163,22 @@ const features = [
         from {
           opacity: 0;
           transform: translateY(14px);
+        }
+      }
+
+      @keyframes pulse {
+        50% {
+          box-shadow: 0 0 12px rgb(130 214 107 / 0.95);
+        }
+      }
+
+      @keyframes parallax {
+        from {
+          transform: scale(1.08) translateY(-3%);
+        }
+
+        to {
+          transform: scale(1.08) translateY(4%);
         }
       }
     </style>
