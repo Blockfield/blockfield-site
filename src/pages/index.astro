@@ -1149,12 +1149,11 @@ const features = [
         }
       }
 
-      /* Параллакс арта на scroll-timeline: где не поддерживается — просто нет. На телефоне арт стоит отдельно. */
+      /* Параллакс арта: сдвиг считает скрипт, здесь только гейт по motion и ширине. На телефоне арт стоит отдельно. */
       @media (prefers-reduced-motion: no-preference) and (min-width: 601px) {
         .hero__art img {
-          animation: parallax linear both;
-          animation-timeline: scroll(root);
-          animation-range: 0 70vh;
+          transform: scale(1.14) translateY(var(--parallax, -5%));
+          will-change: transform;
         }
       }
 
@@ -1168,16 +1167,6 @@ const features = [
       @keyframes pulse {
         50% {
           box-shadow: 0 0 12px rgb(130 214 107 / 0.95);
-        }
-      }
-
-      @keyframes parallax {
-        from {
-          transform: scale(1.14) translateY(-5%);
-        }
-
-        to {
-          transform: scale(1.14) translateY(6%);
         }
       }
     </style>
@@ -1195,6 +1184,24 @@ const features = [
         { rootMargin: '0px 0px -12% 0px' },
       );
       document.querySelectorAll('[data-reveal]').forEach((el) => reveal.observe(el));
+
+      const hero = document.querySelector('.hero') as HTMLElement;
+      const art = document.querySelector('.hero__art img') as HTMLElement;
+      let ticking = false;
+      const parallax = () => {
+        ticking = false;
+        const t = Math.min(scrollY / (hero.offsetHeight * 0.7), 1);
+        art.style.setProperty('--parallax', `${-5 + 11 * t}%`);
+      };
+      addEventListener(
+        'scroll',
+        () => {
+          if (!ticking) requestAnimationFrame(parallax);
+          ticking = true;
+        },
+        { passive: true },
+      );
+      parallax();
 
       document.querySelector('[data-copy]')?.addEventListener('click', async (event) => {
         const button = event.currentTarget as HTMLButtonElement;
