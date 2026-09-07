@@ -98,6 +98,7 @@ const features = [
         softwareVersion: launcher.version || undefined,
       })}
     />
+    <script is:inline>document.documentElement.classList.add('js');</script>
   </head>
   <body>
     <header class="nav">
@@ -146,7 +147,7 @@ const features = [
     </section>
 
     <section class="path" id="download">
-      <div class="path__launcher">
+      <div class="path__launcher" data-reveal>
         <p class="rule"><span class="rule__square"></span><span class="rule__label">Твой путь в игру</span><span class="rule__line"></span><span class="rule__code">INSTALL</span></p>
         <h2>Лаунчер — простой старт</h2>
         <p class="path__text">
@@ -170,7 +171,7 @@ const features = [
         </p>
       </div>
 
-      <div class="path__manual">
+      <div class="path__manual" data-reveal>
         <p class="rule"><span class="rule__square"></span><span class="rule__label">Ручная установка</span><span class="rule__line"></span><span class="rule__code">MANUAL</span></p>
         <ul class="rows">
           {manual.map((item) => (
@@ -196,7 +197,7 @@ const features = [
       <h2>Что тебя ждёт</h2>
       <ul class="game__grid">
         {features.map((item) => (
-          <li>
+          <li data-reveal>
             <p class="game__code">
               <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={item.icon} />
               {item.code}
@@ -208,7 +209,7 @@ const features = [
       </ul>
     </section>
 
-    <section class="server voxel">
+    <section class="server voxel" data-reveal>
       <div class="server__info">
         <p class="rule"><span class="rule__square"></span><span class="rule__label">Сервер</span><span class="rule__line"></span><span class="rule__code">ONLINE</span></p>
         <button class="server__address" type="button" data-copy="minecraft.play.nether.pp.ua">
@@ -1046,9 +1047,59 @@ const features = [
           margin-top: 1.9em;
         }
       }
+
+      /* ——— движение: сдержанно, всё под prefers-reduced-motion ——— */
+      @media (prefers-reduced-motion: no-preference) {
+        html {
+          scroll-behavior: smooth;
+        }
+
+        .hero__copy {
+          animation: rise 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+        }
+
+        .js [data-reveal] {
+          opacity: 0;
+          transform: translateY(14px);
+          transition: opacity 0.55s ease, transform 0.55s cubic-bezier(0.2, 0.7, 0.2, 1);
+        }
+
+        .js [data-reveal].is-in {
+          opacity: 1;
+          transform: none;
+        }
+
+        .game__grid li:nth-child(2) {
+          transition-delay: 90ms;
+        }
+
+        .game__grid li:nth-child(3) {
+          transition-delay: 180ms;
+        }
+      }
+
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(14px);
+        }
+      }
     </style>
 
     <script>
+      const reveal = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            // Прыжок по якорю или перезагрузка посреди страницы: то, что уже выше экрана, показываем сразу.
+            if (!entry.isIntersecting && entry.boundingClientRect.top > 0) continue;
+            entry.target.classList.add('is-in');
+            reveal.unobserve(entry.target);
+          }
+        },
+        { rootMargin: '0px 0px -12% 0px' },
+      );
+      document.querySelectorAll('[data-reveal]').forEach((el) => reveal.observe(el));
+
       document.querySelector('[data-copy]')?.addEventListener('click', async (event) => {
         const button = event.currentTarget as HTMLButtonElement;
         await navigator.clipboard.writeText(button.dataset.copy!);
