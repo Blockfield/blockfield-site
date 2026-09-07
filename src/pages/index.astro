@@ -1074,7 +1074,16 @@ const features = [
         }
 
         .tag__dot {
-          animation: pulse 2.4s ease-in-out infinite;
+          position: relative;
+        }
+
+        .tag__dot::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          border-radius: 50%;
+          background: var(--ok);
+          animation: ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
         }
 
         .js [data-reveal] {
@@ -1149,11 +1158,26 @@ const features = [
         }
       }
 
-      /* Параллакс арта: сдвиг считает скрипт, здесь только гейт по motion и ширине. На телефоне арт стоит отдельно. */
-      @media (prefers-reduced-motion: no-preference) and (min-width: 601px) {
-        .hero__art img {
-          transform: scale(1.14) translateY(var(--parallax, -5%));
-          will-change: transform;
+      /* Шторка: диагональ уезжает влево и открывает арт. Ниже 900px плашки нет, там и шторки нет. */
+      @media (prefers-reduced-motion: no-preference) and (min-width: 901px) {
+        .hero__edge {
+          animation: wipe-edge 1.1s cubic-bezier(0.7, 0, 0.2, 1) both;
+        }
+
+        .hero__plate {
+          animation: wipe-plate 1.1s cubic-bezier(0.7, 0, 0.2, 1) both;
+        }
+      }
+
+      @keyframes wipe-edge {
+        from {
+          clip-path: polygon(0 0, 112% 0, 100% 100%, 0 100%);
+        }
+      }
+
+      @keyframes wipe-plate {
+        from {
+          clip-path: polygon(0 0, calc(112% - 2px) 0, calc(100% - 2px) 100%, 0 100%);
         }
       }
 
@@ -1164,9 +1188,10 @@ const features = [
         }
       }
 
-      @keyframes pulse {
-        50% {
-          box-shadow: 0 0 12px rgb(130 214 107 / 0.95);
+      @keyframes ping {
+        to {
+          transform: scale(3.2);
+          opacity: 0;
         }
       }
     </style>
@@ -1184,24 +1209,6 @@ const features = [
         { rootMargin: '0px 0px -12% 0px' },
       );
       document.querySelectorAll('[data-reveal]').forEach((el) => reveal.observe(el));
-
-      const hero = document.querySelector('.hero') as HTMLElement;
-      const art = document.querySelector('.hero__art img') as HTMLElement;
-      let ticking = false;
-      const parallax = () => {
-        ticking = false;
-        const t = Math.min(scrollY / (hero.offsetHeight * 0.7), 1);
-        art.style.setProperty('--parallax', `${-5 + 11 * t}%`);
-      };
-      addEventListener(
-        'scroll',
-        () => {
-          if (!ticking) requestAnimationFrame(parallax);
-          ticking = true;
-        },
-        { passive: true },
-      );
-      parallax();
 
       document.querySelector('[data-copy]')?.addEventListener('click', async (event) => {
         const button = event.currentTarget as HTMLButtonElement;
