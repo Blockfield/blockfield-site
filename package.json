@@ -7,7 +7,7 @@
     "build": "astro build",
     "preview": "node ./dist/server/entry.mjs",
     "start": "node ./dist/server/entry.mjs",
-    "test": "node --test test/launcher.test.mjs"
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@astrojs/node": "^9.4.4",

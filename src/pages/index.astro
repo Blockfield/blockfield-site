@@ -4,12 +4,17 @@ import '@fontsource/ibm-plex-mono/400.css';
 import '@fontsource/ibm-plex-mono/500.css';
 import '@fontsource/ibm-plex-mono/600.css';
 import { latestLauncher, RELEASES } from '../lib/launcher';
+import { detectPlatform, launcherDownload } from '../lib/platform';
 import { brand, ui } from '../lib/icons';
 
 const launcher = await latestLauncher();
+const platform = detectPlatform(Astro.request.headers.get('user-agent') || '', Astro.request.headers.get('sec-ch-ua-platform') || '');
+const download = launcherDownload(platform, launcher);
+const supported = platform === 'windows' || platform === 'linux';
 
-// Иначе браузер эвристически закэширует документ и покажет вчерашнюю версию лаунчера.
-Astro.response.headers.set('Cache-Control', 'no-cache');
+// HTML содержит ссылку для ОС посетителя; общий кэш не должен отдавать её другой платформе.
+Astro.response.headers.set('Cache-Control', 'private, no-store');
+Astro.response.headers.set('Vary', 'User-Agent, Sec-CH-UA-Platform');
 
 const manual = [
   {
@@ -94,7 +99,7 @@ const features = [
           'Командный шутер в Minecraft 1.21.1 на Fabric: захват точек, классы, оружие и техника.',
         image: 'https://modpack.nether.pp.ua/og.jpg',
         publisher: { '@type': 'Organization', name: 'Blockfield', url: 'https://github.com/netherg-io' },
-        downloadUrl: launcher.windows,
+        downloadUrl: [launcher.windows, launcher.linux],
         softwareVersion: launcher.version || undefined,
       })}
     />
@@ -111,7 +116,7 @@ const features = [
         <a href="#download">СКАЧАТЬ</a>
         <a href="https://github.com/netherg-io/blockfield-releases">GITHUB</a>
       </nav>
-      <a class="nav__cta" href={launcher.windows}>
+      <a class="nav__cta" href={download.href} aria-label={download.label} data-platform-download>
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
         СКАЧАТЬ
       </a>
@@ -127,19 +132,20 @@ const features = [
         <p class="tag"><span class="tag__dot"></span>MINECRAFT 1.21.1 · FABRIC</p>
         <h1><span>Врывайся</span><span>в Blockfield</span></h1>
         <p class="hero__sub">Командные бои в Minecraft.<br />Захватывай точки. Играй своим классом.</p>
-        <a class="button button--amber hero__cta" href={launcher.windows}>
-          <span>СКАЧАТЬ ЛАУНЧЕР</span>
+        <a class="button button--amber hero__cta" href={download.href} data-platform-download>
+          <span>{download.label}</span>
           <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
         </a>
-        <p class="platforms">
+        <p class="download-note">{download.note}</p>
+        <p class="platforms" aria-label="Версии лаунчера">
           <a href={launcher.windows}>
             <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.windows} />
-            Windows
+            Windows · .exe
           </a>
           <span class="platforms__sep" aria-hidden="true"></span>
           <a href={launcher.linux}>
             <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.linux} />
-            Linux
+            Linux · AppImage
           </a>
           {launcher.version && <span class="platforms__version">версия {launcher.version}</span>}
         </p>
@@ -154,24 +160,25 @@ const features = [
           Установи наш лаунчер — он сам загрузит и настроит весь модпак, подберёт версию Minecraft и Fabric.
           Нажми «Играть» — и ты в бою.
         </p>
-        <a class="button button--amber" href={launcher.windows}>
+        <a class="button button--amber" href={supported ? download.href : '#manual-install'} data-platform-download>
           <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
-          <span>УСТАНОВИТЬ ЛАУНЧЕР</span>
+          <span>{supported ? download.label : 'РУЧНАЯ УСТАНОВКА'}</span>
         </a>
-        <p class="platforms">
+        <p class="download-note">{download.note}</p>
+        <p class="platforms" aria-label="Версии лаунчера">
           <a href={launcher.windows}>
             <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.windows} />
-            Windows
+            Windows · .exe
           </a>
           <span class="platforms__sep" aria-hidden="true"></span>
           <a href={launcher.linux}>
             <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.linux} />
-            Linux
+            Linux · AppImage
           </a>
         </p>
       </div>
 
-      <div class="path__manual" data-reveal>
+      <div class="path__manual" id="manual-install" data-reveal>
         <p class="rule"><span class="rule__square"></span><span class="rule__label">Ручная установка</span><span class="rule__line"></span><span class="rule__code">MANUAL</span></p>
         <ul class="rows">
           {manual.map((item) => (
@@ -219,9 +226,9 @@ const features = [
         </button>
         <p class="server__note">Minecraft 1.21.1 · Fabric · порт 25565. Лаунчер подключит тебя сам.</p>
       </div>
-      <a class="button button--amber" href={launcher.windows}>
+      <a class="button button--amber" href={download.href} data-platform-download>
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
-        <span>СКАЧАТЬ И В БОЙ</span>
+        <span>{download.label}</span>
       </a>
     </section>
 
@@ -534,6 +541,14 @@ const features = [
         margin-top: clamp(16px, 1.9vw, 30px);
         width: clamp(260px, 30.3vw, 466px);
         max-width: 100%;
+      }
+
+      .download-note {
+        max-width: 34em;
+        margin: 12px 0 0;
+        color: var(--sand);
+        font-size: 14px;
+        line-height: 1.5;
       }
 
       .platforms {
