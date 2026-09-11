@@ -46,8 +46,8 @@ const manual = [
 
 const features = [
   { code: '01', icon: ui.flag, title: 'Захват точек', text: 'Две команды, контрольные точки и счёт билетов. Держишь точки — выигрываешь матч.' },
-  { code: '02', icon: ui.swords, title: 'Классы и оружие', text: 'Штурмовик, марксман, инженер, снайпер и оператор FPV. У каждого своё снаряжение и роль в бою.' },
-  { code: '03', icon: ui.truck, title: 'Техника и паркур', text: 'Наземная и воздушная техника, подвижный бой и паркур поверх обычной механики Minecraft.' },
+  { code: '02', icon: ui.swords, title: 'Классы и оружие', text: 'Штурмовик, марксман, инженер, снайпер и оператор FPV. Доступность классов зависит от настроек матча и числа игроков.' },
+  { code: '03', icon: ui.swords, title: 'Выбор снаряжения', text: 'Выбирай комплект оружия из вариантов своего класса через меню в игре.' },
 ];
 ---
 
@@ -59,7 +59,7 @@ const features = [
     <title>BLOCKFIELD — командный шутер в Minecraft 1.21.1 (Fabric)</title>
     <meta
       name="description"
-      content="Blockfield — командные бои в Minecraft 1.21.1 на Fabric: захват точек, классы, оружие и техника. Скачай лаунчер, он сам поставит модпак и заведёт тебя на сервер."
+      content="Blockfield — командные бои в Minecraft 1.21.1 на Fabric: захват точек, классы, выбор снаряжения. Скачай лаунчер, он сам поставит модпак и заведёт тебя на сервер."
     />
     <link rel="canonical" href="https://modpack.nether.pp.ua/" />
     <meta name="theme-color" content="#070604" />
@@ -70,7 +70,7 @@ const features = [
     <meta property="og:title" content="BLOCKFIELD — командный шутер в Minecraft" />
     <meta
       property="og:description"
-      content="Захват точек, классы и техника в Minecraft 1.21.1 на Fabric. Лаунчер ставит модпак сам."
+      content="Захват точек, классы и снаряжение в Minecraft 1.21.1 на Fabric. Лаунчер ставит модпак сам."
     />
     <meta property="og:image" content="https://modpack.nether.pp.ua/og.jpg" />
     <meta property="og:image:width" content="1200" />
@@ -80,7 +80,7 @@ const features = [
     <meta name="twitter:title" content="BLOCKFIELD — командный шутер в Minecraft" />
     <meta
       name="twitter:description"
-      content="Захват точек, классы и техника в Minecraft 1.21.1 на Fabric. Лаунчер ставит модпак сам."
+      content="Захват точек, классы и снаряжение в Minecraft 1.21.1 на Fabric. Лаунчер ставит модпак сам."
     />
     <meta name="twitter:image" content="https://modpack.nether.pp.ua/og.jpg" />
     <link rel="icon" href="/logo.svg" type="image/svg+xml" />
@@ -96,7 +96,7 @@ const features = [
         applicationCategory: 'Game',
         operatingSystem: 'Windows, Linux',
         description:
-          'Командный шутер в Minecraft 1.21.1 на Fabric: захват точек, классы, оружие и техника.',
+          'Командный шутер в Minecraft 1.21.1 на Fabric: захват точек, классы, выбор снаряжения.',
         image: 'https://modpack.nether.pp.ua/og.jpg',
         publisher: { '@type': 'Organization', name: 'Blockfield', url: 'https://github.com/netherg-io' },
         downloadUrl: [launcher.windows, launcher.linux],
@@ -218,7 +218,7 @@ const features = [
 
     <section class="server voxel" data-reveal>
       <div class="server__info">
-        <p class="rule"><span class="rule__square"></span><span class="rule__label">Сервер</span><span class="rule__line"></span><span class="rule__code">ONLINE</span></p>
+        <p class="rule"><span class="rule__square"></span><span class="rule__label">Сервер</span><span class="rule__line"></span><span class="rule__code">АДРЕС</span></p>
         <button class="server__address" type="button" data-copy="minecraft.play.nether.pp.ua">
           minecraft.play.nether.pp.ua
           <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.copy} />
