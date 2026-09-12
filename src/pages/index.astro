@@ -32,7 +32,7 @@ const manual = [
   {
     href: 'https://modpack.nether.pp.ua/Blockfield-prism.zip',
     title: 'Инстанс Prism',
-    note: 'Обновляется сам перед запуском',
+    note: 'Проверяет обновления перед запуском',
     icon: ui.refresh_cw,
   },
   {
@@ -45,9 +45,9 @@ const manual = [
 ];
 
 const features = [
-  { code: '01', icon: ui.flag, title: 'Захват точек', text: 'Две команды, контрольные точки и счёт билетов. Держишь точки — выигрываешь матч.' },
+  { code: '01', icon: ui.flag, title: 'Захват точек', text: 'Две команды, контрольные точки и счёт билетов. Контроль точек уменьшает билеты противника.' },
   { code: '02', icon: ui.swords, title: 'Классы и оружие', text: 'Штурмовик, марксман, инженер, снайпер и оператор FPV. Доступность классов зависит от настроек матча и числа игроков.' },
-  { code: '03', icon: ui.swords, title: 'Выбор снаряжения', text: 'Выбирай комплект оружия из вариантов своего класса через меню в игре.' },
+  { code: '03', icon: ui.swords, title: 'Выбор снаряжения', text: 'Комплекты оружия доступны в меню класса. Состав снаряжения зависит от выбранного класса.' },
 ];
 ---
 
@@ -59,7 +59,7 @@ const features = [
     <title>BLOCKFIELD — командный шутер в Minecraft 1.21.1 (Fabric)</title>
     <meta
       name="description"
-      content="Blockfield — командные бои в Minecraft 1.21.1 на Fabric: захват точек, классы, выбор снаряжения. Скачай лаунчер, он сам поставит модпак и заведёт тебя на сервер."
+      content="Blockfield — командные бои в Minecraft 1.21.1 на Fabric: захват точек, классы, выбор снаряжения. Лаунчер установит модпак и подключит к серверу."
     />
     <link rel="canonical" href="https://modpack.nether.pp.ua/" />
     <meta name="theme-color" content="#070604" />
@@ -112,6 +112,7 @@ const features = [
         BLOCKFIELD
       </a>
       <nav class="nav__links">
+        <a href="#rooms">Комнаты</a>
         <a href="#game">ИГРА</a>
         <a href="#download">СКАЧАТЬ</a>
         <a href="https://github.com/netherg-io/blockfield-releases">GITHUB</a>
@@ -130,8 +131,8 @@ const features = [
       <div class="hero__plate voxel"></div>
       <div class="hero__copy">
         <p class="tag"><span class="tag__dot"></span>MINECRAFT 1.21.1 · FABRIC</p>
-        <h1><span>Врывайся</span><span>в Blockfield</span></h1>
-        <p class="hero__sub">Командные бои в Minecraft.<br />Захватывай точки. Играй своим классом.</p>
+        <h1><span>Командные бои</span><span>в Minecraft</span></h1>
+        <p class="hero__sub">Захват точек, выбор класса и снаряжения.<br />Игровые комнаты на сервере Blockfield.</p>
         <a class="button button--amber hero__cta" href={download.href} data-platform-download>
           <span>{download.label}</span>
           <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
@@ -154,11 +155,11 @@ const features = [
 
     <section class="path" id="download">
       <div class="path__launcher" data-reveal>
-        <p class="rule"><span class="rule__square"></span><span class="rule__label">Твой путь в игру</span><span class="rule__line"></span><span class="rule__code">INSTALL</span></p>
-        <h2>Лаунчер — простой старт</h2>
+        <p class="rule"><span class="rule__square"></span><span class="rule__label">Установка</span><span class="rule__line"></span><span class="rule__code">INSTALL</span></p>
+        <h2>Blockfield Launcher</h2>
         <p class="path__text">
-          Установи наш лаунчер — он сам загрузит и настроит весь модпак, подберёт версию Minecraft и Fabric.
-          Нажми «Играть» — и ты в бою.
+          Лаунчер установит модпак, Minecraft и Fabric. После установки нажмите «Играть»
+          для входа на сервер или выберите комнату на этой странице.
         </p>
         <a class="button button--amber" href={supported ? download.href : '#manual-install'} data-platform-download>
           <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
@@ -201,7 +202,7 @@ const features = [
 
     <section class="game voxel" id="game">
       <p class="rule"><span class="rule__square"></span><span class="rule__label">Игра</span><span class="rule__line"></span><span class="rule__code">BRIEFING</span></p>
-      <h2>Что тебя ждёт</h2>
+      <h2>Правила боя</h2>
       <ul class="game__grid">
         {features.map((item) => (
           <li data-reveal>
@@ -216,6 +217,14 @@ const features = [
       </ul>
     </section>
 
+    <section class="rooms" id="rooms" aria-labelledby="rooms-title">
+      <div class="rooms-heading"><h2 id="rooms-title">Игровые комнаты</h2><a class="room-join" id="lobby-join" href="blockfield://join/lobby">Войти в лобби</a></div>
+      <p id="rooms-status" role="status">Загружаем список комнат…</p>
+      <div id="rooms-list"></div>
+      <p class="rooms-help">Кнопки входа откроют Blockfield Launcher. <a href="#download">Установить лаунчер</a></p>
+      <p id="room-launch-status" role="status" hidden></p>
+    </section>
+
     <section class="server voxel" data-reveal>
       <div class="server__info">
         <p class="rule"><span class="rule__square"></span><span class="rule__label">Сервер</span><span class="rule__line"></span><span class="rule__code">АДРЕС</span></p>
@@ -224,7 +233,7 @@ const features = [
           <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.copy} />
           <span class="server__copied" hidden>Скопировано</span>
         </button>
-        <p class="server__note">Minecraft 1.21.1 · Fabric · порт 25565. Лаунчер подключит тебя сам.</p>
+        <p class="server__note">Minecraft 1.21.1 · Fabric · порт 25565. Лаунчер подключит к серверу после запуска игры.</p>
       </div>
       <a class="button button--amber" href={download.href} data-platform-download>
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
@@ -248,6 +257,19 @@ const features = [
     </footer>
 
     <style is:global>
+      .rooms { padding: 56px clamp(20px, 4.5vw, 96px); background: #0B0906; border-top: 1px solid #2A2116; scroll-margin-top: 80px; }
+      .rooms-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }
+      .rooms h2 { font-size: clamp(24px, 4vw, 36px); margin-bottom: 16px; }
+      .rooms p { color: #C7AE86; line-height: 1.6; }
+      .rooms .room-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 24px 0; border-bottom: 1px solid #2A2116; }
+      .rooms .room-row h3 { font-size: 18px; margin-bottom: 6px; }
+      .rooms .room-join { padding: 12px 18px; border: 1px solid #F5A524; color: #F3E7D0; white-space: nowrap; }
+      .rooms .room-join:hover { background: #2A2116; }
+      .rooms a:focus-visible { outline: 2px solid #F5A524; outline-offset: 4px; }
+      .rooms-help { margin-top: 24px; }
+      .rooms-help a { text-decoration: underline; text-underline-offset: 4px; }
+      @media (max-width: 600px) { .rooms .room-row { align-items: flex-start; flex-direction: column; gap: 16px; } }
+
       /* Палитра — та же, что в лаунчере (src/styles/theme.css), менять только вместе с ним. */
       :root {
         --bg: #070604;
@@ -1222,6 +1244,62 @@ const features = [
     </style>
 
     <script>
+      const phaseLabels: Record<string, string> = { IDLE: 'Ожидание игроков', VOTING: 'Голосование', PREPARING: 'Подготовка', GAME: 'Бой', MATCH_END: 'Матч завершён' };
+      const roomList = document.querySelector('#rooms-list')!;
+      const roomStatus = document.querySelector('#rooms-status')!;
+      const invitedRoom = new URL(window.location.href).searchParams.get('room');
+      document.querySelector('#lobby-join')?.addEventListener('click', () => {
+        const note = document.querySelector('#room-launch-status') as HTMLElement;
+        note.hidden = false;
+        note.textContent = 'Подтвердите открытие лаунчера в браузере. Если он не открылся, установите или обновите лаунчер и нажмите кнопку ещё раз.';
+      });
+      let lastRooms = '';
+      async function refreshRooms() {
+        try {
+          const response = await fetch('/api/rooms', { signal: AbortSignal.timeout(6000) });
+          if (!response.ok) throw new Error();
+          const status = await response.json();
+          if (!status.available) throw new Error();
+          roomStatus.textContent = status.rooms.length ? 'Состояние обновляется каждые 10 секунд.' : 'Открытых комнат пока нет. Создать комнату можно в игре.';
+          if (invitedRoom === 'lobby') {
+            roomStatus.textContent = 'Вас пригласили в лобби Blockfield. Нажмите «Войти в лобби» для запуска лаунчера.';
+          } else if (invitedRoom) {
+            const invited = status.rooms.find((room: any) => room.id === invitedRoom);
+            roomStatus.textContent = invited ? `Приглашение: ${invited.name}. Нажмите «Войти в комнату» для запуска лаунчера.` : 'Комната из приглашения уже закрыта. Выберите другую комнату или создайте новую в игре.';
+            status.rooms.sort((a: any, b: any) => Number(b.id === invitedRoom) - Number(a.id === invitedRoom));
+          }
+          const signature = JSON.stringify(status.rooms);
+          if (signature === lastRooms) return;
+          lastRooms = signature;
+          const focusedRoom = document.activeElement?.getAttribute('data-room-id');
+          roomList.replaceChildren(...status.rooms.map((room: any) => {
+            const row = document.createElement('article'); row.className = 'room-row';
+            const info = document.createElement('div');
+            const title = document.createElement('h3'); title.textContent = room.name;
+            const details = document.createElement('p'); details.textContent = [room.mode, room.map, phaseLabels[room.phase], `Игроков: ${room.players}`].filter(Boolean).join(' · ');
+            info.append(title, details);
+            const join = document.createElement('a'); join.className = 'room-join'; join.textContent = 'Войти в комнату';
+            join.setAttribute('aria-label', `Войти в комнату: ${room.name}`);
+            join.href = `blockfield://join/${room.id}`;
+            join.dataset.roomId = room.id;
+            join.addEventListener('click', () => {
+              const note = document.querySelector('#room-launch-status') as HTMLElement;
+              note.hidden = false; note.textContent = 'Подтвердите открытие лаунчера в браузере. Если он не открылся, установите или обновите лаунчер и нажмите кнопку ещё раз.';
+            });
+            row.append(info); if (room.joinable) row.append(join);
+            return row;
+          }));
+          if (focusedRoom) {
+            const link = Array.from(roomList.querySelectorAll<HTMLAnchorElement>('[data-room-id]')).find(link => link.dataset.roomId === focusedRoom);
+            link?.focus({ preventScroll: true });
+          }
+        } catch {
+          lastRooms = ''; roomList.replaceChildren();
+          roomStatus.textContent = 'Не удалось получить список комнат. Повторим запрос автоматически.';
+        }
+      }
+      void refreshRooms();
+      window.setInterval(() => { if (!document.hidden) void refreshRooms(); }, 10000);
       const reveal = new IntersectionObserver(
         (entries) => {
           for (const entry of entries) {
