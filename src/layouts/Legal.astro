@@ -1,0 +1,64 @@
+---
+import '@fontsource-variable/inter';
+interface Props { title: string; description: string; sections: { id: string; title: string }[] }
+const { title, description, sections } = Astro.props;
+const canonical = new URL(Astro.url.pathname, 'https://modpack.nether.pp.ua');
+---
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title} — Blockfield</title>
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#070604" />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href="/logo.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <a class="skip" href="#document">Перейти к документу</a>
+    <header>
+      <a class="brand" href="/" aria-label="Blockfield — главная"><img src="/logo.svg" width="40" height="40" alt="" />BLOCKFIELD</a>
+      <a href="/">На главную</a>
+    </header>
+    <main id="document">
+      <h1>{title}</h1>
+      <p class="revision">Редакция от <time datetime="2026-09-12">12 сентября 2026 года</time></p>
+      <p class="intro">{description}</p>
+      <nav aria-label="Содержание документа">
+        <ul>{sections.map(section => <li><a href={`#${section.id}`}>{section.title}</a></li>)}</ul>
+      </nav>
+      <article><slot /></article>
+    </main>
+    <footer><a href="/terms">Условия использования</a><a href="/privacy">Конфиденциальность</a><a href="/">Blockfield</a></footer>
+    <style is:global>
+      :root { color-scheme: dark; font-family: 'Inter Variable', sans-serif; background: #070604; color: #F3E7D0; }
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      ::selection { background: #F5A524; color: #070604; }
+      a { color: #F5A524; text-underline-offset: 4px; text-decoration-thickness: 1px; }
+      a:hover { color: #F3E7D0; }
+      a:focus-visible { outline: 2px solid #F5A524; outline-offset: 5px; }
+      header, footer { max-width: 1200px; margin: 0 auto; padding: 24px clamp(20px, 5vw, 48px); display: flex; align-items: center; flex-wrap: wrap; gap: 20px; }
+      header { justify-content: space-between; border-bottom: 1px solid #2A2116; }
+      .brand { display: flex; align-items: center; gap: 12px; color: #F3E7D0; font-weight: 750; text-decoration: none; letter-spacing: .04em; }
+      main { max-width: 78ch; margin: 0 auto; padding: 64px 24px 80px; }
+      h1 { font-size: clamp(30px, 5vw, 48px); line-height: 1.15; letter-spacing: -.025em; margin: 0 0 20px; overflow-wrap: anywhere; text-wrap: balance; }
+      .revision { font-size: 14px; color: #C7AE86; }
+      .intro { margin: 24px 0; }
+      p, li { font-size: 17px; line-height: 1.75; color: #C7AE86; }
+      article p { margin: 16px 0; }
+      strong { color: #F3E7D0; font-weight: 650; }
+      nav { padding: 16px 0 24px; border-bottom: 1px solid #2A2116; }
+      nav ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+      h2 { margin: 48px 0 16px; font-size: 24px; line-height: 1.35; scroll-margin-top: 24px; }
+      ul { padding-left: 24px; }
+      article li + li { margin-top: 10px; }
+      footer { border-top: 1px solid #2A2116; font-size: 14px; padding-bottom: 36px; }
+      .skip { position: absolute; top: -80px; left: 16px; padding: 12px; background: #11100D; }
+      .skip:focus { top: 12px; }
+      @media (max-width: 600px) { main { padding-top: 40px; } header { gap: 16px; } header > a:last-child { font-size: 14px; } }
+      @media print { :root { color-scheme: light; background: white; color: black; } p, li, strong, a { color: black; } header, footer, nav, .skip { display: none; } main { padding: 0; max-width: none; } h2 { break-after: avoid; } }
+    </style>
+  </body>
+</html>
