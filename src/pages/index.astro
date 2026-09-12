@@ -112,7 +112,7 @@ const features = [
         BLOCKFIELD
       </a>
       <nav class="nav__links">
-        <a href="#rooms">Комнаты</a>
+        <a href="#rooms" id="rooms-nav" hidden>Комнаты</a>
         <a href="#game">ИГРА</a>
         <a href="#download">СКАЧАТЬ</a>
         <a href="https://github.com/netherg-io/blockfield-releases">GITHUB</a>
@@ -217,7 +217,7 @@ const features = [
       </ul>
     </section>
 
-    <section class="rooms" id="rooms" aria-labelledby="rooms-title">
+    <section hidden class="rooms" id="rooms" aria-labelledby="rooms-title">
       <div class="rooms-heading"><h2 id="rooms-title">Игровые комнаты</h2><a class="room-join" id="lobby-join" href="blockfield://join/lobby">Войти в лобби</a></div>
       <p id="rooms-status" role="status">Загружаем список комнат…</p>
       <div id="rooms-list"></div>
@@ -257,6 +257,17 @@ const features = [
     </footer>
 
     <style is:global>
+      [hidden] { display: none !important; }
+      .room-info { flex: 1; min-width: 0; }
+      .battle-score { display: flex; flex-wrap: wrap; gap: 24px; margin-top: 16px; font-size: 18px; font-variant-numeric: tabular-nums; }
+      .battle-red { color: #FF9D99; }
+      .battle-blue { color: #91C8FF; }
+      .capture-points { display: flex; flex-wrap: wrap; gap: 16px 24px; margin-top: 16px; }
+      .capture-point { display: flex; flex-direction: column; justify-content: space-between; flex: 0 1 220px; min-width: 160px; color: #C7AE86; font-size: 13px; }
+      .capture-point progress { display: block; width: 100%; height: 6px; margin-top: 8px; appearance: none; border: 0; background: #2A2116; }
+      .capture-point progress::-webkit-progress-bar { background: #2A2116; }
+      .capture-point progress::-webkit-progress-value { background: var(--point-color, #C7AE86); }
+      .capture-point progress::-moz-progress-bar { background: var(--point-color, #C7AE86); }
       .rooms { padding: 56px clamp(20px, 4.5vw, 96px); background: #0B0906; border-top: 1px solid #2A2116; scroll-margin-top: 80px; }
       .rooms-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }
       .rooms h2 { font-size: clamp(24px, 4vw, 36px); margin-bottom: 16px; }
@@ -1245,6 +1256,8 @@ const features = [
 
     <script>
       const phaseLabels: Record<string, string> = { IDLE: 'Ожидание игроков', VOTING: 'Голосование', PREPARING: 'Подготовка', GAME: 'Бой', MATCH_END: 'Матч завершён' };
+      const roomSection = document.querySelector<HTMLElement>('#rooms')!;
+      const roomNav = document.querySelector<HTMLElement>('#rooms-nav')!;
       const roomList = document.querySelector('#rooms-list')!;
       const roomStatus = document.querySelector('#rooms-status')!;
       const invitedRoom = new URL(window.location.href).searchParams.get('room');
@@ -1253,6 +1266,7 @@ const features = [
         note.hidden = false;
         note.textContent = 'Подтвердите открытие лаунчера в браузере. Если он не открылся, установите или обновите лаунчер и нажмите кнопку ещё раз.';
       });
+      roomSection.hidden = !invitedRoom;
       let lastRooms = '';
       async function refreshRooms() {
         try {
@@ -1260,6 +1274,8 @@ const features = [
           if (!response.ok) throw new Error();
           const status = await response.json();
           if (!status.available) throw new Error();
+          roomSection.hidden = status.rooms.length === 0 && !invitedRoom;
+          roomNav.hidden = status.rooms.length === 0;
           roomStatus.textContent = status.rooms.length ? 'Состояние обновляется каждые 10 секунд.' : 'Открытых комнат пока нет. Создать комнату можно в игре.';
           if (invitedRoom === 'lobby') {
             roomStatus.textContent = 'Вас пригласили в лобби Blockfield. Нажмите «Войти в лобби» для запуска лаунчера.';
@@ -1274,10 +1290,31 @@ const features = [
           const focusedRoom = document.activeElement?.getAttribute('data-room-id');
           roomList.replaceChildren(...status.rooms.map((room: any) => {
             const row = document.createElement('article'); row.className = 'room-row';
-            const info = document.createElement('div');
+            const info = document.createElement('div'); info.className = 'room-info';
             const title = document.createElement('h3'); title.textContent = room.name;
             const details = document.createElement('p'); details.textContent = [room.mode, room.map, phaseLabels[room.phase], `Игроков: ${room.players}`].filter(Boolean).join(' · ');
             info.append(title, details);
+            if (room.battle) {
+              const score = document.createElement('div'); score.className = 'battle-score'; score.setAttribute('aria-label', 'Очки команд');
+              for (const [team, label] of [['red', 'Красные'], ['blue', 'Синие']]) {
+                const value = document.createElement('strong'); value.className = `battle-${team}`;
+                value.textContent = `${label}: ${room.battle[team]}`; score.append(value);
+              }
+              const points = document.createElement('div'); points.className = 'capture-points';
+              for (const point of room.battle.points) {
+                const flag = document.createElement('div'); flag.className = 'capture-point';
+                const team = point.owner === 'NEUTRAL' ? point.claiming : point.owner;
+                const owner = team === 'RED' ? 'Красные' : team === 'BLUE' ? 'Синие' : 'Нейтральная';
+                const capturing = point.capturing !== 'NONE' && point.capturing !== team
+                  ? ` · ${point.capturing === 'RED' ? 'Красные' : 'Синие'} нейтрализуют` : '';
+                const label = `${point.name} · ${owner} · ${point.progress}%${capturing}`;
+                flag.textContent = label;
+                flag.style.setProperty('--point-color', team === 'RED' ? '#FF9D99' : team === 'BLUE' ? '#91C8FF' : '#C7AE86');
+                const bar = document.createElement('progress'); bar.max = 100; bar.value = point.progress;
+                bar.setAttribute('aria-label', label); flag.append(bar); points.append(flag);
+              }
+              info.append(score, points);
+            }
             const join = document.createElement('a'); join.className = 'room-join'; join.textContent = 'Войти в комнату';
             join.setAttribute('aria-label', `Войти в комнату: ${room.name}`);
             join.href = `blockfield://join/${room.id}`;
@@ -1295,6 +1332,7 @@ const features = [
           }
         } catch {
           lastRooms = ''; roomList.replaceChildren();
+          roomSection.hidden = !invitedRoom; roomNav.hidden = true;
           roomStatus.textContent = 'Не удалось получить список комнат. Повторим запрос автоматически.';
         }
       }

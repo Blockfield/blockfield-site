@@ -1,12 +1,20 @@
 import net from 'node:net';
 
-export type Room = { id: string; name: string; mode: string; map: string; phase: string; players: number; joinable: boolean };
+export type CapturePoint = { id: string; name: string; owner: string; claiming: string; capturing: string; progress: number };
+export type Battle = { red: number; blue: number; points: CapturePoint[] };
+export function validBattle(battle: any): boolean {
+  return battle == null || (Number.isInteger(battle.red) && battle.red >= 0 && Number.isInteger(battle.blue) && battle.blue >= 0
+    && Array.isArray(battle.points) && battle.points.length <= 100 && battle.points.every((p: any) => p && typeof p.id === 'string' && typeof p.name === 'string'
+      && ['RED', 'BLUE', 'NEUTRAL'].includes(p.owner) && ['RED', 'BLUE', 'NONE'].includes(p.claiming) && ['RED', 'BLUE', 'NONE'].includes(p.capturing)
+      && Number.isInteger(p.progress) && p.progress >= 0 && p.progress <= 100));
+}
+export type Room = { id: string; name: string; mode: string; map: string; phase: string; players: number; joinable: boolean; battle?: Battle | null };
 export type RoomStatus = { available: boolean; checkedAt: number; rooms: Room[] };
 export const phases: Record<string, string> = { IDLE: 'Ожидание игроков', VOTING: 'Голосование', PREPARING: 'Подготовка', GAME: 'Бой', MATCH_END: 'Матч завершён' };
 export const roomId = /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 export function parseRooms(value: any): RoomStatus {
   if (!value || !Number.isFinite(value.checkedAt) || Math.abs(Date.now() - value.checkedAt) > 30_000 || !Array.isArray(value.rooms)) throw new Error('Room status unavailable');
-  const rooms = value.rooms.filter((r: any) => r && roomId.test(r.id) && typeof r.name === 'string' && typeof r.mode === 'string' && typeof r.map === 'string' && r.phase in phases && Number.isInteger(r.players) && r.players >= 0 && typeof r.joinable === 'boolean').slice(0, 100);
+  const rooms = value.rooms.filter((r: any) => r && roomId.test(r.id) && typeof r.name === 'string' && typeof r.mode === 'string' && typeof r.map === 'string' && r.phase in phases && Number.isInteger(r.players) && r.players >= 0 && typeof r.joinable === 'boolean' && validBattle(r.battle)).slice(0, 100);
   if (rooms.length !== value.rooms.length) throw new Error('Invalid room status');
   return { available: true, checkedAt: value.checkedAt, rooms };
 }

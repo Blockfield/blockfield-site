@@ -25,3 +25,11 @@ test('Minecraft status accepts fragmented replies and closes its connection', as
   try { assert.deepEqual((await queryRooms('127.0.0.1', server.address().port)).rooms, [room]); }
   finally { await new Promise(resolve => server.close(resolve)); }
 });
+test('battle data preserves capture state and rejects invalid progress and scores', () => {
+  const battle = { red: 720, blue: 685, points: [{ id: 'a', name: 'A', owner: 'BLUE', claiming: 'NONE', capturing: 'RED', progress: 35 }] };
+  const parse = value => parseRooms({ checkedAt: Date.now(), rooms: [{ ...room, battle: value }] });
+  assert.deepEqual(parse(battle).rooms[0].battle, battle);
+  assert.throws(() => parse({ ...battle, red: -1 }));
+  assert.throws(() => parse({ ...battle, points: [{ ...battle.points[0], progress: 101 }] }));
+  assert.throws(() => parse({ ...battle, points: [{ ...battle.points[0], owner: 'unknown' }] }));
+});
