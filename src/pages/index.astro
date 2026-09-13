@@ -458,6 +458,10 @@ const features = [
       /* Не в .nav__links: ссылка на аккаунт нужна и на телефоне, где остальные ссылки скрыты. */
       .nav__account {
         margin-left: auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
         font-family: var(--mono);
         font-weight: 500;
         font-size: clamp(12px, 0.95vw, 14px);
@@ -1276,6 +1280,12 @@ const features = [
       const roomList = document.querySelector('#rooms-list')!;
       const roomStatus = document.querySelector('#rooms-status')!;
       const invitedRoom = new URL(window.location.href).searchParams.get('room');
+      fetch('/api/account/me', { credentials: 'same-origin', cache: 'no-store' }).then(r => r.json()).then(({ account }) => {
+        if (!account?.username) return;
+        const link = document.querySelector<HTMLElement>('.nav__account')!;
+        link.textContent = account.username;
+        link.setAttribute('aria-label', `Аккаунт: ${account.username}`);
+      }).catch(() => {});
       document.querySelector('#lobby-join')?.addEventListener('click', () => {
         const note = document.querySelector('#room-launch-status') as HTMLElement;
         note.hidden = false;
