@@ -1,5 +1,6 @@
 ---
 import '@fontsource-variable/inter';
+import '@fontsource/ibm-plex-mono/500.css';
 ---
 <!doctype html>
 <html lang="ru">
@@ -18,6 +19,7 @@ import '@fontsource-variable/inter';
       <a href="/">На главную</a>
     </header>
     <main>
+      <p class="eyebrow">Blockfield ID</p>
       <h1>Аккаунт</h1>
       <p class="intro">Этот же никнейм и пароль подходят для входа в Blockfield Launcher. Если вы играете через Prism Launcher, в лобби сервера используйте команды <code>/register</code> и <code>/login</code> — аккаунт будет тот же.</p>
       <p id="account-status" role="status">Проверяем вход…</p>
@@ -43,79 +45,88 @@ import '@fontsource-variable/inter';
       </section>
 
       <section id="profile" hidden aria-labelledby="nickname">
-        <div class="panel who">
-          <canvas id="skin-preview" width="16" height="32" role="img" aria-label="Скин спереди"></canvas>
-          <div>
-            <p class="label">Никнейм</p>
-            <h2 id="nickname"></h2>
-            <p id="skin-note"></p>
+        <aside class="who panel">
+          <div id="stage" class="stage" role="img" aria-label="Скин игрока в 3D. Потяните, чтобы повернуть.">
+            <div class="rig"><div id="figure" class="figure"></div></div>
+            <span class="floor"></span>
           </div>
+          <p class="hint">Потяните фигуру, чтобы повернуть</p>
+          <p class="label">Никнейм</p>
+          <h2 id="nickname"></h2>
+          <p id="skin-note"></p>
           <button id="logout" type="button">Выйти</button>
+        </aside>
+
+        <div class="forms">
+          <form id="skin-form" class="panel">
+            <h3><span class="num">01</span>Скин</h3>
+            <label>Файл PNG 64×64 или 64×32, до 1 МиБ
+              <input name="file" type="file" accept="image/png" />
+            </label>
+            <fieldset>
+              <legend>Модель рук</legend>
+              <label class="choice"><input type="radio" name="model" value="classic" checked /> Классическая, 4 px</label>
+              <label class="choice"><input type="radio" name="model" value="slim" /> Тонкая, 3 px</label>
+            </fieldset>
+            <div class="actions">
+              <button class="primary" type="submit">Сохранить скин</button>
+              <button type="button" data-remove="skin">Сбросить к скину Minecraft</button>
+            </div>
+            <p class="form-status" role="status"></p>
+          </form>
+
+          <form id="cape-form" class="panel">
+            <h3><span class="num">02</span>Плащ</h3>
+            <label>Файл PNG 64×32, до 1 МиБ
+              <input name="file" type="file" accept="image/png" required />
+            </label>
+            <div class="actions">
+              <button class="primary" type="submit">Загрузить плащ</button>
+              <button type="button" data-remove="cape">Убрать плащ</button>
+            </div>
+            <p class="form-status" role="status"></p>
+          </form>
+
+          <form id="password-form" class="panel">
+            <h3><span class="num">03</span>Пароль</h3>
+            <input name="username" autocomplete="username" hidden />
+            <label>Текущий пароль
+              <input name="current" type="password" autocomplete="current-password" required />
+            </label>
+            <label>Новый пароль
+              <input name="password" type="password" autocomplete="new-password" required minlength="8" aria-describedby="new-pass-hint" />
+            </label>
+            <small id="new-pass-hint">Не короче 8 символов. После смены пароля лаунчер и игра попросят войти заново.</small>
+            <button class="primary" type="submit">Сменить пароль</button>
+            <p class="form-status" role="status"></p>
+          </form>
         </div>
-
-        <form id="skin-form" class="panel">
-          <h3>Скин</h3>
-          <label>Файл PNG 64×64 или 64×32, до 1 МиБ
-            <input name="file" type="file" accept="image/png" />
-          </label>
-          <fieldset>
-            <legend>Модель рук</legend>
-            <label class="choice"><input type="radio" name="model" value="classic" checked /> Классическая, 4 px</label>
-            <label class="choice"><input type="radio" name="model" value="slim" /> Тонкая, 3 px</label>
-          </fieldset>
-          <div class="actions">
-            <button class="primary" type="submit">Сохранить скин</button>
-            <button type="button" data-remove="skin">Сбросить к скину Minecraft</button>
-          </div>
-          <p class="form-status" role="status"></p>
-        </form>
-
-        <form id="cape-form" class="panel">
-          <h3>Плащ</h3>
-          <label>Файл PNG 64×32, до 1 МиБ
-            <input name="file" type="file" accept="image/png" required />
-          </label>
-          <div class="actions">
-            <button class="primary" type="submit">Загрузить плащ</button>
-            <button type="button" data-remove="cape">Убрать плащ</button>
-          </div>
-          <p class="form-status" role="status"></p>
-        </form>
-
-        <form id="password-form" class="panel">
-          <h3>Пароль</h3>
-          <input name="username" autocomplete="username" hidden />
-          <label>Текущий пароль
-            <input name="current" type="password" autocomplete="current-password" required />
-          </label>
-          <label>Новый пароль
-            <input name="password" type="password" autocomplete="new-password" required minlength="8" aria-describedby="new-pass-hint" />
-          </label>
-          <small id="new-pass-hint">Не короче 8 символов. После смены пароля лаунчер и игра попросят войти заново.</small>
-          <button class="primary" type="submit">Сменить пароль</button>
-          <p class="form-status" role="status"></p>
-        </form>
       </section>
     </main>
     <style is:global>
-      :root { color-scheme: dark; font-family: 'Inter Variable', sans-serif; background: #070604; color: #F3E7D0; }
+      :root { color-scheme: dark; font-family: 'Inter Variable', sans-serif; background: #070604; color: #F3E7D0; --mono: 'IBM Plex Mono', ui-monospace, monospace; }
       * { box-sizing: border-box; }
-      body { margin: 0; min-width: 320px; }
+      body { margin: 0; min-width: 320px; background: radial-gradient(60% 40% at 50% -10%, #1c150a 0%, transparent 100%); }
       [hidden] { display: none !important; }
       a { color: #F5A524; text-underline-offset: 4px; text-decoration-thickness: 1px; }
       a:hover { color: #F3E7D0; }
-      a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid #F5A524; outline-offset: 3px; }
+      a:focus-visible, button:focus-visible, input:focus-visible, .stage:focus-visible { outline: 2px solid #F5A524; outline-offset: 3px; }
       header { max-width: 1200px; margin: 0 auto; padding: 24px clamp(20px, 5vw, 48px); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; border-bottom: 1px solid #2A2116; }
       .brand { display: flex; align-items: center; gap: 12px; color: #F3E7D0; font-weight: 750; text-decoration: none; letter-spacing: .04em; }
-      main { max-width: 720px; margin: 0 auto; padding: 56px 20px 80px; }
-      h1 { font-size: clamp(30px, 5vw, 48px); line-height: 1.15; letter-spacing: -.025em; margin: 0 0 16px; }
+      main { max-width: 1120px; margin: 0 auto; padding: 56px clamp(20px, 5vw, 48px) 96px; }
+      .eyebrow, .label, .num, .hint { font-family: var(--mono); font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: #8E7A5E; margin: 0; }
+      .eyebrow { color: #F5A524; margin-bottom: 12px; }
+      .eyebrow::before { content: '// '; color: #5E5040; }
+      h1 { font-size: clamp(38px, 6vw, 64px); line-height: .95; letter-spacing: -.03em; text-transform: uppercase; font-weight: 800; margin: 0 0 20px; }
       h2, h3 { margin: 0 0 16px; }
       h2 { font-size: 24px; overflow-wrap: anywhere; }
-      h3 { font-size: 18px; }
+      h3 { font-size: 18px; display: flex; align-items: baseline; gap: 12px; }
+      .num { color: #F5A524; }
       p, small { color: #C7AE86; line-height: 1.6; }
-      .intro { font-size: 17px; }
-      code { font-family: 'IBM Plex Mono', ui-monospace, monospace; color: #F3E7D0; background: #18130D; padding: 1px 6px; }
-      .panel { background: #11100D; border: 1px solid #2A2116; padding: clamp(20px, 4vw, 32px); margin-top: 24px; }
+      .intro { font-size: 17px; max-width: 64ch; }
+      code { font-family: var(--mono); color: #F3E7D0; background: #18130D; padding: 1px 6px; }
+      .panel { background: #11100D; border: 1px solid #2A2116; padding: clamp(20px, 4vw, 32px); }
+      #guest { max-width: 520px; margin-top: 24px; }
       form { display: grid; gap: 12px; }
       label { display: grid; gap: 8px; font-weight: 600; }
       small { margin-top: -6px; font-size: 14px; }
@@ -139,15 +150,43 @@ import '@fontsource-variable/inter';
       .form-status { margin: 0; min-height: 1.6em; }
       .form-status.error, #account-status.error { color: #FF9D99; }
       .form-status.ok { color: #82D66B; }
-      .who { display: flex; align-items: center; gap: 24px; }
-      .who > div { flex: 1; min-width: 0; }
+
+      #profile { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 24px; align-items: start; margin-top: 24px; }
+      .forms { display: grid; gap: 24px; }
+      .who { position: sticky; top: 24px; }
       .who p { margin: 0; }
-      .who h2 { margin: 4px 0 8px; }
-      .label { font-size: 13px; text-transform: uppercase; letter-spacing: .14em; }
-      #skin-preview { width: 64px; height: 128px; image-rendering: pixelated; flex: none; background: #070604; border: 1px solid #2A2116; padding: 4px; }
-      @media (max-width: 600px) { main { padding-top: 40px; } .who { flex-wrap: wrap; } #logout { width: 100%; } }
+      .who h2 { font-size: 32px; letter-spacing: -.02em; margin: 4px 0 8px; }
+      .who .hint { margin: 12px 0 28px; text-align: center; letter-spacing: .1em; text-transform: none; }
+      #logout { width: 100%; margin-top: 20px; }
+
+      /* 3D-фигура из CSS-кубоидов: --s — размер текселя, --tex — картинка скина или плаща. */
+      .stage { --s: 8px; position: relative; height: 380px; display: grid; place-items: center; overflow: hidden; perspective: 1400px; cursor: grab; touch-action: pan-y; user-select: none; border: 1px solid #2A2116;
+        background: radial-gradient(80% 45% at 50% 100%, #3a2410 0%, transparent 70%), repeating-linear-gradient(0deg, #17120c 0 1px, transparent 1px 24px), repeating-linear-gradient(90deg, #17120c 0 1px, transparent 1px 24px), #0B0906; }
+      .stage.grabbed { cursor: grabbing; }
+      .stage.grabbed .rig { animation-play-state: paused; }
+      .floor { position: absolute; left: 50%; bottom: 44px; width: 160px; height: 28px; translate: -50% 0; border-radius: 50%; background: radial-gradient(#000c 0%, transparent 70%); }
+      .rig, .figure, .box { transform-style: preserve-3d; }
+      .rig { transform: rotateX(-12deg); animation: spin 18s linear infinite; }
+      .figure { --yaw: 0deg; position: relative; width: calc(16 * var(--s)); height: calc(32 * var(--s)); transform: rotateY(var(--yaw)); }
+      .box { position: absolute; transform-origin: 50% 0; }
+      .box.swing { animation: swing 1.6s ease-in-out infinite alternate; }
+      .box.swing.back { animation-delay: -1.6s; }
+      .overlay { inset: 0; transform-origin: 50% 50%; }
+      .face { position: absolute; left: 50%; top: 50%; translate: -50% -50%; backface-visibility: hidden; image-rendering: pixelated; background-repeat: no-repeat; background-image: var(--tex, none); background-color: var(--fill, transparent); background-size: calc(64 * var(--s)) auto; }
+      .blank { --fill: #2A2116; }
+      .blank .overlay { display: none; }
+      .face:nth-child(2) { filter: brightness(.75); }
+      .face:nth-child(3), .face:nth-child(4) { filter: brightness(.85); }
+      .face:nth-child(5) { filter: brightness(1.12); }
+      .face:nth-child(6) { filter: brightness(.55); }
+      @keyframes spin { to { transform: rotateX(-12deg) rotateY(360deg); } }
+      @keyframes swing { from { rotate: x -22deg; } to { rotate: x 22deg; } }
+      @media (prefers-reduced-motion: reduce) { .rig, .box { animation: none; } }
+      @media (max-width: 860px) { #profile { grid-template-columns: 1fr; } .who { position: static; } }
+      @media (max-width: 600px) { main { padding-top: 40px; } .stage { height: 320px; --s: 7px; } }
     </style>
     <script>
+      import { faces, parts } from '../lib/skin3d';
       const status = document.querySelector<HTMLElement>('#account-status')!;
       const guest = document.querySelector<HTMLElement>('#guest')!;
       const profile = document.querySelector<HTMLElement>('#profile')!;
@@ -155,7 +194,8 @@ import '@fontsource-variable/inter';
       const skinForm = document.querySelector<HTMLFormElement>('#skin-form')!;
       const capeForm = document.querySelector<HTMLFormElement>('#cape-form')!;
       const passwordForm = document.querySelector<HTMLFormElement>('#password-form')!;
-      const canvas = document.querySelector<HTMLCanvasElement>('#skin-preview')!;
+      const stage = document.querySelector<HTMLElement>('#stage')!;
+      const figure = document.querySelector<HTMLElement>('#figure')!;
       type Account = { username: string; skinUrl: string | null; capeUrl: string | null; skinModel: 'classic' | 'slim' };
       let mode = 'login';
 
@@ -182,26 +222,56 @@ import '@fontsource-variable/inter';
         try { say(form, await action(), true); } catch (error) { say(form, (error as Error).message); } finally { buttons.forEach(b => (b.disabled = false)); }
       }
 
+      const px = (n: number) => `calc(${n} * var(--s))`;
+      function box(x: number, y: number, u: number, v: number, W: number, H: number, D: number, style = ''): HTMLElement {
+        const el = document.createElement('div');
+        el.className = 'box';
+        el.style.cssText = `left:${px(x)};top:${px(y)};width:${px(W)};height:${px(H)};${style}`;
+        for (const f of faces(u, v, W, H, D)) {
+          const face = document.createElement('span');
+          face.className = 'face';
+          face.style.cssText = `width:${px(f.w)};height:${px(f.h)};background-position:${px(-f.u)} ${px(-f.v)};transform:${f.rot} translateZ(${px(f.out)})`;
+          el.append(face);
+        }
+        return el;
+      }
+
+      function buildFigure(account: Account, legacy: boolean) {
+        figure.replaceChildren();
+        figure.classList.toggle('blank', !account.skinUrl);
+        figure.style.setProperty('--tex', account.skinUrl ? `url("${account.skinUrl}")` : 'none');
+        for (const p of parts(account.skinModel === 'slim', legacy)) {
+          const el = box(p.x, p.y, p.u, p.v, p.W, p.H, p.D, p.mirror ? 'transform:scaleX(-1)' : '');
+          if (p.swing) el.className += ` swing${p.swing < 0 ? ' back' : ''}`;
+          if (p.over) {
+            const g = p.grow ?? .5;
+            const overlay = box(0, 0, p.over[0], p.over[1], p.W, p.H, p.D, `transform:scale3d(${(p.W + g) / p.W},${(p.H + g) / p.H},${(p.D + g) / p.D})`);
+            overlay.classList.add('overlay');
+            el.append(overlay);
+          }
+          figure.append(el);
+        }
+        if (account.capeUrl) figure.append(box(3, 8, 0, 0, 10, 16, 1, `--tex:url("${account.capeUrl}");transform:translateZ(${px(-2.5)}) rotateY(180deg) rotateX(8deg)`));
+      }
+
       function drawSkin(account: Account) {
-        const ctx = canvas.getContext('2d')!;
-        ctx.clearRect(0, 0, 16, 32);
-        if (!account.skinUrl) return;
+        if (!account.skinUrl) return buildFigure(account, false);
         const image = new Image();
-        image.onload = () => {
-          const legacy = image.height === 32, arm = account.skinModel === 'slim' ? 3 : 4;
-          const part = (sx: number, sy: number, w: number, h: number, dx: number, dy: number, flip = false) => {
-            ctx.save();
-            if (flip) { ctx.translate(dx + w, dy); ctx.scale(-1, 1); dx = 0; dy = 0; }
-            ctx.drawImage(image, sx, sy, w, h, dx, dy, w, h);
-            ctx.restore();
-          };
-          part(8, 8, 8, 8, 4, 0); part(20, 20, 8, 12, 4, 8); part(44, 20, arm, 12, 4 - arm, 8); part(4, 20, 4, 12, 4, 20);
-          if (legacy) { part(44, 20, arm, 12, 12, 8, true); part(4, 20, 4, 12, 8, 20, true); }
-          else { part(36, 52, arm, 12, 12, 8); part(20, 52, 4, 12, 8, 20); part(20, 36, 8, 12, 4, 8); part(44, 36, arm, 12, 4 - arm, 8); part(52, 52, arm, 12, 12, 8); part(4, 36, 4, 12, 4, 20); part(4, 52, 4, 12, 8, 20); }
-          part(40, 8, 8, 8, 4, 0);
-        };
+        image.onload = () => buildFigure(account, image.height === 32);
+        image.onerror = () => buildFigure({ ...account, skinUrl: null }, false);
         image.src = account.skinUrl;
       }
+
+      let yaw = 0, dragX: number | null = null;
+      stage.addEventListener('pointerdown', e => { dragX = e.clientX; stage.classList.add('grabbed'); stage.setPointerCapture(e.pointerId); });
+      stage.addEventListener('pointermove', e => {
+        if (dragX === null) return;
+        yaw += (e.clientX - dragX) * .6;
+        dragX = e.clientX;
+        figure.style.setProperty('--yaw', `${yaw}deg`);
+      });
+      stage.addEventListener('pointerup', () => { dragX = null; stage.classList.remove('grabbed'); });
+      stage.addEventListener('pointercancel', () => { dragX = null; stage.classList.remove('grabbed'); });
 
       function show(account: Account | null) {
         guest.hidden = !!account;
@@ -211,7 +281,7 @@ import '@fontsource-variable/inter';
         if (!account) return;
         document.querySelector('#nickname')!.textContent = account.username;
         passwordForm.username.value = account.username;
-        document.querySelector('#skin-note')!.textContent = `${account.skinUrl ? 'Скин загружен' : 'Скин не загружен'}, модель ${account.skinModel === 'slim' ? 'тонкая' : 'классическая'}. ${account.capeUrl ? 'Плащ загружен.' : 'Плаща нет.'}`;
+        document.querySelector('#skin-note')!.textContent = `${account.skinUrl ? 'Свой скин' : 'Скин Minecraft по умолчанию'}, модель ${account.skinModel === 'slim' ? 'тонкая' : 'классическая'}. ${account.capeUrl ? 'Плащ загружен.' : 'Плаща нет.'}`;
         skinForm.querySelector<HTMLInputElement>(`input[value=${account.skinModel}]`)!.checked = true;
         drawSkin(account);
       }
