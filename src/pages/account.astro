@@ -58,6 +58,11 @@ import '@fontsource/ibm-plex-mono/500.css';
         </aside>
 
         <div class="forms">
+          <section class="panel" aria-labelledby="stats-title">
+            <h3 id="stats-title">Боевая статистика</h3>
+            <p id="stats-status" role="status">Загрузка истории…</p>
+            <a id="stats-profile" href="/leaderboard">Лидерборд и история</a>
+          </section>
           <form id="skin-form" class="panel">
             <h3><span class="num">01</span>Скин</h3>
             <label>Файл PNG 64×64 или 64×32, до 1 МиБ
@@ -196,7 +201,7 @@ import '@fontsource/ibm-plex-mono/500.css';
       const passwordForm = document.querySelector<HTMLFormElement>('#password-form')!;
       const stage = document.querySelector<HTMLElement>('#stage')!;
       const figure = document.querySelector<HTMLElement>('#figure')!;
-      type Account = { username: string; skinUrl: string | null; capeUrl: string | null; skinModel: 'classic' | 'slim' };
+      type Account = { uuid?: string; username: string; skinUrl: string | null; capeUrl: string | null; skinModel: 'classic' | 'slim' };
       let mode = 'login';
 
       async function api(path: string, init?: RequestInit) {
@@ -273,7 +278,28 @@ import '@fontsource/ibm-plex-mono/500.css';
       stage.addEventListener('pointerup', () => { dragX = null; stage.classList.remove('grabbed'); });
       stage.addEventListener('pointercancel', () => { dragX = null; stage.classList.remove('grabbed'); });
 
+      let statsRequest: AbortController | null = null;
+      function loadStats(account: Account | null) {
+        statsRequest?.abort();
+        const line = document.querySelector<HTMLElement>('#stats-status')!;
+        const link = document.querySelector<HTMLAnchorElement>('#stats-profile')!;
+        line.textContent = ''; link.href = '/leaderboard';
+        if (!account?.uuid || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(account.uuid)) return;
+        const controller = new AbortController(); statsRequest = controller;
+        line.textContent = 'Загрузка истории…'; link.href = `/players/${account.uuid}`;
+        fetch(`/api/stats/players/${account.uuid}`, { signal: controller.signal, cache: 'no-store' }).then(async response => {
+          if (controller.signal.aborted) return;
+          if (response.status === 404) { line.textContent = 'Матчей пока нет. Полигон и PvP в лобби в статистику не входят.'; return; }
+          if (!response.ok) throw new Error();
+          const data = await response.json();
+          if (controller.signal.aborted) return;
+          const totals = data.totals;
+          line.textContent = totals ? `Бои: ${totals.matches} · Убийства / смерти: ${totals.kills} / ${totals.deaths} · Захваты: ${totals.captures}` : 'Матчей пока нет.';
+        }).catch(() => { if (!controller.signal.aborted) line.textContent = 'История временно недоступна. Аккаунт продолжает работать.'; });
+      }
+
       function show(account: Account | null) {
+        loadStats(account);
         guest.hidden = !!account;
         profile.hidden = !account;
         status.className = '';
