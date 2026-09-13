@@ -1,0 +1,290 @@
+---
+import '@fontsource-variable/inter';
+---
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Аккаунт — Blockfield</title>
+    <meta name="description" content="Вход, регистрация, скин, плащ и пароль аккаунта Blockfield." />
+    <meta name="robots" content="noindex" />
+    <meta name="theme-color" content="#070604" />
+    <link rel="icon" href="/logo.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="/" aria-label="Blockfield — главная"><img src="/logo.svg" width="40" height="40" alt="" />BLOCKFIELD</a>
+      <a href="/">На главную</a>
+    </header>
+    <main>
+      <h1>Аккаунт</h1>
+      <p class="intro">Этот же никнейм и пароль подходят для входа в Blockfield Launcher. Если вы играете через Prism Launcher, в лобби сервера используйте команды <code>/register</code> и <code>/login</code> — аккаунт будет тот же.</p>
+      <p id="account-status" role="status">Проверяем вход…</p>
+
+      <section id="guest" class="panel" hidden aria-labelledby="auth-title">
+        <h2 id="auth-title">Вход</h2>
+        <div class="tabs" role="group" aria-label="Что сделать">
+          <button type="button" data-mode="login" aria-pressed="true">Войти</button>
+          <button type="button" data-mode="register" aria-pressed="false">Создать аккаунт</button>
+        </div>
+        <form id="auth-form">
+          <label>Никнейм
+            <input name="username" autocomplete="username" required minlength="3" maxlength="16" pattern="[A-Za-z0-9_]{3,16}" aria-describedby="nick-hint" />
+          </label>
+          <small id="nick-hint">3–16 символов: латинские буквы, цифры и _. Никнейм виден в игре.</small>
+          <label>Пароль
+            <input name="password" type="password" autocomplete="current-password" required minlength="8" aria-describedby="pass-hint" />
+          </label>
+          <small id="pass-hint">Не короче 8 символов.</small>
+          <button class="primary" type="submit">Войти</button>
+          <p class="form-status" role="status"></p>
+        </form>
+      </section>
+
+      <section id="profile" hidden aria-labelledby="nickname">
+        <div class="panel who">
+          <canvas id="skin-preview" width="16" height="32" role="img" aria-label="Скин спереди"></canvas>
+          <div>
+            <p class="label">Никнейм</p>
+            <h2 id="nickname"></h2>
+            <p id="skin-note"></p>
+          </div>
+          <button id="logout" type="button">Выйти</button>
+        </div>
+
+        <form id="skin-form" class="panel">
+          <h3>Скин</h3>
+          <label>Файл PNG 64×64 или 64×32, до 1 МиБ
+            <input name="file" type="file" accept="image/png" />
+          </label>
+          <fieldset>
+            <legend>Модель рук</legend>
+            <label class="choice"><input type="radio" name="model" value="classic" checked /> Классическая, 4 px</label>
+            <label class="choice"><input type="radio" name="model" value="slim" /> Тонкая, 3 px</label>
+          </fieldset>
+          <div class="actions">
+            <button class="primary" type="submit">Сохранить скин</button>
+            <button type="button" data-remove="skin">Убрать скин</button>
+          </div>
+          <p class="form-status" role="status"></p>
+        </form>
+
+        <form id="cape-form" class="panel">
+          <h3>Плащ</h3>
+          <label>Файл PNG 64×32, до 1 МиБ
+            <input name="file" type="file" accept="image/png" required />
+          </label>
+          <div class="actions">
+            <button class="primary" type="submit">Загрузить плащ</button>
+            <button type="button" data-remove="cape">Убрать плащ</button>
+          </div>
+          <p class="form-status" role="status"></p>
+        </form>
+
+        <form id="password-form" class="panel">
+          <h3>Пароль</h3>
+          <input name="username" autocomplete="username" hidden />
+          <label>Текущий пароль
+            <input name="current" type="password" autocomplete="current-password" required />
+          </label>
+          <label>Новый пароль
+            <input name="password" type="password" autocomplete="new-password" required minlength="8" aria-describedby="new-pass-hint" />
+          </label>
+          <small id="new-pass-hint">Не короче 8 символов. После смены пароля лаунчер и игра попросят войти заново.</small>
+          <button class="primary" type="submit">Сменить пароль</button>
+          <p class="form-status" role="status"></p>
+        </form>
+      </section>
+    </main>
+    <style is:global>
+      :root { color-scheme: dark; font-family: 'Inter Variable', sans-serif; background: #070604; color: #F3E7D0; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-width: 320px; }
+      [hidden] { display: none !important; }
+      a { color: #F5A524; text-underline-offset: 4px; text-decoration-thickness: 1px; }
+      a:hover { color: #F3E7D0; }
+      a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid #F5A524; outline-offset: 3px; }
+      header { max-width: 1200px; margin: 0 auto; padding: 24px clamp(20px, 5vw, 48px); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; border-bottom: 1px solid #2A2116; }
+      .brand { display: flex; align-items: center; gap: 12px; color: #F3E7D0; font-weight: 750; text-decoration: none; letter-spacing: .04em; }
+      main { max-width: 720px; margin: 0 auto; padding: 56px 20px 80px; }
+      h1 { font-size: clamp(30px, 5vw, 48px); line-height: 1.15; letter-spacing: -.025em; margin: 0 0 16px; }
+      h2, h3 { margin: 0 0 16px; }
+      h2 { font-size: 24px; overflow-wrap: anywhere; }
+      h3 { font-size: 18px; }
+      p, small { color: #C7AE86; line-height: 1.6; }
+      .intro { font-size: 17px; }
+      code { font-family: 'IBM Plex Mono', ui-monospace, monospace; color: #F3E7D0; background: #18130D; padding: 1px 6px; }
+      .panel { background: #11100D; border: 1px solid #2A2116; padding: clamp(20px, 4vw, 32px); margin-top: 24px; }
+      form { display: grid; gap: 12px; }
+      label { display: grid; gap: 8px; font-weight: 600; }
+      small { margin-top: -6px; font-size: 14px; }
+      input:not([type=radio]) { font: inherit; color: #F3E7D0; background: #070604; border: 1px solid #3A2C1D; padding: 12px; width: 100%; }
+      input[type=file] { padding: 10px; }
+      input:user-invalid { border-color: #FF9D99; }
+      fieldset { border: 1px solid #2A2116; margin: 0; padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 8px 24px; }
+      legend { color: #C7AE86; padding: 0 6px; }
+      .choice { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+      .choice input { accent-color: #F5A524; width: 18px; height: 18px; margin: 0; }
+      button { font: inherit; font-weight: 700; color: #F3E7D0; background: transparent; border: 1px solid #F5A524; padding: 12px 18px; cursor: pointer; }
+      button:hover { background: #2A2116; }
+      button.primary { background: #F5A524; color: #070604; }
+      button.primary:hover { background: #FFC861; }
+      button:disabled { opacity: .6; cursor: progress; }
+      form > button { justify-self: start; }
+      .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+      .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+      .tabs button { border-color: #3A2C1D; }
+      .tabs button[aria-pressed=true] { border-color: #F5A524; background: #2A2116; }
+      .form-status { margin: 0; min-height: 1.6em; }
+      .form-status.error, #account-status.error { color: #FF9D99; }
+      .form-status.ok { color: #82D66B; }
+      .who { display: flex; align-items: center; gap: 24px; }
+      .who > div { flex: 1; min-width: 0; }
+      .who p { margin: 0; }
+      .who h2 { margin: 4px 0 8px; }
+      .label { font-size: 13px; text-transform: uppercase; letter-spacing: .14em; }
+      #skin-preview { width: 64px; height: 128px; image-rendering: pixelated; flex: none; background: #070604; border: 1px solid #2A2116; padding: 4px; }
+      @media (max-width: 600px) { main { padding-top: 40px; } .who { flex-wrap: wrap; } #logout { width: 100%; } }
+    </style>
+    <script>
+      const status = document.querySelector<HTMLElement>('#account-status')!;
+      const guest = document.querySelector<HTMLElement>('#guest')!;
+      const profile = document.querySelector<HTMLElement>('#profile')!;
+      const authForm = document.querySelector<HTMLFormElement>('#auth-form')!;
+      const skinForm = document.querySelector<HTMLFormElement>('#skin-form')!;
+      const capeForm = document.querySelector<HTMLFormElement>('#cape-form')!;
+      const passwordForm = document.querySelector<HTMLFormElement>('#password-form')!;
+      const canvas = document.querySelector<HTMLCanvasElement>('#skin-preview')!;
+      type Account = { username: string; skinUrl: string | null; capeUrl: string | null; skinModel: 'classic' | 'slim' };
+      let mode = 'login';
+
+      async function api(path: string, init?: RequestInit) {
+        const response = await fetch(path, init).catch(() => null);
+        if (!response) throw new Error('Нет связи с сайтом. Проверьте подключение.');
+        const data = response.status === 204 ? null : await response.json().catch(() => null);
+        if (response.status === 401) show(null);
+        if (!response.ok) throw new Error(data?.error || 'Не удалось выполнить запрос.');
+        return data;
+      }
+      const json = (method: string, body: unknown): RequestInit => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+      function say(form: HTMLFormElement, text: string, ok = false) {
+        const line = form.querySelector('.form-status')!;
+        line.textContent = text;
+        line.className = `form-status ${ok ? 'ok' : 'error'}`;
+      }
+
+      async function submit(form: HTMLFormElement, action: () => Promise<string>) {
+        const buttons = form.querySelectorAll('button');
+        buttons.forEach(b => (b.disabled = true));
+        say(form, 'Отправляем…', true);
+        try { say(form, await action(), true); } catch (error) { say(form, (error as Error).message); } finally { buttons.forEach(b => (b.disabled = false)); }
+      }
+
+      function drawSkin(account: Account) {
+        const ctx = canvas.getContext('2d')!;
+        ctx.clearRect(0, 0, 16, 32);
+        if (!account.skinUrl) return;
+        const image = new Image();
+        image.onload = () => {
+          const legacy = image.height === 32, arm = account.skinModel === 'slim' ? 3 : 4;
+          const part = (sx: number, sy: number, w: number, h: number, dx: number, dy: number, flip = false) => {
+            ctx.save();
+            if (flip) { ctx.translate(dx + w, dy); ctx.scale(-1, 1); dx = 0; dy = 0; }
+            ctx.drawImage(image, sx, sy, w, h, dx, dy, w, h);
+            ctx.restore();
+          };
+          part(8, 8, 8, 8, 4, 0); part(20, 20, 8, 12, 4, 8); part(44, 20, arm, 12, 4 - arm, 8); part(4, 20, 4, 12, 4, 20);
+          if (legacy) { part(44, 20, arm, 12, 12, 8, true); part(4, 20, 4, 12, 8, 20, true); }
+          else { part(36, 52, arm, 12, 12, 8); part(20, 52, 4, 12, 8, 20); part(20, 36, 8, 12, 4, 8); part(44, 36, arm, 12, 4 - arm, 8); part(52, 52, arm, 12, 12, 8); part(4, 36, 4, 12, 4, 20); part(4, 52, 4, 12, 8, 20); }
+          part(40, 8, 8, 8, 4, 0);
+        };
+        image.src = account.skinUrl;
+      }
+
+      function show(account: Account | null) {
+        guest.hidden = !!account;
+        profile.hidden = !account;
+        status.className = '';
+        status.textContent = account ? `Вы вошли как ${account.username}.` : 'Войдите или создайте аккаунт.';
+        if (!account) return;
+        document.querySelector('#nickname')!.textContent = account.username;
+        passwordForm.username.value = account.username;
+        document.querySelector('#skin-note')!.textContent = `${account.skinUrl ? 'Скин загружен' : 'Скин не загружен'}, модель ${account.skinModel === 'slim' ? 'тонкая' : 'классическая'}. ${account.capeUrl ? 'Плащ загружен.' : 'Плаща нет.'}`;
+        skinForm.querySelector<HTMLInputElement>(`input[value=${account.skinModel}]`)!.checked = true;
+        drawSkin(account);
+      }
+
+      document.querySelectorAll<HTMLButtonElement>('.tabs button').forEach(button => button.addEventListener('click', () => {
+        mode = button.dataset.mode!;
+        document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
+        authForm.querySelector('button[type=submit]')!.textContent = mode === 'login' ? 'Войти' : 'Создать аккаунт';
+        authForm.password.autocomplete = mode === 'login' ? 'current-password' : 'new-password';
+        say(authForm, '', true);
+      }));
+
+      authForm.addEventListener('submit', event => {
+        event.preventDefault();
+        submit(authForm, async () => {
+          const account = await api(`/api/account/${mode}`, json('POST', { username: authForm.username.value, password: authForm.password.value }));
+          authForm.reset();
+          show(account);
+          return '';
+        });
+      });
+
+      document.querySelector('#logout')!.addEventListener('click', async () => {
+        await api('/api/account/logout', json('POST', {})).catch(() => {});
+        show(null);
+      });
+
+      skinForm.addEventListener('submit', event => {
+        event.preventDefault();
+        submit(skinForm, async () => {
+          const file = skinForm.file.files[0] as File | undefined;
+          const model = skinForm.model.value;
+          if (file && file.size > 1_048_576) throw new Error('Файл больше 1 МиБ.');
+          const account = file
+            ? await api(`/api/account/skin?model=${model}`, { method: 'PUT', headers: { 'Content-Type': 'image/png' }, body: file })
+            : await api('/api/account/skin', json('PATCH', { model }));
+          skinForm.file.value = '';
+          show({ ...account, capeUrl: (await api('/api/account/me')).account?.capeUrl ?? null });
+          return file ? 'Скин сохранён. В игре он появится при следующем входе.' : 'Модель скина сохранена.';
+        });
+      });
+
+      capeForm.addEventListener('submit', event => {
+        event.preventDefault();
+        submit(capeForm, async () => {
+          const file = capeForm.file.files[0] as File;
+          if (file.size > 1_048_576) throw new Error('Файл больше 1 МиБ.');
+          show(await api('/api/account/cape', { method: 'PUT', headers: { 'Content-Type': 'image/png' }, body: file }).then(() => api('/api/account/me')).then(d => d.account));
+          capeForm.reset();
+          return 'Плащ сохранён.';
+        });
+      });
+
+      document.querySelectorAll<HTMLButtonElement>('[data-remove]').forEach(button => button.addEventListener('click', () => {
+        const form = button.form!;
+        submit(form, async () => {
+          // Без Content-Type встроенная проверка Astro сравнивает Origin с http-адресом за nginx и отвечает 403.
+          await api(`/api/account/${button.dataset.remove}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } });
+          show((await api('/api/account/me')).account);
+          return button.dataset.remove === 'skin' ? 'Скин убран.' : 'Плащ убран.';
+        });
+      }));
+
+      passwordForm.addEventListener('submit', event => {
+        event.preventDefault();
+        submit(passwordForm, async () => {
+          await api('/api/account/password', json('POST', { current: passwordForm.current.value, password: passwordForm.password.value }));
+          passwordForm.reset();
+          return 'Пароль изменён. Войдите в лаунчере с новым паролем.';
+        });
+      });
+
+      api('/api/account/me').then(data => show(data.account), (error: Error) => { status.textContent = error.message; status.className = 'error'; });
+    </script>
+  </body>
+</html>

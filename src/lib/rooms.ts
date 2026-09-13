@@ -9,7 +9,8 @@ export function validBattle(battle: any): boolean {
       && Number.isInteger(p.progress) && p.progress >= 0 && p.progress <= 100));
 }
 export type Room = { id: string; name: string; mode: string; map: string; phase: string; players: number; joinable: boolean; battle?: Battle | null };
-export type RoomStatus = { available: boolean; checkedAt: number; rooms: Room[] };
+// available — игровой сервер отвечает; lobby — прокси с лобби отвечает (при рестарте игрового сервера туда можно зайти).
+export type RoomStatus = { available: boolean; checkedAt: number; rooms: Room[]; lobby?: boolean };
 export const phases: Record<string, string> = { IDLE: 'Ожидание игроков', VOTING: 'Голосование', PREPARING: 'Подготовка', GAME: 'Бой', MATCH_END: 'Матч завершён' };
 export const roomId = /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 export function parseRooms(value: any): RoomStatus {
@@ -33,11 +34,14 @@ export function readVarint(data: Buffer, offset = 0): [number, number] | null {
   }
   throw new Error('Invalid varint');
 }
-export function queryRooms(host: string, port: number): Promise<RoomStatus> {
+export async function queryRooms(host: string, port: number): Promise<RoomStatus> {
+  return parseRooms((await queryStatus(host, port)).blockfield);
+}
+export function queryStatus(host: string, port: number): Promise<any> {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host, port });
     let data = Buffer.alloc(0);
-    const finish = (error?: Error, value?: RoomStatus) => {
+    const finish = (error?: Error, value?: any) => {
       clearTimeout(timer); socket.destroy();
       if (error) reject(error); else resolve(value!);
     };
@@ -63,7 +67,7 @@ export function queryRooms(host: string, port: number): Promise<RoomStatus> {
         if (!id || id[0] !== 0) throw new Error('Invalid packet');
         const length = readVarint(packet, id[1]);
         if (!length || length[0] < 0 || length[1] + length[0] !== packet.length) throw new Error('Invalid JSON length');
-        finish(undefined, parseRooms(JSON.parse(packet.subarray(length[1]).toString()).blockfield));
+        finish(undefined, JSON.parse(packet.subarray(length[1]).toString()));
       } catch (e) { finish(e as Error); }
     });
   });
@@ -73,8 +77,14 @@ let until = 0;
 let inflight: Promise<RoomStatus> | undefined;
 export function currentRooms(): Promise<RoomStatus> {
   if (Date.now() < until) return Promise.resolve(cache);
-  return inflight ??= queryRooms(process.env.BLOCKFIELD_SERVER_HOST || 'minecraft.play.nether.pp.ua', Number(process.env.BLOCKFIELD_SERVER_PORT || 25565))
-    .catch(() => ({ available: false, checkedAt: Date.now(), rooms: [] }))
-    .then((value) => { cache = value; until = Date.now() + 5000; return value; })
+  const env = process.env;
+  const publicHost = 'minecraft.play.nether.pp.ua';
+  // За Velocity комнаты отдаёт только игровой сервер (внутренний адрес), а публичный адрес — это прокси с лобби.
+  return inflight ??= Promise.all([
+    queryRooms(env.BLOCKFIELD_SERVER_HOST || publicHost, Number(env.BLOCKFIELD_SERVER_PORT || 25565))
+      .catch((): RoomStatus => ({ available: false, checkedAt: Date.now(), rooms: [] })),
+    queryStatus(env.BLOCKFIELD_LOBBY_HOST || publicHost, Number(env.BLOCKFIELD_LOBBY_PORT || 25565)).then(() => true, () => false),
+  ])
+    .then(([rooms, lobby]) => { const value = { ...rooms, lobby }; cache = value; until = Date.now() + 5000; return value; })
     .finally(() => { inflight = undefined; });
 }

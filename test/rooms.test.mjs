@@ -25,6 +25,21 @@ test('Minecraft status accepts fragmented replies and closes its connection', as
   try { assert.deepEqual((await queryRooms('127.0.0.1', server.address().port)).rooms, [room]); }
   finally { await new Promise(resolve => server.close(resolve)); }
 });
+test('restarting game server behind the proxy reports an open lobby', async () => {
+  const lobby = net.createServer(socket => socket.once('data', () => {
+    const json = Buffer.from(JSON.stringify({ version: { name: 'Velocity' } }));
+    const packet = Buffer.concat([Buffer.from([0]), varint(json.length), json]);
+    socket.end(Buffer.concat([varint(packet.length), packet]));
+  }));
+  await new Promise(resolve => lobby.listen(0, '127.0.0.1', resolve));
+  Object.assign(process.env, { BLOCKFIELD_SERVER_HOST: '127.0.0.1', BLOCKFIELD_SERVER_PORT: '1', BLOCKFIELD_LOBBY_HOST: '127.0.0.1', BLOCKFIELD_LOBBY_PORT: String(lobby.address().port) });
+  try {
+    const { currentRooms } = await import('../src/lib/rooms.ts?lobby');
+    const status = await currentRooms();
+    assert.equal(status.available, false);
+    assert.equal(status.lobby, true);
+  } finally { await new Promise(resolve => lobby.close(resolve)); }
+});
 test('battle data preserves capture state and rejects invalid progress and scores', () => {
   const battle = { red: 720, blue: 685, points: [{ id: 'a', name: 'A', owner: 'BLUE', claiming: 'NONE', capturing: 'RED', progress: 35 }] };
   const parse = value => parseRooms({ checkedAt: Date.now(), rooms: [{ ...room, battle: value }] });

@@ -117,6 +117,7 @@ const features = [
         <a href="#download">СКАЧАТЬ</a>
         <a href="https://github.com/netherg-io/blockfield-releases">GITHUB</a>
       </nav>
+      <a class="nav__account" href="/account">АККАУНТ</a>
       <a class="nav__cta" href={download.href} aria-label={download.label} data-platform-download>
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
         СКАЧАТЬ
@@ -454,8 +455,22 @@ const features = [
         color: var(--amber);
       }
 
-      .nav__cta {
+      /* Не в .nav__links: ссылка на аккаунт нужна и на телефоне, где остальные ссылки скрыты. */
+      .nav__account {
         margin-left: auto;
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: clamp(12px, 0.95vw, 14px);
+        letter-spacing: 0.14em;
+        color: var(--sand);
+        transition: color 0.15s ease;
+      }
+
+      .nav__account:hover {
+        color: var(--amber);
+      }
+
+      .nav__cta {
         display: inline-flex;
         align-items: center;
         gap: 0.6em;
@@ -1273,6 +1288,14 @@ const features = [
           const response = await fetch('/api/rooms', { signal: AbortSignal.timeout(6000) });
           if (!response.ok) throw new Error();
           const status = await response.json();
+          if (!status.available && status.lobby) {
+            lastRooms = ''; roomList.replaceChildren();
+            roomSection.hidden = !invitedRoom; roomNav.hidden = true;
+            roomStatus.textContent = invitedRoom && invitedRoom !== 'lobby'
+              ? 'Игровой сервер обновляется. Зайдите в лобби — после запуска сервера вас перенесут автоматически.'
+              : 'Игровой сервер обновляется, лобби открыто. Нажмите «Войти в лобби» — после запуска сервера вас перенесут автоматически.';
+            return;
+          }
           if (!status.available) throw new Error();
           roomSection.hidden = status.rooms.length === 0 && !invitedRoom;
           roomNav.hidden = status.rooms.length === 0;
