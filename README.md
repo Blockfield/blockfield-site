@@ -75,3 +75,7 @@ GitHub, а релиз меняется редко — так что почти �
 Ссылки `blockfield://join/<UUID>` и `blockfield://join/lobby` обрабатывает фирменный лаунчер. Требуется новая сборка
 лаунчера и обоих модов. URL `/?room=<UUID>#rooms` используется для приглашений Discord;
 закрытое приглашение показывает пояснение и остальные доступные комнаты.
+
+## Statistics
+
+Persistent gameplay history, leaderboard and account statistics: see `docs/statistics.md`. The site uses its own SQLite volume and remains independent of the Minecraft backend. No MMR formula is enabled by this change.

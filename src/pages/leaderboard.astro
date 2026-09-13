@@ -1,0 +1,30 @@
+---
+import Community from '../layouts/Community.astro';
+import { statsStore, filters, StatsError } from '../lib/stats';
+let board: ReturnType<ReturnType<typeof statsStore>['leaderboard']> | null = null;
+let error = '';
+try { board = statsStore().leaderboard(filters(Astro.url.searchParams)); }
+catch (e) { Astro.response.status = e instanceof StatsError ? e.status : 503; error = e instanceof StatsError && e.status === 400 ? 'Некорректные фильтры. Сбросьте параметры и повторите запрос.' : 'История временно недоступна. Это не означает, что ваши результаты потеряны.'; }
+const modes = [['', 'Все режимы'], ['room', 'Casual'], ['campaign', 'Ranked · кампания'], ['deathmatch', 'Deathmatch']];
+const periods = [['all','Всё время'],['week','Последние 7 дней'],['month','Последние 30 дней']];
+const sorts = [['score','Очки'],['kills','Убийства'],['captures','Захваты'],['pointSeconds','Время на точках'],['wins','Победы в боях'],['kd','K/D']];
+const pageLink = (page: number) => { const query = new URLSearchParams(Astro.url.searchParams); query.set('page', String(page)); return `/leaderboard?${query}`; };
+const number = (n: unknown) => Number(n).toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+---
+<Community title="Лидерборд" description="Накопленные результаты боёв. Полигон, PvP в лобби и строительные сессии здесь не учитываются.">
+  <form method="get" action="/leaderboard" aria-label="Фильтры лидерборда">
+    <label>Режим<select name="mode">{modes.map(([value,label]) => <option value={value} selected={value === (Astro.url.searchParams.get('mode') || '')}>{label}</option>)}</select></label>
+    <label>Период<select name="period">{periods.map(([value,label]) => <option value={value} selected={value === (Astro.url.searchParams.get('period') || 'all')}>{label}</option>)}</select></label>
+    <label>Сортировка<select name="sort">{sorts.map(([value,label]) => <option value={value} selected={value === (Astro.url.searchParams.get('sort') || 'score')}>{label}</option>)}</select></label>
+    <button type="submit">Применить</button><a href="/leaderboard">Сбросить</a>
+  </form>
+  <p class="notice">Очки — не MMR. Формула рейтинга ещё не включена: рейтинг будет рассчитываться за целую завершённую Ranked-кампанию, а не за отдельный раунд.</p>
+  {error ? <p class="notice" role="status">{error}</p> : board && board.total === 0 ? <p class="notice" role="status">За выбранный период ещё нет результатов.</p> : board && <>
+    <div class="table-wrap" tabindex="0" aria-label="Таблица результатов, возможна горизонтальная прокрутка">
+      <table><thead><tr><th scope="col">Место</th><th scope="col">Игрок</th><th class="num" scope="col">Очки</th><th class="num" scope="col">K / D</th><th class="num" scope="col">Захваты</th><th class="num" scope="col">Бои / победы</th></tr></thead>
+        <tbody>{board.players.map((p: any, index: number) => <tr><td>{(board!.page - 1) * board!.limit + index + 1}</td><td class="player"><a href={`/players/${p.uuid}`}>{p.name}</a></td><td class="num">{number(p.score)}</td><td class="num">{number(p.kills)} / {number(p.deaths)}</td><td class="num">{number(p.captures)}</td><td class="num">{number(p.matches)} / {number(p.wins)}</td></tr>)}</tbody>
+      </table>
+    </div>
+    <nav class="pagination" aria-label="Страницы результатов">{board.page > 1 && <a href={pageLink(board.page - 1)}>← Назад</a>}<span>Страница {board.page} · игроков: {board.total}</span>{board.page * board.limit < board.total && <a href={pageLink(board.page + 1)}>Далее →</a>}</nav>
+  </>}
+</Community>
