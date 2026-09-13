@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
+import { composite, inflate, initial, update, RULES_VERSION } from './glicko2.ts';
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const ID = /^[a-z0-9_.:-]{1,128}$/;
@@ -10,7 +11,12 @@ const MAX_BODY = 1_048_576;
 const MODES = ['room', 'campaign', 'deathmatch'];
 const REASONS = ['completed', 'draw', 'abandoned', 'stopped', 'shutdown', 'error'];
 const COUNTERS = ['kills', 'deaths', 'captures', 'neutralizations', 'pointSeconds', 'playSeconds', 'suicides', 'teamKills', 'maxKillstreak'] as const;
-const SORTS: Record<string, string> = { score: 'score', kills: 'kills', captures: 'captures', pointSeconds: 'pointSeconds', playSeconds: 'playSeconds', wins: 'wins', kd: 'kd' };
+const SORTS: Record<string, string> = { score: 'score', kills: 'kills', captures: 'captures', pointSeconds: 'pointSeconds', playSeconds: 'playSeconds', wins: 'wins', kd: 'kd', rating: 'COALESCE(rating,-1)' };
+/** An idle week is one Glicko-2 rating period: RD grows before the next rated campaign. */
+const RATING_PERIOD_MS = 7 * 86400000;
+function mmr(row: { rating: number | null; rd: number | null; ratedCampaigns: number | null }) {
+  return row.rating === null ? null : { rating: Math.round(row.rating), rd: Math.round(row.rd!), ratedCampaigns: row.ratedCampaigns!, provisional: row.ratedCampaigns! < 5 || row.rd! > 150 };
+}
 export type ClassResult = { classId: string; variantId: string; timeSeconds: number; kills: number; deaths: number; pointSeconds: number };
 export type Participant = { uuid: string; name: string; team: 'RED' | 'BLUE' | 'NONE'; score: number; classes: ClassResult[] } & Record<typeof COUNTERS[number], number>;
 export type Result = {
@@ -116,7 +122,7 @@ export class StatsStore {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number };
-    if (![0, 1].includes(version.user_version)) { this.db.close(); throw new Error('Unsupported statistics schema; restore/migrate explicitly'); }
+    if (![0, 1, 2].includes(version.user_version)) { this.db.close(); throw new Error('Unsupported statistics schema; restore/migrate explicitly'); }
     this.db.exec(`
       BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS results (
@@ -140,7 +146,19 @@ export class StatsStore {
         PRIMARY KEY(server_id,event_id,uuid,class_id,variant_id),
         FOREIGN KEY(server_id,event_id,uuid) REFERENCES participants(server_id,event_id,uuid)
       );
-      PRAGMA user_version=1;
+      CREATE TABLE IF NOT EXISTS ratings (
+        uuid TEXT PRIMARY KEY, rating REAL NOT NULL, rd REAL NOT NULL, volatility REAL NOT NULL,
+        rated_campaigns INTEGER NOT NULL, last_rated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS rating_changes (
+        server_id TEXT NOT NULL, event_id TEXT NOT NULL, uuid TEXT NOT NULL, rules_version TEXT NOT NULL, team TEXT NOT NULL,
+        score REAL NOT NULL, opp_rating REAL NOT NULL, opp_rd REAL NOT NULL,
+        before_rating REAL NOT NULL, before_rd REAL NOT NULL, before_volatility REAL NOT NULL,
+        after_rating REAL NOT NULL, after_rd REAL NOT NULL, after_volatility REAL NOT NULL, rated_at INTEGER NOT NULL,
+        PRIMARY KEY(server_id,event_id,uuid), FOREIGN KEY(server_id,event_id) REFERENCES results(server_id,event_id)
+      );
+      CREATE INDEX IF NOT EXISTS rating_changes_uuid ON rating_changes(uuid,rated_at);
+      PRAGMA user_version=2;
       COMMIT;
     `);
   }
@@ -163,8 +181,35 @@ export class StatsStore {
         participant.run(result.serverId, result.eventId, p.uuid, p.team, p.score, p.kills, p.deaths, p.captures, p.neutralizations, p.pointSeconds, p.playSeconds, p.suicides, p.teamKills, p.maxKillstreak);
         for (const c of p.classes) cls.run(result.serverId, result.eventId, p.uuid, c.classId, c.variantId, c.timeSeconds, c.kills, c.deaths, c.pointSeconds);
       }
+      // Only a fresh insert rates: outbox replays return above, so one campaign changes MMR at most once.
+      if (result.kind === 'campaign' && result.modeId === 'campaign' && ['completed', 'draw'].includes(result.endReason)) this.rate(result);
       this.db.exec('COMMIT'); return { inserted: true, eventId: result.eventId };
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  /** One Glicko-2 period per rated player: the whole opposing side as a composite opponent. Team NONE is unrated. */
+  private rate(result: Result) {
+    const sides = { RED: result.participants.filter(p => p.team === 'RED'), BLUE: result.participants.filter(p => p.team === 'BLUE') };
+    if (!sides.RED.length || !sides.BLUE.length) return;
+    const ended = Date.parse(result.endedAt);
+    const load = this.db.prepare('SELECT rating,rd,volatility,rated_campaigns ratedCampaigns,last_rated_at lastRatedAt FROM ratings WHERE uuid=?');
+    const before = new Map([...sides.RED, ...sides.BLUE].map(p => {
+      const row = load.get(p.uuid) as { rating: number; rd: number; volatility: number; ratedCampaigns: number; lastRatedAt: number } | undefined;
+      const rating = row ? inflate({ rating: row.rating, rd: row.rd, volatility: row.volatility }, Math.floor(Math.max(0, ended - row.lastRatedAt) / RATING_PERIOD_MS)) : initial();
+      return [p.uuid, { rating, campaigns: row?.ratedCampaigns ?? 0 }];
+    }));
+    const save = this.db.prepare(`INSERT INTO ratings VALUES (?,?,?,?,?,?) ON CONFLICT(uuid) DO UPDATE SET rating=excluded.rating,rd=excluded.rd,
+      volatility=excluded.volatility,rated_campaigns=excluded.rated_campaigns,last_rated_at=MAX(ratings.last_rated_at,excluded.last_rated_at)`);
+    const change = this.db.prepare('INSERT INTO rating_changes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    for (const team of ['RED', 'BLUE'] as const) {
+      const opponent = composite(sides[team === 'RED' ? 'BLUE' : 'RED'].map(o => before.get(o.uuid)!.rating));
+      const score = result.endReason === 'draw' ? 0.5 : result.winner === team ? 1 : 0;
+      for (const p of sides[team]) {
+        const { rating: from, campaigns } = before.get(p.uuid)!, to = update(from, [{ opponent, score }]);
+        save.run(p.uuid, to.rating, to.rd, to.volatility, campaigns + 1, ended);
+        change.run(result.serverId, result.eventId, p.uuid, RULES_VERSION, team, score, opponent.rating, opponent.rd,
+          from.rating, from.rd, from.volatility, to.rating, to.rd, to.volatility, ended);
+      }
+    }
   }
   leaderboard(query: Filters, uuid: string | null = null) {
     // Campaign summaries contain the same players/counters: count combat metrics from MATCHES ONLY.
@@ -177,12 +222,14 @@ export class StatsStore {
         (r.mode='deathmatch' AND json_extract(r.payload,'$.winnerUuid')=p.uuid) OR
         (r.mode!='deathmatch' AND p.team!='NONE' AND r.winner=p.team)
       ) THEN 1 ELSE 0 END) wins,
-      ROUND(SUM(p.kills)*1.0/MAX(1,SUM(p.deaths)),3) kd
-      FROM participants p JOIN results r USING(server_id,event_id) JOIN profiles pr ON pr.uuid=p.uuid
+      ROUND(SUM(p.kills)*1.0/MAX(1,SUM(p.deaths)),3) kd,
+      MAX(rt.rating) rating,MAX(rt.rd) rd,MAX(rt.rated_campaigns) ratedCampaigns
+      FROM participants p JOIN results r USING(server_id,event_id) JOIN profiles pr ON pr.uuid=p.uuid LEFT JOIN ratings rt ON rt.uuid=p.uuid
       WHERE ${where} GROUP BY p.uuid ORDER BY ${SORTS[query.sort]} DESC,p.uuid ASC LIMIT ? OFFSET ?`)
-      .all(...args, query.limit, (query.page - 1) * query.limit);
+      .all(...args, query.limit, (query.page - 1) * query.limit) as any[];
     const total = this.db.prepare(`SELECT COUNT(DISTINCT p.uuid) total FROM participants p JOIN results r USING(server_id,event_id) WHERE ${where}`).get(...args) as { total: number };
-    return { schemaVersion: 1, checkedAt: new Date().toISOString(), mode: query.mode, page: query.page, limit: query.limit, total: total.total, ratingStatus: 'not_configured', players: rows.map(row => ({ ...row, mmr: null })) };
+    return { schemaVersion: 1, checkedAt: new Date().toISOString(), mode: query.mode, page: query.page, limit: query.limit, total: total.total, ratingStatus: RULES_VERSION,
+      players: rows.map(({ rating, rd, ratedCampaigns, ...row }) => ({ ...row, mmr: mmr({ rating, rd, ratedCampaigns }) })) };
   }
   player(uuid: string, query: Filters) {
     if (!UUID.test(uuid)) throw new StatsError(400, 'Invalid player UUID');
@@ -199,7 +246,11 @@ export class StatsStore {
     const campaigns = this.db.prepare(`SELECT COUNT(*) completed,SUM(CASE WHEN r.winner=p.team AND p.team!='NONE' THEN 1 ELSE 0 END) wins
       FROM participants p JOIN results r USING(server_id,event_id) WHERE r.kind='campaign' AND r.reason IN ('completed','draw') AND p.uuid=?
       AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)`).get(uuid, query.since, query.until, query.mode, query.mode);
-    return { schemaVersion: 1, profile, totals, classes, campaigns, history, page: query.page, limit: query.limit, mmr: null, ratingStatus: 'not_configured' };
+    const rating = this.db.prepare('SELECT rating,rd,rated_campaigns ratedCampaigns FROM ratings WHERE uuid=?').get(uuid) as any;
+    const ratingHistory = this.db.prepare(`SELECT event_id campaignSessionId,rated_at ratedAt,team,score,ROUND(before_rating) before,ROUND(after_rating) after,ROUND(after_rd) rd
+      FROM rating_changes WHERE uuid=? ORDER BY rated_at DESC,event_id LIMIT 20`).all(uuid);
+    return { schemaVersion: 1, profile, totals, classes, campaigns, history, page: query.page, limit: query.limit,
+      mmr: rating ? mmr(rating) : null, ratingHistory, ratingStatus: RULES_VERSION };
   }
 }
 let singleton: StatsStore | undefined;

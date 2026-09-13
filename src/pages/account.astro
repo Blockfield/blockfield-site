@@ -294,7 +294,8 @@ import '@fontsource/ibm-plex-mono/500.css';
           const data = await response.json();
           if (controller.signal.aborted) return;
           const totals = data.totals;
-          line.textContent = totals ? `Бои: ${totals.matches} · Убийства / смерти: ${totals.kills} / ${totals.deaths} · Захваты: ${totals.captures}` : 'Матчей пока нет.';
+          const rated = data.mmr ? ` · MMR: ${data.mmr.rating}${data.mmr.provisional ? ' (предварительный)' : ''}` : '';
+          line.textContent = totals ? `Бои: ${totals.matches} · Убийства / смерти: ${totals.kills} / ${totals.deaths} · Захваты: ${totals.captures}${rated}` : 'Матчей пока нет.';
         }).catch(() => { if (!controller.signal.aborted) line.textContent = 'История временно недоступна. Аккаунт продолжает работать.'; });
       }
 
