@@ -43,7 +43,29 @@ test('campaign completion never double-counts round metrics or awards provisiona
   assert.equal(detail.totals.kills, 1); assert.equal(detail.totals.matches, 1);
   assert.equal(detail.campaigns.completed, 1); assert.equal(detail.campaigns.wins, 1);
   assert.equal(detail.classes[0].timeSeconds, 60); assert.equal(detail.history.length, 2);
-  assert.equal(detail.mmr, null); assert.equal(detail.ratingStatus, 'not_configured');
+  // One side only: nobody to be rated against, so no MMR operation at all.
+  assert.equal(detail.mmr, null); assert.equal(detail.ratingStatus, 'glicko2-v1');
+});
+test('completed Ranked campaign rates both sides once; replays, stops and matches never rate', t => {
+  const db = database(t), blue = '00000000-0000-4000-8000-000000000008';
+  const round = fixture(); round.participants.push({ ...structuredClone(round.participants[0]), uuid: blue, name: 'Bravo', team: 'BLUE' });
+  db.ingest(round);
+  assert.equal(db.player(player, query()).mmr, null); // a round alone is history, not MMR
+  const result = { ...round, kind: 'campaign', eventId: campaign, matchId: null, mapId: null, rounds: [id] };
+  db.ingest(result); db.ingest(structuredClone(result));
+  const winner = db.player(player, query()).mmr, loser = db.player(blue, query()).mmr;
+  assert.ok(winner.rating > 1500 && loser.rating < 1500, `${winner.rating} / ${loser.rating}`);
+  assert.equal(winner.ratedCampaigns, 1); assert.equal(winner.provisional, true);
+  assert.equal(db.db.prepare('SELECT COUNT(*) n FROM rating_changes').get().n, 2);
+  assert.equal(db.leaderboard(query('sort=rating')).players[0].uuid, player);
+  const stopped = { ...result, eventId: '00000000-0000-4000-8000-000000000009', campaignSessionId: '00000000-0000-4000-8000-000000000009', endReason: 'stopped', winner: 'NONE' };
+  db.ingest(stopped);
+  assert.equal(db.player(player, query()).mmr.ratedCampaigns, 1);
+  const draw = { ...result, eventId: '00000000-0000-4000-8000-00000000000a', campaignSessionId: '00000000-0000-4000-8000-00000000000a', endReason: 'draw', winner: 'NONE' };
+  db.ingest(draw);
+  const afterDraw = db.player(player, query());
+  assert.equal(afterDraw.mmr.ratedCampaigns, 2); assert.ok(afterDraw.mmr.rating < winner.rating); // stronger side loses points on a draw
+  assert.equal(afterDraw.ratingHistory.length, 2);
 });
 test('interrupted campaign is stored but is not a victory or completed campaign', t => {
   const db = database(t), round = fixture(); db.ingest(round);

@@ -40,7 +40,7 @@ test('FFA winner UUID is persisted and counted once through the public API', asy
   const detail = store.player(alpha, query());
   assert.equal(detail.history[0].winnerUuid, alpha);
   assert.equal(detail.campaigns.completed, 0);
-  assert.equal(detail.ratingStatus, 'not_configured');
+  assert.equal(detail.ratingStatus, 'glicko2-v1'); assert.equal(detail.mmr, null); // FFA never rates
 });
 
 test('personal winner must belong to a completed FFA roster, not a team or campaign', () => {
@@ -92,14 +92,33 @@ test('conflicting personal winner replay cannot rewrite an accepted victory', t 
   assert.equal(store.player(beta, query()).totals.wins, 0);
 });
 
-test('winner UUID survives reopen without a database schema migration', () => {
+test('schema 1 database with results opens under schema 2 without losing data', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const directory = mkdtempSync(join(tmpdir(), 'bf-migrate-'));
+  try {
+    const path = join(directory, 'stats.sqlite'), result = { ...fixture(), winnerUuid: alpha };
+    const first = new StatsStore(path); first.ingest(result); first.close();
+    // Simulate a production v1 file: drop the rating tables and the version bump.
+    const legacy = new DatabaseSync(path);
+    legacy.exec('DROP TABLE rating_changes; DROP TABLE ratings; PRAGMA user_version=1;'); legacy.close();
+    const upgraded = new StatsStore(path);
+    try {
+      assert.equal(upgraded.db.prepare('PRAGMA user_version').get().user_version, 2);
+      assert.equal(upgraded.ingest(result).inserted, false);
+      assert.equal(upgraded.player(alpha, query()).totals.wins, 1);
+      assert.equal(upgraded.db.prepare('SELECT COUNT(*) n FROM ratings').get().n, 0);
+    } finally { upgraded.close(); }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('winner UUID survives reopen', () => {
   const directory = mkdtempSync(join(tmpdir(), 'bf-ffa-review-'));
   try {
     const path = join(directory, 'stats.sqlite'), result = { ...fixture(), winnerUuid: alpha };
     const first = new StatsStore(path); first.ingest(result); first.close();
     const second = new StatsStore(path);
     try {
-      assert.equal(second.db.prepare('PRAGMA user_version').get().user_version, 1);
+      assert.equal(second.db.prepare('PRAGMA user_version').get().user_version, 2);
       assert.equal(second.ingest(result).inserted, false);
       assert.equal(second.player(alpha, query()).totals.wins, 1);
     } finally { second.close(); }
