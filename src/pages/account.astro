@@ -65,7 +65,7 @@ import '@fontsource-variable/inter';
           </fieldset>
           <div class="actions">
             <button class="primary" type="submit">Сохранить скин</button>
-            <button type="button" data-remove="skin">Убрать скин</button>
+            <button type="button" data-remove="skin">Сбросить к скину Minecraft</button>
           </div>
           <p class="form-status" role="status"></p>
         </form>
@@ -271,7 +271,7 @@ import '@fontsource-variable/inter';
           // Без Content-Type встроенная проверка Astro сравнивает Origin с http-адресом за nginx и отвечает 403.
           await api(`/api/account/${button.dataset.remove}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } });
           show((await api('/api/account/me')).account);
-          return button.dataset.remove === 'skin' ? 'Скин убран.' : 'Плащ убран.';
+          return button.dataset.remove === 'skin' ? 'Скин сброшен к скину Minecraft.' : 'Плащ убран.';
         });
       }));
 
