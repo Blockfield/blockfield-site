@@ -1,6 +1,7 @@
 ---
 import Community from '../../layouts/Community.astro';
 import { statsStore, filters, StatsError } from '../../lib/stats';
+import { outcomeLabel } from '../../lib/stats-outcome';
 let data: any = null, error = '';
 try { data = statsStore().player(Astro.params.uuid || '', filters(Astro.url.searchParams)); }
 catch (e) { Astro.response.status = e instanceof StatsError ? e.status : 503; error = e instanceof StatsError && e.status === 404 ? 'У этого игрока ещё нет записанных боёв.' : e instanceof StatsError && e.status === 400 ? 'Некорректный идентификатор игрока или параметры запроса.' : 'История временно недоступна. Попробуйте открыть страницу позже.'; }
@@ -18,7 +19,7 @@ const next = (page: number) => { const q = new URLSearchParams(Astro.url.searchP
     <h2>Классы и варианты</h2>
     {data.classes.length === 0 ? <p>Данных по классам пока нет.</p> : <div class="table-wrap" tabindex="0" aria-label="Статистика классов"><table><thead><tr><th scope="col">Класс / вариант</th><th scope="col">Минуты</th><th scope="col">K / D</th><th scope="col">Секунды на точках</th></tr></thead><tbody>{data.classes.map((c: any) => <tr><td>{c.classId} / {c.variantId}</td><td>{Math.floor(c.timeSeconds / 60)}</td><td>{c.kills} / {c.deaths}</td><td>{c.pointSeconds}</td></tr>)}</tbody></table></div>}
     <h2>История</h2><p class="muted">Время UTC. Итоги кампании не прибавляют повторно убийства и очки раундов.</p>
-    <div class="table-wrap" tabindex="0" aria-label="История матчей"><table><thead><tr><th scope="col">Время</th><th scope="col">Событие</th><th scope="col">Результат</th><th scope="col">K / D</th></tr></thead><tbody>{data.history.map((r: any) => <tr><td>{time(r.endedAt)}</td><td>{modes[r.mode] || r.mode} · {r.kind === 'campaign' ? 'вся кампания' : 'бой'}</td><td>{reasons[r.reason] || r.reason}{r.winner !== 'NONE' ? r.winner === r.team ? ' · победа' : r.team !== 'NONE' ? ' · поражение' : '' : ''}</td><td>{r.kind === 'match' ? `${r.kills} / ${r.deaths}` : '—'}</td></tr>)}</tbody></table></div>
+    <div class="table-wrap" tabindex="0" aria-label="История матчей"><table><thead><tr><th scope="col">Время</th><th scope="col">Событие</th><th scope="col">Результат</th><th scope="col">K / D</th></tr></thead><tbody>{data.history.map((r: any) => <tr><td>{time(r.endedAt)}</td><td>{modes[r.mode] || r.mode} · {r.kind === 'campaign' ? 'вся кампания' : 'бой'}</td><td>{reasons[r.reason] || r.reason}{outcomeLabel(r, data.profile.uuid)}</td><td>{r.kind === 'match' ? `${r.kills} / ${r.deaths}` : '—'}</td></tr>)}</tbody></table></div>
     <nav class="pagination" aria-label="Страницы истории">{data.page > 1 && <a href={next(data.page - 1)}>← Назад</a>}<span>Страница {data.page}</span>{data.history.length === data.limit && <a href={next(data.page + 1)}>Далее →</a>}</nav>
   </>}
 </Community>

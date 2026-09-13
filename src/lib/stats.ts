@@ -1,4 +1,4 @@
-/** Durable, Minecraft-independent result ingestion. Node >=22.13; no browser imports. */
+/** Durable, Minecraft-independent result ingestion. Node >=22.19; no browser imports. */
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
@@ -19,6 +19,7 @@ export type Result = {
   matchId: string | null; campaignSessionId: string | null; mapId: string | null;
   startedAt: string; endedAt: string; endReason: string; winner: 'RED' | 'BLUE' | 'NONE';
   participants: Participant[]; rounds: string[];
+  winnerUuid?: string; // Additive FFA result; absent legacy fields stay absent for replay digests.
 };
 export class StatsError extends Error {
   status: number;
@@ -35,7 +36,7 @@ function utc(value: unknown): number {
 /** Strict allow-list of gameplay producers: training/playtest never reaches the aggregate tables. */
 export function validateResult(value: any, now = Date.now()): Result {
   requireValue(value && typeof value === 'object' && !Array.isArray(value), 'Result object required');
-  requireValue(value.schemaVersion === 1 && UUID.test(value.eventId) && UUID.test(value.serverId), 'Invalid result identity/version');
+  requireValue(value.schemaVersion === 1 && typeof value.eventId === 'string' && UUID.test(value.eventId) && typeof value.serverId === 'string' && UUID.test(value.serverId), 'Invalid result identity/version');
   requireValue(value.sessionPurpose === 'gameplay', 'Non-gameplay results are not accepted');
   requireValue(MODES.includes(value.modeId) && typeof value.ranked === 'boolean' && value.ranked === (value.modeId === 'campaign'), 'Invalid mode/ranking context');
   requireValue(typeof value.rulesetVersion === 'string' && ID.test(value.rulesetVersion), 'Invalid ruleset version');
@@ -70,12 +71,20 @@ export function validateResult(value: any, now = Date.now()): Result {
       requireValue(['timeSeconds', 'kills', 'deaths', 'pointSeconds'].every(key => integer(c[key])), 'Invalid class counters');
     }
   }
+  const hasPersonalWinner = Object.hasOwn(value, 'winnerUuid');
+  if (hasPersonalWinner) {
+    requireValue(value.modeId === 'deathmatch' && value.kind === 'match' && value.endReason === 'completed'
+      && value.winner === 'NONE' && value.campaignSessionId === null, 'Personal winner requires a completed FFA match');
+    requireValue(typeof value.winnerUuid === 'string' && UUID.test(value.winnerUuid) && seen.has(value.winnerUuid), 'Personal winner must belong to the match');
+    requireValue(value.participants.every((p: Participant) => p.team === 'NONE'), 'FFA participants cannot declare teams');
+  }
   // Return only the public contract; never persist arbitrary producer-supplied fields or secrets.
   return {
     schemaVersion: 1, eventId: value.eventId, serverId: value.serverId, kind: value.kind,
     sessionPurpose: 'gameplay', modeId: value.modeId, ranked: value.ranked, rulesetVersion: value.rulesetVersion,
     matchId: value.matchId, campaignSessionId: value.campaignSessionId, mapId: value.mapId,
     startedAt: value.startedAt, endedAt: value.endedAt, endReason: value.endReason, winner: value.winner,
+    ...(hasPersonalWinner ? { winnerUuid: value.winnerUuid } : {}),
     rounds: [...value.rounds].sort(), participants: value.participants.map((p: any) => ({
       uuid: p.uuid, name: p.name, team: p.team, score: p.score,
       ...Object.fromEntries(COUNTERS.map(key => [key, p[key]])),
@@ -164,7 +173,10 @@ export class StatsStore {
     const rows = this.db.prepare(`SELECT p.uuid,pr.name,SUM(p.score) score,SUM(p.kills) kills,SUM(p.deaths) deaths,
       SUM(p.captures) captures,SUM(p.neutralizations) neutralizations,SUM(p.point_seconds) pointSeconds,
       SUM(p.play_seconds) playSeconds,SUM(p.suicides) suicides,SUM(p.team_kills) teamKills,MAX(p.max_streak) maxKillstreak,
-      COUNT(*) matches,SUM(CASE WHEN r.reason='completed' AND p.team!='NONE' AND r.winner=p.team THEN 1 ELSE 0 END) wins,
+      COUNT(*) matches,SUM(CASE WHEN r.reason='completed' AND (
+        (r.mode='deathmatch' AND json_extract(r.payload,'$.winnerUuid')=p.uuid) OR
+        (r.mode!='deathmatch' AND p.team!='NONE' AND r.winner=p.team)
+      ) THEN 1 ELSE 0 END) wins,
       ROUND(SUM(p.kills)*1.0/MAX(1,SUM(p.deaths)),3) kd
       FROM participants p JOIN results r USING(server_id,event_id) JOIN profiles pr ON pr.uuid=p.uuid
       WHERE ${where} GROUP BY p.uuid ORDER BY ${SORTS[query.sort]} DESC,p.uuid ASC LIMIT ? OFFSET ?`)
@@ -177,7 +189,7 @@ export class StatsStore {
     const profile = this.db.prepare('SELECT uuid,name,last_seen lastSeen FROM profiles WHERE uuid=?').get(uuid);
     if (!profile) throw new StatsError(404, 'No recorded gameplay for this player');
     const totals = this.leaderboard({ ...query, page: 1, limit: 1 }, uuid).players[0] || null;
-    const history = this.db.prepare(`SELECT r.event_id eventId,r.server_id serverId,r.kind,r.mode,r.campaign_id campaignSessionId,r.ended_at endedAt,r.reason,r.winner,p.team,p.score,p.kills,p.deaths
+    const history = this.db.prepare(`SELECT r.event_id eventId,r.server_id serverId,r.kind,r.mode,r.campaign_id campaignSessionId,r.ended_at endedAt,r.reason,r.winner,json_extract(r.payload,'$.winnerUuid') winnerUuid,p.team,p.score,p.kills,p.deaths
       FROM participants p JOIN results r USING(server_id,event_id) WHERE p.uuid=? AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)
       ORDER BY r.ended_at DESC,r.server_id,r.event_id LIMIT ? OFFSET ?`)
       .all(uuid, query.since, query.until, query.mode, query.mode, query.limit, (query.page - 1) * query.limit);
@@ -212,6 +224,7 @@ export function ingestKeys(): Record<string, string[]> {
 }
 function authorized(request: Request, keys: Record<string, string[]>): string {
   const server = request.headers.get('X-Blockfield-Server-Id') || '', header = request.headers.get('Authorization') || '';
+  if (!UUID.test(server) || !Object.hasOwn(keys, server)) throw new StatsError(401, 'Invalid producer credentials');
   const provided = createHash('sha256').update(header).digest();
   let match = false;
   for (const token of keys[server] || []) match = timingSafeEqual(provided, createHash('sha256').update(`Bearer ${token}`).digest()) || match;
