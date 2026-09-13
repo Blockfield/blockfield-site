@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { credentials, drasl, draslError, pngError, readJson, route, sameOrigin } from '../src/lib/account.ts';
+import { credentials, drasl, draslError, importMojangSkin, pngError, readJson, route, sameOrigin } from '../src/lib/account.ts';
 
 const png = (width, height, size = 33) => {
   const bytes = new Uint8Array(size);
@@ -101,5 +101,41 @@ test('запрос к Drasl несёт токен, а ошибка не раск
     assert.equal(error.status, 502);
   } finally {
     down.restore();
+  }
+});
+
+test('скин с Mojang подтягивается только в пустой лицензионный аккаунт', async () => {
+  process.env.DRASL_URL = 'http://drasl.test';
+  const user = (username, skinUrl = null) => ({ username, players: [{ uuid: `uuid-${username}`, name: username, skinUrl, capeUrl: null }] });
+  const textures = Buffer.from(JSON.stringify({ textures: { SKIN: { url: 'http://textures.minecraft.net/texture/abc', metadata: { model: 'slim' } } } })).toString('base64');
+  const stub = stubFetch(async (url, init) => {
+    if (url === 'https://api.mojang.com/users/profiles/minecraft/Alex') return Response.json({ id: 'a'.repeat(32), name: 'alex' });
+    if (url === 'https://api.mojang.com/users/profiles/minecraft/Nobody') return new Response(null, { status: 204 });
+    if (url === `https://sessionserver.mojang.com/session/minecraft/profile/${'a'.repeat(32)}`) return Response.json({ properties: [{ name: 'textures', value: textures }] });
+    if (url === 'http://textures.minecraft.net/texture/abc') return new Response(png(64, 64));
+    if (url === 'http://drasl.test/drasl/api/v3/players/uuid-Alex' && init.method === 'PATCH') return Response.json({});
+    if (url === 'http://drasl.test/drasl/api/v3/user') return Response.json(user('Alex', 'http://drasl.test/texture/skin/x.png'));
+    assert.fail(`неожиданный запрос ${url}`);
+  });
+  try {
+    const refreshed = await importMojangSkin('token', user('Alex'));
+    const patch = JSON.parse(stub.seen.find(({ init }) => init?.method === 'PATCH').init.body);
+    assert.equal(patch.skinBase64, Buffer.from(png(64, 64)).toString('base64'));
+    assert.equal(patch.skinModel, 'slim');
+    assert.equal(patch.capeBase64, undefined);
+    assert.equal(refreshed.players[0].skinUrl, 'http://drasl.test/texture/skin/x.png');
+
+    stub.seen.length = 0;
+    const custom = user('Alex', 'http://drasl.test/texture/skin/mine.png');
+    assert.equal(await importMojangSkin('token', custom), custom);
+    assert.equal(stub.seen.length, 0, 'при своём скине Mojang не трогаем');
+
+    const pirate = user('Nobody');
+    assert.equal(await importMojangSkin('token', pirate), pirate);
+    assert.equal(await importMojangSkin('token', pirate), pirate);
+    assert.equal(stub.seen.length, 1, 'без PATCH, а повтор берётся из кэша');
+  } finally {
+    stub.restore();
+    delete process.env.DRASL_URL;
   }
 });

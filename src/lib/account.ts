@@ -103,6 +103,40 @@ export function account(user: any) {
   return { username: user?.username, uuid: player?.uuid, skinUrl: player?.skinUrl ?? null, capeUrl: player?.capeUrl ?? null, skinModel: player?.skinModel === 'slim' ? 'slim' : 'classic' };
 }
 
+const noMojangSkin = new Map<string, number>();
+const mojang = (url: string) => fetch(url, { signal: AbortSignal.timeout(5000) });
+
+async function mojangTexture(texture: any, skin: boolean): Promise<string | undefined> {
+  if (typeof texture?.url !== 'string' || !/^https?:\/\/textures\.minecraft\.net\//.test(texture.url)) return;
+  const response = await mojang(texture.url);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (response.ok && !pngError(bytes, skin)) return Buffer.from(bytes).toString('base64');
+}
+
+// Drasl выдаёт офлайн-UUID, по которым Mojang скины не отдаёт, поэтому лицензионный скин того же ника переносим сами.
+export async function importMojangSkin(token: string, user: any): Promise<any> {
+  const { username, uuid, skinUrl } = account(user);
+  const key = String(username).toLowerCase();
+  if (!uuid || skinUrl || (noMojangSkin.get(key) ?? 0) > Date.now()) return user;
+  try {
+    const found = await mojang(`https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(username)}`);
+    const profile = found.status === 200 ? await found.json() : null;
+    if (profile?.name?.toLowerCase() !== key || !/^[0-9a-f]{32}$/.test(profile.id)) throw null;
+    const session = await (await mojang(`https://sessionserver.mojang.com/session/minecraft/profile/${profile.id}`)).json();
+    const { textures } = JSON.parse(Buffer.from(session.properties.find((p: any) => p.name === 'textures').value, 'base64').toString());
+    const skinBase64 = await mojangTexture(textures.SKIN, true);
+    if (!skinBase64) throw null;
+    const player = user.players.find((p: any) => p.uuid === uuid);
+    const capeBase64 = player?.capeUrl ? undefined : await mojangTexture(textures.CAPE, false).catch(() => undefined);
+    await drasl(`/players/${uuid}`, { method: 'PATCH', token, body: { skinBase64, skinModel: textures.SKIN.metadata?.model === 'slim' ? 'slim' : 'classic', capeBase64 } });
+    return await drasl('/user', { token });
+  } catch {
+    // ponytail: любой сбой кэшируется как «нет скина» на 10 минут, чтобы не долбить Mojang; перезапуск сайта сбрасывает кэш.
+    noMojangSkin.set(key, Date.now() + 600_000);
+    return user;
+  }
+}
+
 export function startSession(cookies: AstroCookies, token: string) {
   cookies.set(session, token, { httpOnly: true, secure: true, sameSite: 'strict', path: '/', maxAge: 30 * 86_400 });
 }
