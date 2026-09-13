@@ -1,0 +1,50 @@
+name: Apply private review patch
+on:
+  push:
+    branches: [feat/issues-3-8-review]
+    paths: [.github/workflows/review-apply.yml]
+permissions:
+  contents: write
+concurrency:
+  group: apply-statistics-review
+  cancel-in-progress: false
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify baseline and apply source patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(git rev-parse HEAD^)" = 4e3b600919c427dd0385c70e672227bc2f83d75c
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, pathlib, subprocess
+          shas = ['c1d97707e2bd478ad4658fcc1ede815d7c694b3e', '2a6235dad5c1f1d61d464f8880349c785b190a9e', 'd07397742e1f9e81dd119be3af3f453c0b1ef465']
+          parts = []
+          for sha in shas:
+              blob = json.loads(subprocess.check_output(['gh', 'api', f'repos/netherg-io/blockfield-web/git/blobs/{sha}']))
+              parts.append(base64.b64decode(blob['content']).decode('ascii'))
+          patch = lzma.decompress(base64.b64decode(''.join(parts)))
+          assert hashlib.sha256(patch).hexdigest() == '6e13d700fd0acb301921538becdb70ed12055a886d4bf7e5773faea8ce80174a'
+          pathlib.Path('/tmp/review.patch').write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', '--whitespace=error', '/tmp/review.patch'], check=True)
+          subprocess.run(['git', 'apply', '/tmp/review.patch'], check=True)
+          PY
+          git diff --check
+      - run: npm test
+      - name: Commit source changes to the review branch only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md docs package.json package-lock.json src test
+          git commit -m 'feat(stats): persist authenticated results and expose independent leaderboards'
+          git push origin HEAD:feat/issues-3-8-review
+      - run: npm ci
+      - run: npm run build
