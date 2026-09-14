@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
-import { composite, inflate, initial, update, RULES_VERSION } from './glicko2.ts';
+import { composite, inflate, initial, softReset, update, RULES_VERSION } from './glicko2.ts';
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const ID = /^[a-z0-9_.:-]{1,128}$/;
@@ -118,7 +118,9 @@ export function seasons(now = Date.now()): Season[] {
   }
   return list;
 }
-export type Filters = { mode: string | null; season: string | null; since: number; until: number; sort: string; limit: number; page: number };
+/** The season containing a timestamp; anything before season 1 belongs to season 1. */
+export function seasonAt(time: number): Season { return seasons(Math.max(time, SEASON_ONE_STARTS_AT)).at(-1)!; }
+export type Filters = { mode: string | null; season: string | null; mmrSeason: string; since: number; until: number; sort: string; limit: number; page: number };
 export function filters(params: URLSearchParams, now = Date.now()): Filters {
   const mode = params.get('mode') || null, season = params.get('season') || null, period = params.get('period') || 'all', sort = params.get('sort') || 'score';
   if (mode !== null && !MODES.includes(mode)) throw new StatsError(400, 'Unknown mode');
@@ -130,8 +132,9 @@ export function filters(params: URLSearchParams, now = Date.now()): Filters {
   if (!/^\d+$/.test(limitText) || !/^\d+$/.test(pageText)) throw new StatsError(400, 'Invalid pagination');
   const limit = Number(limitText), page = Number(pageText);
   if (!integer(limit, 100) || limit < 1 || !integer(page, 1000) || page < 1) throw new StatsError(400, 'Invalid pagination');
-  if (selected) return { mode, season, since: Date.parse(selected.startsAt), until: Date.parse(selected.endsAt), sort, limit, page };
-  return { mode, season, since: period === 'all' ? 0 : now - (period === 'week' ? 7 : 30) * 86400000, until: now + 300000, sort, limit, page };
+  const mmrSeason = season ?? seasonAt(now).id;
+  if (selected) return { mode, season, mmrSeason, since: Date.parse(selected.startsAt), until: Date.parse(selected.endsAt), sort, limit, page };
+  return { mode, season, mmrSeason, since: period === 'all' ? 0 : now - (period === 'week' ? 7 : 30) * 86400000, until: now + 300000, sort, limit, page };
 }
 export class StatsStore {
   db: DatabaseSync;
@@ -140,9 +143,15 @@ export class StatsStore {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number };
-    if (![0, 1, 2].includes(version.user_version)) { this.db.close(); throw new Error('Unsupported statistics schema; restore/migrate explicitly'); }
-    this.db.exec(`
-      BEGIN IMMEDIATE;
+    if (![0, 1, 2, 3].includes(version.user_version)) { this.db.close(); throw new Error('Unsupported statistics schema; restore/migrate explicitly'); }
+    this.db.function('season_at', (time: any) => seasonAt(Number(time)).id);
+    const columns = (table: string) => (this.db.prepare('SELECT name FROM pragma_table_info(?)').all(table) as { name: string }[]).map(c => c.name);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      // v2 -> v3: lifetime ratings become per-season rows; existing rows move to the season of their rating time.
+      const legacyRatings = columns('ratings').length > 0 && !columns('ratings').includes('season_id');
+      if (legacyRatings) this.db.exec('ALTER TABLE ratings RENAME TO ratings_v2');
+      this.db.exec(`
       CREATE TABLE IF NOT EXISTS results (
         server_id TEXT NOT NULL, event_id TEXT NOT NULL, kind TEXT NOT NULL, mode TEXT NOT NULL,
         campaign_id TEXT, ended_at INTEGER NOT NULL, reason TEXT NOT NULL, winner TEXT NOT NULL,
@@ -165,20 +174,24 @@ export class StatsStore {
         FOREIGN KEY(server_id,event_id,uuid) REFERENCES participants(server_id,event_id,uuid)
       );
       CREATE TABLE IF NOT EXISTS ratings (
-        uuid TEXT PRIMARY KEY, rating REAL NOT NULL, rd REAL NOT NULL, volatility REAL NOT NULL,
-        rated_campaigns INTEGER NOT NULL, last_rated_at INTEGER NOT NULL
+        season_id TEXT NOT NULL, uuid TEXT NOT NULL, rating REAL NOT NULL, rd REAL NOT NULL, volatility REAL NOT NULL,
+        rated_campaigns INTEGER NOT NULL, last_rated_at INTEGER NOT NULL, PRIMARY KEY(season_id,uuid)
       );
       CREATE TABLE IF NOT EXISTS rating_changes (
         server_id TEXT NOT NULL, event_id TEXT NOT NULL, uuid TEXT NOT NULL, rules_version TEXT NOT NULL, team TEXT NOT NULL,
         score REAL NOT NULL, opp_rating REAL NOT NULL, opp_rd REAL NOT NULL,
         before_rating REAL NOT NULL, before_rd REAL NOT NULL, before_volatility REAL NOT NULL,
-        after_rating REAL NOT NULL, after_rd REAL NOT NULL, after_volatility REAL NOT NULL, rated_at INTEGER NOT NULL,
+        after_rating REAL NOT NULL, after_rd REAL NOT NULL, after_volatility REAL NOT NULL, rated_at INTEGER NOT NULL, season_id TEXT NOT NULL,
         PRIMARY KEY(server_id,event_id,uuid), FOREIGN KEY(server_id,event_id) REFERENCES results(server_id,event_id)
       );
       CREATE INDEX IF NOT EXISTS rating_changes_uuid ON rating_changes(uuid,rated_at);
-      PRAGMA user_version=2;
-      COMMIT;
-    `);
+      `);
+      if (legacyRatings) this.db.exec(`INSERT INTO ratings SELECT season_at(last_rated_at),uuid,rating,rd,volatility,rated_campaigns,last_rated_at FROM ratings_v2;
+        DROP TABLE ratings_v2;`);
+      if (!columns('rating_changes').includes('season_id')) this.db.exec(`ALTER TABLE rating_changes ADD COLUMN season_id TEXT NOT NULL DEFAULT '';
+        UPDATE rating_changes SET season_id=season_at(rated_at);`);
+      this.db.exec('PRAGMA user_version=3; COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
   }
   close() { this.db.close(); }
   ingest(input: unknown): { inserted: boolean; eventId: string } {
@@ -204,28 +217,39 @@ export class StatsStore {
       this.db.exec('COMMIT'); return { inserted: true, eventId: result.eventId };
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
-  /** One Glicko-2 period per rated player: the whole opposing side as a composite opponent. Team NONE is unrated. */
+  /**
+   * One Glicko-2 period per rated player: the whole opposing side as a composite opponent. Team NONE is unrated.
+   * The season comes from endedAt. A player's first campaign in a season starts from their latest earlier season, soft-reset once per boundary crossed.
+   * ponytail: a late result rates only its own season; later seasons that already carried over from it are not recomputed.
+   * Replay rating_changes in endedAt order per season if late cross-season results become common.
+   */
   private rate(result: Result) {
     const sides = { RED: result.participants.filter(p => p.team === 'RED'), BLUE: result.participants.filter(p => p.team === 'BLUE') };
     if (!sides.RED.length || !sides.BLUE.length) return;
-    const ended = Date.parse(result.endedAt);
-    const load = this.db.prepare('SELECT rating,rd,volatility,rated_campaigns ratedCampaigns,last_rated_at lastRatedAt FROM ratings WHERE uuid=?');
+    const ended = Date.parse(result.endedAt), season = seasonAt(ended), seasonNumber = Number(season.id.slice(1));
+    const periods = (since: number) => Math.floor(Math.max(0, ended - since) / RATING_PERIOD_MS);
+    const load = this.db.prepare('SELECT rating,rd,volatility,rated_campaigns ratedCampaigns,last_rated_at lastRatedAt FROM ratings WHERE season_id=? AND uuid=?');
+    const carry = this.db.prepare(`SELECT rating,rd,volatility,CAST(substr(season_id,2) AS INTEGER) seasonNumber FROM ratings
+      WHERE uuid=? AND CAST(substr(season_id,2) AS INTEGER)<? ORDER BY seasonNumber DESC LIMIT 1`);
     const before = new Map([...sides.RED, ...sides.BLUE].map(p => {
-      const row = load.get(p.uuid) as { rating: number; rd: number; volatility: number; ratedCampaigns: number; lastRatedAt: number } | undefined;
-      const rating = row ? inflate({ rating: row.rating, rd: row.rd, volatility: row.volatility }, Math.floor(Math.max(0, ended - row.lastRatedAt) / RATING_PERIOD_MS)) : initial();
+      const row = load.get(season.id, p.uuid) as { rating: number; rd: number; volatility: number; ratedCampaigns: number; lastRatedAt: number } | undefined;
+      const previous = row ? undefined : carry.get(p.uuid, seasonNumber) as { rating: number; rd: number; volatility: number; seasonNumber: number } | undefined;
+      const rating = row ? inflate({ rating: row.rating, rd: row.rd, volatility: row.volatility }, periods(row.lastRatedAt))
+        : previous ? inflate(softReset(previous, seasonNumber - previous.seasonNumber), periods(Date.parse(season.startsAt))) : initial();
       return [p.uuid, { rating, campaigns: row?.ratedCampaigns ?? 0 }];
     }));
-    const save = this.db.prepare(`INSERT INTO ratings VALUES (?,?,?,?,?,?) ON CONFLICT(uuid) DO UPDATE SET rating=excluded.rating,rd=excluded.rd,
+    const save = this.db.prepare(`INSERT INTO ratings (season_id,uuid,rating,rd,volatility,rated_campaigns,last_rated_at) VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT(season_id,uuid) DO UPDATE SET rating=excluded.rating,rd=excluded.rd,
       volatility=excluded.volatility,rated_campaigns=excluded.rated_campaigns,last_rated_at=MAX(ratings.last_rated_at,excluded.last_rated_at)`);
-    const change = this.db.prepare('INSERT INTO rating_changes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    const change = this.db.prepare('INSERT INTO rating_changes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
     for (const team of ['RED', 'BLUE'] as const) {
       const opponent = composite(sides[team === 'RED' ? 'BLUE' : 'RED'].map(o => before.get(o.uuid)!.rating));
       const score = result.endReason === 'draw' ? 0.5 : result.winner === team ? 1 : 0;
       for (const p of sides[team]) {
         const { rating: from, campaigns } = before.get(p.uuid)!, to = update(from, [{ opponent, score }]);
-        save.run(p.uuid, to.rating, to.rd, to.volatility, campaigns + 1, ended);
+        save.run(season.id, p.uuid, to.rating, to.rd, to.volatility, campaigns + 1, ended);
         change.run(result.serverId, result.eventId, p.uuid, RULES_VERSION, team, score, opponent.rating, opponent.rd,
-          from.rating, from.rd, from.volatility, to.rating, to.rd, to.volatility, ended);
+          from.rating, from.rd, from.volatility, to.rating, to.rd, to.volatility, ended, season.id);
       }
     }
   }
@@ -244,11 +268,11 @@ export class StatsStore {
       ) THEN 1 ELSE 0 END) wins,
       ROUND(SUM(p.kills)*1.0/MAX(1,SUM(p.deaths)),3) kd,
       MAX(rt.rating) rating,MAX(rt.rd) rd,MAX(rt.rated_campaigns) ratedCampaigns
-      FROM participants p JOIN results r USING(server_id,event_id) JOIN profiles pr ON pr.uuid=p.uuid LEFT JOIN ratings rt ON rt.uuid=p.uuid
+      FROM participants p JOIN results r USING(server_id,event_id) JOIN profiles pr ON pr.uuid=p.uuid LEFT JOIN ratings rt ON rt.season_id=? AND rt.uuid=p.uuid
       WHERE ${where} GROUP BY p.uuid)) WHERE (? IS NULL OR uuid=?) ORDER BY "rank" LIMIT ? OFFSET ?`)
-      .all(...args, uuid, uuid, query.limit, (query.page - 1) * query.limit) as any[];
+      .all(query.mmrSeason, ...args, uuid, uuid, query.limit, (query.page - 1) * query.limit) as any[];
     const total = this.db.prepare(`SELECT COUNT(DISTINCT p.uuid) total FROM participants p JOIN results r USING(server_id,event_id) WHERE ${where}`).get(...args) as { total: number };
-    return { schemaVersion: 1, checkedAt: new Date().toISOString(), mode: query.mode, season: query.season, page: query.page, limit: query.limit, total: total.total, ratingStatus: RULES_VERSION,
+    return { schemaVersion: 1, checkedAt: new Date().toISOString(), mode: query.mode, season: query.season, mmrSeason: query.mmrSeason, page: query.page, limit: query.limit, total: total.total, ratingStatus: RULES_VERSION,
       players: rows.map(({ rating, rd, ratedCampaigns, ...row }) => ({ ...row, mmr: mmr({ rating, rd, ratedCampaigns }) })) };
   }
   player(uuid: string, query: Filters) {
@@ -266,12 +290,12 @@ export class StatsStore {
     const campaigns = this.db.prepare(`SELECT COUNT(*) completed,COALESCE(SUM(CASE WHEN r.winner=p.team AND p.team!='NONE' THEN 1 ELSE 0 END),0) wins
       FROM participants p JOIN results r USING(server_id,event_id) WHERE r.kind='campaign' AND r.reason IN ('completed','draw') AND p.uuid=?
       AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)`).get(uuid, query.since, query.until, query.mode, query.mode);
-    // mmr is lifetime; ratingHistory shows only the changes inside the requested window (rating changes are Ranked campaigns only).
-    const rating = this.db.prepare('SELECT rating,rd,rated_campaigns ratedCampaigns FROM ratings WHERE uuid=?').get(uuid) as any;
+    // mmr and ratingHistory belong to mmrSeason (selected or current); history is also cut to the requested window (Ranked campaigns only).
+    const rating = this.db.prepare('SELECT rating,rd,rated_campaigns ratedCampaigns FROM ratings WHERE season_id=? AND uuid=?').get(query.mmrSeason, uuid) as any;
     const ratingHistory = this.db.prepare(`SELECT event_id campaignSessionId,rated_at ratedAt,team,score,ROUND(before_rating) before,ROUND(after_rating) after,ROUND(after_rd) rd
-      FROM rating_changes WHERE uuid=? AND rated_at>=? AND rated_at<=? AND (? IS NULL OR ?='campaign') ORDER BY rated_at DESC,event_id LIMIT 20`)
-      .all(uuid, query.since, query.until, query.mode, query.mode);
-    return { schemaVersion: 1, checkedAt: new Date().toISOString(), season: query.season, profile, totals, classes, campaigns, history, page: query.page, limit: query.limit,
+      FROM rating_changes WHERE uuid=? AND season_id=? AND rated_at>=? AND rated_at<=? AND (? IS NULL OR ?='campaign') ORDER BY rated_at DESC,event_id LIMIT 20`)
+      .all(uuid, query.mmrSeason, query.since, query.until, query.mode, query.mode);
+    return { schemaVersion: 1, checkedAt: new Date().toISOString(), season: query.season, mmrSeason: query.mmrSeason, profile, totals, classes, campaigns, history, page: query.page, limit: query.limit,
       mmr: rating ? mmr(rating) : null, ratingHistory, ratingStatus: RULES_VERSION };
   }
 }

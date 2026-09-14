@@ -43,6 +43,11 @@ export function inflate(player: Rating, periods: number): Rating {
   return { ...player, rd: Math.min(GLICKO2.rd, phi * GLICKO2.scale) };
 }
 
+/** Season soft reset, once per season boundary crossed: half the distance to the initial rating, RD at least 200, volatility kept. */
+export function softReset(player: Rating, seasons = 1): Rating {
+  return { rating: GLICKO2.rating + 0.5 ** seasons * (player.rating - GLICKO2.rating), rd: Math.max(player.rd, 200), volatility: player.volatility };
+}
+
 /** Team campaign = one game against a virtual opponent: mean rating, RMS deviation of the other side. */
 export function composite(opponents: Rating[]): Opponent {
   if (opponents.length === 0) throw new Error('Composite opponent needs at least one player');

@@ -19,6 +19,8 @@ Mount a **named persistent volume** at `/data/stats` owned by the image's `node`
 
 Without `BLOCKFIELD_STATS_DB`, reads return 503 rather than an empty leaderboard. Without ingestion keys, writes are unauthorized. Bad key configuration fails closed. Keep one writer deployment per local SQLite volume; do not place the database on NFS or share it between hosts. Use WAL-aware SQLite backup tooling, or stop **the site only** and copy the database plus any WAL/SHM files before upgrades. Do not copy a live `.sqlite` file alone. Restore to an isolated instance and replay the producer outbox to verify a backup. Unknown database schema versions are rejected, not overwritten.
 
+Schema is `PRAGMA user_version=3`. Versions 0, 1 and 2 upgrade in place on startup inside one transaction (any failure rolls back and the site refuses to open the file). v2 → v3: `ratings` is re-keyed from `uuid` to `(season_id, uuid)` and `rating_changes` gains `season_id`; every existing row is assigned to the season that contains its `last_rated_at` / `rated_at` (before season 1 → `s1`). Nothing is recalculated: on the production data (all rated after 2026-09-14) every rating stays exactly as it was, now as season `s1`. Back up the volume before deploying; v3 files cannot be opened by older builds.
+
 There are no automatic deletes, destructive migrations, production deployments, or MMR recalculations in this PR. Add retention/administration policies explicitly before a large public rollout. Put public read endpoints behind reverse-proxy rate limits appropriate to the deployment.
 
 ## Contract v1
@@ -47,15 +49,16 @@ All reads are `GET`, public, `Cache-Control: no-store`, and served from SQLite o
 - `/api/stats/players/<UUID>` with the same filters (sort only affects `totals.rank`).
 - `/api/stats/seasons` → `{schemaVersion, current, seasons: [{id, name, startsAt, endsAt}]}`; only started seasons, oldest first; `current` is `null` before season 1.
 
-Filters: `mode` = `room`, `campaign`, `deathmatch` (omitted = all). `period` = `all`, rolling `week` (7 days), rolling `month` (30 days). `season` = a started season ID; `season` together with `period` (even `period=all`), an unknown season or a future season is **400**. `sort` = `score` (default), `rating`, `kills`, `captures`, `pointSeconds`, `playSeconds`, `wins`, `kd`. `limit` 1–100, `page` 1–1000, otherwise 400. A page past the end returns `players: []` with the real `total`.
+Filters: `mode` = `room`, `campaign`, `deathmatch` (omitted = all). `period` = `all`, rolling `week` (7 days), rolling `month` (30 days). `season` = a started season ID; `season` together with `period` (even `period=all`), an unknown season or a future season is **400**. `sort` = `score` (default), `rating` (the MMR season's rating), `kills`, `captures`, `pointSeconds`, `playSeconds`, `wins`, `kd`. `limit` 1–100, `page` 1–1000, otherwise 400. A page past the end returns `players: []` with the real `total`.
 
-Leaderboard response: `schemaVersion`, `checkedAt` (server read time, not last result time), `mode`, `season` (or `null`), `page`, `limit`, `total`, `ratingStatus` (rules version, `glicko2-v1`), `players[]`. Each row: `uuid`, `name` (latest known display name), `rank`, `score`, `kills`, `deaths`, `kd`, `captures`, `neutralizations`, `pointSeconds`, `playSeconds`, `suicides`, `teamKills`, `maxKillstreak`, `matches`, `wins` (battle wins), `mmr`.
+Leaderboard response: `schemaVersion`, `checkedAt` (server read time, not last result time), `mode`, `season` (or `null`), `mmrSeason`, `page`, `limit`, `total`, `ratingStatus` (rules version, `glicko2-v1`), `players[]`. Each row: `uuid`, `name` (latest known display name), `rank`, `score`, `kills`, `deaths`, `kd`, `captures`, `neutralizations`, `pointSeconds`, `playSeconds`, `suicides`, `teamKills`, `maxKillstreak`, `matches`, `wins` (battle wins), `mmr`.
 
-- `rank` is the 1-based position under the same filter and sort, numbered over the whole filtered set: `(page-1)*limit+index+1`. Ties sort by `uuid` ascending; on `sort=rating` players without MMR come last.
+- `mmrSeason` is the season whose MMR is shown: the `season` parameter, or the current season when it is omitted (also with `period`). Label MMR with it («MMR · Сезон 1»).
+- `rank` is the 1-based position under the same filter and sort, numbered over the whole filtered set: `(page-1)*limit+index+1`. Ties sort by `uuid` ascending; on `sort=rating` players without MMR in `mmrSeason` come last.
 - `kd` = `kills / max(1, deaths)` rounded to 3 decimals: zero deaths gives `kd = kills`, never `Infinity`/`NaN`/`null`.
-- `mmr` is `null` (never rated) or `{rating, rd, ratedCampaigns, provisional}`; `provisional` = fewer than 5 rated campaigns or RD > 150.
+- `mmr` is `null` (no rated campaign in `mmrSeason`) or `{rating, rd, ratedCampaigns, provisional}`; `provisional` = fewer than 5 rated campaigns **in that season** or RD > 150.
 
-Player response: `schemaVersion`, `checkedAt`, `season`, `profile {uuid, name, lastSeen}`, `totals` (a leaderboard row incl. `rank` for this filter/sort, or `null` when the player has no battles in the filter), `classes[]`, `campaigns {completed, wins}` (numbers, `0` when none), `history[]` (paged by `page`/`limit`), `mmr` (**lifetime**, not filtered), `ratingHistory[]` (up to 20 MMR changes inside the filter window; empty for non-Ranked modes), `ratingStatus`. An unknown UUID is 404; a known player with a non-matching filter is 200 with `totals: null` and empty arrays.
+Player response: `schemaVersion`, `checkedAt`, `season`, `mmrSeason`, `profile {uuid, name, lastSeen}`, `totals` (a leaderboard row incl. `rank` for this filter/sort, or `null` when the player has no battles in the filter), `classes[]`, `campaigns {completed, wins}` (numbers, `0` when none), `history[]` (paged by `page`/`limit`), `mmr` (for `mmrSeason`), `ratingHistory[]` (up to 20 MMR changes of `mmrSeason` inside the filter window; empty for non-Ranked modes), `ratingStatus`. An unknown UUID is 404; a known player with a non-matching filter is 200 with `totals: null` and empty arrays.
 
 Combat metrics come from `kind=match` rows only; campaign summaries never add round kills/score twice.
 
@@ -71,7 +74,19 @@ A win awarded by an administrator (`/bf stop … win TEAM`) is exported and stor
 
 ## Seasons
 
-Default (owner can change): quarterly time windows. `s1` "Сезон 1" = `2026-09-14T00:00:00.000Z` (production export start) … `2026-12-31T23:59:59.999Z`; then each UTC calendar quarter (`s2` = 2027 Q1, …), generated by `seasons()` in `src/lib/stats.ts`, so no edits per quarter. `endsAt` is inclusive; a result is in a season by `endedAt`. A season is only a filter: MMR is not reset and stays lifetime. Changing the first start or length changes historical season membership, not stored data.
+Default (owner can change): quarterly time windows. `s1` "Сезон 1" = `2026-09-14T00:00:00.000Z` (production export start) … `2026-12-31T23:59:59.999Z`; then each UTC calendar quarter (`s2` = 2027 Q1, …), generated by `seasons()` in `src/lib/stats.ts`, so no edits per quarter. `endsAt` is inclusive; a result is in a season by `endedAt`. Changing the first start or length changes historical season membership of results, but not the season already stored with ratings.
+
+### Seasonal MMR with soft reset (owner decision 2026-09-14)
+
+MMR is kept per season (`ratings` keyed by `(season_id, uuid)`). A campaign rates in the season that contains its `endedAt` (not the arrival time); a campaign ending exactly at a season start belongs to the new season. Results before season 1 rate in `s1`.
+
+- A player's first rated campaign in a season starts from their latest earlier season, soft-reset once per season boundary crossed (`softReset` in `src/lib/glicko2.ts`): `rating = 1500 + 0.5·(previous − 1500)`, `rd = max(previous_rd, 200)`, volatility unchanged. Example: 1700 / RD 60 → 1600 / RD 200. A player who skipped a season is reset twice (1700 → 1550).
+- Without any earlier season the player starts at the Glicko-2 initial state (1500 / 350 / 0.06).
+- Idle RD growth (one period per full idle week) is measured inside the season: from the last rating in this season, or from the season start for a carried-over state.
+- Opponent composites use the opponents' state in the same season, carried over the same way.
+- `ratedCampaigns` and therefore `provisional` count campaigns within the season.
+
+Late results: a campaign that ended in an earlier season but arrives later updates only that season's ratings. Later seasons are **not** recomputed, even if a player's carry-over was already taken from the old state. Upgrade path if this matters: replay `rating_changes` for the affected season onwards in `endedAt` order.
 
 ## Display rules (site, launcher, game)
 
@@ -91,8 +106,8 @@ Default (owner can change): quarterly time windows. `s1` "Сезон 1" = `2026-
 
 ## Verification and remaining integration
 
-`npm ci && npm test && npm run build`. Tests cover replay/conflict, transactional rollback, restarts on disk, both authorization boundaries, streamed limits, non-gameplay rejection, duplicate participants, stable paging, zero deaths, filters, name changes and round/campaign double counting. Run the producer/API end-to-end check from the companion mod PR before merging both.
+`npm ci && npm test && npm run build`. Tests cover replay/conflict, transactional rollback, restarts on disk, both authorization boundaries, streamed limits, non-gameplay rejection, duplicate participants, stable paging, zero deaths, filters, name changes, round/campaign double counting, season carry-over and boundaries, late results, season-specific API MMR and the v1→v3 / v2→v3 migrations. Run the producer/API end-to-end check from the companion mod PR before merging both.
 
 Local review: submit the test fixture with a configured producer key, replay it, verify exactly one battle; submit a campaign summary, verify counters are unchanged; stop Minecraft, refresh leaderboard/account, and verify history still loads. Invalid/missing DB must show unavailable, not zero stats. Check layout at 360px and desktop, keyboard navigation, long display names and logout during a slow request.
 
-Not implemented by this site PR: a legacy CamelCase-log importer (historical mode/time/class IDs require an explicit mapping), season MMR resets, class-filtered leaderboard, and large-dataset load testing. Existing log files are never silently reinterpreted or rewritten.
+Not implemented by this site PR: a legacy CamelCase-log importer (historical mode/time/class IDs require an explicit mapping), recomputing later seasons after late results, class-filtered leaderboard, and large-dataset load testing. Existing log files are never silently reinterpreted or rewritten.
