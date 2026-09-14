@@ -262,8 +262,8 @@ export class StatsStore {
     }
   }
   /** Deterministic replay of every non-voided rated campaign from `seasonId` on; earlier seasons (the carry-over source) stay untouched. Call inside a transaction. */
-  private rebuildRatings(seasonId: string) {
-    const number = Number(seasonId.slice(1)), since = number === 1 ? Number.MIN_SAFE_INTEGER : Date.parse(seasons().find(s => s.id === seasonId)!.startsAt);
+  private rebuildRatings(season: Season) {
+    const number = Number(season.id.slice(1)), since = number === 1 ? Number.MIN_SAFE_INTEGER : Date.parse(season.startsAt);
     this.db.prepare('DELETE FROM rating_changes WHERE CAST(substr(season_id,2) AS INTEGER)>=?').run(number);
     this.db.prepare('DELETE FROM ratings WHERE CAST(substr(season_id,2) AS INTEGER)>=?').run(number);
     const rows = this.db.prepare(`SELECT payload FROM results WHERE kind='campaign' AND mode='campaign' AND reason IN ('completed','draw') AND voided_at IS NULL AND ended_at>=?
@@ -277,9 +277,10 @@ export class StatsStore {
       if (!row) throw new StatsError(404, 'Result not found');
       if ((row.voided_at !== null) === (by !== null)) throw new StatsError(409, by ? 'Result is already voided' : 'Result is not voided');
       this.db.prepare('UPDATE results SET voided_at=?,voided_by=? WHERE server_id=? AND event_id=?').run(by ? Date.now() : null, by, serverId, eventId);
-      const result: Result = JSON.parse(row.payload), season = rated(result) ? seasonAt(Date.parse(result.endedAt)).id : null;
+      // seasonAt generates seasons up to endedAt, which may be a few minutes ahead of now (and of the current season).
+      const result: Result = JSON.parse(row.payload), season = rated(result) ? seasonAt(Date.parse(result.endedAt)) : null;
       if (season) this.rebuildRatings(season);
-      this.db.exec('COMMIT'); return { rebuilt: season };
+      this.db.exec('COMMIT'); return { rebuilt: season?.id ?? null };
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   results(mode: string | null, page: number, limit = 25) {
@@ -303,8 +304,12 @@ export class StatsStore {
     return (this.db.prepare('SELECT key_hash h FROM ingest_keys WHERE server_id=? AND revoked_at IS NULL').all(serverId) as { h: string }[]).map(r => Buffer.from(r.h, 'hex'));
   }
   audit(entry: { actorUuid: string; actorName: string; role: string; action: string; target?: string | null; detail?: unknown; ok: boolean; error?: string | null }) {
+    const json = entry.detail === undefined ? null : JSON.stringify(entry.detail);
+    const detail = json !== null && json.length > 2048 ? `${json.slice(0, 2048)}…` : json;
     this.db.prepare('INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run(Date.now(), entry.actorUuid, entry.actorName, entry.role, entry.action, entry.target ?? null, entry.detail === undefined ? null : JSON.stringify(entry.detail), entry.ok ? 1 : 0, entry.error ?? null);
+      .run(Date.now(), entry.actorUuid, entry.actorName, entry.role, entry.action, entry.target?.slice(0, 200) ?? null, detail, entry.ok ? 1 : 0, entry.error?.slice(0, 500) ?? null);
+    // ponytail: keeps the newest 10 000 entries; export them elsewhere first if a longer history is ever required.
+    this.db.prepare('DELETE FROM admin_audit WHERE id <= (SELECT id FROM admin_audit ORDER BY id DESC LIMIT 1 OFFSET 10000)').run();
   }
   staff(): { uuid: string; name: string; role: string; grantedBy: string; grantedAt: number }[] {
     return this.db.prepare('SELECT uuid,name,role,granted_by grantedBy,granted_at grantedAt FROM staff_roles ORDER BY name COLLATE NOCASE,uuid').all() as any[];

@@ -93,3 +93,23 @@ test('audit entries are stored newest first and capped', t => {
   const log = db.auditLog();
   assert.equal(log.length, 200); assert.equal(log[0].action, 'a204'); assert.equal(JSON.parse(log[0].detail).i, 204); assert.equal(log[1].ok, 0);
 });
+
+test('review: voiding a campaign that ends minutes ahead, in the next season, rebuilds without a 500', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-12-31T23:58:00Z') });
+  const db = database(t);
+  db.ingest(campaign(60, '2027-01-01T00:01:00.000Z', 'RED'));
+  assert.equal(db.player(red, query()).mmrSeason, 's1');
+  assert.deepEqual(db.setVoided(server, uid(60), 'Adm'), { rebuilt: 's2' });
+  assert.deepEqual(db.setVoided(server, uid(60), null), { rebuilt: 's2' });
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM ratings WHERE season_id='s2'").get().n, 2);
+});
+
+test('review: audit detail is capped at 2 KB and the table keeps the newest 10 000 rows', t => {
+  const db = database(t);
+  db.audit({ actorUuid: 'a', actorName: 'Adm', role: 'admin', action: 'big', detail: { x: 'y'.repeat(70000) }, ok: true });
+  assert.ok(db.auditLog(1)[0].detail.length <= 2049);
+  db.db.exec('WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10005) INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,ok) SELECT i,\'a\',\'A\',\'admin\',\'seed\',1 FROM n');
+  db.audit({ actorUuid: 'a', actorName: 'Adm', role: 'admin', action: 'last', ok: true });
+  assert.equal(db.db.prepare('SELECT COUNT(*) n FROM admin_audit').get().n, 10000);
+  assert.equal(db.auditLog(1)[0].action, 'last');
+});

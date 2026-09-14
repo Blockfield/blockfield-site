@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { can, checkRoleChange, devUser, handleAdmin, owners, playerId, rconCommand, roleOf, saveSettings, validateSettings, workshopMembers, writeRequest } from '../src/lib/admin.ts';
+import { rejectedByServer, can, checkRoleChange, devUser, handleAdmin, owners, playerId, rconCommand, roleOf, saveSettings, validateSettings, workshopMembers, writeRequest } from '../src/lib/admin.ts';
 import { StatsStore } from '../src/lib/stats.ts';
 
 const OWNER = 'e10438e4797b49718cfecec6a8fa171b', ADMIN = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', MOD = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', OTHER = 'cccccccccccccccccccccccccccccccc';
@@ -61,7 +61,6 @@ test('inbox request is validated and written atomically as <id>.json', t => {
     [admin, { kind: 'mode', profile: 'workshop', expectedRevision: 3, recover: true }, 400],
     [admin, { kind: 'mode', profile: 'maintenance', expectedRevision: 3 }, 400],
     [admin, { kind: 'mode', profile: 'game' }, 400],
-    [admin, { kind: 'message', message: 'a\nb' }, 400],
     [admin, { kind: 'message', message: 'x'.repeat(201) }, 400],
     [admin, { kind: 'members', members: [{ draslId: 'bad', name: 'Bob', role: 'admin' }] }, 400],
     [admin, { kind: 'shell' }, 400],
@@ -148,4 +147,51 @@ test('API: role gate, audit of success and refusal, members request on role chan
     ['Adm', 'role-grant', 1, false], ['Adm', 'role-grant', 0, true],
   ]);
   assert.equal(log[3].target, MOD); assert.equal(JSON.parse(log[3].detail).role, 'moderator');
+});
+
+test('review: range goes through /bf, Brigadier rejections are detected', () => {
+  assert.deepEqual(rconCommand({ action: 'range', op: 'close' }).commands, ['bf range close']);
+  for (const reply of ['Unknown or incomplete command, see below for error', 'Unknown command', 'range close<--[HERE]']) assert.equal(rejectedByServer(reply), true, reply);
+  assert.equal(rejectedByServer('[BlockField] Полигон закрыт, выведено игроков: 0'), false);
+});
+
+test('review: message strips exactly Cc and §, keeps ZWJ emoji, counts code points', t => {
+  const dir = temp(t), actor = { uuid: MOD, name: 'Mod', role: 'moderator' }, family = '👨\u200d👩\u200d👧';
+  const id = writeRequest(dir, actor, { kind: 'message', message: `  §cРаботы\n\u0085${family}\t ` });
+  assert.equal(JSON.parse(readFileSync(join(dir, `${id}.json`))).message, `cРаботы${family}`);
+  writeRequest(dir, actor, { kind: 'message', message: '😀'.repeat(200) });
+  assert.throws(() => writeRequest(dir, actor, { kind: 'message', message: 'x'.repeat(201) }), e => status(e) === 400);
+});
+
+test('review: balance types, per-key ranges and merged cross-checks match the mod', () => {
+  validateSettings({ campaignBalance: { '*': { max_tickets: 100000, score_per_obj_sec: 0.5, base_warn_radius: 50, base_kill_radius: 40, ready_timeout_seconds: 10 }, desert: { max_players_per_team: 8 } } });
+  for (const balance of [
+    { '*': { max_tickets: 0 } }, { '*': { max_tickets: 1.5 } }, { '*': { ready_timeout_seconds: 9 } }, { '*': { spawn_shield_duration_seconds: 61 } },
+    { '*': { score_per_obj_sec: 1000.5 } }, { '*': { enable_spawn_shield: 'true' } }, { '*': { shuffle_teams_between_rounds: 1 } },
+    { '*': { min_players_per_team: 5, max_players_per_team: 4 } }, { '*': { min_players_per_team: 5 }, desert: { max_players_per_team: 4 } },
+    { '*': { base_warn_radius: 30 }, desert: { base_kill_radius: 31 } },
+  ]) assert.throws(() => validateSettings({ campaignBalance: balance }), e => status(e) === 400, JSON.stringify(balance));
+});
+
+test('review: non-staff are refused before the body is read and never audited; RCON errors hide addresses', async t => {
+  const saved = { ...process.env };
+  t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
+  Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test', BLOCKFIELD_RCON_HOST: '127.0.0.1', BLOCKFIELD_RCON_PORT: '1', BLOCKFIELD_RCON_PASSWORD: 'x' });
+  const s = store(t);
+  let read = false;
+  const call = (as, method, path, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as;
+    const url = new URL(`http://site/api/admin/${path}`);
+    const request = new Request(url, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    Object.defineProperty(request, 'body', { get() { read = true; return null; } });
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, s).then(r => r, e => e);
+  };
+  assert.equal((await call(`${OTHER}:Nobody`, 'PUT', 'settings', { expectedRevision: 0, x: 'y'.repeat(60000) })).status, 403);
+  assert.equal(read, false); assert.equal(s.auditLog().length, 0);
+  const failed = await handleAdmin((() => { process.env.BLOCKFIELD_ADMIN_DEV_USER = `${OWNER}:Nether`; const url = new URL('http://site/api/admin/rcon');
+    return { request: new Request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'list' }) }), url, cookies: { get: () => undefined } }; })(), 'rcon', s).then(r => r, e => e);
+  assert.equal(failed.status, 502);
+  const text = (await failed.json()).error;
+  assert.equal(text, 'Игровой сервер не отвечает.'); assert.ok(!text.includes('127.0.0.1'));
+  assert.match(s.auditLog()[0].error, /ECONNREFUSED/);
 });

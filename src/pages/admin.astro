@@ -110,10 +110,14 @@ import '@fontsource/ibm-plex-mono/500.css';
             <label>Закрыть брошенную, с (5–600)<input type="number" name="abandonCloseSeconds" min="5" max="600" /></label>
           </fieldset>
           <label>Закрытые классы (через запятую)<input name="classLocks" autocomplete="off" /></label>
-          <label>Баланс кампаний, JSON
-            <textarea name="campaignBalance" rows="6" spellcheck="false" aria-describedby="balance-keys"></textarea>
+          <fieldset>
+            <legend>Баланс всех кампаний</legend>
+            <div id="balance-all" class="grid"></div>
+          </fieldset>
+          <label>Баланс отдельных кампаний, JSON
+            <textarea name="campaignBalance" rows="5" spellcheck="false" aria-describedby="balance-keys"></textarea>
           </label>
-          <small>Пример: <code>{'{"*": {"max_tickets": 300}, "desert": {"enable_spawn_shield": false}}'}</code>, где <code>*</code> — все кампании. <span id="balance-keys"></span></small>
+          <small>Пример: <code>{'{"desert": {"max_tickets": 300, "enable_spawn_shield": false}}'}</code>. Значения поверх общих. <span id="balance-keys"></span></small>
           <p class="hint">Пустое поле — значение сервера по умолчанию.</p>
           <button class="primary" type="submit">Сохранить настройки</button>
           <p class="form-status" role="status"></p>
@@ -188,6 +192,8 @@ import '@fontsource/ibm-plex-mono/500.css';
       .panel { background: #11100D; border: 1px solid #2A2116; padding: clamp(18px, 4vw, 32px); min-width: 0; scroll-margin-top: 64px; }
       form, .stack { display: grid; gap: 12px; margin-top: 20px; }
       h2 + form { margin-top: 0; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+      .grid label { font-weight: 500; font-size: 14px; overflow-wrap: anywhere; }
       .facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 20px; margin: 0 0 20px; }
       dt { color: #8E7A5E; font-family: var(--mono); font-size: 13px; }
       dd { margin: 0; overflow-wrap: anywhere; }
@@ -343,17 +349,23 @@ import '@fontsource/ibm-plex-mono/500.css';
         rconAction(body);
       }));
 
-      let settingsRevision = 0;
+      let settingsRevision = 0, balanceRules: Record<string, { type: string }> = {};
       async function loadSettings() {
-        const { settings, applied, balanceKeys } = await api('settings');
+        const { settings, applied, balance } = await api('settings');
+        balanceRules = balance;
+        const shared = settings.campaignBalance?.['*'] ?? {};
+        $('#balance-all').replaceChildren(...Object.entries(balance).map(([key, r]: [string, any]) => el('label', {}, key, r.type === 'bool'
+          ? el('select', { name: `b_${key}` }, ...[['', 'по умолчанию'], ['true', 'да'], ['false', 'нет']].map(([value, text]) => el('option', { value, textContent: text, selected: String(shared[key] ?? '') === value })))
+          : el('input', { type: 'number', name: `b_${key}`, min: String(r.min), max: String(r.max), step: r.type === 'int' ? '1' : 'any', value: shared[key] ?? '', placeholder: `${r.min}–${r.max}` }))));
         settingsRevision = settings.revision;
         const form = $<HTMLFormElement>('#settings-form');
         form.pvpEnabled.checked = settings.lobby?.pvpEnabled ?? false;
         for (const [section, keys] of [['lobby', ['pvpCooldownSeconds']], ['rooms', ['maxRooms', 'idleCloseSeconds', 'abandonCloseSeconds']]] as const)
           for (const key of keys) form[key].value = settings[section]?.[key] ?? '';
         form.classLocks.value = (settings.classLocks ?? []).join(', ');
-        form.campaignBalance.value = settings.campaignBalance ? JSON.stringify(settings.campaignBalance, null, 2) : '';
-        $('#balance-keys').textContent = `Ключи: ${balanceKeys.join(', ')}.`;
+        const { '*': _, ...perCampaign } = settings.campaignBalance ?? {};
+        form.campaignBalance.value = Object.keys(perCampaign).length ? JSON.stringify(perCampaign, null, 2) : '';
+        $('#balance-keys').textContent = `Ключи: ${Object.entries(balance).map(([k, r]: [string, any]) => r.type === 'bool' ? `${k} (true/false)` : `${k} (${r.min}–${r.max}${r.type === 'int' ? ', целое' : ''})`).join(', ')}.`;
         const state = !settings.revision ? 'Настройки ещё не сохранялись: сервер использует значения по умолчанию.'
           : applied?.errors?.length ? `Ревизия ${settings.revision}: сервер сообщил об ошибках — ${applied.errors.join('; ')}`
           : applied?.revision >= settings.revision ? `Ревизия ${settings.revision}: применено ${time(applied.appliedAt)}.`
@@ -367,10 +379,13 @@ import '@fontsource/ibm-plex-mono/500.css';
           const number = (name: string) => (form[name].value === '' ? undefined : Number(form[name].value));
           const lobby = { pvpEnabled: form.pvpEnabled.checked, pvpCooldownSeconds: number('pvpCooldownSeconds') };
           const rooms = { maxRooms: number('maxRooms'), idleCloseSeconds: number('idleCloseSeconds'), abandonCloseSeconds: number('abandonCloseSeconds') };
-          let campaignBalance;
-          try { campaignBalance = form.campaignBalance.value.trim() ? JSON.parse(form.campaignBalance.value) : undefined; } catch { throw new Error('Баланс кампаний: некорректный JSON.'); }
+          let campaignBalance: Record<string, unknown> = {};
+          try { campaignBalance = form.campaignBalance.value.trim() ? JSON.parse(form.campaignBalance.value) : {}; } catch { throw new Error('Баланс кампаний: некорректный JSON.'); }
+          const shared = Object.fromEntries(Object.entries(balanceRules).map(([key, r]) => [key, form[`b_${key}`].value]).filter(([, v]) => v !== '')
+            .map(([key, v]) => [key, balanceRules[key].type === 'bool' ? v === 'true' : Number(v)]));
+          if (Object.keys(shared).length) campaignBalance = { ...campaignBalance, '*': shared };
           const classLocks = form.classLocks.value.split(',').map((s: string) => s.trim()).filter(Boolean);
-          await api('settings', 'PUT', JSON.parse(JSON.stringify({ expectedRevision: settingsRevision, lobby, rooms, classLocks, campaignBalance })));
+          await api('settings', 'PUT', JSON.parse(JSON.stringify({ expectedRevision: settingsRevision, lobby, rooms, classLocks, campaignBalance: Object.keys(campaignBalance).length ? campaignBalance : undefined })));
           await loadSettings();
           return 'Сохранено. Сервер применит настройки в течение минуты.';
         }, form);

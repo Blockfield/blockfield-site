@@ -95,8 +95,10 @@ export function writeRequest(directory: string, actor: Actor, body: any): string
     if (body.recover && !can(actor.role, 'recover')) throw fail(403, 'Восстановление доступно администратору.');
     request = { ...base, profile: body.profile, expectedRevision: body.expectedRevision, ...(body.recover ? { recover: true } : {}) };
   } else if (body?.kind === 'message') {
-    if (typeof body.message !== 'string' || /[\r\n]/.test(body.message) || body.message.trim().length > 200) throw bad('Сообщение: одна строка до 200 символов.');
-    request = { ...base, message: body.message.trim().replace(/[\x00-\x1f\x7f§]/g, '') };
+    // Same rule as the controller: strip control characters (Unicode Cc) and §, keep format characters such as ZWJ.
+    const message = typeof body.message === 'string' ? body.message.replace(/[\p{Cc}§]/gu, '').trim() : null;
+    if (message === null || [...message].length > 200) throw bad('Сообщение: до 200 символов.');
+    request = { ...base, message };
   } else if (body?.kind === 'members') {
     const valid = Array.isArray(body.members) && body.members.every((m: any) => playerId(m?.draslId) === m.draslId && nickname.test(m.name) && ['admin', 'lead', 'builder'].includes(m.role));
     if (!valid) throw bad('Некорректный список участников.');
@@ -109,12 +111,18 @@ export function writeRequest(directory: string, actor: Actor, body: any): string
 const range = (min: number, max: number) => (v: unknown) => Number.isSafeInteger(v) && (v as number) >= min && (v as number) <= max;
 const LOBBY: Record<string, (v: unknown) => boolean> = { pvpEnabled: v => typeof v === 'boolean', pvpCooldownSeconds: range(0, 600) };
 const ROOMS: Record<string, (v: unknown) => boolean> = { maxRooms: range(1, 16), idleCloseSeconds: range(30, 3600), abandonCloseSeconds: range(5, 600) };
-export const BALANCE_BOOLEANS = ['enable_spawn_shield', 'shuffle_teams_between_rounds'];
-export const BALANCE_KEYS = ['max_tickets', 'ticket_bleed_multiplier', 'ticket_bleed_timer_seconds', 'death_ticket_cost', 'capture_speed_percent_per_tick',
-  'uncapture_speed_percent_per_tick', 'score_per_kill', 'score_per_obj_sec', 'score_per_capture', 'score_per_uncapture', 'preparation_time_seconds',
-  'transition_time_seconds', 'enable_spawn_shield', 'spawn_shield_duration_seconds', 'safe_spawn_threshold', 'base_warn_radius', 'base_kill_radius',
-  'max_players_per_team', 'min_players_per_team', 'base_spawn_time_seconds', 'spawn_time_per_point_seconds', 'shuffle_teams_between_rounds',
-  'ready_countdown_seconds', 'reserve_seconds', 'ready_timeout_seconds'];
+/** Must match the mod's campaign balance parser: type and inclusive range per key. */
+export const BALANCE: Record<string, { type: 'int' | 'double' | 'bool'; min?: number; max?: number }> = {
+  max_tickets: { type: 'int', min: 1, max: 100_000 }, ticket_bleed_multiplier: { type: 'int', min: 0, max: 100 }, ticket_bleed_timer_seconds: { type: 'int', min: 1, max: 600 },
+  death_ticket_cost: { type: 'int', min: 0, max: 1000 }, capture_speed_percent_per_tick: { type: 'int', min: 1, max: 100 }, uncapture_speed_percent_per_tick: { type: 'int', min: 1, max: 100 },
+  score_per_kill: { type: 'int', min: 0, max: 10_000 }, score_per_obj_sec: { type: 'double', min: 0, max: 1000 }, score_per_capture: { type: 'int', min: 0, max: 10_000 },
+  score_per_uncapture: { type: 'int', min: 0, max: 10_000 }, preparation_time_seconds: { type: 'int', min: 0, max: 600 }, transition_time_seconds: { type: 'int', min: 0, max: 600 },
+  enable_spawn_shield: { type: 'bool' }, spawn_shield_duration_seconds: { type: 'int', min: 0, max: 60 }, safe_spawn_threshold: { type: 'int', min: 0, max: 100 },
+  base_warn_radius: { type: 'double', min: 0, max: 1000 }, base_kill_radius: { type: 'double', min: 0, max: 1000 },
+  max_players_per_team: { type: 'int', min: 1, max: 64 }, min_players_per_team: { type: 'int', min: 1, max: 64 },
+  base_spawn_time_seconds: { type: 'int', min: 0, max: 300 }, spawn_time_per_point_seconds: { type: 'int', min: 0, max: 300 }, shuffle_teams_between_rounds: { type: 'bool' },
+  ready_countdown_seconds: { type: 'int', min: 0, max: 300 }, reserve_seconds: { type: 'int', min: 0, max: 3600 }, ready_timeout_seconds: { type: 'int', min: 10, max: 3600 },
+};
 const plain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 function section(value: unknown, rules: Record<string, (v: unknown) => boolean>, name: string) {
   if (!plain(value) || !Object.entries(value).every(([k, v]) => Object.hasOwn(rules, k) && rules[k](v))) throw bad(`Настройки: неверный раздел «${name}».`);
@@ -132,10 +140,16 @@ export function validateSettings(body: any) {
     out.classLocks = list;
   }
   if (body.campaignBalance !== undefined) {
-    const balance = body.campaignBalance, rules = Object.fromEntries(BALANCE_KEYS.map(k => [k, BALANCE_BOOLEANS.includes(k)
-      ? (v: unknown) => typeof v === 'boolean' : (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1_000_000]));
+    const balance = body.campaignBalance, rules = Object.fromEntries(Object.entries(BALANCE).map(([k, r]) => [k, (v: unknown) => r.type === 'bool' ? typeof v === 'boolean'
+      : typeof v === 'number' && Number.isFinite(v) && (r.type === 'double' || Number.isSafeInteger(v)) && v >= r.min! && v <= r.max!]));
     if (!plain(balance) || Object.keys(balance).length > 64 || !Object.keys(balance).every(k => k === '*' || /^[A-Za-z0-9_-]{1,32}$/.test(k))) throw bad('Настройки: неверные кампании в балансе.');
-    for (const [campaign, values] of Object.entries(balance)) section(values, rules, `баланс ${campaign}`);
+    for (const [campaign, values] of Object.entries(balance)) {
+      section(values, rules, `баланс ${campaign}`);
+      // The mod applies "*" first, then the campaign's own section.
+      const merged: any = { ...(balance['*'] as object), ...(values as object) };
+      if (merged.min_players_per_team > merged.max_players_per_team) throw bad(`Баланс ${campaign}: min_players_per_team больше max_players_per_team.`);
+      if (merged.base_kill_radius > merged.base_warn_radius) throw bad(`Баланс ${campaign}: base_kill_radius больше base_warn_radius.`);
+    }
     out.campaignBalance = balance;
   }
   return out;
@@ -157,7 +171,7 @@ export function saveSettings(directory: string, body: any, actorName: string) {
 function text(value: unknown, required: boolean): string {
   if (value === undefined || value === null || value === '') { if (required) throw bad('Укажите текст.'); return ''; }
   if (typeof value !== 'string') throw bad('Некорректный текст.');
-  const clean = value.replace(/[\x00-\x1f\x7f§]/g, ' ').replace(/ {2,}/g, ' ').trim();
+  const clean = value.replace(/[\p{Cc}§]/gu, ' ').replace(/ {2,}/g, ' ').trim();
   if (!clean && required) throw bad('Укажите текст.');
   if (clean.length > 120) throw bad('Текст длиннее 120 символов.');
   if (clean.startsWith('/')) throw bad('Текст не может начинаться с «/».');
@@ -179,7 +193,7 @@ export function rconCommand(body: any): { permission: string; commands: string[]
     }
     case 'range':
       if (!['open', 'close', 'reset'].includes(body.op)) throw bad('Полигон: open, close или reset.');
-      return { permission: 'moderate', commands: [`range ${body.op}`], target: body.op };
+      return { permission: 'moderate', commands: [`bf range ${body.op}`], target: body.op };
     case 'stop-room': {
       if (typeof body.roomId !== 'string' || !roomId.test(body.roomId)) throw bad('Некорректная комната.');
       const reason = text(body.reason, false), room = `bf stop room ${body.roomId}`;
@@ -198,6 +212,10 @@ export function rconCommand(body: any): { permission: string; commands: string[]
   }
 }
 const stripColors = (output: string) => output.replace(/§./g, '');
+/** Brigadier answers a bad command with text, not an error code. */
+export const rejectedByServer = (output: string) => /^\s*(Unknown or incomplete command|Unknown command)/i.test(output) || output.includes('<--[HERE]');
+/** A failure whose `internal` text goes only to the server log and the audit log, never to the browser. */
+function hidden(status: number, message: string, internal: string) { return Object.assign(fail(status, message), { internal }); }
 
 async function lookupName(name: unknown): Promise<{ uuid: string; name: string }> {
   if (typeof name !== 'string' || !nickname.test(name)) throw bad('Никнейм: 3–16 символов, латинские буквы, цифры и _.');
@@ -246,11 +264,13 @@ const routes: Record<string, Route> = {
     const env = process.env;
     if (!env.BLOCKFIELD_RCON_HOST || !env.BLOCKFIELD_RCON_PASSWORD) throw fail(503, 'RCON не настроен на сайте.');
     const outputs = await rcon(commands, { host: env.BLOCKFIELD_RCON_HOST, port: Number(env.BLOCKFIELD_RCON_PORT || 25575), password: env.BLOCKFIELD_RCON_PASSWORD })
-      .catch((error: Error) => { throw fail(502, `Игровой сервер не ответил: ${error.message}`); });
+      .catch((error: Error) => { console.error('RCON failed', error.message); throw hidden(502, 'Игровой сервер не отвечает.', error.message); });
     const output = stripColors(outputs.at(-1) ?? '');
+    const rejected = outputs.map(stripColors).find(rejectedByServer);
+    if (rejected !== undefined) throw fail(502, `Сервер не принял команду: ${rejected.slice(0, 200)}`);
     return { output, players: body.action === 'list' ? (output.split(':')[1] ?? '').split(',').map(s => s.trim()).filter(Boolean) : undefined };
   }, audit: (body, result) => ({ action: `rcon:${body?.action}`, target: body?.player ?? body?.roomId ?? body?.classId ?? body?.op ?? null, detail: { ...body, output: result?.output?.slice(0, 500) } }) },
-  'GET settings': { permission: 'settings', handler: () => ({ ...readSettings(settingsDir()), balanceKeys: BALANCE_KEYS, balanceBooleans: BALANCE_BOOLEANS }) },
+  'GET settings': { permission: 'settings', handler: () => ({ ...readSettings(settingsDir()), balance: BALANCE }) },
   'PUT settings': { permission: 'settings', handler: ({ actor, body }) => ({ settings: saveSettings(settingsDir(), body, actor.name) }),
     audit: (body, result) => ({ action: 'settings', target: result?.settings ? `revision ${result.settings.revision}` : null, detail: body }) },
   'GET staff': { permission: 'roles', handler: async ({ store }) => {
@@ -300,16 +320,19 @@ export async function handleAdmin(context: APIContext, path: string, storage?: S
   if (method === 'GET' && path === 'me') return Response.json({ uuid: actor.uuid, name: actor.name, role: actor.role, permissions: permissions(actor.role) }, { headers: noStore });
   const route = routes[`${method} ${path}`];
   if (!route) return fail(404, 'Неизвестный запрос.');
+  // Non-staff are refused before the body is read and never reach the audit log, so they cannot grow it.
+  if (!actor.role) return fail(403, 'Нет доступа.');
   let body: any, result: any;
   try {
+    if (!can(actor.role, route.permission)) throw fail(403, 'Недостаточно прав.');
     if (method !== 'GET') body = await readJson(context.request, 65_536);
-    if (!can(actor.role, route.permission)) throw fail(403, actor.role ? 'Недостаточно прав.' : 'Нет доступа.');
     result = await route.handler({ context, actor, store, body });
     if (method !== 'GET') record(store, actor, route, body, result, null);
     return Response.json(result, { headers: noStore });
   } catch (thrown) {
     const error = thrown instanceof StatsError ? fail(thrown.status, thrown.message) : thrown;
-    if (method !== 'GET') record(store, actor, route, body, result, error instanceof Response ? await error.clone().json().then(d => d.error, () => 'error') : 'internal error');
+    const message = error instanceof Response ? await error.clone().json().then(d => d.error, () => 'error') : 'internal error';
+    if (method !== 'GET') record(store, actor, route, body, result, (error as any)?.internal ? `${message} (${(error as any).internal})` : message);
     throw error;
   }
 }
