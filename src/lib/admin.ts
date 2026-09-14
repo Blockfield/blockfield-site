@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { account, drasl, fail, nickname, readJson, token } from './account.ts';
 import { rcon } from './rcon.ts';
 import { currentRooms, roomId } from './rooms.ts';
-import { seasons, statsStore, StatsError, type StatsStore } from './stats.ts';
+import { resolveNames, seasons, statsStore, StatsError, UNKNOWN_PLAYER, type StatsStore } from './stats.ts';
+import { BALANCE_LABELS, BALANCE_SCOPES } from './game-names.ts';
 
 export const ROLES = ['builder', 'moderator', 'admin', 'owner'] as const;
 export type Role = typeof ROLES[number];
@@ -147,8 +148,9 @@ export function validateSettings(body: any) {
       section(values, rules, `баланс ${campaign}`);
       // The mod applies "*" first, then the campaign's own section.
       const merged: any = { ...(balance['*'] as object), ...(values as object) };
-      if (merged.min_players_per_team > merged.max_players_per_team) throw bad(`Баланс ${campaign}: min_players_per_team больше max_players_per_team.`);
-      if (merged.base_kill_radius > merged.base_warn_radius) throw bad(`Баланс ${campaign}: base_kill_radius больше base_warn_radius.`);
+      const scope = BALANCE_SCOPES.find(s => s.id === campaign)?.name ?? 'Другая кампания';
+      if (merged.min_players_per_team > merged.max_players_per_team) throw bad(`${scope}: «${BALANCE_LABELS.min_players_per_team}» больше, чем «${BALANCE_LABELS.max_players_per_team}».`);
+      if (merged.base_kill_radius > merged.base_warn_radius) throw bad(`${scope}: «${BALANCE_LABELS.base_kill_radius}» больше, чем «${BALANCE_LABELS.base_warn_radius}».`);
     }
     out.campaignBalance = balance;
   }
@@ -249,6 +251,21 @@ async function syncWorkshop(store: StatsStore, actor: Actor, resolve = ownerName
   return { id, members };
 }
 
+/**
+ * Players banned through the site: the latest successful ban/pardon per nickname in the audit log.
+ * ponytail: bans made in-game or older than the newest 10 000 audit rows are not listed (RCON `banlist` output has no separators to parse); «Разбанить по нику» covers them.
+ */
+export function siteBans(store: StatsStore) {
+  const rows = store.db.prepare(`SELECT action,target,actor_name actorName,at,detail FROM admin_audit WHERE ok=1 AND action IN ('rcon:ban','rcon:pardon') AND target IS NOT NULL ORDER BY id`).all() as any[];
+  const latest = new Map<string, any>();
+  for (const row of rows) latest.set(String(row.target).toLowerCase(), row);
+  return [...latest.values()].filter(r => r.action === 'rcon:ban').reverse().map(r => {
+    let reason = '';
+    try { reason = String(JSON.parse(r.detail)?.reason ?? ''); } catch {}
+    return { player: r.target as string, by: r.actorName as string, at: r.at as number, reason };
+  });
+}
+
 type Handler = (args: { context: APIContext; actor: Actor; store: StatsStore; body: any }) => Promise<unknown> | unknown;
 type Route = { permission: string; handler: Handler; audit?: (body: any, result: any) => { action: string; target?: string | null; detail?: unknown } };
 const page = (url: URL) => { const n = Number(url.searchParams.get('page') || '1'); if (!Number.isSafeInteger(n) || n < 1 || n > 1000) throw bad('Некорректная страница.'); return n; };
@@ -269,23 +286,27 @@ const routes: Record<string, Route> = {
     if (!can(actor.role, permission)) throw fail(403, 'Недостаточно прав.');
     const env = process.env;
     if (!env.BLOCKFIELD_RCON_HOST || !env.BLOCKFIELD_RCON_PASSWORD) throw fail(503, 'RCON не настроен на сайте.');
+    // Room ids are not meaningful to people: keep the room's name and map for the audit log.
+    const found = body.action === 'stop-room' ? (await currentRooms()).rooms.find(r => r.id === body.roomId) : undefined;
+    const room = found ? { name: found.name, map: found.map } : undefined;
     const outputs = await rcon(commands, { host: env.BLOCKFIELD_RCON_HOST, port: Number(env.BLOCKFIELD_RCON_PORT || 25575), password: env.BLOCKFIELD_RCON_PASSWORD })
       .catch((error: Error) => { console.error('RCON failed', error.message); throw hidden(502, 'Игровой сервер не отвечает.', error.message); });
     const output = stripColors(outputs.at(-1) ?? '');
     const rejected = outputs.map(stripColors).find(rejectedByServer);
     if (rejected !== undefined) throw fail(502, `Сервер не принял команду: ${rejected.slice(0, 200)}`);
-    return { output, players: body.action === 'list' ? (output.split(':')[1] ?? '').split(',').map(s => s.trim()).filter(Boolean) : undefined };
-  }, audit: (body, result) => ({ action: `rcon:${body?.action}`, target: body?.player ?? body?.roomId ?? body?.classId ?? body?.op ?? null, detail: { ...body, output: result?.output?.slice(0, 500) } }) },
+    return { output, room, players: body.action === 'list' ? (output.split(':')[1] ?? '').split(',').map(s => s.trim()).filter(Boolean) : undefined };
+  }, audit: (body, result) => ({ action: `rcon:${body?.action}`, target: body?.player ?? body?.roomId ?? body?.classId ?? body?.op ?? null, detail: { ...body, room: result?.room, output: result?.output?.slice(0, 500) } }) },
+  'GET bans': { permission: 'ban', handler: ({ store }) => ({ bans: siteBans(store) }) },
   'GET settings': { permission: 'settings', handler: () => ({ ...readSettings(settingsDir()), balance: BALANCE }) },
   'PUT settings': { permission: 'settings', handler: ({ actor, body }) => ({ settings: saveSettings(settingsDir(), body, actor.name) }),
     audit: (body, result) => ({ action: 'settings', target: result?.settings ? `revision ${result.settings.revision}` : null, detail: body }) },
-  'GET staff': { permission: 'roles', handler: async ({ store }) => {
+  'GET staff': { permission: 'roles', handler: async ({ actor, store }) => {
     const ids = owners();
     await Promise.all([...ids].map(uuid => ownerName(uuid).catch(() => null)));
     const last = (store.auditLog(200) as any[]).find(e => e.action === 'workshop-sync' && e.ok && e.target);
     const lastSync = last ? { id: last.target, at: last.at, result: readFile(join(adminDir(), 'results', `${last.target}.json`)) } : null;
-    const name = (uuid: string) => ownerNames.get(uuid) ?? knownName(store, uuid);
-    return { owners: [...ids].map(uuid => ({ uuid, name: name(uuid) ?? `Владелец ${uuid.slice(0, 8)}` })), staff: store.staff(), workshop: readFile(join(adminDir(), 'members.json')),
+    const name = (uuid: string) => ownerNames.get(uuid) ?? knownName(store, uuid) ?? (uuid === actor.uuid ? actor.name : null);
+    return { owners: [...ids].map(uuid => ({ uuid, name: name(uuid) ?? UNKNOWN_PLAYER })), staff: store.staff(), workshop: readFile(join(adminDir(), 'members.json')),
       expected: workshopMembers(store.staff(), new Map([...ids].map(uuid => [uuid, name(uuid) ?? '']))), lastSync };
   } },
   'POST staff': { permission: 'roles', handler: async ({ actor, store, body }) => {
@@ -298,11 +319,15 @@ const routes: Record<string, Route> = {
     return { uuid: target.uuid, name: target.name, role: body.role, sync };
   }, audit: (body, result) => ({ action: body?.role === null ? 'role-revoke' : 'role-grant', target: result?.uuid ?? body?.uuid ?? body?.name ?? null, detail: { name: result?.name ?? body?.name, role: body?.role, sync: result?.sync } }) },
   'POST staff/sync': { permission: 'workshop', handler: async ({ actor, store }) => syncWorkshop(store, actor), audit: (_, result) => ({ action: 'workshop-sync', target: result?.id ?? null, detail: { members: result?.members } }) },
-  'GET results': { permission: 'stats', handler: ({ context, store }) => store.results(context.url.searchParams.get('mode') || null, page(context.url)) },
+  'GET results': { permission: 'stats', handler: async ({ context, store }) => {
+    const load = () => store.results(context.url.searchParams.get('mode') || null, page(context.url)), data = load();
+    const unknown = data.results.flatMap(r => r.players.filter(p => p.name === UNKNOWN_PLAYER).map(p => p.uuid));
+    return unknown.length && (await resolveNames(store, unknown)).size ? load() : data;
+  } },
   'POST results/void': { permission: 'stats', handler: ({ actor, store, body }) => {
     if (!UUID.test(body?.serverId) || !UUID.test(body?.eventId) || typeof body.voided !== 'boolean') throw bad('Некорректный результат.');
     return store.setVoided(body.serverId, body.eventId, body.voided ? actor.name : null);
-  }, audit: body => ({ action: body?.voided ? 'result-void' : 'result-restore', target: `${body?.serverId}/${body?.eventId}` }) },
+  }, audit: (body, result) => ({ action: body?.voided ? 'result-void' : 'result-restore', target: `${body?.serverId}/${body?.eventId}`, detail: result?.match }) },
   'GET keys': { permission: 'stats', handler: ({ store }) => ({ keys: store.ingestKeys() }) },
   'POST keys': { permission: 'stats', handler: ({ store, body }) => {
     if (!UUID.test(body?.serverId)) throw bad('ID сервера — UUID.');

@@ -1,6 +1,16 @@
 # Admin panel (`/admin`)
 
-Staff page of the site: controller status and server mode, live moderation over RCON, persistent game settings, staff roles (and the workshop member list derived from them), statistics administration and an audit log. Code: `src/lib/admin.ts` (roles, validation, API), `src/lib/rcon.ts`, `src/pages/api/admin/[...path].ts`, `src/pages/admin.astro`; storage in the statistics DB (`src/lib/stats.ts`, schema v4). Tests: `test/admin.test.mjs`, `test/rcon.test.mjs`, `test/stats-admin.test.mjs`.
+Staff page of the site: controller status and server mode, live moderation over RCON, persistent game settings, staff roles (and the workshop member list derived from them), statistics administration and an audit log. Code: `src/lib/admin.ts` (roles, validation, API), `src/lib/rcon.ts`, `src/pages/api/admin/[...path].ts`, `src/pages/admin.astro`; storage in the statistics DB (`src/lib/stats.ts`, schema v4). Tests: `test/admin.test.mjs`, `test/rcon.test.mjs`, `test/stats-admin.test.mjs`, `test/names.test.mjs`.
+
+## Interface
+
+The page is written for people who do not know the internals: Russian sentences, no UUIDs, request ids, revisions, class/campaign ids, balance keys or command strings. Tabs are grouped by task and only those the role can use are shown: «Обзор» (server state in words, mode switch, message, range, maintenance), «Игроки» (online list with kick / remove from match / ban, announcement, actions by nickname, players banned through the site), «Матчи» (room cards, «Завершить матч» with draw / red / blue / no outcome), «Настройки игры» (labelled fields with units, ranges and defaults; classes as checkboxes; balance per «Все матчи», «Кампания Центр», «Кампания Юг», «Обычные бои»), «Команда» (role descriptions, add by nickname, workshop access), «Статистика» (readable match rows, «Не учитывать матч» / «Вернуть в статистику», ingest keys under «Для разработчиков»), «Журнал действий» (sentences with relative time). Every destructive action goes through a native `<dialog>` that says what will happen.
+
+- Display names for class, map, mode and campaign ids, balance labels/groups and the game-file balance defaults live in `src/lib/game-names.ts`, a hand-kept copy of `blockfield-modpack/server/lobby/blockfield/{classes,campaigns,maps,modes}`. Update it when the modpack adds content; unknown ids show a neutral label and are preserved on save. A test checks that every `BALANCE` key has a label and a default.
+- Read-only API additions: `GET bans` (`ban`): the latest successful site ban/pardon per nickname from the audit log (in-game bans are not listed; «Разбанить» by nickname covers them). `GET results` rows carry `mapId`, `players:[{uuid,name,team}]` (sorted by score, UUID-like names resolved or «Неизвестный игрок») and `winnerName`. `POST rcon` `stop-room` returns and audits the room's name and map; `POST results/void` audits the match mode, map and time. `overview.rooms.online` is the proxy's online count when it reports one.
+- Settings keep "absent = server default" for every field: empty number fields, «По умолчанию» selects (including lobby PvP) and an untouched class list are not written (`src/lib/settings-form.ts`, tested). Defaults are named in the hint, never as placeholders.
+- All times on the site are UTC and labelled; relative times («5 минут назад») are used in lists.
+- Owner rows fall back to the Drasl name, then the last known profile name, then the signed-in owner's own name, then «Неизвестный игрок».
 
 ## Roles
 

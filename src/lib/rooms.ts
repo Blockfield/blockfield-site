@@ -12,7 +12,8 @@ export function validBattle(battle: any): boolean {
 export type Room = { id: string; name: string; mode: string; map: string; phase: string; players: number; joinable: boolean; battle?: Battle | null };
 // available — игровой сервер отвечает; lobby — прокси с лобби отвечает (при рестарте игрового сервера туда можно зайти).
 export type Maintenance = { message: string; since: number | null };
-export type RoomStatus = { available: boolean; checkedAt: number; rooms: Room[]; lobby?: boolean; maintenance?: Maintenance };
+// online — игроков на прокси (все серверы за ним), если прокси отдал это число.
+export type RoomStatus = { available: boolean; checkedAt: number; rooms: Room[]; lobby?: boolean; online?: number; maintenance?: Maintenance };
 export const maintenanceMessage = 'На сервере проводятся технические работы. Обычный вход временно недоступен.';
 // Любое значение, кроме валидного mode "game", закрывает вход (fail closed).
 export function maintenanceFrom(value: any): Maintenance | null {
@@ -106,8 +107,12 @@ export function currentRooms(): Promise<RoomStatus> {
     maintenance ? { available: false, checkedAt: Date.now(), rooms: [], maintenance }
       : queryRooms(env.BLOCKFIELD_SERVER_HOST || publicHost, Number(env.BLOCKFIELD_SERVER_PORT || 25565))
         .catch((): RoomStatus => ({ available: false, checkedAt: Date.now(), rooms: [] })),
-    queryStatus(env.BLOCKFIELD_LOBBY_HOST || publicHost, Number(env.BLOCKFIELD_LOBBY_PORT || 25565)).then(() => true, () => false),
+    queryStatus(env.BLOCKFIELD_LOBBY_HOST || publicHost, Number(env.BLOCKFIELD_LOBBY_PORT || 25565)).then(status => status, () => null),
   ]))
-    .then(([rooms, lobby]) => { const value = { ...rooms, lobby }; cache = value; until = Date.now() + 5000; return value; })
+    .then(([rooms, status]) => {
+      const online = status?.players?.online;
+      const value = { ...rooms, lobby: status !== null, ...(Number.isSafeInteger(online) && online >= 0 ? { online } : {}) };
+      cache = value; until = Date.now() + 5000; return value;
+    })
     .finally(() => { inflight = undefined; });
 }

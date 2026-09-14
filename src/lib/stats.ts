@@ -145,6 +145,7 @@ export class StatsStore {
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number };
     if (![0, 1, 2, 3, 4].includes(version.user_version)) { this.db.close(); throw new Error('Unsupported statistics schema; restore/migrate explicitly'); }
     this.db.function('season_at', (time: any) => seasonAt(Number(time)).id);
+    this.db.function('uuid_like', { deterministic: true }, (name: any) => (uuidLike(String(name)) ? 1 : 0));
     const columns = (table: string) => (this.db.prepare('SELECT name FROM pragma_table_info(?)').all(table) as { name: string }[]).map(c => c.name);
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -213,7 +214,11 @@ export class StatsStore {
       }
       this.db.prepare('INSERT INTO results (server_id,event_id,kind,mode,campaign_id,ended_at,reason,winner,digest,payload) VALUES (?,?,?,?,?,?,?,?,?,?)').run(result.serverId, result.eventId, result.kind, result.modeId, result.campaignSessionId, Date.parse(result.endedAt), result.endReason, result.winner, digest, payload);
       const participant = this.db.prepare('INSERT INTO participants VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-      const profile = this.db.prepare('INSERT INTO profiles VALUES (?,?,?) ON CONFLICT(uuid) DO UPDATE SET name=excluded.name,last_seen=excluded.last_seen WHERE excluded.last_seen>=profiles.last_seen');
+      // The mod sends the UUID as the name when it does not know the nickname: a real name always wins over a UUID-like one, regardless of order.
+      const profile = this.db.prepare(`INSERT INTO profiles VALUES (?,?,?) ON CONFLICT(uuid) DO UPDATE SET
+        name=CASE WHEN uuid_like(excluded.name) AND NOT uuid_like(profiles.name) THEN profiles.name
+          WHEN excluded.last_seen>=profiles.last_seen OR uuid_like(profiles.name) THEN excluded.name ELSE profiles.name END,
+        last_seen=MAX(profiles.last_seen,excluded.last_seen)`);
       const cls = this.db.prepare('INSERT INTO classes VALUES (?,?,?,?,?,?,?,?,?)');
       for (const p of result.participants) {
         profile.run(p.uuid, p.name, Date.parse(result.endedAt));
@@ -280,7 +285,7 @@ export class StatsStore {
       // seasonAt generates seasons up to endedAt, which may be a few minutes ahead of now (and of the current season).
       const result: Result = JSON.parse(row.payload), season = rated(result) ? seasonAt(Date.parse(result.endedAt)) : null;
       if (season) this.rebuildRatings(season);
-      this.db.exec('COMMIT'); return { rebuilt: season?.id ?? null };
+      this.db.exec('COMMIT'); return { rebuilt: season?.id ?? null, match: { kind: result.kind, mode: result.modeId, mapId: result.mapId, endedAt: Date.parse(result.endedAt) } };
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   results(mode: string | null, page: number, limit = 25) {
@@ -288,11 +293,21 @@ export class StatsStore {
     const rows = this.db.prepare(`SELECT server_id serverId,event_id eventId,kind,mode,ended_at endedAt,reason,winner,voided_at voidedAt,voided_by voidedBy,payload
       FROM results WHERE (? IS NULL OR mode=?) ORDER BY ended_at DESC,server_id,event_id LIMIT ? OFFSET ?`).all(mode, mode, limit, (page - 1) * limit) as any[];
     const { total } = this.db.prepare('SELECT COUNT(*) total FROM results WHERE (? IS NULL OR mode=?)').get(mode, mode) as { total: number };
+    const known = this.db.prepare('SELECT name FROM profiles WHERE uuid=?');
     return { total, page, limit, results: rows.map(({ payload, ...row }) => {
-      const participants: Participant[] = JSON.parse(payload).participants;
-      return { ...row, rated: rated(JSON.parse(payload)), participants: participants.length, names: participants.slice(0, 12).map(p => `${p.name}${p.team === 'NONE' ? '' : ` (${p.team})`}`) };
+      const result: Result = JSON.parse(payload), name = (p: Participant) => (known.get(p.uuid) as { name: string } | undefined)?.name ?? p.name;
+      const players = [...result.participants].sort((a, b) => b.score - a.score);
+      return { ...row, rated: rated(result), mapId: result.mapId, participants: players.length, winnerName: result.winnerUuid ? displayName(name(players.find(p => p.uuid === result.winnerUuid)!)) : null,
+        players: players.slice(0, 12).map(p => ({ uuid: p.uuid, name: displayName(name(p)), team: p.team })) };
     }) };
   }
+  /** Profiles whose stored name is a UUID (see ingest), among `uuids`. */
+  unnamed(uuids: string[]): string[] {
+    const row = this.db.prepare('SELECT 1 FROM profiles WHERE uuid=? AND uuid_like(name)');
+    return [...new Set(uuids)].filter(uuid => row.get(uuid));
+  }
+  /** Stores a resolved nickname only over a UUID-like name, so a newer real name from ingest is never overwritten. */
+  rename(uuid: string, name: string) { this.db.prepare('UPDATE profiles SET name=? WHERE uuid=? AND uuid_like(name)').run(name, uuid); }
   createIngestKey(serverId: string, label: string): string {
     const key = randomBytes(32).toString('base64url');
     this.db.prepare('INSERT INTO ingest_keys VALUES (?,?,?,?,NULL)').run(serverId, sha256(key).toString('hex'), label, Date.now());
@@ -367,6 +382,37 @@ export class StatsStore {
       mmr: rating ? mmr(rating) : null, ratingHistory, ratingStatus: RULES_VERSION };
   }
 }
+export const UNKNOWN_PLAYER = 'Неизвестный игрок';
+export const uuidLike = (name: string) => /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(name.trim());
+export const displayName = (name: string | null | undefined) => (!name || uuidLike(name) ? UNKNOWN_PLAYER : name);
+
+const lookups = new Map<string, Promise<string | null>>();
+const missed = new Map<string, number>();
+/**
+ * Resolves UUID-like profile names through Drasl and caches hits into `profiles.name`. Waits at most `budgetMs`;
+ * slower lookups keep running and still update the DB for the next render. Misses are not retried for 10 minutes.
+ * Returns the names resolved within the budget.
+ */
+export async function resolveNames(store: StatsStore, uuids: string[], budgetMs = 1500, fetcher: typeof fetch = fetch): Promise<Map<string, string>> {
+  const base = (process.env.DRASL_URL || 'https://skins.blockfield.pro').replace(/\/+$/, ''), now = Date.now(), found = new Map<string, string>();
+  const pending = store.unnamed(uuids).filter(uuid => (missed.get(uuid) ?? 0) < now).slice(0, 50).map(uuid => {
+    let lookup = lookups.get(uuid);
+    if (!lookup) {
+      lookup = fetcher(`${base}/session/minecraft/profile/${uuid.replaceAll('-', '')}`, { signal: AbortSignal.timeout(10_000) })
+        .then(r => (r.ok ? r.json() : null)).then(data => (typeof data?.name === 'string' && /^[A-Za-z0-9_]{3,16}$/.test(data.name) ? data.name : null), () => null)
+        .then(name => { if (name) store.rename(uuid, name); else missed.set(uuid, Date.now() + 600_000); return name; })
+        .catch(() => null).finally(() => lookups.delete(uuid));
+      lookups.set(uuid, lookup);
+    }
+    return lookup.then(name => { if (name) found.set(uuid, name); });
+  });
+  if (!pending.length) return found;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([Promise.all(pending), new Promise(resolve => { timer = setTimeout(resolve, budgetMs); })]);
+  clearTimeout(timer);
+  return new Map(found);
+}
+
 let singleton: StatsStore | undefined;
 export function statsStore(): StatsStore {
   if (singleton) return singleton;
@@ -431,9 +477,19 @@ export async function handleStatsRequest(request: Request, dependencies?: { stor
     if (request.method !== 'GET') return Response.json({ error: 'Method not allowed' }, { status: 405, headers: { ...headers, Allow: 'GET' } });
     if (path === '/api/stats/seasons') { const list = seasons(); return Response.json({ schemaVersion: 1, current: list.at(-1)?.id ?? null, seasons: list }, { headers }); }
     const query = filters(url.searchParams);
-    if (path === '/api/stats/leaderboard') return Response.json((dependencies?.store ?? statsStore()).leaderboard(query), { headers });
+    const store = dependencies?.store ?? statsStore();
+    // Clients (site, launcher) show `name` as is, so a UUID-like name is resolved or replaced here.
+    const named = async <T extends { uuid: string; name: string }>(rows: T[]) => {
+      const names = await resolveNames(store, rows.filter(r => uuidLike(r.name)).map(r => r.uuid));
+      for (const row of rows) row.name = displayName(names.get(row.uuid) ?? row.name);
+    };
+    if (path === '/api/stats/leaderboard') { const board = store.leaderboard(query); await named(board.players); return Response.json(board, { headers }); }
     const player = /^\/api\/stats\/players\/([^/]+)$/.exec(path);
-    if (player) return Response.json((dependencies?.store ?? statsStore()).player(player[1], query), { headers });
+    if (player) {
+      const data = store.player(player[1], query) as any;
+      await named([data.profile, ...(data.totals ? [data.totals] : [])]);
+      return Response.json(data, { headers });
+    }
     throw new StatsError(404, 'Unknown statistics endpoint');
   } catch (error) {
     if (!(error instanceof StatsError)) console.error('Statistics storage operation failed', error instanceof Error ? error.message : 'unknown');

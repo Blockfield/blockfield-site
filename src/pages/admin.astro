@@ -7,491 +7,970 @@ import '@fontsource/ibm-plex-mono/500.css';
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Админка — Blockfield</title>
+    <title>Панель управления — Blockfield</title>
     <meta name="robots" content="noindex" />
     <meta name="theme-color" content="#070604" />
     <link rel="icon" href="/logo.svg" type="image/svg+xml" />
   </head>
   <body>
+    <a class="skip" href="#content">Перейти к содержимому</a>
     <header>
       <a class="brand" href="/" aria-label="Blockfield — главная"><img src="/logo.svg" width="40" height="40" alt="" />BLOCKFIELD</a>
-      <a href="/account">Аккаунт</a>
+      <nav aria-label="Сайт"><a href="/leaderboard">Лидерборд</a><a href="/account">Аккаунт</a></nav>
     </header>
-    <main>
-      <p class="eyebrow">Blockfield staff</p>
-      <h1>Админка</h1>
-      <p id="admin-status" role="status">Проверяем доступ…</p>
-      <nav id="nav" aria-label="Разделы" hidden></nav>
+    <main id="content">
+      <div class="top">
+        <p class="eyebrow">Панель управления</p>
+        <h1>Сервер Blockfield</h1>
+        <p id="whoami" role="status">Проверяем доступ…</p>
+      </div>
+      <nav id="tabs" class="tabs" aria-label="Разделы панели" hidden></nav>
 
-      <section id="status" class="panel" data-perm="view" hidden aria-labelledby="status-title">
-        <h2 id="status-title"><span class="num">01</span>Статус и режим</h2>
-        <dl id="status-list" class="facts"></dl>
-        <div data-perm="mode" class="stack">
-          <div class="actions">
-            <button type="button" data-mode="game">Игровой режим</button>
-            <button type="button" data-mode="workshop">Мастерская</button>
-          </div>
-          <label class="choice" data-perm="recover"><input id="recover" type="checkbox" /> Восстановление (только в игровой режим)</label>
+      <section id="overview" data-perm="view" data-tab="Обзор" hidden aria-labelledby="overview-title">
+        <h2 id="overview-title" tabindex="-1">Обзор</h2>
+        <div id="server-card" class="hero" data-tone="wait">
+          <span class="dot" aria-hidden="true"></span>
+          <div><p class="headline" id="server-headline">Загружаем состояние сервера…</p><p id="server-detail" class="muted"></p></div>
         </div>
-        <form id="message-form" data-perm="message">
-          <label>Сообщение игрокам на время техработ или мастерской
-            <input name="message" maxlength="200" required />
-          </label>
-          <button type="submit">Отправить сообщение</button>
-        </form>
-        <p class="form-status" id="request-status" role="status"></p>
-      </section>
-
-      <section id="rooms" class="panel" data-perm="view" hidden aria-labelledby="rooms-title">
-        <h2 id="rooms-title"><span class="num">02</span>Комнаты и игроки</h2>
-        <div id="room-list" class="list"></div>
-        <div data-perm="moderate" class="stack">
-          <button type="button" id="list-players">Показать игроков онлайн</button>
-          <ul id="player-list" class="list"></ul>
+        <div class="cards">
+          <article class="card" data-perm="mode" aria-labelledby="mode-title">
+            <h3 id="mode-title">Режим сервера</h3>
+            <p class="muted">Кто может зайти на сервер. Переключение перезапускает сервер.</p>
+            <div id="mode-options" class="options"></div>
+            <p class="form-status" id="mode-status" role="status"></p>
+          </article>
+          <article class="card" data-perm="message" aria-labelledby="message-title">
+            <h3 id="message-title">Сообщение для игроков</h3>
+            <p class="muted">Игроки видят его при входе, когда сервер закрыт на техработы или открыта мастерская.</p>
+            <form id="message-form">
+              <label for="message">Текст сообщения</label>
+              <textarea id="message" name="message" maxlength="200" rows="3" required aria-describedby="message-hint"></textarea>
+              <small id="message-hint">До 200 символов. Например: «Обновляем карты, вернёмся к 20:00».</small>
+              <button class="primary" type="submit">Сохранить сообщение</button>
+              <p class="form-status" role="status"></p>
+            </form>
+          </article>
+          <article class="card" data-perm="moderate" aria-labelledby="range-title">
+            <h3 id="range-title">Полигон</h3>
+            <p class="muted">Тренировочная площадка в лобби, где игроки пристреливают оружие.</p>
+            <div class="actions">
+              <button type="button" data-range="open">Открыть</button>
+              <button type="button" data-range="close">Закрыть</button>
+              <button type="button" data-range="reset">Сбросить</button>
+            </div>
+            <p class="form-status" id="range-status" role="status"></p>
+          </article>
+          <article class="card warn" data-perm="maintenance" aria-labelledby="maint-title">
+            <h3 id="maint-title">Техработы и аварии</h3>
+            <p class="muted">Когда нужно срочно освободить сервер. Обычно достаточно включить мастерскую — она сама дождётся конца матчей.</p>
+            <div class="actions">
+              <button type="button" id="drain">Не начинать новые матчи</button>
+              <button type="button" id="interrupt" class="danger">Прервать все матчи</button>
+            </div>
+            <p class="form-status" id="maint-status" role="status"></p>
+          </article>
         </div>
       </section>
 
-      <section id="moderation" class="panel" data-perm="moderate" hidden aria-labelledby="moderation-title">
-        <h2 id="moderation-title"><span class="num">03</span>Модерация</h2>
-        <form data-rcon="say">
-          <label>Объявление в чат<input name="text" maxlength="120" required /></label>
-          <button type="submit">Отправить</button>
-        </form>
-        <form data-rcon="player">
-          <label>Никнейм<input name="player" required pattern="[A-Za-z0-9_]{3,16}" autocomplete="off" /></label>
-          <label>Причина<input name="reason" maxlength="120" /></label>
-          <div class="actions">
-            <button type="submit" value="kick">Кикнуть</button>
-            <button type="submit" value="team-kick">Убрать из команды</button>
-            <button type="submit" value="ban" data-perm="ban">Забанить</button>
-            <button type="submit" value="pardon" data-perm="ban">Разбанить</button>
-          </div>
-        </form>
-        <form data-rcon="class">
-          <label>ID класса<input name="classId" required pattern="[a-z0-9_]{1,32}" autocomplete="off" /></label>
-          <div class="actions">
-            <button type="submit" value="class-lock">Закрыть класс</button>
-            <button type="submit" value="class-unlock">Открыть класс</button>
-          </div>
-        </form>
-        <form data-rcon="range">
-          <p class="label">Полигон</p>
-          <div class="actions">
-            <button type="submit" value="open">Открыть</button>
-            <button type="submit" value="close">Закрыть</button>
-            <button type="submit" value="reset">Сбросить</button>
-          </div>
-        </form>
-        <form data-rcon="maintenance" data-perm="maintenance">
-          <p class="label">Техработы</p>
-          <label>Причина прерывания<input name="reason" maxlength="120" /></label>
-          <div class="actions">
-            <button type="submit" value="maintenance-status">Статус</button>
-            <button type="submit" value="drain">Закрыть новые комнаты</button>
-            <button type="submit" value="interrupt" class="danger">Прервать все матчи</button>
-          </div>
-        </form>
-        <pre id="rcon-output" aria-live="polite"></pre>
+      <section id="players" data-perm="moderate" data-tab="Игроки" hidden aria-labelledby="players-title">
+        <h2 id="players-title" tabindex="-1">Игроки</h2>
+        <div class="cards">
+          <article class="card wide" aria-labelledby="online-title">
+            <div class="card-head"><h3 id="online-title">Сейчас на сервере</h3><button type="button" id="online-refresh" class="small">Обновить</button></div>
+            <p id="online-summary" class="muted" role="status">Загружаем список…</p>
+            <ul id="online-list" class="rows"></ul>
+          </article>
+          <article class="card" aria-labelledby="say-title">
+            <h3 id="say-title">Объявление всем</h3>
+            <p class="muted">Сообщение сразу появится в чате у всех, кто сейчас на сервере.</p>
+            <form id="say-form">
+              <label for="say-text">Текст объявления</label>
+              <input id="say-text" name="text" maxlength="120" required autocomplete="off" />
+              <button class="primary" type="submit">Отправить всем</button>
+              <p class="form-status" role="status"></p>
+            </form>
+          </article>
+          <article class="card" aria-labelledby="byname-title">
+            <h3 id="byname-title">Найти по никнейму</h3>
+            <p class="muted" id="byname-about">Если игрока нет в списке — например, чтобы забанить или разбанить его, пока он не в сети.</p>
+            <form id="byname-form">
+              <label for="byname">Никнейм игрока</label>
+              <input id="byname" name="player" required pattern="[A-Za-z0-9_]{3,16}" autocomplete="off" aria-describedby="byname-hint" />
+              <small id="byname-hint">Как в игре: латинские буквы, цифры и _, от 3 до 16 символов.</small>
+              <div class="actions">
+                <button type="submit" value="kick">Выгнать</button>
+                <button type="submit" value="ban" data-perm="ban" class="danger">Забанить</button>
+                <button type="submit" value="pardon" data-perm="ban">Разбанить</button>
+              </div>
+              <p class="form-status" role="status"></p>
+            </form>
+          </article>
+          <article class="card wide" data-perm="ban" aria-labelledby="bans-title">
+            <h3 id="bans-title">Забаненные игроки</h3>
+            <p class="muted">Кого забанили через эту панель. Забаненных командой в игре разбаньте через «Найти по никнейму».</p>
+            <ul id="ban-list" class="rows"></ul>
+            <p class="form-status" id="ban-status" role="status"></p>
+          </article>
+        </div>
       </section>
 
-      <section id="settings" class="panel" data-perm="settings" hidden aria-labelledby="settings-title">
-        <h2 id="settings-title"><span class="num">04</span>Настройки</h2>
-        <p id="settings-state"></p>
+      <section id="matches" data-perm="view" data-tab="Матчи" hidden aria-labelledby="matches-title">
+        <h2 id="matches-title" tabindex="-1">Матчи</h2>
+        <p class="muted">Комнаты, которые сейчас открыты на сервере. Список обновляется сам.</p>
+        <p class="form-status" id="room-status" role="status"></p>
+        <div id="room-list" class="cards"></div>
+      </section>
+
+      <section id="settings" data-perm="settings" data-tab="Настройки игры" hidden aria-labelledby="settings-title">
+        <h2 id="settings-title" tabindex="-1">Настройки игры</h2>
+        <p class="muted">Пустое поле или «По умолчанию» не сохраняется: сервер использует своё значение, оно написано под полем.</p>
+        <p id="settings-state" class="banner" role="status">Загружаем настройки…</p>
         <form id="settings-form">
-          <fieldset>
+          <fieldset class="card">
             <legend>Лобби</legend>
-            <label class="choice"><input type="checkbox" name="pvpEnabled" /> PvP в лобби</label>
-            <label>Перезарядка PvP, с (0–600)<input type="number" name="pvpCooldownSeconds" min="0" max="600" /></label>
+            <div class="fields">
+              <div class="field">
+                <label for="pvp">PvP в лобби</label>
+                <select id="pvp" name="pvpEnabled" aria-describedby="pvp-hint"><option value="">По умолчанию (включено)</option><option value="true">Включено</option><option value="false">Выключено</option></select>
+                <small id="pvp-hint">«По умолчанию» — решает сервер, обычно PvP включено. При смене у всех в лобби PvP сбросится в «выключено».</small>
+              </div>
+            </div>
+            <div id="lobby-fields" class="fields"></div>
           </fieldset>
-          <fieldset>
+          <fieldset class="card">
             <legend>Комнаты</legend>
-            <label>Максимум комнат (1–16)<input type="number" name="maxRooms" min="1" max="16" /></label>
-            <label>Закрыть пустую, с (30–3600)<input type="number" name="idleCloseSeconds" min="30" max="3600" /></label>
-            <label>Закрыть брошенную, с (5–600)<input type="number" name="abandonCloseSeconds" min="5" max="600" /></label>
+            <div id="room-fields" class="fields"></div>
           </fieldset>
-          <label>Закрытые классы (через запятую)<input name="classLocks" autocomplete="off" /></label>
-          <fieldset>
-            <legend>Баланс всех кампаний</legend>
-            <div id="balance-all" class="grid"></div>
+          <fieldset class="card">
+            <legend>Классы</legend>
+            <p class="muted">Снимите галочку, чтобы закрыть класс. Кто уже играет этим классом, доиграет ещё 3 минуты.</p>
+            <div id="class-list" class="checks"></div>
           </fieldset>
-          <label>Баланс отдельных кампаний, JSON
-            <textarea name="campaignBalance" rows="5" spellcheck="false" aria-describedby="balance-keys"></textarea>
-          </label>
-          <small>Пример: <code>{'{"desert": {"max_tickets": 300, "enable_spawn_shield": false}}'}</code>. Значения поверх общих. <span id="balance-keys"></span></small>
-          <p class="hint">Пустое поле — значение сервера по умолчанию.</p>
-          <button class="primary" type="submit">Сохранить настройки</button>
-          <p class="form-status" role="status"></p>
+          <fieldset class="card">
+            <legend>Баланс матчей</legend>
+            <p class="muted">Пустое поле — значение из файлов игры, оно указано под полем. Идущие матчи не меняются: новые значения действуют со следующего матча.</p>
+            <div class="scope">
+              <label for="scope">Для каких матчей</label>
+              <select id="scope"></select>
+              <small id="scope-hint"></small>
+            </div>
+            <div id="balance-fields"></div>
+          </fieldset>
+          <div class="savebar">
+            <button class="primary" type="submit">Сохранить и применить</button>
+            <p class="form-status" role="status"></p>
+          </div>
         </form>
       </section>
 
-      <section id="roles" class="panel" data-perm="roles" hidden aria-labelledby="roles-title">
-        <h2 id="roles-title"><span class="num">05</span>Роли и мастерская</h2>
-        <div class="table"><table><thead><tr><th>Игрок</th><th>Роль</th><th>Выдал</th><th><span class="sr">Действия</span></th></tr></thead><tbody id="staff-list"></tbody></table></div>
-        <form id="grant-form">
-          <label>Никнейм<input name="nickname" required pattern="[A-Za-z0-9_]{3,16}" autocomplete="off" /></label>
-          <label>Роль<select name="role"></select></label>
-          <button class="primary" type="submit">Выдать роль</button>
-          <p class="form-status" role="status"></p>
-        </form>
-        <div data-perm="workshop" class="stack">
-          <p id="workshop-state"></p>
-          <button type="button" id="sync">Синхронизировать мастерскую</button>
+      <section id="team" data-perm="roles" data-tab="Команда" hidden aria-labelledby="team-title">
+        <h2 id="team-title" tabindex="-1">Команда</h2>
+        <p class="muted">Кто помогает управлять сервером. Каждая следующая роль умеет всё, что предыдущая, и больше.</p>
+        <dl id="role-legend" class="legend"></dl>
+        <ul id="staff-list" class="rows"></ul>
+        <p class="form-status" id="staff-status" role="status"></p>
+        <div class="cards">
+          <article class="card" aria-labelledby="grant-title">
+            <h3 id="grant-title">Добавить в команду</h3>
+            <form id="grant-form">
+              <label for="grant-name">Никнейм игрока</label>
+              <input id="grant-name" name="nickname" required pattern="[A-Za-z0-9_]{3,16}" autocomplete="off" aria-describedby="grant-hint" />
+              <small id="grant-hint">У игрока должен быть аккаунт Blockfield.</small>
+              <fieldset class="plain"><legend>Роль</legend><div id="grant-roles" class="radios"></div></fieldset>
+              <button class="primary" type="submit">Добавить в команду</button>
+              <p class="form-status" role="status"></p>
+            </form>
+          </article>
+          <article class="card" data-perm="workshop" aria-labelledby="ws-title">
+            <h3 id="ws-title">Доступ в мастерскую</h3>
+            <p id="workshop-state" class="muted">Проверяем…</p>
+            <button type="button" id="sync">Обновить доступ</button>
+            <p class="form-status" id="sync-status" role="status"></p>
+          </article>
         </div>
       </section>
 
-      <section id="stats" class="panel" data-perm="stats" hidden aria-labelledby="stats-title">
-        <h2 id="stats-title"><span class="num">06</span>Статистика</h2>
-        <div class="actions">
-          <label>Режим<select id="result-mode"><option value="">Все</option><option value="campaign">Ranked</option><option value="room">Casual</option><option value="deathmatch">Deathmatch</option></select></label>
+      <section id="stats" data-perm="stats" data-tab="Статистика" hidden aria-labelledby="stats-title">
+        <h2 id="stats-title" tabindex="-1">Статистика</h2>
+        <p class="muted">Сыгранные матчи, которые попали в лидерборд (время — UTC). Если матч сыгран нечестно или с ошибкой, его можно не учитывать: он пропадёт из лидерборда и профилей, а рейтинг пересчитается.</p>
+        <div class="scope">
+          <label for="result-mode">Показать</label>
+          <select id="result-mode"><option value="">Все матчи</option><option value="campaign">Ranked-кампании</option><option value="room">Обычные бои</option><option value="deathmatch">Каждый сам за себя</option></select>
         </div>
-        <div class="table"><table><thead><tr><th>Окончен</th><th>Режим</th><th>Итог</th><th>Участники</th><th><span class="sr">Действия</span></th></tr></thead><tbody id="result-list"></tbody></table></div>
-        <div class="actions pager"><button type="button" id="prev">Назад</button><span id="page"></span><button type="button" id="next">Дальше</button></div>
-        <h3>Ключи приёма результатов</h3>
-        <form id="key-form">
-          <label>ID игрового сервера (UUID)<input name="serverId" required autocomplete="off" /></label>
-          <label>Подпись<input name="label" required maxlength="64" /></label>
-          <button type="submit">Создать ключ</button>
-          <p class="form-status" role="status"></p>
-        </form>
-        <div class="table"><table><thead><tr><th>Сервер</th><th>Подпись</th><th>Создан</th><th><span class="sr">Действия</span></th></tr></thead><tbody id="key-list"></tbody></table></div>
+        <p class="form-status" id="result-status" role="status"></p>
+        <ul id="result-list" class="rows"></ul>
+        <div class="actions pager"><button type="button" id="prev" class="small">← Новее</button><span id="page" class="muted"></span><button type="button" id="next" class="small">Старее →</button></div>
         <h3>Сезоны</h3>
-        <ul id="season-list" class="list"></ul>
+        <ul id="season-list" class="plain-list"></ul>
+        <details class="dev">
+          <summary>Для разработчиков: ключи приёма результатов</summary>
+          <p class="muted">Игровой сервер отправляет результаты матчей на сайт с секретным ключом. Создайте ключ, когда подключаете новый игровой сервер, и отзовите его, если он мог попасть в чужие руки. Ключ показывается только один раз.</p>
+          <form id="key-form">
+            <label for="key-server">Идентификатор игрового сервера</label>
+            <input id="key-server" name="serverId" required autocomplete="off" aria-describedby="key-server-hint" />
+            <small id="key-server-hint">Берётся из настроек статистики на игровом сервере.</small>
+            <label for="key-label">Название, чтобы не перепутать</label>
+            <input id="key-label" name="label" required maxlength="64" placeholder="Например: основной сервер" />
+            <button type="submit">Создать ключ</button>
+            <p class="form-status" role="status"></p>
+          </form>
+          <ul id="key-list" class="rows"></ul>
+        </details>
       </section>
 
-      <section id="audit" class="panel" data-perm="audit" hidden aria-labelledby="audit-title">
-        <h2 id="audit-title"><span class="num">07</span>Журнал</h2>
-        <div class="table"><table><thead><tr><th>Когда</th><th>Кто</th><th>Действие</th><th>Цель</th><th>Итог</th></tr></thead><tbody id="audit-list"></tbody></table></div>
+      <section id="journal" data-perm="audit" data-tab="Журнал действий" hidden aria-labelledby="journal-title">
+        <h2 id="journal-title" tabindex="-1">Журнал действий</h2>
+        <p class="muted">Последние действия команды в этой панели.</p>
+        <ul id="audit-list" class="log"></ul>
       </section>
     </main>
+
+    <dialog id="dialog" aria-labelledby="dialog-title" aria-describedby="dialog-text">
+      <form method="dialog">
+        <h2 id="dialog-title"></h2>
+        <p id="dialog-text"></p>
+        <div id="dialog-fields"></div>
+        <div class="actions end">
+          <button type="submit" value="cancel" formnovalidate>Отмена</button>
+          <button type="submit" value="ok" id="dialog-ok" class="primary"></button>
+        </div>
+      </form>
+    </dialog>
+
     <style is:global>
-      :root { color-scheme: dark; font-family: 'Inter Variable', sans-serif; background: #070604; color: #F3E7D0; --mono: 'IBM Plex Mono', ui-monospace, monospace; }
+      :root { color-scheme: dark; font-family: 'Inter Variable', sans-serif; background: #070604; color: #F3E7D0; --line: #2A2116; --panel: #11100D; --muted: #C7AE86; --amber: #F5A524; --red: #FF9D99; --green: #82D66B; }
       * { box-sizing: border-box; }
       body { margin: 0; min-width: 320px; background: radial-gradient(60% 40% at 50% -10%, #1c150a 0%, transparent 100%); }
       [hidden] { display: none !important; }
-      a { color: #F5A524; text-underline-offset: 4px; text-decoration-thickness: 1px; }
+      a { color: var(--amber); text-underline-offset: 4px; text-decoration-thickness: 1px; }
       a:hover { color: #F3E7D0; }
-      a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #F5A524; outline-offset: 3px; }
-      header { max-width: 1200px; margin: 0 auto; padding: 24px clamp(20px, 5vw, 48px); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; border-bottom: 1px solid #2A2116; }
+      :focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
+      h2:focus { outline: none; }
+      .skip { position: absolute; top: -80px; left: 16px; padding: 12px; background: var(--panel); z-index: 5; } .skip:focus { top: 12px; }
+      header { max-width: 1200px; margin: 0 auto; padding: 20px clamp(16px, 5vw, 48px); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px 24px; border-bottom: 1px solid var(--line); }
+      header nav { display: flex; gap: 20px; }
       .brand { display: flex; align-items: center; gap: 12px; color: #F3E7D0; font-weight: 750; text-decoration: none; letter-spacing: .04em; }
-      main { max-width: 1120px; margin: 0 auto; padding: 56px clamp(20px, 5vw, 48px) 96px; display: grid; gap: 24px; }
-      main > p, main > h1 { margin-bottom: 0; }
-      .eyebrow, .label, .num { font-family: var(--mono); font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: #8E7A5E; margin: 0; }
-      .eyebrow { color: #F5A524; margin-bottom: -12px; }
-      .eyebrow::before { content: '// '; color: #5E5040; }
-      h1 { font-size: clamp(38px, 6vw, 64px); line-height: .95; letter-spacing: -.03em; text-transform: uppercase; font-weight: 800; margin: 0; }
-      h2 { font-size: 22px; margin: 0 0 20px; display: flex; align-items: baseline; gap: 12px; }
-      h3 { font-size: 17px; margin: 28px 0 12px; }
-      .num { color: #F5A524; }
-      p, small, dd { color: #C7AE86; line-height: 1.6; }
-      .hint { margin: 0; font-size: 14px; }
-      code, pre { font-family: var(--mono); color: #F3E7D0; background: #18130D; }
-      code { padding: 1px 6px; }
-      pre { padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 16px 0 0; min-height: 0; }
-      pre:empty { display: none; }
-      nav { display: flex; flex-wrap: wrap; gap: 8px 20px; position: sticky; top: 0; z-index: 1; background: #070604e6; padding: 12px 0; border-bottom: 1px solid #2A2116; }
-      .panel { background: #11100D; border: 1px solid #2A2116; padding: clamp(18px, 4vw, 32px); min-width: 0; scroll-margin-top: 64px; }
-      form, .stack { display: grid; gap: 12px; margin-top: 20px; }
-      h2 + form { margin-top: 0; }
-      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-      .grid label { font-weight: 500; font-size: 14px; overflow-wrap: anywhere; }
-      .facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 20px; margin: 0 0 20px; }
-      dt { color: #8E7A5E; font-family: var(--mono); font-size: 13px; }
-      dd { margin: 0; overflow-wrap: anywhere; }
-      label { display: grid; gap: 8px; font-weight: 600; }
-      input:not([type=checkbox]), select, textarea { font: inherit; color: #F3E7D0; background: #070604; border: 1px solid #3A2C1D; padding: 10px 12px; width: 100%; }
-      textarea { font-family: var(--mono); font-size: 14px; resize: vertical; }
-      input:user-invalid { border-color: #FF9D99; }
-      fieldset { border: 1px solid #2A2116; margin: 0; padding: 12px 16px 16px; display: grid; gap: 12px; }
-      legend { color: #C7AE86; padding: 0 6px; }
-      .choice { display: flex; align-items: center; gap: 8px; font-weight: 400; }
-      .choice input { accent-color: #F5A524; width: 18px; height: 18px; margin: 0; }
-      button { font: inherit; font-weight: 700; color: #F3E7D0; background: transparent; border: 1px solid #F5A524; padding: 10px 16px; cursor: pointer; }
+      main { max-width: 1120px; margin: 0 auto; padding: 40px clamp(16px, 5vw, 48px) 96px; display: grid; gap: 24px; }
+      .top { display: grid; gap: 8px; }
+      .eyebrow { font-family: var(--mono, 'IBM Plex Mono', monospace); font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: var(--amber); margin: 0; }
+      h1 { font-size: clamp(32px, 5vw, 48px); line-height: 1.05; letter-spacing: -.025em; font-weight: 800; margin: 0; }
+      h2 { font-size: clamp(24px, 3.5vw, 30px); margin: 0 0 4px; letter-spacing: -.01em; }
+      h3 { font-size: 18px; margin: 0; }
+      p { margin: 0; line-height: 1.55; }
+      .muted, small { color: var(--muted); }
+      small { font-size: 14px; line-height: 1.45; }
+      #whoami { color: var(--muted); }
+      #whoami strong { color: #F3E7D0; }
+      section { display: grid; gap: 16px; min-width: 0; scroll-margin-top: 80px; }
+      .row .actions select { width: auto; min-width: 170px; }
+
+      .tabs { display: flex; gap: 4px; overflow-x: auto; position: sticky; top: 0; z-index: 2; background: #070604f2; border-bottom: 1px solid var(--line); padding: 8px 0; scrollbar-width: thin; }
+      .tabs a { flex: none; padding: 10px 14px; border-radius: 6px; color: var(--muted); text-decoration: none; font-weight: 600; white-space: nowrap; }
+      .tabs a:hover { color: #F3E7D0; background: #1a150e; }
+      .tabs a[aria-current="page"] { color: #070604; background: var(--amber); }
+
+      .hero { display: flex; gap: 16px; align-items: flex-start; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--muted); padding: 20px 22px; border-radius: 8px; }
+      .hero .headline { font-size: clamp(20px, 3vw, 24px); font-weight: 700; }
+      .dot { flex: none; width: 14px; height: 14px; border-radius: 50%; margin-top: 7px; background: var(--muted); }
+      [data-tone="ok"] { border-left-color: var(--green); } [data-tone="ok"] .dot { background: var(--green); box-shadow: 0 0 0 4px #82d66b26; }
+      [data-tone="warn"] { border-left-color: var(--amber); } [data-tone="warn"] .dot { background: var(--amber); }
+      [data-tone="bad"] { border-left-color: var(--red); } [data-tone="bad"] .dot { background: var(--red); }
+
+      .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; }
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: clamp(16px, 3vw, 22px); display: grid; gap: 12px; align-content: start; min-width: 0; margin: 0; }
+      .card.wide { grid-column: 1 / -1; }
+      .card.warn { border-color: #4a3317; }
+      .card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+      fieldset.card { padding-top: 8px; }
+      legend { font-size: 18px; font-weight: 700; padding: 0 6px; margin-left: -6px; }
+      fieldset.plain { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; }
+      fieldset.plain legend { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+
+      form { display: grid; gap: 10px; }
+      label { font-weight: 600; }
+      input:not([type=checkbox]):not([type=radio]), select, textarea { font: inherit; color: #F3E7D0; background: #070604; border: 1px solid #3A2C1D; border-radius: 6px; padding: 10px 12px; width: 100%; min-height: 44px; }
+      textarea { resize: vertical; }
+      input:user-invalid, textarea:user-invalid { border-color: var(--red); }
+      input[type=checkbox], input[type=radio] { accent-color: var(--amber); width: 20px; height: 20px; margin: 0; flex: none; }
+      button { font: inherit; font-weight: 650; color: #F3E7D0; background: transparent; border: 1px solid var(--amber); border-radius: 6px; padding: 10px 16px; min-height: 44px; cursor: pointer; }
       button:hover { background: #2A2116; }
-      button.primary { background: #F5A524; color: #070604; }
+      button.primary { background: var(--amber); color: #070604; }
       button.primary:hover { background: #FFC861; }
-      button.danger { border-color: #FF9D99; color: #FF9D99; }
-      button.small { padding: 6px 10px; font-size: 14px; }
-      button:disabled { opacity: .6; cursor: progress; }
-      form > button, .stack > button { justify-self: start; }
-      .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
-      .pager { margin-top: 12px; align-items: center; }
-      .form-status { margin: 0; min-height: 1.6em; }
-      .error, #admin-status.error { color: #FF9D99; }
-      .ok { color: #82D66B; }
-      .list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
-      .item { border: 1px solid #2A2116; padding: 12px 14px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
-      .item p { margin: 0; }
-      .table { overflow-x: auto; }
-      table { border-collapse: collapse; width: 100%; font-size: 14px; }
-      th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #2A2116; vertical-align: top; }
-      th { font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: .1em; text-transform: uppercase; color: #8E7A5E; }
-      td { color: #C7AE86; overflow-wrap: break-word; }
-      td button, .item button { white-space: nowrap; }
-      tr.voided td { opacity: .55; text-decoration: line-through; }
-      tr.voided td:last-child { opacity: 1; text-decoration: none; }
-      .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+      button.danger { border-color: var(--red); color: var(--red); }
+      button.danger.primary { background: var(--red); color: #070604; }
+      button.small { padding: 6px 12px; min-height: 38px; font-size: 15px; }
+      button:disabled { opacity: .55; cursor: not-allowed; }
+      form > button, .card > button { justify-self: start; }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      .actions.end { justify-content: flex-end; }
+      .form-status { min-height: 0; font-weight: 500; }
+      .form-status:empty { display: none; }
+      .ok { color: var(--green); } .error { color: var(--red); } .pending { color: var(--amber); }
+
+      .options { display: grid; gap: 10px; }
+      .option { border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 8px; }
+      .option[data-current] { border-color: var(--green); background: #82d66b0d; }
+      .option p { color: var(--muted); font-size: 15px; }
+      .option-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; font-weight: 700; }
+      .badge { font-size: 13px; font-weight: 600; padding: 3px 8px; border-radius: 999px; background: #2A2116; color: var(--muted); white-space: nowrap; }
+      .badge.ok { background: #82d66b1f; color: var(--green); } .badge.warn { background: #f5a5241f; color: var(--amber); } .badge.bad { background: #ff9d991f; color: var(--red); }
+
+      .rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+      .row { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
+      .card .row { background: #0b0a08; }
+      .row-main { display: grid; gap: 4px; min-width: 0; flex: 1 1 240px; }
+      .row-main strong { overflow-wrap: anywhere; }
+      .row.voided { opacity: .75; border-style: dashed; }
+      .empty { color: var(--muted); padding: 8px 0; }
+      .team-RED { color: #ff8a80; } .team-BLUE { color: #82b1ff; }
+
+      .room { gap: 14px; }
+      .facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+      .facts dt { color: var(--muted); } .facts dd { margin: 0; font-weight: 600; }
+
+      .banner { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--muted); border-radius: 8px; padding: 14px 16px; }
+      .banner.ok { border-left-color: var(--green); color: #F3E7D0; } .banner.pending { border-left-color: var(--amber); color: #F3E7D0; } .banner.error { border-left-color: var(--red); color: #F3E7D0; }
+      #settings-form { gap: 16px; }
+      .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 16px 20px; }
+      .field { display: grid; gap: 6px; align-content: start; }
+      .unit { display: flex; align-items: stretch; }
+      .unit input { border-top-right-radius: 0 !important; border-bottom-right-radius: 0 !important; }
+      .unit span { display: flex; align-items: center; padding: 0 12px; border: 1px solid #3A2C1D; border-left: 0; border-radius: 0 6px 6px 0; color: var(--muted); background: #0b0a08; white-space: nowrap; font-size: 14px; }
+      .group { display: grid; gap: 12px; padding-top: 16px; border-top: 1px solid var(--line); }
+      .group h4 { margin: 0; font-size: 15px; color: var(--amber); font-weight: 650; }
+      .switch, .check, .radio { display: flex; gap: 10px; align-items: flex-start; font-weight: 600; cursor: pointer; }
+      .switch input, .check input, .radio input { margin-top: 2px; }
+      .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 10px; }
+      .check { border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+      .radios { display: grid; gap: 8px; }
+      .radio { border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+      .radio:has(input:checked) { border-color: var(--amber); }
+      .radio span { display: grid; gap: 2px; } .radio small { font-weight: 400; }
+      .scope { display: grid; gap: 6px; max-width: 420px; }
+      .savebar { position: sticky; bottom: 0; background: #070604f2; border-top: 1px solid var(--line); padding: 12px 0; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; z-index: 1; }
+
+      .legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 10px; margin: 0; }
+      .legend div { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+      .legend dt { font-weight: 700; } .legend dd { margin: 4px 0 0; color: var(--muted); font-size: 15px; line-height: 1.45; }
+
+      .pager { justify-content: space-between; }
+      .plain-list { margin: 0; padding-left: 20px; color: var(--muted); line-height: 1.7; }
+      details.dev { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; display: grid; gap: 12px; }
+      details.dev[open] { display: grid; }
+      details.dev summary { cursor: pointer; font-weight: 600; color: var(--muted); }
+      details.dev > * + * { margin-top: 12px; }
+      .secret { font-family: 'IBM Plex Mono', monospace; background: #18130D; padding: 8px 10px; border-radius: 6px; overflow-wrap: anywhere; color: #F3E7D0; }
+
+      .log { list-style: none; margin: 0; padding: 0; display: grid; }
+      .log li { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+      .log time { color: var(--muted); font-size: 14px; white-space: nowrap; }
+      .log li.failed { border-left: 3px solid var(--red); padding-left: 12px; }
+      .log .fail { color: var(--red); font-weight: 600; }
+
+      dialog { background: var(--panel); color: #F3E7D0; border: 1px solid #5C4526; border-radius: 10px; padding: 0; width: min(520px, calc(100vw - 24px)); }
+      dialog::backdrop { background: #000b; }
+      dialog form { padding: 22px; gap: 14px; }
+      dialog h2 { font-size: 22px; }
+      #dialog-fields { display: grid; gap: 10px; }
+      #dialog-fields:empty { display: none; }
+
       @media (max-width: 600px) {
-        main { padding-top: 40px; } .facts { grid-template-columns: 1fr; } dd { margin-bottom: 6px; }
-        table, tbody, tr, td { display: block; } thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-        tr { padding: 10px 0; border-bottom: 1px solid #2A2116; } td { border: 0; padding: 2px 0; } td:empty { display: none; } td button { margin-top: 6px; }
+        main { padding-top: 28px; gap: 20px; }
+        .tabs { position: static; flex-wrap: wrap; overflow: visible; }
+        .tabs a { padding: 8px 12px; }
+        .log li { grid-template-columns: 1fr; }
+        .row > .actions { width: 100%; }
+        .savebar button { width: 100%; }
       }
     </style>
+
     <script>
-      type Me = { uuid: string; name: string; role: string | null; permissions: string[] };
+      import { BALANCE_DEFAULTS, BALANCE_GROUPS, BALANCE_LABELS, BALANCE_SCOPES, CLASS_NAMES, MAP_NAMES, MODE_NAMES, TEAM_NAMES } from '../lib/game-names';
+      import { settingsBody } from '../lib/settings-form';
+
+      type Me = { name: string; role: string | null; permissions: string[] };
       const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
-      const status = $('#admin-status');
-      const roleNames: Record<string, string> = { builder: 'Строитель', moderator: 'Модератор', admin: 'Администратор', owner: 'Владелец' };
-      const modeNames: Record<string, string> = { campaign: 'Ranked', room: 'Casual', deathmatch: 'Deathmatch' };
+      const ROLES: Record<string, { name: string; about: string }> = {
+        builder: { name: 'Строитель', about: 'Заходит в мастерскую и строит карты. В панели видит состояние сервера и матчи.' },
+        moderator: { name: 'Модератор', about: 'Выгоняет игроков, пишет объявления, завершает матчи, включает мастерскую и управляет полигоном.' },
+        admin: { name: 'Администратор', about: 'Банит, меняет настройки игры, исключает матчи из статистики, видит журнал, добавляет строителей и модераторов.' },
+        owner: { name: 'Владелец', about: 'Полный доступ, в том числе назначение администраторов. Задаётся в настройках сервера.' },
+      };
+      const PHASES: Record<string, string> = { IDLE: 'Ждёт игроков', VOTING: 'Голосование за карту', PREPARING: 'Подготовка к бою', GAME: 'Идёт бой', MATCH_END: 'Подведение итогов' };
+      const OUTCOMES: [string, string, string][] = [
+        ['draw', 'Ничья', 'Никто не побеждает.'], ['RED', 'Победа красных', ''], ['BLUE', 'Победа синих', ''],
+        ['none', 'Без итога', 'Матч просто останавливается, победитель не записывается.'],
+      ];
       let me: Me;
       const can = (permission: string) => me.permissions.includes(permission);
-      const time = (ms: unknown) => (typeof ms === 'number' ? new Date(ms).toLocaleString('ru-RU') : '—');
 
+      // The whole site shows times in UTC (leaderboard and player pages too), always labelled.
+      const dateFormat = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+      const relative = new Intl.RelativeTimeFormat('ru', { numeric: 'auto' });
+      const date = (ms: number) => `${dateFormat.format(ms)} UTC`;
+      function ago(ms: number) {
+        const seconds = (ms - Date.now()) / 1000;
+        for (const [unit, size] of [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]] as const)
+          if (Math.abs(seconds) >= size) return relative.format(Math.round(seconds / size), unit);
+        return 'только что';
+      }
+      const number = (n: number) => n.toLocaleString('ru-RU');
+
+      /** Server errors are mostly Russian already; technical or English ones are replaced with plain words. */
+      function friendly(message: string | undefined, status: number) {
+        const rules: [RegExp, string][] = [
+          [/^Сервер не принял команду/, 'Игровой сервер не выполнил действие. Возможно, игрок уже вышел или матч уже закончился.'],
+          [/^(Недостаточно прав|Нет доступа)/, 'У вашей роли нет прав на это действие.'],
+          [/^RCON не настроен/, 'Управление игровым сервером с сайта не настроено. Сообщите владельцу.'],
+          [/already voided/, 'Этот матч уже не учитывается. Обновите страницу.'], [/is not voided/, 'Этот матч уже учитывается. Обновите страницу.'],
+          [/Result not found/, 'Матч не найден. Обновите страницу.'], [/^Нет ревизии/, 'Состояние сервера изменилось. Обновите страницу и попробуйте снова.'],
+          [/Участник не найден/, 'Этого участника уже нет в команде. Обновите страницу.'],
+        ];
+        if (!message) return status >= 500 ? 'Сайт сейчас не отвечает. Попробуйте через минуту.' : 'Не получилось. Обновите страницу и попробуйте ещё раз.';
+        const rule = rules.find(([pattern]) => pattern.test(message));
+        if (rule) return rule[1];
+        return /[а-яё]/i.test(message) ? message : 'Что-то пошло не так. Обновите страницу и попробуйте ещё раз.';
+      }
       async function api(path: string, method = 'GET', body?: unknown) {
         // Content-Type is sent even without a body: Astro's origin check rejects bodiless non-GET requests behind the proxy.
         const response = await fetch(`/api/admin/${path}`, { method, cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }).catch(() => null);
-        if (!response) throw new Error('Нет связи с сайтом. Проверьте подключение.');
+        if (!response) throw new Error('Нет связи с сайтом. Проверьте интернет и попробуйте ещё раз.');
         const data = await response.json().catch(() => null);
         if (method !== 'GET' && can('audit')) loadAudit().catch(() => {});
-        if (!response.ok) throw new Error(data?.error || 'Не удалось выполнить запрос.');
+        if (!response.ok) throw Object.assign(new Error(friendly(data?.error, response.status)), { raw: data?.error ?? '' });
         return data;
       }
-      function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}, ...children: (Node | string)[]) {
-        const node = Object.assign(document.createElement(tag), props);
-        node.append(...children);
+      function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<string, any> = {}, ...children: (Node | string | null | undefined | false)[]) {
+        const node = document.createElement(tag);
+        for (const [key, value] of Object.entries(props)) {
+          if (key.startsWith('aria') || key.startsWith('data') || key === 'role' || key === 'for') node.setAttribute(key.replace(/^aria([A-Z])/, (_, c) => `aria-${c.toLowerCase()}`).replace(/^data([A-Z])/, (_, c) => `data-${c.toLowerCase()}`), String(value));
+          else (node as any)[key] = value;
+        }
+        node.append(...children.filter((c): c is Node | string => c !== null && c !== undefined && c !== false));
         return node;
       }
-      const button = (text: string, onClick: () => void, className = 'small') => el('button', { type: 'button', className, textContent: text, onclick: onClick });
-      function say(line: HTMLElement, text: string, ok = true) { line.textContent = text; line.className = `form-status ${ok ? 'ok' : 'error'}`; }
-      async function run(line: HTMLElement, action: () => Promise<string | void>, disable: HTMLElement | null = null) {
-        const buttons = disable ? [...disable.querySelectorAll('button')] : [];
+      const button = (text: string, onclick: () => void, className = 'small', label?: string) => el('button', { type: 'button', className, textContent: text, onclick, ...(label ? { ariaLabel: label } : {}) });
+      function say(line: HTMLElement, text: string, tone: 'ok' | 'error' | 'pending' = 'ok') { line.textContent = text; line.classList.remove('ok', 'error', 'pending'); line.classList.add(tone); }
+      /** Runs an action with its buttons disabled and reports progress, success or a friendly error on `line`. */
+      async function run(line: HTMLElement, action: () => Promise<string | void>, scope: HTMLElement | null = null) {
+        const buttons = scope ? [...scope.querySelectorAll('button')].filter(b => !b.disabled) : [];
         buttons.forEach(b => (b.disabled = true));
-        say(line, 'Выполняем…');
-        try { say(line, (await action()) || 'Готово.'); } catch (error) { say(line, (error as Error).message, false); } finally { buttons.forEach(b => (b.disabled = false)); }
+        say(line, 'Выполняем…', 'pending');
+        try { const text = await action(); if (text) say(line, text); else line.textContent = ''; }
+        catch (error) { say(line, (error as Error).message, 'error'); }
+        finally { buttons.forEach(b => (b.disabled = false)); }
       }
 
-      /** Controller requests are applied asynchronously; poll its result file for up to a minute. */
-      async function follow(line: HTMLElement, id: string, label: string) {
-        say(line, `${label}: ожидает контроллер…`);
+      // Accessible confirmation: native <dialog> traps focus, Escape cancels, focus returns to the opener.
+      const dialog = $<HTMLDialogElement>('#dialog');
+      function ask({ title, text, ok, danger = false, fields = [] }: { title: string; text: string; ok: string; danger?: boolean; fields?: Node[] }): Promise<FormData | null> {
+        const opener = document.activeElement as HTMLElement | null;
+        $('#dialog-title').textContent = title; $('#dialog-text').textContent = text;
+        $('#dialog-fields').replaceChildren(...fields);
+        Object.assign($('#dialog-ok'), { textContent: ok, className: danger ? 'primary danger' : 'primary' });
+        dialog.returnValue = '';
+        dialog.showModal();
+        return new Promise(resolve => dialog.addEventListener('close', () => {
+          const form = dialog.querySelector('form')!;
+          resolve(dialog.returnValue === 'ok' ? new FormData(form) : null);
+          opener?.focus();
+        }, { once: true }));
+      }
+      let fieldId = 0;
+      function field(label: string, input: HTMLElement, hint?: string, wrap?: HTMLElement) {
+        const id = `f${++fieldId}`; input.id = id;
+        if (hint) input.setAttribute('aria-describedby', `${id}-hint`);
+        return el('div', { className: 'field' }, el('label', { for: id, textContent: label }), wrap ?? input, hint ? el('small', { id: `${id}-hint`, textContent: hint }) : null);
+      }
+      const reasonField = (label = 'Причина (игрок её увидит)', required = false) => field(label, el('input', { name: 'reason', maxLength: 120, required, autocomplete: 'off' }), required ? undefined : 'Необязательно.');
+
+      /** Controller requests are applied by the host within ~15 s; poll its result file for up to a minute. */
+      async function follow(line: HTMLElement, id: string, done: string) {
+        say(line, 'Запрос отправлен. Сервер применит его в течение 15 секунд…', 'pending');
         for (let i = 0; i < 30; i++) {
           await new Promise(r => setTimeout(r, 2000));
           const { result } = await api(`request?id=${id}`).catch(() => ({ result: null }));
-          if (result) { say(line, result.ok ? `${label}: выполнено.` : `${label}: ошибка — ${result.error ?? 'неизвестно'}`, !!result.ok); loadOverview(); return; }
+          if (result) {
+            if (result.ok) say(line, done);
+            else say(line, /revision/i.test(String(result.error)) ? 'Состояние сервера успело измениться. Обновите страницу и попробуйте снова.' : 'Сервер не смог выполнить запрос. Попробуйте ещё раз или сообщите владельцу.', 'error');
+            loadOverview(); return;
+          }
         }
-        say(line, `${label}: контроллер не ответил за минуту. Проверьте статус позже.`, false);
+        say(line, 'Сервер не ответил за минуту. Возможно, управляющая программа выключена — проверьте состояние позже.', 'error');
       }
 
-      let revision = 0;
+      // ---------- Overview and matches ----------
+      let controller: any = null;
+      function describe(state: any, rooms: any): { tone: string; title: string; detail: string } {
+        const matches = rooms.rooms?.length ?? 0;
+        const counts = [typeof rooms.online === 'number' ? `Игроков онлайн: ${rooms.online}` : null, rooms.available ? `Идёт матчей: ${matches}` : null].filter(Boolean).join(' · ');
+        const target = state?.desired?.profile === 'workshop' ? 'мастерскую' : 'игровой режим';
+        switch (state?.phase) {
+          case 'workshop': return { tone: 'warn', title: 'Открыта мастерская', detail: 'Заходить могут только участники команды. Обычные игроки видят сообщение о техработах.' };
+          case 'test': return { tone: 'warn', title: 'Тестовый режим', detail: 'Заходить могут только тестеры.' };
+          case 'DRAINING': return { tone: 'warn', title: 'Готовимся к мастерской', detail: `Новые матчи не начинаются. Сервер ждёт, пока закончатся идущие, — это может занять целую кампанию. ${counts}` };
+          case 'REQUESTED': case 'SAVING': case 'STARTING': return { tone: 'warn', title: `Сервер переключается в ${target}`, detail: 'Сохраняем мир и перезапускаем сервер, обычно это несколько минут. Игроки пока не могут зайти.' };
+          case 'ERROR': return { tone: 'bad', title: 'Сервер остановлен из-за ошибки', detail: can('recover') ? 'Игроки не могут зайти. Восстановите игровой режим в карточке «Режим сервера».' : 'Игроки не могут зайти. Сообщите администратору.' };
+        }
+        if (rooms.maintenance) return { tone: 'warn', title: 'Вход на сервер закрыт', detail: rooms.maintenance.message };
+        if (rooms.available) return { tone: 'ok', title: 'Сервер работает', detail: counts };
+        return { tone: 'bad', title: 'Игровой сервер не отвечает', detail: rooms.lobby ? 'Лобби работает, но матчи сейчас недоступны.' : 'Игроки сейчас не могут зайти.' };
+      }
       async function loadOverview() {
         const { status: state, rooms } = await api('overview');
-        revision = Number.isSafeInteger(state?.revision) ? state.revision : 0;
-        const facts: [string, string][] = state ? [
-          ['Фаза', state.phase], ['Вход', state.gate], ['Профиль', state.desired?.profile ?? '—'], ['Сообщение', state.message || '—'],
-          ['Ошибка', state.error ?? 'нет'], ['Ревизия', String(state.revision)], ['Обновлено', time(state.updatedAt)],
-        ] : [['Контроллер', 'статус недоступен']];
-        $('#status-list').replaceChildren(...facts.flatMap(([k, v]) => [el('dt', { textContent: k }), el('dd', { textContent: String(v ?? '—') })]));
-        const list = $('#room-list');
-        if (!rooms.available) list.replaceChildren(el('p', { textContent: rooms.maintenance ? `Вход закрыт: ${rooms.maintenance.message}` : 'Игровой сервер не отвечает.' }));
-        else if (!rooms.rooms.length) list.replaceChildren(el('p', { textContent: 'Открытых комнат нет.' }));
-        else list.replaceChildren(...rooms.rooms.map((room: any) => {
-          const info = el('p', { textContent: `${room.name} · ${modeNames[room.mode] ?? room.mode} · ${room.map} · ${room.phase} · игроков: ${room.players}` });
-          const item = el('div', { className: 'item' }, info);
-          if (can('moderate')) {
-            const outcome = el('select', { ariaLabel: `Итог для ${room.name}` }, ...[['none', 'Без итога'], ['draw', 'Ничья'], ['RED', 'Победа RED'], ['BLUE', 'Победа BLUE']].map(([value, text]) => el('option', { value, textContent: text })));
-            item.append(el('div', { className: 'actions' }, outcome, button('Остановить', () => {
-              if (!confirm(`Остановить комнату «${room.name}»?`)) return;
-              rconAction({ action: 'stop-room', roomId: room.id, outcome: outcome.value, reason: prompt('Причина (необязательно)') ?? '' });
-            }, 'small danger')));
-          }
-          return item;
+        controller = state;
+        const view = describe(state, rooms);
+        $('#server-card').dataset.tone = view.tone;
+        $('#server-headline').textContent = view.title;
+        $('#server-detail').textContent = [view.detail, `проверено ${ago(rooms.checkedAt || Date.now())}`].filter(Boolean).join(' · ');
+        const message = $<HTMLTextAreaElement>('#message');
+        if (!message.value && rooms.maintenance?.message && document.activeElement !== message) message.value = rooms.maintenance.message;
+        renderModes();
+        renderRooms(rooms);
+      }
+
+      const MODES = [
+        { id: 'game', title: 'Игра', about: 'Обычный режим: все игроки заходят и играют матчи.' },
+        { id: 'workshop', title: 'Мастерская', about: 'Сервер для строителей карт. Обычные игроки зайти не смогут.' },
+      ];
+      function renderModes() {
+        const box = $('#mode-options');
+        if (!controller || controller.phase === 'UNINITIALIZED') { box.replaceChildren(el('p', { className: 'muted', textContent: 'Переключение режимов недоступно: управляющая программа сервера ещё не сообщила своё состояние.' })); return; }
+        const busy = ['REQUESTED', 'DRAINING', 'SAVING', 'STARTING'].includes(controller.phase), broken = controller.phase === 'ERROR';
+        const target = controller.desired?.profile;
+        box.replaceChildren(...MODES.map(mode => {
+          const current = !busy && !broken && controller.phase === mode.id, pending = busy && target === mode.id;
+          const head = el('div', { className: 'option-head' }, mode.title,
+            current ? el('span', { className: 'badge ok', textContent: 'Включено сейчас' }) : pending ? el('span', { className: 'badge warn', textContent: 'Переключается…' }) : null);
+          const option = el('div', { className: 'option', ...(current ? { dataCurrent: '' } : {}) }, head, el('p', { textContent: mode.about }));
+          if (!current && !pending && !broken) option.append(button(mode.id === 'game' ? 'Вернуть игровой режим' : 'Включить мастерскую', () => switchMode(mode.id, false), 'small', undefined));
+          if (busy && !pending) option.lastElementChild instanceof HTMLButtonElement && ((option.lastElementChild as HTMLButtonElement).disabled = true);
+          if (broken && mode.id === 'game' && can('recover')) option.append(button('Восстановить игровой режим', () => switchMode('game', true), 'small primary'));
+          return option;
         }));
       }
-
-      const output = $('#rcon-output');
-      async function rconAction(body: Record<string, unknown>) {
-        output.textContent = 'Выполняем…';
-        try { const data = await api('rcon', 'POST', body); output.textContent = data.output || 'Готово.'; return data; }
-        catch (error) { output.textContent = (error as Error).message; }
+      async function switchMode(profile: string, recover: boolean) {
+        const texts = recover
+          ? { title: 'Восстановить игровой режим?', text: 'Сервер остановит всё, что сейчас запущено, и заново запустит игру. Используйте это, если сервер застрял в ошибке.', ok: 'Восстановить' }
+          : profile === 'workshop'
+            ? { title: 'Включить мастерскую?', text: 'Новые матчи перестанут начинаться. Когда закончатся идущие (это может занять целую кампанию), сервер сохранит мир и перезапустится в мастерскую. Пока она открыта, обычные игроки не смогут зайти.', ok: 'Включить мастерскую' }
+            : { title: 'Вернуть игровой режим?', text: 'Мастерская закроется, строители будут отключены. Сервер перезапустится для всех игроков, обычно это занимает несколько минут.', ok: 'Вернуть игровой режим' };
+        if (!(await ask({ ...texts, danger: true }))) return;
+        const line = $('#mode-status');
+        run(line, async () => {
+          const { id } = await api('mode', 'POST', { profile, expectedRevision: controller.revision, ...(recover ? { recover } : {}) });
+          follow(line, id, profile === 'workshop' ? 'Сервер принял запрос: переключение в мастерскую началось.' : 'Сервер принял запрос: запускаем игровой режим.');
+          return 'Запрос отправлен. Сервер применит его в течение 15 секунд…';
+        }, $('#mode-options'));
       }
 
-      document.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach(b => b.addEventListener('click', () => {
-        const profile = b.dataset.mode!, recover = $<HTMLInputElement>('#recover').checked && profile === 'game';
-        if (!confirm(`Переключить сервер в режим «${b.textContent}»${recover ? ' с восстановлением' : ''}? Игроков может отключить.`)) return;
-        const line = $('#request-status');
-        run(line, async () => { const { id } = await api('mode', 'POST', { profile, expectedRevision: revision, ...(recover ? { recover } : {}) }); follow(line, id, 'Смена режима'); return 'Запрос отправлен.'; });
-      }));
-      $<HTMLFormElement>('#message-form').addEventListener('submit', e => {
-        e.preventDefault();
-        const form = e.currentTarget as HTMLFormElement, line = $('#request-status');
-        run(line, async () => { const { id } = await api('message', 'POST', { message: form.message.value }); follow(line, id, 'Сообщение'); return 'Запрос отправлен.'; }, form);
-      });
+      function renderRooms(rooms: any) {
+        const list = $('#room-list');
+        if (!rooms.available) { list.replaceChildren(el('p', { className: 'empty', textContent: rooms.maintenance ? 'Вход на сервер закрыт — матчей сейчас нет.' : 'Игровой сервер не отвечает, список матчей недоступен.' })); return; }
+        if (!rooms.rooms.length) { list.replaceChildren(el('p', { className: 'empty', textContent: 'Сейчас не идёт ни одного матча.' })); return; }
+        list.replaceChildren(...rooms.rooms.map((room: any) => {
+          const facts: [string, string][] = [['Карта', room.map || 'выбирается'], ['Режим', room.mode], ['Сейчас', PHASES[room.phase] ?? 'Идёт'], ['Игроков', String(room.players)]];
+          if (room.battle) facts.push(['Тикеты', `красные ${room.battle.red} · синие ${room.battle.blue}`]);
+          const card = el('article', { className: 'card room', ariaLabel: room.name },
+            el('div', { className: 'card-head' }, el('h3', { textContent: room.name }), el('span', { className: `badge ${room.joinable ? 'ok' : ''}`, textContent: room.joinable ? 'Можно зайти' : 'Набор закрыт' })),
+            el('dl', { className: 'facts' }, ...facts.flatMap(([k, v]) => [el('dt', { textContent: k }), el('dd', { textContent: v })])));
+          if (can('moderate')) card.append(button('Завершить матч', () => stopRoom(room), 'danger', `Завершить матч «${room.name}»`));
+          return card;
+        }));
+      }
+      async function stopRoom(room: any) {
+        const radios = el('fieldset', { className: 'plain' }, el('legend', { textContent: 'Чем закончить матч' }), el('div', { className: 'radios' },
+          ...OUTCOMES.map(([value, label, about], i) => el('label', { className: 'radio' }, el('input', { type: 'radio', name: 'outcome', value, required: true, checked: i === 0 }), el('span', {}, label, about ? el('small', { textContent: about }) : null)))));
+        const answer = await ask({ title: `Завершить матч «${room.name}»?`, text: 'Все игроки вернутся в лобби. Итог попадёт в статистику.', ok: 'Завершить матч', danger: true, fields: [radios, reasonField('Причина (увидят игроки)')] });
+        if (!answer) return;
+        const outcome = String(answer.get('outcome')), reason = String(answer.get('reason') ?? '');
+        run($('#room-status'), async () => {
+          await api('rcon', 'POST', { action: 'stop-room', roomId: room.id, outcome, reason: outcome === 'none' && /^(win|draw)\b/i.test(reason) ? `— ${reason}` : reason });
+          loadOverview();
+          return `Матч «${room.name}» завершён.`;
+        });
+      }
 
-      $('#list-players').addEventListener('click', async () => {
-        const data = await rconAction({ action: 'list' });
-        if (!data) return;
-        $('#player-list').replaceChildren(...(data.players as string[]).map(name => el('li', { className: 'item' }, el('p', { textContent: name }), el('div', { className: 'actions' },
-          button('Кикнуть', () => confirm(`Кикнуть ${name}?`) && rconAction({ action: 'kick', player: name })),
-          button('Из команды', () => rconAction({ action: 'team-kick', player: name }))))));
-      });
-
-      const dangerous: Record<string, (form: HTMLFormElement) => string> = {
-        ban: f => `Забанить ${f.player.value}?`, interrupt: () => 'Прервать ВСЕ матчи без победителя?', drain: () => 'Закрыть создание новых комнат?', reset: () => 'Сбросить полигон?',
+      // ---------- Players ----------
+      const PLAYER_ACTIONS: Record<string, { ok: string; title: (p: string) => string; text: (p: string) => string; done: (p: string) => string; reason: boolean }> = {
+        kick: { ok: 'Выгнать', title: p => `Выгнать ${p}?`, text: p => `${p} будет отключён от сервера, но сможет сразу зайти снова.`, done: p => `${p} выгнан с сервера.`, reason: true },
+        'team-kick': { ok: 'Убрать из матча', title: p => `Убрать ${p} из матча?`, text: p => `${p} покинет команду в текущем матче. С сервера его не выгонит.`, done: p => `${p} убран из матча.`, reason: false },
+        ban: { ok: 'Забанить', title: p => `Забанить ${p}?`, text: p => `${p} будет отключён и не сможет зайти на сервер, пока его не разбанят.`, done: p => `${p} забанен.`, reason: true },
+        pardon: { ok: 'Разбанить', title: p => `Разбанить ${p}?`, text: p => `${p} снова сможет заходить на сервер.`, done: p => `${p} разбанен.`, reason: false },
       };
-      document.querySelectorAll<HTMLFormElement>('[data-rcon]').forEach(form => form.addEventListener('submit', e => {
-        e.preventDefault();
-        const action = (e.submitter as HTMLButtonElement | null)?.value || form.dataset.rcon!;
-        if (dangerous[action] && !confirm(dangerous[action](form))) return;
-        const kind = form.dataset.rcon;
-        const body = kind === 'say' ? { action: 'say', text: form.text.value }
-          : kind === 'player' ? { action, player: form.player.value, reason: form.reason.value }
-          : kind === 'class' ? { action, classId: form.classId.value }
-          : kind === 'range' ? { action: 'range', op: action }
-          : { action, reason: form.reason.value };
-        rconAction(body);
-      }));
-
-      let settingsRevision = 0, balanceRules: Record<string, { type: string }> = {};
-      async function loadSettings() {
-        const { settings, applied, balance } = await api('settings');
-        balanceRules = balance;
-        const shared = settings.campaignBalance?.['*'] ?? {};
-        $('#balance-all').replaceChildren(...Object.entries(balance).map(([key, r]: [string, any]) => el('label', {}, key, r.type === 'bool'
-          ? el('select', { name: `b_${key}` }, ...[['', 'по умолчанию'], ['true', 'да'], ['false', 'нет']].map(([value, text]) => el('option', { value, textContent: text, selected: String(shared[key] ?? '') === value })))
-          : el('input', { type: 'number', name: `b_${key}`, min: String(r.min), max: String(r.max), step: r.type === 'int' ? '1' : 'any', value: shared[key] ?? '', placeholder: `${r.min}–${r.max}` }))));
-        settingsRevision = settings.revision;
-        const form = $<HTMLFormElement>('#settings-form');
-        form.pvpEnabled.checked = settings.lobby?.pvpEnabled ?? false;
-        for (const [section, keys] of [['lobby', ['pvpCooldownSeconds']], ['rooms', ['maxRooms', 'idleCloseSeconds', 'abandonCloseSeconds']]] as const)
-          for (const key of keys) form[key].value = settings[section]?.[key] ?? '';
-        form.classLocks.value = (settings.classLocks ?? []).join(', ');
-        const { '*': _, ...perCampaign } = settings.campaignBalance ?? {};
-        form.campaignBalance.value = Object.keys(perCampaign).length ? JSON.stringify(perCampaign, null, 2) : '';
-        $('#balance-keys').textContent = `Ключи: ${Object.entries(balance).map(([k, r]: [string, any]) => r.type === 'bool' ? `${k} (true/false)` : `${k} (${r.min}–${r.max}${r.type === 'int' ? ', целое' : ''})`).join(', ')}.`;
-        const state = !settings.revision ? 'Настройки ещё не сохранялись: сервер использует значения по умолчанию.'
-          : applied?.errors?.length ? `Ревизия ${settings.revision}: сервер сообщил об ошибках — ${applied.errors.join('; ')}`
-          : applied?.revision >= settings.revision ? `Ревизия ${settings.revision}: применено ${time(applied.appliedAt)}.`
-          : `Ревизия ${settings.revision}: ожидает применения сервером.`;
-        $('#settings-state').textContent = `${state} Изменил: ${settings.updatedBy ?? '—'}, ${time(settings.updatedAt)}.`;
+      async function playerAction(action: string, player: string, line: HTMLElement) {
+        const spec = PLAYER_ACTIONS[action];
+        const answer = await ask({ title: spec.title(player), text: spec.text(player), ok: spec.ok, danger: action !== 'pardon', fields: spec.reason ? [reasonField()] : [] });
+        if (!answer) return;
+        await run(line, async () => {
+          await api('rcon', 'POST', { action, player, reason: String(answer.get('reason') ?? '') });
+          if (action === 'ban' || action === 'pardon') loadBans();
+          if (action !== 'pardon') setTimeout(loadOnline, 1000);
+          return spec.done(player);
+        });
       }
-      $<HTMLFormElement>('#settings-form').addEventListener('submit', e => {
+      async function loadOnline() {
+        const summary = $('#online-summary');
+        try {
+          const { players } = await api('rcon', 'POST', { action: 'list' });
+          summary.className = 'muted';
+          summary.textContent = players.length ? `Игроков на сервере: ${players.length}.` : 'Сейчас на сервере никого нет.';
+          $('#online-list').replaceChildren(...players.map((name: string) => el('li', { className: 'row' }, el('div', { className: 'row-main' }, el('strong', { textContent: name })),
+            el('div', { className: 'actions' },
+              button('Выгнать', () => playerAction('kick', name, summary), 'small', `Выгнать ${name}`),
+              button('Убрать из матча', () => playerAction('team-kick', name, summary), 'small', `Убрать ${name} из матча`),
+              can('ban') ? button('Забанить', () => playerAction('ban', name, summary), 'small danger', `Забанить ${name}`) : null))));
+        } catch (error) { say(summary, (error as Error).message, 'error'); $('#online-list').replaceChildren(); }
+      }
+      async function loadBans() {
+        const { bans } = await api('bans');
+        $('#ban-list').replaceChildren(...(bans.length ? bans.map((b: any) => el('li', { className: 'row' },
+          el('div', { className: 'row-main' }, el('strong', { textContent: b.player }), el('small', { textContent: `Забанил ${b.by} ${ago(b.at)}${b.reason ? ` · причина: «${b.reason}»` : ''}` })),
+          button('Разбанить', () => playerAction('pardon', b.player, $('#ban-status')), 'small', `Разбанить ${b.player}`)))
+          : [el('li', { className: 'empty', textContent: 'Никто не забанен.' })]));
+      }
+
+      // ---------- Settings ----------
+      type Rule = { type: 'int' | 'double' | 'bool'; min?: number; max?: number };
+      let rules: Record<string, Rule> = {}, settingsRevision = 0, balance: Record<string, Record<string, number | boolean>> = {}, scope = '*', extraLocks: string[] = [], hadLocks = false;
+      const LOBBY = [{ key: 'pvpCooldownSeconds', label: 'Задержка перед выключением PvP', unit: 'сек', min: 0, max: 600, def: 10 }];
+      const ROOMS = [
+        { key: 'maxRooms', label: 'Сколько матчей может идти одновременно', unit: 'шт', min: 1, max: 16, def: 2 },
+        { key: 'idleCloseSeconds', label: 'Закрывать пустую комнату через', unit: 'сек', min: 30, max: 3600, def: 600 },
+        { key: 'abandonCloseSeconds', label: 'Завершать матч, если все вышли, через', unit: 'сек', min: 5, max: 600, def: 30 },
+      ];
+      const SETTING_LABELS: Record<string, string> = { pvpEnabled: 'PvP в лобби', classLocks: 'Закрытые классы', ...Object.fromEntries([...LOBBY, ...ROOMS].map(f => [f.key, f.label])), ...BALANCE_LABELS };
+      function numberField(label: string, name: string, min: number, max: number, step: string, value: unknown, fallback: string, unit?: string, about?: string) {
+        const input = el('input', { type: 'number', name, min, max, step, inputMode: step === '1' ? 'numeric' : 'decimal', value: value ?? '' });
+        const wrap = unit ? el('div', { className: 'unit' }, input, el('span', { textContent: unit, ariaHidden: 'true' })) : undefined;
+        return field(label, input, `${about ? `${about} ` : ''}От ${number(min)} до ${number(max)}. Пустое поле — ${fallback}.`, wrap);
+      }
+      const shown = (v: number | boolean) => (typeof v === 'boolean' ? (v ? 'да' : 'нет') : number(v));
+      /** What the server uses when the field is empty, in words. */
+      function fallbackFor(key: string) {
+        if (scope !== '*') {
+          const shared = balance['*']?.[key];
+          return shared !== undefined ? `общее значение из «Все матчи»: ${shown(shared)}` : `по умолчанию ${shown(BALANCE_DEFAULTS[scope][key])} (из файлов игры)`;
+        }
+        const values = BALANCE_SCOPES.slice(1).map(s => [s.name, BALANCE_DEFAULTS[s.id][key]] as const);
+        return new Set(values.map(([, v]) => v)).size === 1 ? `по умолчанию ${shown(values[0][1])} (из файлов игры)` : `по умолчанию как в файлах игры: ${values.map(([n, v]) => `${n} — ${shown(v)}`).join(', ')}`;
+      }
+      const defaultValue = (key: string) => shown(scope === '*' ? BALANCE_DEFAULTS.room[key] : balance['*']?.[key] ?? BALANCE_DEFAULTS[scope][key]);
+      function renderBalance() {
+        const values = balance[scope] ?? {};
+        $('#scope-hint').textContent = scope === '*' ? 'Общие значения для всех кампаний и обычных боёв.' : 'Значения только для этих матчей, поверх общих.';
+        $('#balance-fields').replaceChildren(...BALANCE_GROUPS.map(group => el('div', { className: 'group' }, el('h4', { textContent: group.title }), el('div', { className: 'fields' }, ...group.fields.map(f => {
+          const rule = rules[f.key], name = `b_${f.key}`;
+          if (rule.type === 'bool') {
+            const select = el('select', { name }, ...[['', `По умолчанию (${defaultValue(f.key)})`], ['true', 'Да'], ['false', 'Нет']].map(([value, text]) => el('option', { value, textContent: text, selected: String(values[f.key] ?? '') === value })));
+            return field(f.label, select, `${f.hint ? `${f.hint} ` : ''}«По умолчанию» — ${fallbackFor(f.key)}.`);
+          }
+          return numberField(f.label, name, rule.min!, rule.max!, rule.type === 'int' ? '1' : '0.1', values[f.key], fallbackFor(f.key), f.unit, f.hint);
+        })))));
+      }
+      function collectBalance() {
+        const form = $<HTMLFormElement>('#settings-form'), values: Record<string, number | boolean> = {};
+        for (const key of Object.keys(rules)) {
+          const raw = (form.elements.namedItem(`b_${key}`) as HTMLInputElement | null)?.value ?? '';
+          if (raw !== '') values[key] = rules[key].type === 'bool' ? raw === 'true' : Number(raw);
+        }
+        if (Object.keys(values).length) balance[scope] = values; else delete balance[scope];
+      }
+      function renderScopes() {
+        const known = new Set(BALANCE_SCOPES.map(s => s.id));
+        $('#scope').replaceChildren(...BALANCE_SCOPES.map(s => el('option', { value: s.id, textContent: `${s.name}${balance[s.id] ? ' — есть изменения' : ''}`, selected: s.id === scope })));
+        // Sections for campaigns the site does not know are kept as they are.
+        for (const id of Object.keys(balance)) if (!known.has(id)) $('#scope').append(el('option', { value: id, textContent: 'Другая кампания — есть изменения', selected: id === scope }));
+      }
+      $('#scope').addEventListener('change', e => { collectBalance(); scope = (e.target as HTMLSelectElement).value; renderScopes(); renderBalance(); });
+
+      function appliedErrors(errors: string[]) {
+        return errors.map(error => {
+          const key = Object.keys(SETTING_LABELS).find(k => error.includes(k));
+          if (!key) return 'сервер не смог прочитать часть настроек';
+          return /clamp/i.test(error) ? `«${SETTING_LABELS[key]}» — значение вне допустимых границ, сервер его ограничил` : `«${SETTING_LABELS[key]}» — сервер оставил прежнее значение`;
+        });
+      }
+      let settingsPoll: ReturnType<typeof setTimeout> | undefined;
+      async function loadSettings(waitStarted = 0, statusOnly = false) {
+        const { settings, applied, balance: balanceRules } = await api('settings');
+        rules = balanceRules; settingsRevision = settings.revision ?? 0;
+        if (!statusOnly) {
+        const form = $<HTMLFormElement>('#settings-form');
+        (form.elements.namedItem('pvpEnabled') as HTMLSelectElement).value = typeof settings.lobby?.pvpEnabled === 'boolean' ? String(settings.lobby.pvpEnabled) : '';
+        hadLocks = Array.isArray(settings.classLocks);
+        $('#lobby-fields').replaceChildren(...LOBBY.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.lobby?.[f.key], `значение сервера по умолчанию, ${f.def} ${f.unit}`, f.unit)));
+        $('#room-fields').replaceChildren(...ROOMS.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.rooms?.[f.key], `значение сервера по умолчанию, ${f.def} ${f.unit}`, f.unit)));
+        const locks: string[] = settings.classLocks ?? [];
+        extraLocks = locks.filter(id => !Object.hasOwn(CLASS_NAMES, id));
+        $('#class-list').replaceChildren(...Object.entries(CLASS_NAMES).map(([id, name]) => el('label', { className: 'check' }, el('input', { type: 'checkbox', name: 'class', value: id, checked: !locks.includes(id) }), name)));
+        balance = structuredClone(settings.campaignBalance ?? {});
+        renderScopes(); renderBalance();
+        }
+
+        clearTimeout(settingsPoll);
+        const who = settings.updatedBy ? ` Последнее изменение: ${settings.updatedBy}, ${ago(settings.updatedAt)}.` : '';
+        if (!settings.revision) settingsStatus('Настройки ещё не меняли — сервер работает на своих значениях по умолчанию.', 'ok', '');
+        else if (applied?.revision >= settings.revision && applied.errors?.length) settingsStatus(`Сохранено, но сервер применил не всё: ${appliedErrors(applied.errors).join('; ')}.${who}`, 'error', 'Применено не всё — подробности вверху.');
+        else if (applied?.revision >= settings.revision) settingsStatus(`Применено на сервере.${who}`, 'ok', 'Применено на сервере.');
+        else if (waitStarted && Date.now() - waitStarted > 60_000) settingsStatus(`Сохранено, но сервер пока не подтвердил применение. Возможно, он перезапускается или открыта мастерская — настройки применятся, когда игра запустится.${who}`, 'pending', 'Сохранено, сервер пока не подтвердил.');
+        else {
+          settingsStatus('Сохранено, сервер применяет настройки (обычно до 5 секунд)…', 'pending', 'Сохранено, сервер применяет…');
+          settingsPoll = setTimeout(() => loadSettings(waitStarted || Date.now(), true).catch(() => {}), 3000);
+        }
+      }
+      /** One status in two places: the banner at the top and the sticky save bar. */
+      function settingsStatus(text: string, tone: 'ok' | 'error' | 'pending', short: string) {
+        say($('#settings-state'), text, tone);
+        const line = $('#settings-form .savebar .form-status');
+        if (short) say(line, short, tone); else line.textContent = '';
+      }
+      $<HTMLFormElement>('#settings-form').addEventListener('submit', async e => {
         e.preventDefault();
-        const form = e.currentTarget as HTMLFormElement;
-        run(form.querySelector('.form-status')!, async () => {
-          const number = (name: string) => (form[name].value === '' ? undefined : Number(form[name].value));
-          const lobby = { pvpEnabled: form.pvpEnabled.checked, pvpCooldownSeconds: number('pvpCooldownSeconds') };
-          const rooms = { maxRooms: number('maxRooms'), idleCloseSeconds: number('idleCloseSeconds'), abandonCloseSeconds: number('abandonCloseSeconds') };
-          let campaignBalance: Record<string, unknown> = {};
-          try { campaignBalance = form.campaignBalance.value.trim() ? JSON.parse(form.campaignBalance.value) : {}; } catch { throw new Error('Баланс кампаний: некорректный JSON.'); }
-          const shared = Object.fromEntries(Object.entries(balanceRules).map(([key, r]) => [key, form[`b_${key}`].value]).filter(([, v]) => v !== '')
-            .map(([key, v]) => [key, balanceRules[key].type === 'bool' ? v === 'true' : Number(v)]));
-          if (Object.keys(shared).length) campaignBalance = { ...campaignBalance, '*': shared };
-          const classLocks = form.classLocks.value.split(',').map((s: string) => s.trim()).filter(Boolean);
-          await api('settings', 'PUT', JSON.parse(JSON.stringify({ expectedRevision: settingsRevision, lobby, rooms, classLocks, campaignBalance: Object.keys(campaignBalance).length ? campaignBalance : undefined })));
-          await loadSettings();
-          return 'Сохранено. Сервер применит настройки в течение минуты.';
-        }, form);
+        const form = e.currentTarget as HTMLFormElement, save = form.querySelector<HTMLButtonElement>('.savebar button')!;
+        collectBalance();
+        const value = (name: string) => (form.elements.namedItem(name) as HTMLInputElement).value;
+        const body = settingsBody(settingsRevision, {
+          pvpEnabled: value('pvpEnabled'),
+          lobby: Object.fromEntries(LOBBY.map(f => [f.key, value(f.key)])), rooms: Object.fromEntries(ROOMS.map(f => [f.key, value(f.key)])),
+          lockedClasses: [...[...form.querySelectorAll<HTMLInputElement>('input[name=class]')].filter(c => !c.checked).map(c => c.value), ...extraLocks],
+          hadLocks, balance,
+        });
+        save.disabled = true;
+        settingsStatus('Сохраняем…', 'pending', 'Сохраняем…');
+        try { await api('settings', 'PUT', body); await loadSettings(); }
+        catch (error) { settingsStatus((error as Error).message, 'error', (error as Error).message); }
+        finally { save.disabled = false; }
       });
 
-      async function loadRoles() {
+      // ---------- Team ----------
+      const assignable = () => (can('roles-admin') ? ['builder', 'moderator', 'admin'] : ['builder', 'moderator']);
+      async function loadTeam() {
         const data = await api('staff');
-        const assignable = can('roles-admin') ? ['builder', 'moderator', 'admin'] : ['builder', 'moderator'];
-        $<HTMLSelectElement>('#grant-form select').replaceChildren(...assignable.map(r => el('option', { value: r, textContent: roleNames[r] })));
-        const rows = data.owners.map((o: any) => el('tr', {}, el('td', { textContent: o.name ?? o.uuid }), el('td', { textContent: roleNames.owner }), el('td', { textContent: 'окружение сервера' }), el('td')));
+        $('#role-legend').replaceChildren(...Object.values(ROLES).map(r => el('div', {}, el('dt', { textContent: r.name }), el('dd', { textContent: r.about }))));
+        const line = $('#staff-status');
+        const rows = data.owners.map((o: any) => el('li', { className: 'row' }, el('div', { className: 'row-main' }, el('strong', { textContent: o.name }), el('small', { textContent: 'Владелец. Назначается в настройках сервера, здесь не меняется.' }))));
         for (const s of data.staff) {
-          const editable = s.uuid !== me.uuid && (s.role !== 'admin' || can('roles-admin'));
-          const actions = el('td');
+          const editable = s.name !== me.name && (s.role !== 'admin' || can('roles-admin'));
+          const main = el('div', { className: 'row-main' }, el('strong', { textContent: s.name }), el('small', { textContent: `${ROLES[s.role]?.name ?? 'Участник'} · добавил ${s.grantedBy} ${ago(s.grantedAt)}` }));
+          const row = el('li', { className: 'row' }, main);
           if (editable) {
-            const select = el('select', { ariaLabel: `Роль ${s.name}` }, ...assignable.map(r => el('option', { value: r, textContent: roleNames[r], selected: r === s.role })));
-            select.addEventListener('change', () => changeRole({ uuid: s.uuid, role: select.value }, `Сменить роль ${s.name} на «${roleNames[select.value]}»?`));
-            actions.append(el('div', { className: 'actions' }, select, button('Снять', () => changeRole({ uuid: s.uuid, role: null }, `Снять роль с ${s.name}?`), 'small danger')));
+            const select = el('select', { ariaLabel: `Роль игрока ${s.name}` }, ...assignable().map(r => el('option', { value: r, textContent: ROLES[r].name, selected: r === s.role })));
+            select.addEventListener('change', async () => {
+              const role = select.value;
+              if (!(await ask({ title: `Сделать ${s.name} — ${ROLES[role].name.toLowerCase()}?`, text: ROLES[role].about, ok: 'Сменить роль' }))) { select.value = s.role; return; }
+              changeRole({ uuid: s.uuid, role }, `${s.name} теперь ${ROLES[role].name.toLowerCase()}.`, line);
+            });
+            row.append(el('div', { className: 'actions' }, select, button('Убрать из команды', async () => {
+              if (await ask({ title: `Убрать ${s.name} из команды?`, text: `${s.name} потеряет доступ к панели и мастерской. Играть на сервере он сможет как обычно.`, ok: 'Убрать', danger: true }))
+                changeRole({ uuid: s.uuid, role: null }, `${s.name} больше не в команде.`, line);
+            }, 'small danger', `Убрать ${s.name} из команды`)));
           }
-          rows.push(el('tr', {}, el('td', { textContent: s.name }), el('td', { textContent: roleNames[s.role] ?? s.role }), el('td', { textContent: `${s.grantedBy}, ${time(s.grantedAt)}` }), actions));
+          rows.push(row);
         }
         $('#staff-list').replaceChildren(...rows);
+        $('#grant-roles').replaceChildren(...assignable().map((r, i) => el('label', { className: 'radio' }, el('input', { type: 'radio', name: 'role', value: r, required: true, checked: i === 0 }), el('span', {}, ROLES[r].name, el('small', { textContent: ROLES[r].about })))));
         const key = (list: any[]) => JSON.stringify((list ?? []).map(m => [m.draslId, m.role]).sort());
-        const drift = !Array.isArray(data.workshop) ? 'Контроллер ещё не опубликовал members.json.'
-          : key(data.workshop) === key(data.expected) ? 'Список мастерской совпадает с ролями сайта.' : 'Список мастерской отличается от ролей сайта — синхронизируйте.';
-        const last = data.lastSync ? ` Последняя синхронизация ${time(data.lastSync.at)}: ${data.lastSync.result ? (data.lastSync.result.ok ? 'выполнена' : `ошибка — ${data.lastSync.result.error}`) : 'ожидает контроллер'}.` : '';
-        $('#workshop-state').textContent = drift + last;
+        const inSync = Array.isArray(data.workshop) && key(data.workshop) === key(data.expected);
+        const last = data.lastSync ? ` Последнее обновление ${ago(data.lastSync.at)}${data.lastSync.result && !data.lastSync.result.ok ? ' — не удалось' : ''}.` : '';
+        say($('#workshop-state'), inSync ? `Мастерская пускает ровно тех, кто в команде.${last}` : `Список доступа в мастерскую отличается от команды — нажмите «Обновить доступ».${last}`, inSync ? 'ok' : 'pending');
       }
-      async function changeRole(body: Record<string, unknown>, question: string) {
-        const line = $<HTMLFormElement>('#grant-form').querySelector<HTMLElement>('.form-status')!;
-        if (!confirm(question)) return loadRoles();
-        await run(line, async () => { const data = await api('staff', 'POST', body); await loadRoles(); return data.sync.error ? `Роль сохранена, но мастерская не обновлена: ${data.sync.error}` : 'Роль сохранена, список мастерской отправлен.'; });
+      async function changeRole(body: Record<string, unknown>, done: string, line: HTMLElement) {
+        await run(line, async () => {
+          const data = await api('staff', 'POST', body);
+          await loadTeam();
+          return data.sync.error ? `${done} Но доступ в мастерскую обновить не удалось — нажмите «Обновить доступ» позже.` : done;
+        });
       }
-      $<HTMLFormElement>('#grant-form').addEventListener('submit', e => {
+      $<HTMLFormElement>('#grant-form').addEventListener('submit', async e => {
         e.preventDefault();
-        const form = e.currentTarget as HTMLFormElement;
-        changeRole({ name: form.nickname.value, role: form.role.value }, `Выдать ${form.nickname.value} роль «${roleNames[form.role.value]}»?`).then(() => form.reset());
+        const form = e.currentTarget as HTMLFormElement, data = new FormData(form), name = String(data.get('nickname')), role = String(data.get('role'));
+        if (!(await ask({ title: `Добавить ${name} в команду?`, text: `Роль: ${ROLES[role].name}. ${ROLES[role].about}`, ok: 'Добавить' }))) return;
+        const line = form.querySelector<HTMLElement>('.form-status')!;
+        await changeRole({ name, role }, `${name} добавлен в команду.`, line);
+        if (line.classList.contains('ok')) form.reset();
       });
       $('#sync').addEventListener('click', () => {
-        const line = $<HTMLFormElement>('#grant-form').querySelector<HTMLElement>('.form-status')!;
-        run(line, async () => { const { id } = await api('staff/sync', 'POST', {}); follow(line, id, 'Синхронизация мастерской').then(loadRoles); return 'Запрос отправлен.'; });
+        const line = $('#sync-status');
+        run(line, async () => { const { id } = await api('staff/sync', 'POST', {}); follow(line, id, 'Доступ в мастерскую обновлён.').then(loadTeam); return 'Запрос отправлен. Сервер применит его в течение 15 секунд…'; }, $('#sync').parentElement);
       });
 
+      // ---------- Statistics ----------
+      const REASONS: Record<string, string> = { draw: 'Ничья', abandoned: 'Прерван: все игроки вышли', stopped: 'Остановлен вручную', shutdown: 'Прерван: сервер выключился', error: 'Прерван из-за ошибки' };
+      const matchTitle = (r: { kind: string; mode: string; mapId: string | null }) => `${MODE_NAMES[r.mode] ?? 'Матч'} · ${r.kind === 'campaign' ? 'итог кампании' : MAP_NAMES[r.mapId ?? ''] ?? 'другая карта'}`;
+      function outcome(r: any) {
+        if (r.reason !== 'completed') return REASONS[r.reason] ?? 'Завершён';
+        if (r.winnerName) return `Победил ${r.winnerName}`;
+        return TEAM_NAMES[r.winner] ? `Победа ${TEAM_NAMES[r.winner]}` : 'Завершён';
+      }
       let resultPage = 1;
       async function loadResults() {
         const mode = $<HTMLSelectElement>('#result-mode').value, data = await api(`results?page=${resultPage}${mode ? `&mode=${mode}` : ''}`);
-        $('#result-list').replaceChildren(...data.results.map((r: any) => {
-          const voided = r.voidedAt !== null;
-          const outcome = `${r.kind === 'campaign' ? 'Кампания' : 'Бой'} · ${r.reason}${r.winner !== 'NONE' ? ` · ${r.winner}` : ''}${voided ? ` · аннулирован (${r.voidedBy})` : ''}`;
-          return el('tr', { className: voided ? 'voided' : '' }, el('td', { textContent: time(r.endedAt) }), el('td', { textContent: modeNames[r.mode] ?? r.mode }), el('td', { textContent: outcome }),
-            el('td', { textContent: `${r.participants}: ${r.names.join(', ')}${r.participants > r.names.length ? '…' : ''}` }),
-            el('td', {}, button(voided ? 'Вернуть' : 'Аннулировать', async () => {
-              if (!confirm(`${voided ? 'Вернуть' : 'Аннулировать'} результат?${r.rated ? ' Рейтинг сезона будет пересчитан.' : ''}`)) return;
-              try { await api('results/void', 'POST', { serverId: r.serverId, eventId: r.eventId, voided: !voided }); } catch (error) { alert((error as Error).message); }
-              loadResults();
-            }, voided ? 'small' : 'small danger')));
-        }));
-        $('#page').textContent = `Стр. ${resultPage} из ${Math.max(1, Math.ceil(data.total / data.limit))}`;
+        const line = $('#result-status');
+        $('#result-list').replaceChildren(...(data.results.length ? data.results.map((r: any) => {
+          const voided = r.voidedAt !== null, title = matchTitle(r);
+          const players = el('small', {}, `Игроки (${r.participants}): `, ...r.players.flatMap((p: any, i: number) => [i ? ', ' : '', el('span', { className: `team-${p.team}`, textContent: p.name })]), r.participants > r.players.length ? '…' : '');
+          const main = el('div', { className: 'row-main' },
+            el('strong', { textContent: title }),
+            el('span', {}, `${date(r.endedAt)} · ${outcome(r)}`, voided ? el('span', { className: 'badge warn', textContent: ` Не учитывается — решил ${r.voidedBy}` }) : null),
+            players);
+          const toggle = button(voided ? 'Вернуть в статистику' : 'Не учитывать матч', async () => {
+            const answer = await ask(voided
+              ? { title: 'Вернуть матч в статистику?', text: `«${title}», ${date(r.endedAt)}. Матч снова появится в лидерборде и профилях игроков.${r.rated ? ' Рейтинг сезона пересчитается.' : ''}`, ok: 'Вернуть' }
+              : { title: 'Не учитывать этот матч?', text: `«${title}», ${date(r.endedAt)}. Матч пропадёт из лидерборда и профилей игроков.${r.rated ? ' Рейтинг сезона пересчитается.' : ''} Решение можно отменить.`, ok: 'Не учитывать', danger: true });
+            if (!answer) return;
+            await run(line, async () => { await api('results/void', 'POST', { serverId: r.serverId, eventId: r.eventId, voided: !voided }); await loadResults(); return voided ? 'Матч снова учитывается.' : 'Матч больше не учитывается.'; });
+          }, voided ? 'small' : 'small danger', `${voided ? 'Вернуть в статистику' : 'Не учитывать'}: ${title}, ${date(r.endedAt)}`);
+          return el('li', { className: `row${voided ? ' voided' : ''}` }, main, toggle);
+        }) : [el('li', { className: 'empty', textContent: 'Матчей пока нет.' })]));
+        const from = data.total ? (resultPage - 1) * data.limit + 1 : 0, to = Math.min(data.total, resultPage * data.limit);
+        $('#page').textContent = data.total ? `Матчи ${from}–${to} из ${data.total}` : '';
         $<HTMLButtonElement>('#prev').disabled = resultPage <= 1;
         $<HTMLButtonElement>('#next').disabled = resultPage * data.limit >= data.total;
       }
       $('#result-mode').addEventListener('change', () => { resultPage = 1; loadResults(); });
       $('#prev').addEventListener('click', () => { resultPage--; loadResults(); });
       $('#next').addEventListener('click', () => { resultPage++; loadResults(); });
-
+      const dayFormat = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+      async function loadSeasons() {
+        const { seasons } = await api('seasons');
+        $('#season-list').replaceChildren(...seasons.slice().reverse().map((s: any) => el('li', { textContent: `${s.name}: ${dayFormat.format(Date.parse(s.startsAt))} — ${dayFormat.format(Date.parse(s.endsAt))}` })));
+      }
       async function loadKeys() {
         const { keys } = await api('keys');
-        $('#key-list').replaceChildren(...keys.map((k: any) => el('tr', {}, el('td', { textContent: k.serverId }), el('td', { textContent: k.label }),
-          el('td', { textContent: k.revokedAt ? `${time(k.createdAt)} · отозван ${time(k.revokedAt)}` : time(k.createdAt) }),
-          el('td', {}, k.revokedAt ? '' : button('Отозвать', async () => {
-            if (!confirm(`Отозвать ключ «${k.label}»? Сервер с ним перестанет отправлять результаты.`)) return;
-            try { await api('keys/revoke', 'POST', { id: k.id }); } catch (error) { alert((error as Error).message); }
-            loadKeys();
-          }, 'small danger')))));
+        $('#key-list').replaceChildren(...keys.map((k: any) => el('li', { className: 'row' },
+          el('div', { className: 'row-main' }, el('strong', { textContent: k.label }), el('small', { textContent: k.revokedAt ? `Отозван ${ago(k.revokedAt)}` : `Действует, создан ${ago(k.createdAt)}` })),
+          k.revokedAt ? null : button('Отозвать', async () => {
+            if (!(await ask({ title: `Отозвать ключ «${k.label}»?`, text: 'Сервер с этим ключом перестанет отправлять результаты матчей, пока ему не выдадут новый.', ok: 'Отозвать', danger: true }))) return;
+            await run($('#key-form .form-status'), async () => { await api('keys/revoke', 'POST', { id: k.id }); await loadKeys(); return 'Ключ отозван.'; });
+          }, 'small danger', `Отозвать ключ «${k.label}»`))));
       }
       $<HTMLFormElement>('#key-form').addEventListener('submit', e => {
         e.preventDefault();
-        const form = e.currentTarget as HTMLFormElement;
-        run(form.querySelector('.form-status')!, async () => {
-          const { key } = await api('keys', 'POST', { serverId: form.serverId.value.trim(), label: form.label.value });
+        const form = e.currentTarget as HTMLFormElement, line = form.querySelector<HTMLElement>('.form-status')!;
+        run(line, async () => {
+          const { key } = await api('keys', 'POST', { serverId: (form.elements.namedItem('serverId') as HTMLInputElement).value.trim().toLowerCase(), label: (form.elements.namedItem('label') as HTMLInputElement).value });
           form.reset(); loadKeys();
-          return `Ключ (показывается один раз): ${key}`;
-        }, form);
+          line.replaceChildren('Ключ создан. Скопируйте его сейчас — больше он показан не будет:', el('div', { className: 'secret', textContent: key }));
+        }, form).then(() => { if (!line.firstElementChild && line.textContent === 'Выполняем…') line.textContent = ''; });
       });
 
+      // ---------- Journal ----------
+      /** [past tense, infinitive for a failed attempt, rest of the sentence]. */
+      function sentence(a: any): [string, string, string] {
+        let d: any = {};
+        try { d = a.detail ? JSON.parse(a.detail) : {}; } catch {}
+        const player = d.player ?? a.target, reason = d.reason ? `, причина: «${d.reason}»` : '';
+        const match = d.room ? ` «${d.room.name}»${d.room.map ? ` на карте ${d.room.map}` : ''}` : '';
+        const result = d.mode ? ` «${matchTitle(d)}» от ${date(d.endedAt)}` : '';
+        const cls = ` «${CLASS_NAMES[a.target] ?? 'неизвестный'}»`;
+        switch (a.action) {
+          case 'mode': return a.target === 'workshop' ? ['включил', 'включить', ' мастерскую'] : d.recover ? ['восстановил', 'восстановить', ' игровой режим'] : ['вернул', 'вернуть', ' игровой режим'];
+          case 'message': return ['изменил', 'изменить', ` сообщение для игроков: «${d.message ?? ''}»`];
+          case 'rcon:say': return ['написал', 'написать', ` всем: «${d.text ?? ''}»`];
+          case 'rcon:kick': return ['выгнал', 'выгнать', ` игрока ${player}${reason}`];
+          case 'rcon:ban': return ['забанил', 'забанить', ` игрока ${player}${reason}`];
+          case 'rcon:pardon': return ['разбанил', 'разбанить', ` игрока ${player}`];
+          case 'rcon:team-kick': return ['убрал', 'убрать', ` игрока ${player} из матча`];
+          case 'rcon:class-lock': return ['закрыл', 'закрыть', ` класс${cls}`];
+          case 'rcon:class-unlock': return ['открыл', 'открыть', ` класс${cls}`];
+          case 'rcon:range': return a.target === 'open' ? ['открыл', 'открыть', ' полигон'] : a.target === 'close' ? ['закрыл', 'закрыть', ' полигон'] : ['сбросил', 'сбросить', ' полигон'];
+          case 'rcon:stop-room': return ['завершил', 'завершить', ` матч${match} — ${(OUTCOMES.find(o => o[0] === d.outcome)?.[1] ?? 'без итога').toLowerCase()}${reason}`];
+          case 'rcon:maintenance-status': return ['проверил', 'проверить', ' состояние техработ'];
+          case 'rcon:drain': return ['запретил', 'запретить', ' начинать новые матчи'];
+          case 'rcon:interrupt': return ['прервал', 'прервать', ` все матчи${reason}`];
+          case 'settings': return ['изменил', 'изменить', ' настройки игры'];
+          case 'role-grant': return ['назначил', 'назначить', ` ${d.name ?? 'игрока'} на роль «${ROLES[d.role]?.name ?? 'участник'}»`];
+          case 'role-revoke': return ['убрал', 'убрать', ` ${d.name ?? 'игрока'} из команды`];
+          case 'workshop-sync': return ['обновил', 'обновить', ' доступ в мастерскую'];
+          case 'result-void': return ['исключил', 'исключить', ` из статистики матч${result}`];
+          case 'result-restore': return ['вернул', 'вернуть', ` в статистику матч${result}`];
+          case 'ingest-key-create': return ['создал', 'создать', ` ключ приёма результатов «${d.label ?? ''}»`];
+          case 'ingest-key-revoke': return ['отозвал', 'отозвать', ' ключ приёма результатов'];
+          default: return ['выполнил', 'выполнить', ' действие в панели'];
+        }
+      }
       async function loadAudit() {
         const { entries } = await api('audit');
-        $('#audit-list').replaceChildren(...entries.map((a: any) => el('tr', {}, el('td', { textContent: time(a.at) }), el('td', { textContent: `${a.actorName} (${roleNames[a.role] ?? a.role})` }),
-          el('td', { textContent: a.action, title: a.detail ?? '' }), el('td', { textContent: a.target ?? '—' }), el('td', { textContent: a.ok ? 'успех' : `отказ: ${a.error}`, className: a.ok ? 'ok' : 'error' }))));
+        const shown = entries.filter((a: any) => a.action !== 'rcon:list');
+        $('#audit-list').replaceChildren(...(shown.length ? shown.map((a: any) => {
+          const [past, attempt, rest] = sentence(a), error = friendly(String(a.error ?? '').replace(/\s\(.*\)$/, ''), 400);
+          return el('li', { className: a.ok ? '' : 'failed' },
+            el('span', {}, el('strong', { textContent: a.actorName }), a.ok ? ` ${past}${rest}` : ` пытался ${attempt}${rest} — `,
+              a.ok ? null : el('span', { className: 'fail', textContent: `не получилось: ${error.charAt(0).toLowerCase()}${error.slice(1)}` })),
+            el('time', { dateTime: new Date(a.at).toISOString(), title: date(a.at), textContent: ago(a.at) }));
+        })
+          : [el('li', { className: 'empty', textContent: 'Пока никто ничего не делал.' })]));
       }
 
-      const loaders: [string, () => Promise<void>][] = [['view', loadOverview], ['settings', loadSettings], ['roles', loadRoles], ['stats', loadResults], ['stats', loadKeys],
-        ['stats', async () => { const { seasons } = await api('seasons'); $('#season-list').replaceChildren(...seasons.map((s: any) => el('li', { textContent: `${s.name}: ${time(Date.parse(s.startsAt))} — ${time(Date.parse(s.endsAt))}` }))); }],
-        ['audit', loadAudit]];
+      // ---------- Tabs and start ----------
+      function showTab(id: string, focus: boolean) {
+        const tabs = [...document.querySelectorAll<HTMLAnchorElement>('#tabs a')];
+        const current = tabs.find(t => t.hash === `#${id}`) ?? tabs[0];
+        if (!current) return;
+        tabs.forEach(t => (t === current ? t.setAttribute('aria-current', 'page') : t.removeAttribute('aria-current')));
+        document.querySelectorAll<HTMLElement>('main > section').forEach(s => (s.hidden = `#${s.id}` !== current.hash));
+        if (focus) document.querySelector<HTMLElement>(`${current.hash} h2`)?.focus();
+      }
+      addEventListener('hashchange', () => showTab(location.hash.slice(1), true));
 
-      api('me').then(async (data: Me) => {
+      $<HTMLFormElement>('#message-form').addEventListener('submit', e => {
+        e.preventDefault();
+        const form = e.currentTarget as HTMLFormElement, line = form.querySelector<HTMLElement>('.form-status')!;
+        run(line, async () => { const { id } = await api('message', 'POST', { message: $<HTMLTextAreaElement>('#message').value }); follow(line, id, 'Сообщение сохранено. Игроки увидят его, когда сервер будет закрыт.'); return 'Запрос отправлен. Сервер применит его в течение 15 секунд…'; }, form);
+      });
+      const RANGE: Record<string, { title: string; text: string; ok: string; done: string }> = {
+        open: { title: 'Открыть полигон?', text: 'Игроки смогут заходить на тренировочную площадку.', ok: 'Открыть', done: 'Полигон открыт.' },
+        close: { title: 'Закрыть полигон?', text: 'Все, кто сейчас на полигоне, вернутся в лобби.', ok: 'Закрыть', done: 'Полигон закрыт.' },
+        reset: { title: 'Сбросить полигон?', text: 'Площадка вернётся в исходное состояние, игроки на ней вернутся в лобби.', ok: 'Сбросить', done: 'Полигон сброшен.' },
+      };
+      document.querySelectorAll<HTMLButtonElement>('[data-range]').forEach(b => b.addEventListener('click', async () => {
+        const spec = RANGE[b.dataset.range!];
+        if (!(await ask({ ...spec, danger: b.dataset.range !== 'open' }))) return;
+        run($('#range-status'), async () => { await api('rcon', 'POST', { action: 'range', op: b.dataset.range }); return spec.done; }, b.parentElement);
+      }));
+      $('#drain').addEventListener('click', async () => {
+        if (!(await ask({ title: 'Не начинать новые матчи?', text: 'Идущие матчи доиграют, а новые начаться не смогут. Используйте перед техработами, если мастерская не нужна.', ok: 'Не начинать новые', danger: true }))) return;
+        run($('#maint-status'), async () => { await api('rcon', 'POST', { action: 'drain' }); return 'Новые матчи больше не начинаются.'; }, $('#drain').parentElement);
+      });
+      $('#interrupt').addEventListener('click', async () => {
+        const answer = await ask({ title: 'Прервать все матчи?', text: 'Все идущие матчи сразу остановятся без победителя, игроки вернутся в лобби. Это нельзя отменить.', ok: 'Прервать все матчи', danger: true, fields: [reasonField('Причина (увидят все игроки)', true)] });
+        if (!answer) return;
+        run($('#maint-status'), async () => { await api('rcon', 'POST', { action: 'interrupt', reason: String(answer.get('reason')) }); loadOverview(); return 'Все матчи прерваны.'; }, $('#interrupt').parentElement);
+      });
+      $<HTMLFormElement>('#say-form').addEventListener('submit', e => {
+        e.preventDefault();
+        const form = e.currentTarget as HTMLFormElement, input = $<HTMLInputElement>('#say-text');
+        run(form.querySelector<HTMLElement>('.form-status')!, async () => { await api('rcon', 'POST', { action: 'say', text: input.value }); input.value = ''; return 'Объявление отправлено.'; }, form);
+      });
+      $<HTMLFormElement>('#byname-form').addEventListener('submit', e => {
+        e.preventDefault();
+        const form = e.currentTarget as HTMLFormElement;
+        playerAction((e.submitter as HTMLButtonElement | null)?.value || 'kick', $<HTMLInputElement>('#byname').value, form.querySelector<HTMLElement>('.form-status')!);
+      });
+      $('#online-refresh').addEventListener('click', () => { $('#online-summary').textContent = 'Обновляем…'; loadOnline(); });
+
+      const failed = (where: string) => (error: Error) => { const w = $('#whoami'); w.append(el('span', { className: 'error', textContent: ` ${where}: ${error.message}` })); };
+      api('me').then(async (data: Me & { role: string | null }) => {
         me = data;
-        if (!me.role) { status.textContent = 'Нет доступа. Роль выдаёт администратор проекта.'; return; }
-        status.textContent = `${me.name} · ${roleNames[me.role]}`;
+        const who = $('#whoami');
+        if (!me.role) { who.textContent = 'У вашего аккаунта нет доступа к панели. Попросите администратора добавить вас в команду.'; return; }
+        who.replaceChildren('Вы вошли как ', el('strong', { textContent: me.name }), ` — ${ROLES[me.role].name.toLowerCase()}. ${ROLES[me.role].about}`);
         document.querySelectorAll<HTMLElement>('[data-perm]').forEach(node => { node.hidden = !can(node.dataset.perm!); });
-        const nav = $('#nav');
-        nav.replaceChildren(...[...document.querySelectorAll<HTMLElement>('main > section:not([hidden])')].map(s => el('a', { href: `#${s.id}`, textContent: s.querySelector('h2')!.lastChild!.textContent! })));
+        if (!can('ban')) $('#byname-about').textContent = 'Если игрока нет в списке «Сейчас на сервере», его можно выгнать по никнейму.';
+        const sections = [...document.querySelectorAll<HTMLElement>('main > section:not([hidden])')];
+        const nav = $('#tabs');
+        nav.replaceChildren(...sections.map(s => el('a', { href: `#${s.id}`, textContent: s.dataset.tab })));
         nav.hidden = false;
-        await Promise.all(loaders.filter(([permission]) => can(permission)).map(([, load]) => load().catch((error: Error) => { status.textContent = `${status.textContent} · ${error.message}`; status.className = 'error'; })));
-      }, (error: Error) => {
-        status.className = /Войдите|Сессия/.test(error.message) ? '' : 'error';
-        status.replaceChildren(/Войдите|Сессия/.test(error.message) ? el('span', {}, 'Войдите в ', el('a', { href: '/account', textContent: 'аккаунт' }), ', чтобы открыть админку.') : error.message);
+        showTab(location.hash.slice(1), false);
+        const loaders: [string, () => Promise<void>, string][] = [['view', loadOverview, 'Обзор'], ['moderate', loadOnline, 'Игроки'], ['ban', loadBans, 'Забаненные'], ['settings', () => loadSettings(), 'Настройки'],
+          ['roles', loadTeam, 'Команда'], ['stats', loadResults, 'Статистика'], ['stats', loadSeasons, 'Сезоны'], ['stats', loadKeys, 'Ключи'], ['audit', loadAudit, 'Журнал']];
+        await Promise.all(loaders.filter(([permission]) => can(permission)).map(([, load, where]) => load().catch(failed(where))));
+        setInterval(() => { if (document.visibilityState === 'visible') loadOverview().catch(() => {}); }, 15_000);
+      }, (error: Error & { raw?: string }) => {
+        const who = $('#whoami');
+        if (/Войдите|Сессия/.test(error.raw ?? '')) who.replaceChildren('Войдите в ', el('a', { href: '/account', textContent: 'аккаунт' }), ', чтобы открыть панель управления.');
+        else say(who, error.message, 'error');
       });
     </script>
   </body>

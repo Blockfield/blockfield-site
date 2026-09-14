@@ -18,7 +18,7 @@ test('void removes a match from leaderboard, player history and classes; restore
   const db = database(t);
   db.ingest(match(20, '2026-09-01T00:00:00Z')); db.ingest(match(21, '2026-09-02T00:00:00Z'));
   assert.equal(db.leaderboard(query()).players[0].matches, 2);
-  assert.deepEqual(db.setVoided(server, uid(20), 'Adm'), { rebuilt: null });
+  assert.deepEqual(db.setVoided(server, uid(20), 'Adm'), { rebuilt: null, match: { kind: 'match', mode: 'campaign', mapId: 'test', endedAt: Date.parse('2026-09-01T00:00:00Z') } });
   assert.equal(db.leaderboard(query()).players[0].matches, 1);
   assert.deepEqual(db.player(red, query()).history.map(h => h.eventId), [uid(21)]);
   assert.equal(db.results(null, 1).results.find(r => r.eventId === uid(20)).voidedBy, 'Adm');
@@ -39,7 +39,7 @@ test('voiding a rated campaign rebuilds that season and later ones; restore equa
 
   const reference = database(t);
   for (const result of list.filter(r => r.eventId !== uid(41))) reference.ingest(result);
-  assert.deepEqual(db.setVoided(server, uid(41), 'Adm'), { rebuilt: 's1' });
+  assert.equal(db.setVoided(server, uid(41), 'Adm').rebuilt, 's1');
   assert.deepEqual(ratings(db), ratings(reference), 'void = as if the campaign never arrived, including the s2 carry-over');
   assert.deepEqual(changes(db), changes(reference));
   assert.equal(db.player(red, query('season=s1')).mmr.ratedCampaigns, 2);
@@ -80,7 +80,7 @@ test('schema 3 file upgrades to 4: results gain void columns, new tables appear,
       assert.equal(upgraded.db.prepare('PRAGMA user_version').get().user_version, 4);
       assert.deepEqual(ratings(upgraded), before);
       assert.equal(upgraded.ingest(result).inserted, false);
-      assert.deepEqual(upgraded.setVoided(server, uid(50), 'Adm'), { rebuilt: 's1' });
+      assert.equal(upgraded.setVoided(server, uid(50), 'Adm').rebuilt, 's1');
       assert.equal(upgraded.db.prepare('SELECT COUNT(*) n FROM ratings').get().n, 0);
       upgraded.audit({ actorUuid: 'a', actorName: 'Adm', role: 'admin', action: 'x', ok: true }); upgraded.setStaff('b'.repeat(32), 'Bob', 'builder', 'Adm');
     } finally { upgraded.close(); }
@@ -99,8 +99,8 @@ test('review: voiding a campaign that ends minutes ahead, in the next season, re
   const db = database(t);
   db.ingest(campaign(60, '2027-01-01T00:01:00.000Z', 'RED'));
   assert.equal(db.player(red, query()).mmrSeason, 's1');
-  assert.deepEqual(db.setVoided(server, uid(60), 'Adm'), { rebuilt: 's2' });
-  assert.deepEqual(db.setVoided(server, uid(60), null), { rebuilt: 's2' });
+  assert.equal(db.setVoided(server, uid(60), 'Adm').rebuilt, 's2');
+  assert.equal(db.setVoided(server, uid(60), null).rebuilt, 's2');
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM ratings WHERE season_id='s2'").get().n, 2);
 });
 

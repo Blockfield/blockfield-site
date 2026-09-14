@@ -1,6 +1,6 @@
 ---
 import Community from '../layouts/Community.astro';
-import { statsStore, filters, seasons, StatsError } from '../lib/stats';
+import { statsStore, filters, seasons, StatsError, resolveNames, displayName, uuidLike } from '../lib/stats';
 let board: ReturnType<ReturnType<typeof statsStore>['leaderboard']> | null = null;
 let error = '';
 const started = seasons(), current = started.at(-1);
@@ -8,7 +8,11 @@ const seasonName = (id?: string) => started.find(s => s.id === id)?.name ?? 'С�
 // The period select also lists seasons; the API takes those as `season`, never together with `period`.
 const params = new URLSearchParams(Astro.url.searchParams);
 if (started.some(s => s.id === params.get('period'))) { params.set('season', params.get('period')!); params.delete('period'); }
-try { board = statsStore().leaderboard(filters(params)); }
+try {
+  board = statsStore().leaderboard(filters(params));
+  const names = await resolveNames(statsStore(), board.players.filter((p: any) => uuidLike(p.name)).map((p: any) => p.uuid));
+  for (const p of board.players as any[]) p.name = displayName(names.get(p.uuid) ?? p.name);
+}
 catch (e) { Astro.response.status = e instanceof StatsError ? e.status : 503; error = e instanceof StatsError && e.status === 400 ? 'Некорректные фильтры. Сбросьте параметры и повторите запрос.' : 'История временно недоступна. Это не означает, что ваши результаты потеряны.'; }
 const modes = [['', 'Все режимы'], ['room', 'Casual'], ['campaign', 'Ranked · кампания'], ['deathmatch', 'Deathmatch']];
 const periods = [['all','Всё время'],['week','Последние 7 дней'],['month','Последние 30 дней'], ...started.map(s => [s.id, s.name]).reverse()];
