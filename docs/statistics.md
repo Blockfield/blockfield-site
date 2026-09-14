@@ -1,4 +1,4 @@
-# Durable statistics (review implementation)
+# Durable statistics
 
 Refs: netherg-io/blockfield-releases#3 and #6. This service is part of the existing Astro SSR application, **not** the retired launcher API/CMS. It does not query Minecraft to read history. Deploy the site with its own persistent storage; replacing/stopping the game backend must not replace this volume. This provides process independence, not availability through failure of a shared physical host.
 
@@ -39,14 +39,55 @@ Maximum body 1 MiB, maximum 512 participants, bounded per-player class breakdown
 
 The result and all participant/class rows are inserted in **one transaction**. `(serverId,eventId)` is unique. Exact semantic replay returns 200 without changes; a new result returns 201. Reusing an ID with changed data returns 409 and must be quarantined/operator-reviewed by the producer, not assigned a fresh ID and replayed as another match. Other non-success responses must not be acknowledged as delivered. Aggregation reads only match rows: campaign summaries never count round kills/score twice.
 
-## Reads and UI
+## Read API
 
-- `/api/stats/leaderboard?mode=campaign&period=week&sort=score&page=1&limit=25`
-- `/api/stats/players/<UUID>` with the same mode/period/pagination filters.
-- Modes: `room`, `campaign`, `deathmatch`; omitted = all. Periods: `all`, rolling `week` (7 days), rolling `month` (30 days). Sort: `score`, `kills`, `captures`, `pointSeconds`, `playSeconds`, `wins`, `kd`. Limit 1–100, page 1–1000. Stable UUID tie-breaker.
-- `/leaderboard`, `/players/<UUID>`, and the account's statistics card use these same persisted records. The account card uses Drasl's returned UUID and cancels stale requests after logout/account changes.
+All reads are `GET`, public, `Cache-Control: no-store`, and served from SQLite only.
 
-MMR is deliberately `null` with `ratingStatus: not_configured`. Battle wins are not a rating. Completed Ranked campaign wins are recorded separately. The approved formula, seasons and incomplete-participation policy must be implemented as a versioned, once-per-campaign calculation later; no Elo or penalty formula is guessed here.
+- `/api/stats/leaderboard?mode=campaign&season=s1&sort=score&page=1&limit=25`
+- `/api/stats/players/<UUID>` with the same filters (sort only affects `totals.rank`).
+- `/api/stats/seasons` → `{schemaVersion, current, seasons: [{id, name, startsAt, endsAt}]}`; only started seasons, oldest first; `current` is `null` before season 1.
+
+Filters: `mode` = `room`, `campaign`, `deathmatch` (omitted = all). `period` = `all`, rolling `week` (7 days), rolling `month` (30 days). `season` = a started season ID; `season` together with `period` (even `period=all`), an unknown season or a future season is **400**. `sort` = `score` (default), `rating`, `kills`, `captures`, `pointSeconds`, `playSeconds`, `wins`, `kd`. `limit` 1–100, `page` 1–1000, otherwise 400. A page past the end returns `players: []` with the real `total`.
+
+Leaderboard response: `schemaVersion`, `checkedAt` (server read time, not last result time), `mode`, `season` (or `null`), `page`, `limit`, `total`, `ratingStatus` (rules version, `glicko2-v1`), `players[]`. Each row: `uuid`, `name` (latest known display name), `rank`, `score`, `kills`, `deaths`, `kd`, `captures`, `neutralizations`, `pointSeconds`, `playSeconds`, `suicides`, `teamKills`, `maxKillstreak`, `matches`, `wins` (battle wins), `mmr`.
+
+- `rank` is the 1-based position under the same filter and sort, numbered over the whole filtered set: `(page-1)*limit+index+1`. Ties sort by `uuid` ascending; on `sort=rating` players without MMR come last.
+- `kd` = `kills / max(1, deaths)` rounded to 3 decimals: zero deaths gives `kd = kills`, never `Infinity`/`NaN`/`null`.
+- `mmr` is `null` (never rated) or `{rating, rd, ratedCampaigns, provisional}`; `provisional` = fewer than 5 rated campaigns or RD > 150.
+
+Player response: `schemaVersion`, `checkedAt`, `season`, `profile {uuid, name, lastSeen}`, `totals` (a leaderboard row incl. `rank` for this filter/sort, or `null` when the player has no battles in the filter), `classes[]`, `campaigns {completed, wins}` (numbers, `0` when none), `history[]` (paged by `page`/`limit`), `mmr` (**lifetime**, not filtered), `ratingHistory[]` (up to 20 MMR changes inside the filter window; empty for non-Ranked modes), `ratingStatus`. An unknown UUID is 404; a known player with a non-matching filter is 200 with `totals: null` and empty arrays.
+
+Combat metrics come from `kind=match` rows only; campaign summaries never add round kills/score twice.
+
+## Outcome rules
+
+| `endReason` | Stored | Battle/campaign winner | MMR (Ranked campaign summary only) |
+| --- | --- | --- | --- |
+| `completed` | yes | `winner` side (FFA: `winnerUuid`) | win = 1, loss = 0 |
+| `draw` | yes | none | 0.5 for everyone |
+| `abandoned`, `stopped`, `shutdown`, `error` | yes | none (a declared winner is rejected with 422) | none |
+
+A win awarded by an administrator (`/bf stop … win TEAM`) is exported and stored as `stopped`: no winner, no MMR. MMR is Glicko-2 (`src/lib/glicko2.ts`), one operation per completed/drawn Ranked campaign per participant with team `RED`/`BLUE` (the other side is a composite opponent). Rounds, Casual and Deathmatch never rate. Rating is keyed by `(serverId, eventId, uuid)`: replays and a summary arriving before or after its rounds do not rate twice; later rounds never change ratings.
+
+## Seasons
+
+Default (owner can change): quarterly time windows. `s1` "Сезон 1" = `2026-09-14T00:00:00.000Z` (production export start) … `2026-12-31T23:59:59.999Z`; then each UTC calendar quarter (`s2` = 2027 Q1, …), generated by `seasons()` in `src/lib/stats.ts`, so no edits per quarter. `endsAt` is inclusive; a result is in a season by `endedAt`. A season is only a filter: MMR is not reset and stays lifetime. Changing the first start or length changes historical season membership, not stored data.
+
+## Display rules (site, launcher, game)
+
+- MMR is shown as the rounded `mmr.rating`; append `?` when `provisional`. `null` → `—`.
+- K/D is shown as `kills / deaths` (raw counters), not the ratio; `kd` is for sorting.
+- Score is shown with up to 2 decimals.
+- Position is `rank` from the API, never recomputed from list order.
+- Show `checkedAt`/stale state separately from "game server unavailable".
+
+## For developers and AI agents
+
+- Code: contract/validation, storage, aggregation, seasons and HTTP in `src/lib/stats.ts`; rating math in `src/lib/glicko2.ts`; route `src/pages/api/stats/[...path].ts`; tests `test/stats*.test.mjs`, `test/glicko2.test.mjs`.
+- Site: `/leaderboard` and `/players/<UUID>` call `StatsStore` directly on the server; `/account` fetches `/api/stats/players/<UUID>` in the browser with the Drasl profile UUID.
+- Launcher and in-game UI must read the same public HTTP endpoints and apply the display rules above; do not re-aggregate or recompute rank/MMR locally.
+- The read API never calls Minecraft, RCON or Server List Ping; only the game server's producer writes, via `POST /api/stats/results`.
+- The app uses the DB at `BLOCKFIELD_STATS_DB` (absolute path). For local work point it at a throwaway file and seed it by `StatsStore.ingest()` with the test fixtures; never at production data.
 
 ## Verification and remaining integration
 
@@ -54,4 +95,4 @@ MMR is deliberately `null` with `ratingStatus: not_configured`. Battle wins are 
 
 Local review: submit the test fixture with a configured producer key, replay it, verify exactly one battle; submit a campaign summary, verify counters are unchanged; stop Minecraft, refresh leaderboard/account, and verify history still loads. Invalid/missing DB must show unavailable, not zero stats. Check layout at 360px and desktop, keyboard navigation, long display names and logout during a slow request.
 
-Not implemented by this site PR: a legacy CamelCase-log importer (historical mode/time/class IDs require an explicit mapping), MMR/seasons, class-filtered leaderboard, and large-dataset load testing. Existing log files are never silently reinterpreted or rewritten.
+Not implemented by this site PR: a legacy CamelCase-log importer (historical mode/time/class IDs require an explicit mapping), season MMR resets, class-filtered leaderboard, and large-dataset load testing. Existing log files are never silently reinterpreted or rewritten.

@@ -104,16 +104,34 @@ function canonical(value: any): string {
   if (value !== null && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
   return JSON.stringify(value);
 }
-export type Filters = { mode: string | null; since: number; until: number; sort: string; limit: number; page: number };
+/** Season 1 starts with the production stats export; later seasons are UTC calendar quarters. */
+export const SEASON_ONE_STARTS_AT = Date.UTC(2026, 8, 14);
+export type Season = { id: string; name: string; startsAt: string; endsAt: string };
+/** Started seasons, oldest first. endsAt is inclusive (1 ms before the next season starts). */
+export function seasons(now = Date.now()): Season[] {
+  const list: Season[] = [];
+  for (let start = SEASON_ONE_STARTS_AT, n = 1; start <= now; n++) {
+    // Season 1 absorbs the rest of 2026 Q3; every later season starts on a quarter boundary.
+    const date = new Date(start), next = n === 1 ? Date.UTC(2027, 0, 1) : Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 3, 1);
+    list.push({ id: `s${n}`, name: `Сезон ${n}`, startsAt: new Date(start).toISOString(), endsAt: new Date(next - 1).toISOString() });
+    start = next;
+  }
+  return list;
+}
+export type Filters = { mode: string | null; season: string | null; since: number; until: number; sort: string; limit: number; page: number };
 export function filters(params: URLSearchParams, now = Date.now()): Filters {
-  const mode = params.get('mode') || null, period = params.get('period') || 'all', sort = params.get('sort') || 'score';
+  const mode = params.get('mode') || null, season = params.get('season') || null, period = params.get('period') || 'all', sort = params.get('sort') || 'score';
   if (mode !== null && !MODES.includes(mode)) throw new StatsError(400, 'Unknown mode');
   if (!['all', 'week', 'month'].includes(period) || !Object.hasOwn(SORTS, sort)) throw new StatsError(400, 'Unknown period/sort');
+  if (season !== null && params.get('period')) throw new StatsError(400, 'Use either season or period');
+  const selected = season === null ? null : seasons(now).find(s => s.id === season);
+  if (selected === undefined) throw new StatsError(400, 'Unknown season');
   const limitText = params.get('limit') || '25', pageText = params.get('page') || '1';
   if (!/^\d+$/.test(limitText) || !/^\d+$/.test(pageText)) throw new StatsError(400, 'Invalid pagination');
   const limit = Number(limitText), page = Number(pageText);
   if (!integer(limit, 100) || limit < 1 || !integer(page, 1000) || page < 1) throw new StatsError(400, 'Invalid pagination');
-  return { mode, since: period === 'all' ? 0 : now - (period === 'week' ? 7 : 30) * 86400000, until: now + 300000, sort, limit, page };
+  if (selected) return { mode, season, since: Date.parse(selected.startsAt), until: Date.parse(selected.endsAt), sort, limit, page };
+  return { mode, season, since: period === 'all' ? 0 : now - (period === 'week' ? 7 : 30) * 86400000, until: now + 300000, sort, limit, page };
 }
 export class StatsStore {
   db: DatabaseSync;
@@ -213,9 +231,11 @@ export class StatsStore {
   }
   leaderboard(query: Filters, uuid: string | null = null) {
     // Campaign summaries contain the same players/counters: count combat metrics from MATCHES ONLY.
-    const where = `r.kind='match' AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?) AND (? IS NULL OR p.uuid=?)`;
-    const args = [query.since, query.until, query.mode, query.mode, uuid, uuid];
-    const rows = this.db.prepare(`SELECT p.uuid,pr.name,SUM(p.score) score,SUM(p.kills) kills,SUM(p.deaths) deaths,
+    const where = `r.kind='match' AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)`;
+    const args = [query.since, query.until, query.mode, query.mode];
+    // rank is numbered over the whole filtered aggregate BEFORE the uuid/page cut, so a player's rank matches the board.
+    const rows = this.db.prepare(`SELECT * FROM (SELECT *,ROW_NUMBER() OVER (ORDER BY ${SORTS[query.sort]} DESC,uuid ASC) "rank" FROM (
+      SELECT p.uuid,pr.name,SUM(p.score) score,SUM(p.kills) kills,SUM(p.deaths) deaths,
       SUM(p.captures) captures,SUM(p.neutralizations) neutralizations,SUM(p.point_seconds) pointSeconds,
       SUM(p.play_seconds) playSeconds,SUM(p.suicides) suicides,SUM(p.team_kills) teamKills,MAX(p.max_streak) maxKillstreak,
       COUNT(*) matches,SUM(CASE WHEN r.reason='completed' AND (
@@ -225,10 +245,10 @@ export class StatsStore {
       ROUND(SUM(p.kills)*1.0/MAX(1,SUM(p.deaths)),3) kd,
       MAX(rt.rating) rating,MAX(rt.rd) rd,MAX(rt.rated_campaigns) ratedCampaigns
       FROM participants p JOIN results r USING(server_id,event_id) JOIN profiles pr ON pr.uuid=p.uuid LEFT JOIN ratings rt ON rt.uuid=p.uuid
-      WHERE ${where} GROUP BY p.uuid ORDER BY ${SORTS[query.sort]} DESC,p.uuid ASC LIMIT ? OFFSET ?`)
-      .all(...args, query.limit, (query.page - 1) * query.limit) as any[];
+      WHERE ${where} GROUP BY p.uuid)) WHERE (? IS NULL OR uuid=?) ORDER BY "rank" LIMIT ? OFFSET ?`)
+      .all(...args, uuid, uuid, query.limit, (query.page - 1) * query.limit) as any[];
     const total = this.db.prepare(`SELECT COUNT(DISTINCT p.uuid) total FROM participants p JOIN results r USING(server_id,event_id) WHERE ${where}`).get(...args) as { total: number };
-    return { schemaVersion: 1, checkedAt: new Date().toISOString(), mode: query.mode, page: query.page, limit: query.limit, total: total.total, ratingStatus: RULES_VERSION,
+    return { schemaVersion: 1, checkedAt: new Date().toISOString(), mode: query.mode, season: query.season, page: query.page, limit: query.limit, total: total.total, ratingStatus: RULES_VERSION,
       players: rows.map(({ rating, rd, ratedCampaigns, ...row }) => ({ ...row, mmr: mmr({ rating, rd, ratedCampaigns }) })) };
   }
   player(uuid: string, query: Filters) {
@@ -243,13 +263,15 @@ export class StatsStore {
     const classes = this.db.prepare(`SELECT c.class_id classId,c.variant_id variantId,SUM(c.time_seconds) timeSeconds,SUM(c.kills) kills,SUM(c.deaths) deaths,SUM(c.point_seconds) pointSeconds
       FROM classes c JOIN results r USING(server_id,event_id) WHERE r.kind='match' AND c.uuid=? AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)
       GROUP BY c.class_id,c.variant_id ORDER BY timeSeconds DESC,c.class_id,c.variant_id`).all(uuid, query.since, query.until, query.mode, query.mode);
-    const campaigns = this.db.prepare(`SELECT COUNT(*) completed,SUM(CASE WHEN r.winner=p.team AND p.team!='NONE' THEN 1 ELSE 0 END) wins
+    const campaigns = this.db.prepare(`SELECT COUNT(*) completed,COALESCE(SUM(CASE WHEN r.winner=p.team AND p.team!='NONE' THEN 1 ELSE 0 END),0) wins
       FROM participants p JOIN results r USING(server_id,event_id) WHERE r.kind='campaign' AND r.reason IN ('completed','draw') AND p.uuid=?
       AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)`).get(uuid, query.since, query.until, query.mode, query.mode);
+    // mmr is lifetime; ratingHistory shows only the changes inside the requested window (rating changes are Ranked campaigns only).
     const rating = this.db.prepare('SELECT rating,rd,rated_campaigns ratedCampaigns FROM ratings WHERE uuid=?').get(uuid) as any;
     const ratingHistory = this.db.prepare(`SELECT event_id campaignSessionId,rated_at ratedAt,team,score,ROUND(before_rating) before,ROUND(after_rating) after,ROUND(after_rd) rd
-      FROM rating_changes WHERE uuid=? ORDER BY rated_at DESC,event_id LIMIT 20`).all(uuid);
-    return { schemaVersion: 1, profile, totals, classes, campaigns, history, page: query.page, limit: query.limit,
+      FROM rating_changes WHERE uuid=? AND rated_at>=? AND rated_at<=? AND (? IS NULL OR ?='campaign') ORDER BY rated_at DESC,event_id LIMIT 20`)
+      .all(uuid, query.since, query.until, query.mode, query.mode);
+    return { schemaVersion: 1, checkedAt: new Date().toISOString(), season: query.season, profile, totals, classes, campaigns, history, page: query.page, limit: query.limit,
       mmr: rating ? mmr(rating) : null, ratingHistory, ratingStatus: RULES_VERSION };
   }
 }
@@ -311,6 +333,7 @@ export async function handleStatsRequest(request: Request, dependencies?: { stor
       return Response.json(result, { status: result.inserted ? 201 : 200, headers });
     }
     if (request.method !== 'GET') return Response.json({ error: 'Method not allowed' }, { status: 405, headers: { ...headers, Allow: 'GET' } });
+    if (path === '/api/stats/seasons') { const list = seasons(); return Response.json({ schemaVersion: 1, current: list.at(-1)?.id ?? null, seasons: list }, { headers }); }
     const query = filters(url.searchParams);
     if (path === '/api/stats/leaderboard') return Response.json((dependencies?.store ?? statsStore()).leaderboard(query), { headers });
     const player = /^\/api\/stats\/players\/([^/]+)$/.exec(path);
