@@ -1,9 +1,14 @@
 ---
 import Community from '../../layouts/Community.astro';
-import { statsStore, filters, seasons, StatsError } from '../../lib/stats';
+import { statsStore, filters, seasons, StatsError, resolveNames, displayName } from '../../lib/stats';
 import { outcomeLabel } from '../../lib/stats-outcome';
+import { CLASS_NAMES } from '../../lib/game-names';
 let data: any = null, error = '';
-try { data = statsStore().player(Astro.params.uuid || '', filters(Astro.url.searchParams)); }
+try {
+  data = statsStore().player(Astro.params.uuid || '', filters(Astro.url.searchParams));
+  const resolved = (await resolveNames(statsStore(), [data.profile.uuid])).get(data.profile.uuid);
+  data.profile.name = displayName(resolved ?? data.profile.name);
+}
 catch (e) { Astro.response.status = e instanceof StatsError ? e.status : 503; error = e instanceof StatsError && e.status === 404 ? 'У этого игрока ещё нет записанных боёв.' : e instanceof StatsError && e.status === 400 ? 'Некорректный идентификатор игрока или параметры запроса.' : 'История временно недоступна. Попробуйте открыть страницу позже.'; }
 const mmrName = seasons().find(s => s.id === data?.mmrSeason)?.name ?? 'Сезон 1';
 const time =(epoch: number) => new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(epoch);
@@ -14,13 +19,12 @@ const next = (page: number) => { const q = new URLSearchParams(Astro.url.searchP
 <Community title={data?.profile.name || 'Статистика игрока'} description="История боёв, результаты кампаний и время по классам. Идентичность игрока определяется UUID, а не никнеймом.">
   <a href="/leaderboard">← Лидерборд</a>
   {error ? <p class="notice" role="status">{error}</p> : data && <>
-    <p class="muted"><code>{data.profile.uuid}</code></p>
     {data.season && <p class="muted">Фильтр: {seasons().find(s => s.id === data.season)?.name}</p>}
     {data.totals && <dl class="metrics"><div><dt>Место</dt><dd>{data.totals.rank}</dd></div><div><dt>MMR · {mmrName}</dt><dd>{data.mmr ? `${data.mmr.rating} ± ${data.mmr.rd * 2}${data.mmr.provisional ? ' · предварительный' : ''}` : 'нет рейтинговых кампаний'}</dd></div><div><dt>Бои</dt><dd>{data.totals.matches}</dd></div><div><dt>Убийства / смерти</dt><dd>{data.totals.kills} / {data.totals.deaths}</dd></div><div><dt>Захваты</dt><dd>{data.totals.captures}</dd></div><div><dt>Кампании / победы</dt><dd>{data.campaigns.completed} / {data.campaigns.wins || 0}</dd></div></dl>}
     <p class="notice">MMR (Glicko-2) сезонный и меняется один раз за завершённую Ranked-кампанию; прерванная или остановленная кампания не считается победой и рейтинг не меняет. В начале сезона рейтинг сдвигается к 1500 на половину разницы (мягкий сброс).</p>
     {data.ratingHistory.length > 0 && <><h2>Изменения MMR · {mmrName}</h2><div class="table-wrap" tabindex="0" aria-label="История рейтинга"><table><thead><tr><th scope="col">Время</th><th scope="col">Итог кампании</th><th scope="col">MMR</th></tr></thead><tbody>{data.ratingHistory.map((h: any) => <tr><td>{time(h.ratedAt)}</td><td>{h.score === 1 ? 'Победа' : h.score === 0 ? 'Поражение' : 'Ничья'}</td><td>{h.before} → {h.after} ({h.after - h.before >= 0 ? '+' : ''}{h.after - h.before})</td></tr>)}</tbody></table></div></>}
     <h2>Классы и варианты</h2>
-    {data.classes.length === 0 ? <p>Данных по классам пока нет.</p> : <div class="table-wrap" tabindex="0" aria-label="Статистика классов"><table><thead><tr><th scope="col">Класс / вариант</th><th scope="col">Минуты</th><th scope="col">K / D</th><th scope="col">Секунды на точках</th></tr></thead><tbody>{data.classes.map((c: any) => <tr><td>{c.classId} / {c.variantId}</td><td>{Math.floor(c.timeSeconds / 60)}</td><td>{c.kills} / {c.deaths}</td><td>{c.pointSeconds}</td></tr>)}</tbody></table></div>}
+    {data.classes.length === 0 ? <p>Данных по классам пока нет.</p> : <div class="table-wrap" tabindex="0" aria-label="Статистика классов"><table><thead><tr><th scope="col">Класс / вариант</th><th scope="col">Минуты</th><th scope="col">K / D</th><th scope="col">Секунды на точках</th></tr></thead><tbody>{data.classes.map((c: any) => <tr><td>{CLASS_NAMES[c.classId] ?? 'Другой класс'}{c.variantId !== '0' && ` · вариант ${c.variantId}`}</td><td>{Math.floor(c.timeSeconds / 60)}</td><td>{c.kills} / {c.deaths}</td><td>{c.pointSeconds}</td></tr>)}</tbody></table></div>}
     <h2>История</h2><p class="muted">Время UTC. Итоги кампании не прибавляют повторно убийства и очки раундов.</p>
     <div class="table-wrap" tabindex="0" aria-label="История матчей"><table><thead><tr><th scope="col">Время</th><th scope="col">Событие</th><th scope="col">Результат</th><th scope="col">K / D</th></tr></thead><tbody>{data.history.map((r: any) => <tr><td>{time(r.endedAt)}</td><td>{modes[r.mode] || r.mode} · {r.kind === 'campaign' ? 'вся кампания' : 'бой'}</td><td>{reasons[r.reason] || r.reason}{outcomeLabel(r, data.profile.uuid)}</td><td>{r.kind === 'match' ? `${r.kills} / ${r.deaths}` : '—'}</td></tr>)}</tbody></table></div>
     <nav class="pagination" aria-label="Страницы истории">{data.page > 1 && <a href={next(data.page - 1)}>← Назад</a>}<span>Страница {data.page}</span>{data.history.length === data.limit && <a href={next(data.page + 1)}>Далее →</a>}</nav>
