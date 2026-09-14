@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { StatsStore, StatsError, filters, validateResult, handleStatsRequest } from '../src/lib/stats.ts';
+import { StatsStore, StatsError, filters, seasons, validateResult, handleStatsRequest } from '../src/lib/stats.ts';
 
 const server = '00000000-0000-4000-8000-000000000001';
 const id = '00000000-0000-4000-8000-000000000002';
@@ -174,4 +174,105 @@ test('accepted data survives close/reopen with a persistent volume path', () => 
 });
 test('pagination/sort inputs are bounded and never become arbitrary SQL', () => {
   for (const value of ['limit=0', 'limit=101', 'page=-1', 'page=1e2', 'page=1001', 'sort=__proto__', 'sort=score;DROP TABLE profiles', 'mode=training', 'period=bad']) assert.throws(() => query(value), StatsError);
+});
+
+const uid = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+const get = async (deps, path) => handleStatsRequest(new Request(`https://example.test/api/stats${path}`), deps);
+const campaignOf = round => ({ ...round, kind: 'campaign', eventId: campaign, matchId: null, mapId: null, rounds: [id] });
+function twoSided() {
+  const round = fixture(); round.participants.push({ ...structuredClone(round.participants[0]), uuid: uid(11), name: 'Bravo', team: 'BLUE' });
+  return round;
+}
+test('zero deaths gives a finite K/D and no Infinity/NaN/null kd in JSON', async t => {
+  const deps = dependencies(t), result = fixture(); result.participants[0].kills = 3; deps.store.ingest(result);
+  for (const path of ['/leaderboard?sort=kd', `/players/${player}`]) {
+    const text = await (await get(deps, path)).text();
+    assert.ok(!/Infinity|NaN|"kd":null/.test(text), text);
+  }
+  assert.equal(deps.store.leaderboard(query('sort=kd')).players[0].kd, 3);
+  assert.equal(deps.store.player(player, query()).totals.kd, 3);
+});
+test('a nickname change is shown identically in the leaderboard row and the profile', t => {
+  const db = database(t), older = fixture(); older.eventId = older.matchId = uid(20);
+  older.startedAt = new Date(Date.now() - 7200000).toISOString(); older.endedAt = new Date(Date.now() - 3600000).toISOString(); db.ingest(older);
+  const newer = fixture(); newer.participants[0].name = 'Renamed'; db.ingest(newer);
+  const detail = db.player(player, query());
+  assert.equal(db.leaderboard(query()).players[0].name, 'Renamed');
+  assert.equal(detail.profile.name, 'Renamed'); assert.equal(detail.totals.name, 'Renamed'); assert.equal(db.leaderboard(query()).total, 1);
+});
+test('kd and rating ties break by UUID; players without MMR sort last on rating', t => {
+  const db = database(t), round = fixture();
+  for (const [uuid, team] of [[uid(11), 'BLUE'], [uid(12), 'RED'], [uid(13), 'RED']]) round.participants.push({ ...structuredClone(round.participants[0]), uuid, name: uuid.slice(-2), team });
+  db.ingest(round);
+  assert.deepEqual(db.leaderboard(query('sort=kd')).players.map(p => [p.uuid, p.rank]), [[player, 1], [uid(11), 2], [uid(12), 3], [uid(13), 4]]);
+  const summary = campaignOf(round); summary.participants = summary.participants.slice(0, 2); db.ingest(summary);
+  assert.deepEqual(db.leaderboard(query('sort=rating')).players.map(p => [p.uuid, p.mmr === null]), [[player, false], [uid(11), false], [uid(12), true], [uid(13), true]]);
+  assert.equal(db.player(uid(13), query('sort=rating')).totals.rank, 4);
+});
+test('season boundaries: start inclusive, 1 ms before excluded, next season start belongs to the next season', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2027-02-01T00:00:00Z') });
+  const deps = dependencies(t);
+  for (const [n, at] of [[30, '2026-09-13T23:59:59.999Z'], [31, '2026-09-14T00:00:00.000Z'], [32, '2026-12-31T23:59:59.999Z'], [33, '2027-01-01T00:00:00.000Z']]) {
+    deps.store.ingest({ ...fixture(), eventId: uid(n), matchId: uid(n), startedAt: at, endedAt: at });
+  }
+  assert.deepEqual(seasons(), [
+    { id: 's1', name: 'Сезон 1', startsAt: '2026-09-14T00:00:00.000Z', endsAt: '2026-12-31T23:59:59.999Z' },
+    { id: 's2', name: 'Сезон 2', startsAt: '2027-01-01T00:00:00.000Z', endsAt: '2027-03-31T23:59:59.999Z' },
+  ]);
+  assert.deepEqual(seasons(Date.parse('2026-09-13T23:59:59.999Z')), []);
+  assert.deepEqual(seasons(Date.parse('2027-04-01T00:00:00Z')).at(-1), { id: 's3', name: 'Сезон 3', startsAt: '2027-04-01T00:00:00.000Z', endsAt: '2027-06-30T23:59:59.999Z' });
+  const board = await (await get(deps, '/leaderboard?season=s1')).json();
+  assert.equal(board.season, 's1'); assert.equal(board.players[0].matches, 2);
+  assert.equal(deps.store.leaderboard(query('season=s2')).players[0].matches, 1);
+  assert.equal(deps.store.player(player, query('season=s2')).history.length, 1);
+  assert.equal(deps.store.leaderboard(query()).players[0].matches, 4);
+  assert.deepEqual(await (await get(deps, '/seasons')).json(), { schemaVersion: 1, current: 's2', seasons: seasons() });
+});
+test('season with period, unknown or not-yet-started season, and out-of-range pagination are 400', async t => {
+  const deps = dependencies(t);
+  for (const q of ['season=s1&period=all', 'season=s1&period=week', 'season=s99', 'season=s2', 'season=S1', 'limit=0', 'limit=101', 'page=0', 'page=1001']) {
+    assert.equal((await get(deps, `/leaderboard?${q}`)).status, 400, q);
+    assert.equal((await get(deps, `/players/${player}?${q}`)).status, 400, q);
+  }
+  assert.equal((await get(deps, '/leaderboard?season=s1')).status, 200);
+});
+test('rank follows page offsets; a page past the end is empty with an unchanged total', t => {
+  const db = database(t), round = fixture();
+  for (const n of [11, 12, 13, 14]) round.participants.push({ ...structuredClone(round.participants[0]), uuid: uid(n), name: `P${n}`, score: n });
+  db.ingest(round);
+  const all = db.leaderboard(query('limit=100')).players.map(p => p.uuid);
+  for (const page of [1, 2, 3]) {
+    const board = db.leaderboard(query(`limit=2&page=${page}`));
+    board.players.forEach((p, index) => { assert.equal(p.rank, (page - 1) * 2 + index + 1); assert.equal(p.uuid, all[p.rank - 1]); });
+  }
+  const past = db.leaderboard(query('limit=2&page=9'));
+  assert.deepEqual(past.players, []); assert.equal(past.total, 5);
+  assert.equal(db.player(uid(11), query('limit=1')).totals.rank, all.indexOf(uid(11)) + 1);
+});
+test('known profile with a non-matching filter has empty history, not errors or nulls', t => {
+  const db = database(t), round = twoSided(); db.ingest(round); db.ingest(campaignOf(round));
+  const detail = db.player(player, query('mode=room'));
+  assert.equal(detail.totals, null); assert.deepEqual(detail.history, []); assert.deepEqual(detail.classes, []);
+  assert.deepEqual({ ...detail.campaigns }, { completed: 0, wins: 0 }); assert.deepEqual(detail.ratingHistory, []);
+  assert.ok(detail.mmr); assert.ok(Number.isFinite(Date.parse(detail.checkedAt))); assert.equal(detail.season, null);
+});
+test('campaign summary before its rounds rates once per participant; late rounds do not change ratings', t => {
+  const db = database(t), round = twoSided(), summary = campaignOf(round);
+  db.ingest(summary);
+  const ratings = () => db.db.prepare('SELECT * FROM ratings ORDER BY uuid').all();
+  const changes = () => db.db.prepare('SELECT uuid,COUNT(*) n FROM rating_changes GROUP BY uuid ORDER BY uuid').all().map(r => [r.uuid, r.n]);
+  const before = ratings();
+  assert.deepEqual(changes(), [[player, 1], [uid(11), 1]]);
+  db.ingest(round); db.ingest(summary); db.ingest(round);
+  assert.deepEqual(ratings(), before); assert.deepEqual(changes(), [[player, 1], [uid(11), 1]]);
+  assert.equal(db.player(player, query()).totals.matches, 1);
+});
+test('draw campaign rates 0.5 for everyone; stopped campaign with a winner is rejected and never rates', t => {
+  const db = database(t), round = twoSided();
+  db.ingest({ ...campaignOf(round), endReason: 'draw', winner: 'NONE' });
+  assert.deepEqual(db.db.prepare('SELECT DISTINCT score FROM rating_changes').all().map(r => r.score), [0.5]);
+  const other = database(t);
+  assert.throws(() => other.ingest({ ...campaignOf(round), endReason: 'stopped', winner: 'RED' }), error => error.status === 422);
+  assert.equal(other.db.prepare('SELECT COUNT(*) n FROM rating_changes').get().n, 0);
+  assert.equal(other.db.prepare('SELECT COUNT(*) n FROM ratings').get().n, 0);
 });
