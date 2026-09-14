@@ -1,4 +1,5 @@
 import net from 'node:net';
+import { open } from 'node:fs/promises';
 
 export type CapturePoint = { id: string; name: string; owner: string; claiming: string; capturing: string; progress: number };
 export type Battle = { red: number; blue: number; points: CapturePoint[] };
@@ -10,7 +11,28 @@ export function validBattle(battle: any): boolean {
 }
 export type Room = { id: string; name: string; mode: string; map: string; phase: string; players: number; joinable: boolean; battle?: Battle | null };
 // available — игровой сервер отвечает; lobby — прокси с лобби отвечает (при рестарте игрового сервера туда можно зайти).
-export type RoomStatus = { available: boolean; checkedAt: number; rooms: Room[]; lobby?: boolean };
+export type Maintenance = { message: string; since: number | null };
+export type RoomStatus = { available: boolean; checkedAt: number; rooms: Room[]; lobby?: boolean; maintenance?: Maintenance };
+export const maintenanceMessage = 'На сервере проводятся технические работы. Обычный вход временно недоступен.';
+// Любое значение, кроме валидного mode "game", закрывает вход (fail closed).
+export function maintenanceFrom(value: any): Maintenance | null {
+  if (value?.mode === 'game') return null;
+  const valid = ['draining', 'workshop', 'maintenance'].includes(value?.mode);
+  const message = valid && typeof value.message === 'string' ? value.message.trim().slice(0, 500) : '';
+  return { message: message || maintenanceMessage, since: valid && Number.isSafeInteger(value.since) ? value.since : null };
+}
+export async function readGate(path: string | undefined): Promise<Maintenance | null> {
+  if (!path) return null;
+  try {
+    const file = await open(path);
+    try {
+      const buffer = Buffer.alloc(16_385);
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+      if (bytesRead === buffer.length) throw new Error('Gate file too large');
+      return maintenanceFrom(JSON.parse(buffer.subarray(0, bytesRead).toString()));
+    } finally { await file.close(); }
+  } catch { return maintenanceFrom(null); }
+}
 export const phases: Record<string, string> = { IDLE: 'Ожидание игроков', VOTING: 'Голосование', PREPARING: 'Подготовка', GAME: 'Бой', MATCH_END: 'Матч завершён' };
 export const roomId = /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 export function parseRooms(value: any): RoomStatus {
@@ -80,11 +102,12 @@ export function currentRooms(): Promise<RoomStatus> {
   const env = process.env;
   const publicHost = 'minecraft.play.nether.pp.ua';
   // За Velocity комнаты отдаёт только игровой сервер (внутренний адрес), а публичный адрес — это прокси с лобби.
-  return inflight ??= Promise.all([
-    queryRooms(env.BLOCKFIELD_SERVER_HOST || publicHost, Number(env.BLOCKFIELD_SERVER_PORT || 25565))
-      .catch((): RoomStatus => ({ available: false, checkedAt: Date.now(), rooms: [] })),
+  return inflight ??= readGate(env.BLOCKFIELD_GATE_FILE).then(maintenance => Promise.all([
+    maintenance ? { available: false, checkedAt: Date.now(), rooms: [], maintenance }
+      : queryRooms(env.BLOCKFIELD_SERVER_HOST || publicHost, Number(env.BLOCKFIELD_SERVER_PORT || 25565))
+        .catch((): RoomStatus => ({ available: false, checkedAt: Date.now(), rooms: [] })),
     queryStatus(env.BLOCKFIELD_LOBBY_HOST || publicHost, Number(env.BLOCKFIELD_LOBBY_PORT || 25565)).then(() => true, () => false),
-  ])
+  ]))
     .then(([rooms, lobby]) => { const value = { ...rooms, lobby }; cache = value; until = Date.now() + 5000; return value; })
     .finally(() => { inflight = undefined; });
 }

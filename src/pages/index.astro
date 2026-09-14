@@ -1287,7 +1287,8 @@ const features = [
         link.textContent = account.username;
         link.setAttribute('aria-label', `Аккаунт: ${account.username}`);
       }).catch(() => {});
-      document.querySelector('#lobby-join')?.addEventListener('click', () => {
+      const lobbyJoin = document.querySelector<HTMLElement>('#lobby-join')!;
+      lobbyJoin.addEventListener('click', () => {
         const note = document.querySelector('#room-launch-status') as HTMLElement;
         note.hidden = false;
         note.textContent = 'Подтвердите открытие лаунчера в браузере. Если он не открылся, установите или обновите лаунчер и нажмите кнопку ещё раз.';
@@ -1299,6 +1300,13 @@ const features = [
           const response = await fetch('/api/rooms', { signal: AbortSignal.timeout(6000) });
           if (!response.ok) throw new Error();
           const status = await response.json();
+          lobbyJoin.hidden = Boolean(status.maintenance);
+          if (status.maintenance) {
+            lastRooms = ''; roomList.replaceChildren();
+            roomSection.hidden = false; roomNav.hidden = false;
+            roomStatus.textContent = status.maintenance.message;
+            return;
+          }
           if (!status.available && status.lobby) {
             lastRooms = ''; roomList.replaceChildren();
             roomSection.hidden = !invitedRoom; roomNav.hidden = true;
