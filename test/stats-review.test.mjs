@@ -92,7 +92,7 @@ test('conflicting personal winner replay cannot rewrite an accepted victory', t 
   assert.equal(store.player(beta, query()).totals.wins, 0);
 });
 
-test('schema 1 database with results opens under schema 3 without losing data', async () => {
+test('schema 1 database with results opens under schema 4 without losing data', async () => {
   const { DatabaseSync } = await import('node:sqlite');
   const directory = mkdtempSync(join(tmpdir(), 'bf-migrate-'));
   try {
@@ -103,7 +103,7 @@ test('schema 1 database with results opens under schema 3 without losing data', 
     legacy.exec('DROP TABLE rating_changes; DROP TABLE ratings; PRAGMA user_version=1;'); legacy.close();
     const upgraded = new StatsStore(path);
     try {
-      assert.equal(upgraded.db.prepare('PRAGMA user_version').get().user_version, 3);
+      assert.equal(upgraded.db.prepare('PRAGMA user_version').get().user_version, 4);
       assert.equal(upgraded.ingest(result).inserted, false);
       assert.equal(upgraded.player(alpha, query()).totals.wins, 1);
       assert.equal(upgraded.db.prepare('SELECT COUNT(*) n FROM ratings').get().n, 0);
@@ -111,7 +111,7 @@ test('schema 1 database with results opens under schema 3 without losing data', 
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('schema 2 lifetime ratings migrate in place to schema 3 season 1 rows', async t => {
+test('schema 2 lifetime ratings migrate in place to schema 4 season 1 rows', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-02T00:00:00Z') });
   const { DatabaseSync } = await import('node:sqlite');
   const directory = mkdtempSync(join(tmpdir(), 'bf-migrate-v3-'));
@@ -132,7 +132,7 @@ test('schema 2 lifetime ratings migrate in place to schema 3 season 1 rows', asy
     legacy.close();
     const upgraded = new StatsStore(path);
     try {
-      assert.equal(upgraded.db.prepare('PRAGMA user_version').get().user_version, 3);
+      assert.equal(upgraded.db.prepare('PRAGMA user_version').get().user_version, 4);
       const ratings = () => upgraded.db.prepare(`SELECT season_id,${columns} FROM ratings ORDER BY uuid`).all().map(r => ({ ...r }));
       assert.equal(before.length, 2); assert.deepEqual(ratings(), before);
       assert.deepEqual(upgraded.db.prepare('SELECT DISTINCT season_id FROM rating_changes').all().map(r => r.season_id), ['s1']);
@@ -150,7 +150,7 @@ test('winner UUID survives reopen', () => {
     const first = new StatsStore(path); first.ingest(result); first.close();
     const second = new StatsStore(path);
     try {
-      assert.equal(second.db.prepare('PRAGMA user_version').get().user_version, 3);
+      assert.equal(second.db.prepare('PRAGMA user_version').get().user_version, 4);
       assert.equal(second.ingest(result).inserted, false);
       assert.equal(second.player(alpha, query()).totals.wins, 1);
     } finally { second.close(); }

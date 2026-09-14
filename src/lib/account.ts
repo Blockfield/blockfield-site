@@ -75,9 +75,9 @@ async function readBody(request: Request, max: number, message: string): Promise
   return Buffer.concat(chunks);
 }
 
-export async function readJson(request: Request): Promise<any> {
+export async function readJson(request: Request, max = 4096): Promise<any> {
   if (!request.headers.get('content-type')?.startsWith('application/json')) throw fail(415, 'Ожидался JSON.');
-  const text = (await readBody(request, 4096, 'Слишком большой запрос.')).toString();
+  const text = (await readBody(request, max, 'Слишком большой запрос.')).toString();
   try { return JSON.parse(text); } catch { throw fail(400, 'Некорректный запрос.'); }
 }
 
