@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StatsStore, StatsError, filters, seasons, validateResult, handleStatsRequest } from '../src/lib/stats.ts';
+import { inflate } from '../src/lib/glicko2.ts';
 
 const server = '00000000-0000-4000-8000-000000000001';
 const id = '00000000-0000-4000-8000-000000000002';
@@ -275,4 +276,61 @@ test('draw campaign rates 0.5 for everyone; stopped campaign with a winner is re
   assert.throws(() => other.ingest({ ...campaignOf(round), endReason: 'stopped', winner: 'RED' }), error => error.status === 422);
   assert.equal(other.db.prepare('SELECT COUNT(*) n FROM rating_changes').get().n, 0);
   assert.equal(other.db.prepare('SELECT COUNT(*) n FROM ratings').get().n, 0);
+});
+
+function rankedAt(n, time, winner = 'RED', red = player, blue = uid(11)) {
+  const round = fixture(), row = round.participants[0];
+  return { ...round, kind: 'campaign', eventId: uid(n), campaignSessionId: uid(n), matchId: null, mapId: null, rounds: [id], startedAt: time, endedAt: time, winner,
+    participants: [{ ...row, uuid: red }, { ...structuredClone(row), uuid: blue, name: 'Bravo', team: 'BLUE' }] };
+}
+const roundAt = (n, time) => ({ ...rankedAt(n, time), kind: 'match', matchId: uid(n), mapId: 'test', rounds: [] });
+const change = (db, n, uuid) => db.db.prepare('SELECT * FROM rating_changes WHERE event_id=? AND uuid=?').get(uid(n), uuid);
+const seasonRatings = (db, season) => db.db.prepare('SELECT * FROM ratings WHERE season_id=? ORDER BY uuid').all(season).map(r => ({ ...r }));
+function inSeasonTwo(t) { t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2027-02-01T00:00:00Z') }); return database(t); }
+
+test('first campaign of a season soft-resets the previous season (1700/RD 60 -> 1600/RD 200); newcomers start at initial', t => {
+  const db = inSeasonTwo(t), seed = db.db.prepare('INSERT INTO ratings VALUES (?,?,?,?,?,?,?)');
+  seed.run('s1', player, 1700, 60, 0.05, 30, Date.parse('2026-12-20T00:00:00Z'));
+  db.ingest(rankedAt(40, '2027-01-03T00:00:00Z'));
+  const carried = change(db, 40, player), newcomer = change(db, 40, uid(11));
+  assert.deepEqual([carried.season_id, carried.before_rating, carried.before_rd, carried.before_volatility], ['s2', 1600, 200, 0.05]);
+  assert.deepEqual([newcomer.before_rating, newcomer.before_rd, newcomer.before_volatility], [1500, 350, 0.06]);
+  assert.equal(db.player(player, query()).mmr.ratedCampaigns, 1); // provisional count restarts within the season
+  assert.deepEqual([seasonRatings(db, 's1')[0].rating, seasonRatings(db, 's1')[0].rd], [1700, 60]);
+  // Idle weeks inflate the carried-over RD from the season start, not from the last season 1 rating.
+  seed.run('s1', uid(12), 1700, 60, 0.05, 30, Date.parse('2026-12-20T00:00:00Z'));
+  db.ingest(rankedAt(41, '2027-01-15T00:00:00Z', 'RED', uid(12), uid(13)));
+  assert.equal(change(db, 41, uid(12)).before_rd, inflate({ rating: 1600, rd: 200, volatility: 0.05 }, 2).rd);
+});
+test('a campaign ending exactly at a season start rates in the new season; 1 ms earlier rates in the old one', t => {
+  const db = inSeasonTwo(t);
+  db.ingest(rankedAt(42, '2026-12-31T23:59:59.999Z')); db.ingest(rankedAt(43, '2027-01-01T00:00:00.000Z'));
+  const old = change(db, 42, player), next = change(db, 43, player);
+  assert.deepEqual([old.season_id, next.season_id], ['s1', 's2']);
+  assert.equal(next.before_rating, 1500 + 0.5 * (old.after_rating - 1500)); assert.equal(next.before_rd, Math.max(old.after_rd, 200));
+  assert.deepEqual(db.db.prepare('SELECT season_id,rated_campaigns FROM ratings WHERE uuid=? ORDER BY season_id').all(player).map(r => [r.season_id, r.rated_campaigns]), [['s1', 1], ['s2', 1]]);
+});
+test('a late result for an old season rates only that season; replays stay idempotent', t => {
+  const db = inSeasonTwo(t);
+  db.ingest(rankedAt(44, '2026-12-01T00:00:00Z')); db.ingest(rankedAt(45, '2027-01-10T00:00:00Z'));
+  const current = seasonRatings(db, 's2'), old = seasonRatings(db, 's1'), mmr = db.player(player, query()).mmr;
+  const late = rankedAt(46, '2026-12-15T00:00:00Z', 'BLUE');
+  db.ingest(late); db.ingest(structuredClone(late)); db.ingest(rankedAt(45, '2027-01-10T00:00:00Z'));
+  assert.deepEqual(seasonRatings(db, 's2'), current); assert.deepEqual(db.player(player, query()).mmr, mmr);
+  assert.notDeepEqual(seasonRatings(db, 's1'), old); assert.equal(seasonRatings(db, 's1')[0].rated_campaigns, 2);
+  assert.equal(change(db, 46, player).season_id, 's1'); assert.equal(db.db.prepare('SELECT COUNT(*) n FROM rating_changes').get().n, 6);
+});
+test('API mmr, ratingHistory and sort=rating follow the selected season, defaulting to the current one', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2027-02-01T00:00:00Z') });
+  const deps = dependencies(t);
+  for (const [n, time, winner] of [[47, '2026-11-01T00:00:00Z', 'RED'], [48, '2027-01-10T00:00:00Z', 'BLUE']]) { deps.store.ingest(roundAt(n + 100, time)); deps.store.ingest(rankedAt(n, time, winner)); }
+  const s1 = await (await get(deps, `/players/${player}?season=s1`)).json(), current = await (await get(deps, `/players/${player}`)).json();
+  assert.deepEqual([s1.mmrSeason, current.mmrSeason, current.season], ['s1', 's2', null]);
+  assert.deepEqual(s1.ratingHistory.map(h => h.campaignSessionId), [uid(47)]); assert.deepEqual(current.ratingHistory.map(h => h.campaignSessionId), [uid(48)]);
+  assert.ok(s1.mmr.rating > 1500 && current.mmr.rating < s1.mmr.rating, `${s1.mmr.rating} / ${current.mmr.rating}`); assert.equal(current.mmr.ratedCampaigns, 1);
+  const board = async q => (await get(deps, `/leaderboard?sort=rating${q}`)).json();
+  const b1 = await board('&season=s1'), b2 = await board('');
+  assert.deepEqual([b1.mmrSeason, b2.mmrSeason], ['s1', 's2']);
+  assert.deepEqual(b1.players.map(p => p.uuid), [player, uid(11)]); assert.deepEqual(b2.players.map(p => p.uuid), [uid(11), player]);
+  assert.deepEqual(b1.players[0].mmr, s1.mmr); assert.deepEqual(b2.players[1].mmr, current.mmr);
 });

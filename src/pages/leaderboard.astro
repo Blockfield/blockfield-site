@@ -4,6 +4,7 @@ import { statsStore, filters, seasons, StatsError } from '../lib/stats';
 let board: ReturnType<ReturnType<typeof statsStore>['leaderboard']> | null = null;
 let error = '';
 const started = seasons(), current = started.at(-1);
+const seasonName = (id?: string) => started.find(s => s.id === id)?.name ?? 'Сезон 1';
 // The period select also lists seasons; the API takes those as `season`, never together with `period`.
 const params = new URLSearchParams(Astro.url.searchParams);
 if (started.some(s => s.id === params.get('period'))) { params.set('season', params.get('period')!); params.delete('period'); }
@@ -25,11 +26,11 @@ const number = (n: unknown) => Number(n).toLocaleString('ru-RU', { maximumFracti
     <div class="field"><span id="f-sort">Сортировка</span><select name="sort" aria-labelledby="f-sort">{sorts.map(([value,label]) => <option value={value} selected={value === (Astro.url.searchParams.get('sort') || 'score')}>{label}</option>)}</select></div>
     <div class="actions"><button type="submit">Применить</button><a href="/leaderboard">Сбросить</a></div>
   </form>
-  {current && <p class="muted">Текущий сезон: <strong>{current.name}</strong> · {day(current.startsAt)} — {day(current.endsAt)} (UTC). MMR не сбрасывается между сезонами.</p>}
-  <p class="notice">MMR — рейтинг Glicko-2: меняется один раз за целую завершённую Ranked-кампанию (победа, поражение или ничья), не за раунд. Остановленные и прерванные кампании, Casual и Deathmatch его не меняют. «?» — предварительный рейтинг (меньше 5 кампаний).</p>
+  {current && <p class="muted">Текущий сезон: <strong>{current.name}</strong> · {day(current.startsAt)} — {day(current.endsAt)} (UTC).</p>}
+  <p class="notice">MMR — сезонный рейтинг Glicko-2: меняется один раз за целую завершённую Ranked-кампанию (победа, поражение или ничья), не за раунд. Остановленные и прерванные кампании, Casual и Deathmatch его не меняют. В начале сезона рейтинг сдвигается к 1500 на половину разницы (мягкий сброс). «?» — предварительный рейтинг (меньше 5 кампаний за сезон).</p>
   {error ? <p class="notice" role="status">{error}</p> : board && board.total === 0 ? <p class="notice" role="status">За выбранный период ещё нет результатов.</p> : board && <>
     <div class="table-wrap" tabindex="0" aria-label="Таблица результатов, возможна горизонтальная прокрутка">
-      <table><thead><tr><th scope="col">Место</th><th scope="col">Игрок</th><th class="num" scope="col">MMR</th><th class="num" scope="col">Очки</th><th class="num" scope="col">K / D</th><th class="num" scope="col">Захваты</th><th class="num" scope="col">Бои / победы</th></tr></thead>
+      <table><thead><tr><th scope="col">Место</th><th scope="col">Игрок</th><th class="num mmr" scope="col">MMR&nbsp;· <span>{seasonName(board.mmrSeason)}</span></th><th class="num" scope="col">Очки</th><th class="num" scope="col">K / D</th><th class="num" scope="col">Захваты</th><th class="num" scope="col">Бои / победы</th></tr></thead>
         <tbody>{board.players.map((p: any) => <tr><td>{p.rank}</td><td class="player"><a href={`/players/${p.uuid}`}>{p.name}</a></td><td class="num">{rating(p.mmr)}</td><td class="num">{number(p.score)}</td><td class="num">{number(p.kills)} / {number(p.deaths)}</td><td class="num">{number(p.captures)}</td><td class="num">{number(p.matches)} / {number(p.wins)}</td></tr>)}</tbody>
       </table>
     </div>
@@ -39,6 +40,7 @@ const number = (n: unknown) => Number(n).toLocaleString('ru-RU', { maximumFracti
     .field { display: grid; gap: 8px; color: #C7AE86; font-size: 14px; min-width: 200px; }
     .field select, .field .select-trigger, form .actions button, form .actions a { height: 48px; }
     .actions { display: flex; align-items: center; gap: 24px; }
+    th.mmr { white-space: normal; } th.mmr span { white-space: nowrap; }
     .actions a { display: inline-flex; align-items: center; }
     .select { position: relative; }
     .select-trigger { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 16px; text-align: left; font-size: 16px; font-weight: 400; background: #11100D; color: #F3E7D0; }
