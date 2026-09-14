@@ -20,9 +20,12 @@ const FILE_BALANCE = {
   uncapture_speed_percent_per_tick: 3, score_per_kill: 15, score_per_obj_sec: 0.5, score_per_capture: 50, score_per_uncapture: 25,
   preparation_time_seconds: 60, transition_time_seconds: 10, enable_spawn_shield: true, spawn_shield_duration_seconds: 5, safe_spawn_threshold: 90,
   base_warn_radius: 100, base_kill_radius: 80, max_players_per_team: 16, base_spawn_time_seconds: 10, spawn_time_per_point_seconds: 5,
-  shuffle_teams_between_rounds: false, min_players_per_team: 2, ready_countdown_seconds: 15, reserve_seconds: 180, ready_timeout_seconds: 120,
+  shuffle_teams_between_rounds: false, min_players_per_team: 1, ready_countdown_seconds: 15, reserve_seconds: 180, ready_timeout_seconds: 120,
 } as Record<string, number | boolean>;
-/** Values from the game's own files, shown as "по умолчанию". */
+/**
+ * Values from the game's own files, shown as "по умолчанию". Keys no file sets use CampaignConfig's code defaults
+ * (min_players_per_team 1, ready_countdown_seconds 15, reserve_seconds 180, ready_timeout_seconds 120).
+ */
 export const BALANCE_DEFAULTS: Record<string, Record<string, number | boolean>> = { Center: FILE_BALANCE, South: { ...FILE_BALANCE, max_tickets: 100 }, room: FILE_BALANCE };
 
 export type Field = { key: string; label: string; unit?: string; hint?: string };

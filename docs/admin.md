@@ -8,6 +8,8 @@ The page is written for people who do not know the internals: Russian sentences,
 
 - Display names for class, map, mode and campaign ids, balance labels/groups and the game-file balance defaults live in `src/lib/game-names.ts`, a hand-kept copy of `blockfield-modpack/server/lobby/blockfield/{classes,campaigns,maps,modes}`. Update it when the modpack adds content; unknown ids show a neutral label and are preserved on save. A test checks that every `BALANCE` key has a label and a default.
 - Read-only API additions: `GET bans` (`ban`): the latest successful site ban/pardon per nickname from the audit log (in-game bans are not listed; «Разбанить» by nickname covers them). `GET results` rows carry `mapId`, `players:[{uuid,name,team}]` (sorted by score, UUID-like names resolved or «Неизвестный игрок») and `winnerName`. `POST rcon` `stop-room` returns and audits the room's name and map; `POST results/void` audits the match mode, map and time. `overview.rooms.online` is the proxy's online count when it reports one.
+- Settings keep "absent = server default" for every field: empty number fields, «По умолчанию» selects (including lobby PvP) and an untouched class list are not written (`src/lib/settings-form.ts`, tested). Defaults are named in the hint, never as placeholders.
+- All times on the site are UTC and labelled; relative times («5 минут назад») are used in lists.
 - Owner rows fall back to the Drasl name, then the last known profile name, then the signed-in owner's own name, then «Неизвестный игрок».
 
 ## Roles

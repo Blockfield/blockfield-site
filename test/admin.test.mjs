@@ -209,3 +209,14 @@ test('owner row falls back to the last known profile name, the signed-in owner n
   const response = await handleAdmin({ request: new Request(url), url, cookies: { get: () => undefined } }, 'staff', s);
   assert.deepEqual((await response.json()).owners, [{ uuid: OWNER, name: 'Nether' }, { uuid: second, name: 'Second' }, { uuid: third, name: 'Неизвестный игрок' }]);
 });
+
+test('review: stop-room without RCON configured fails fast, before querying rooms', async t => {
+  const saved = { ...process.env };
+  t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
+  Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test', BLOCKFIELD_ADMIN_DEV_USER: `${OWNER}:Nether`, BLOCKFIELD_SERVER_HOST: '10.255.255.1', BLOCKFIELD_LOBBY_HOST: '10.255.255.1' });
+  delete process.env.BLOCKFIELD_RCON_HOST; delete process.env.BLOCKFIELD_GATE_FILE;
+  const s = store(t), url = new URL('http://site/api/admin/rcon'), started = Date.now();
+  const request = new Request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'stop-room', roomId: '0f8e0c3a-1b2c-4d5e-8f90-123456789abc', outcome: 'draw' }) });
+  const response = await handleAdmin({ request, url, cookies: { get: () => undefined } }, 'rcon', s).then(r => r, e => e);
+  assert.equal(response.status, 503); assert.ok(Date.now() - started < 1000);
+});

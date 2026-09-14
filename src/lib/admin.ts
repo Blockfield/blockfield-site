@@ -284,11 +284,11 @@ const routes: Record<string, Route> = {
   'POST rcon': { permission: 'moderate', handler: async ({ actor, body }) => {
     const { permission, commands } = rconCommand(body);
     if (!can(actor.role, permission)) throw fail(403, 'Недостаточно прав.');
+    const env = process.env;
+    if (!env.BLOCKFIELD_RCON_HOST || !env.BLOCKFIELD_RCON_PASSWORD) throw fail(503, 'RCON не настроен на сайте.');
     // Room ids are not meaningful to people: keep the room's name and map for the audit log.
     const found = body.action === 'stop-room' ? (await currentRooms()).rooms.find(r => r.id === body.roomId) : undefined;
     const room = found ? { name: found.name, map: found.map } : undefined;
-    const env = process.env;
-    if (!env.BLOCKFIELD_RCON_HOST || !env.BLOCKFIELD_RCON_PASSWORD) throw fail(503, 'RCON не настроен на сайте.');
     const outputs = await rcon(commands, { host: env.BLOCKFIELD_RCON_HOST, port: Number(env.BLOCKFIELD_RCON_PORT || 25575), password: env.BLOCKFIELD_RCON_PASSWORD })
       .catch((error: Error) => { console.error('RCON failed', error.message); throw hidden(502, 'Игровой сервер не отвечает.', error.message); });
     const output = stripColors(outputs.at(-1) ?? '');

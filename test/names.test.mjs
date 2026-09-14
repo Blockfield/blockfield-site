@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { StatsStore, displayName, filters, handleStatsRequest, resolveNames, uuidLike } from '../src/lib/stats.ts';
 import { BALANCE, siteBans } from '../src/lib/admin.ts';
 import { BALANCE_GROUPS, BALANCE_DEFAULTS } from '../src/lib/game-names.ts';
+import { settingsBody } from '../src/lib/settings-form.ts';
 
 const uid = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const server = uid(1), player = 'fa21daa3-0c6e-31df-b689-b445b9f10ec8';
@@ -77,4 +78,16 @@ test('every balance key has a Russian label and a default', () => {
   const labelled = BALANCE_GROUPS.flatMap(g => g.fields.map(f => f.key));
   assert.deepEqual([...labelled].sort(), Object.keys(BALANCE).sort());
   for (const scope of Object.values(BALANCE_DEFAULTS)) assert.deepEqual(Object.keys(scope).sort(), Object.keys(BALANCE).sort());
+});
+
+test('balance defaults follow the mod: no file sets min_players_per_team, CampaignConfig defaults to 1', () => {
+  for (const scope of Object.values(BALANCE_DEFAULTS)) assert.equal(scope.min_players_per_team, 1);
+  assert.equal(BALANCE_DEFAULTS.South.max_tickets, 100); assert.equal(BALANCE_DEFAULTS.Center.max_tickets, 500);
+});
+
+test('settings form: untouched fields, including PvP, are not written; explicit values are', () => {
+  const empty = { pvpEnabled: '', lobby: { pvpCooldownSeconds: '' }, rooms: { maxRooms: '' }, lockedClasses: [], hadLocks: false, balance: { '*': {} } };
+  assert.deepEqual(settingsBody(3, empty), { expectedRevision: 3 });
+  assert.deepEqual(settingsBody(3, { ...empty, pvpEnabled: 'false', rooms: { maxRooms: '4' }, hadLocks: true, balance: { South: { max_tickets: 150 } } }),
+    { expectedRevision: 3, lobby: { pvpEnabled: false }, rooms: { maxRooms: 4 }, classLocks: [], campaignBalance: { South: { max_tickets: 150 } } });
 });

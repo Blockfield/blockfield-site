@@ -92,7 +92,7 @@ import '@fontsource/ibm-plex-mono/500.css';
           </article>
           <article class="card" aria-labelledby="byname-title">
             <h3 id="byname-title">Найти по никнейму</h3>
-            <p class="muted">Если игрока нет в списке — например, чтобы забанить или разбанить его, пока он не в сети.</p>
+            <p class="muted" id="byname-about">Если игрока нет в списке — например, чтобы забанить или разбанить его, пока он не в сети.</p>
             <form id="byname-form">
               <label for="byname">Никнейм игрока</label>
               <input id="byname" name="player" required pattern="[A-Za-z0-9_]{3,16}" autocomplete="off" aria-describedby="byname-hint" />
@@ -123,12 +123,18 @@ import '@fontsource/ibm-plex-mono/500.css';
 
       <section id="settings" data-perm="settings" data-tab="Настройки игры" hidden aria-labelledby="settings-title">
         <h2 id="settings-title" tabindex="-1">Настройки игры</h2>
+        <p class="muted">Пустое поле или «По умолчанию» не сохраняется: сервер использует своё значение, оно написано под полем.</p>
         <p id="settings-state" class="banner" role="status">Загружаем настройки…</p>
         <form id="settings-form">
           <fieldset class="card">
             <legend>Лобби</legend>
-            <label class="switch"><input type="checkbox" role="switch" name="pvpEnabled" /><span>Разрешить PvP в лобби</span></label>
-            <small>Если включить или выключить, у всех в лобби PvP сбросится в «выключено».</small>
+            <div class="fields">
+              <div class="field">
+                <label for="pvp">PvP в лобби</label>
+                <select id="pvp" name="pvpEnabled" aria-describedby="pvp-hint"><option value="">По умолчанию (включено)</option><option value="true">Включено</option><option value="false">Выключено</option></select>
+                <small id="pvp-hint">«По умолчанию» — решает сервер, обычно PvP включено. При смене у всех в лобби PvP сбросится в «выключено».</small>
+              </div>
+            </div>
             <div id="lobby-fields" class="fields"></div>
           </fieldset>
           <fieldset class="card">
@@ -186,7 +192,7 @@ import '@fontsource/ibm-plex-mono/500.css';
 
       <section id="stats" data-perm="stats" data-tab="Статистика" hidden aria-labelledby="stats-title">
         <h2 id="stats-title" tabindex="-1">Статистика</h2>
-        <p class="muted">Сыгранные матчи, которые попали в лидерборд. Если матч сыгран нечестно или с ошибкой, его можно не учитывать: он пропадёт из лидерборда и профилей, а рейтинг пересчитается.</p>
+        <p class="muted">Сыгранные матчи, которые попали в лидерборд (время — UTC). Если матч сыгран нечестно или с ошибкой, его можно не учитывать: он пропадёт из лидерборда и профилей, а рейтинг пересчитается.</p>
         <div class="scope">
           <label for="result-mode">Показать</label>
           <select id="result-mode"><option value="">Все матчи</option><option value="campaign">Ranked-кампании</option><option value="room">Обычные бои</option><option value="deathmatch">Каждый сам за себя</option></select>
@@ -358,7 +364,8 @@ import '@fontsource/ibm-plex-mono/500.css';
       .log { list-style: none; margin: 0; padding: 0; display: grid; }
       .log li { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
       .log time { color: var(--muted); font-size: 14px; white-space: nowrap; }
-      .log .fail { grid-column: 1 / -1; color: var(--red); font-size: 15px; }
+      .log li.failed { border-left: 3px solid var(--red); padding-left: 12px; }
+      .log .fail { color: var(--red); font-weight: 600; }
 
       dialog { background: var(--panel); color: #F3E7D0; border: 1px solid #5C4526; border-radius: 10px; padding: 0; width: min(520px, calc(100vw - 24px)); }
       dialog::backdrop { background: #000b; }
@@ -379,6 +386,7 @@ import '@fontsource/ibm-plex-mono/500.css';
 
     <script>
       import { BALANCE_DEFAULTS, BALANCE_GROUPS, BALANCE_LABELS, BALANCE_SCOPES, CLASS_NAMES, MAP_NAMES, MODE_NAMES, TEAM_NAMES } from '../lib/game-names';
+      import { settingsBody } from '../lib/settings-form';
 
       type Me = { name: string; role: string | null; permissions: string[] };
       const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
@@ -396,9 +404,10 @@ import '@fontsource/ibm-plex-mono/500.css';
       let me: Me;
       const can = (permission: string) => me.permissions.includes(permission);
 
-      const dateFormat = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+      // The whole site shows times in UTC (leaderboard and player pages too), always labelled.
+      const dateFormat = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
       const relative = new Intl.RelativeTimeFormat('ru', { numeric: 'auto' });
-      const date = (ms: number) => dateFormat.format(ms);
+      const date = (ms: number) => `${dateFormat.format(ms)} UTC`;
       function ago(ms: number) {
         const seconds = (ms - Date.now()) / 1000;
         for (const [unit, size] of [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]] as const)
@@ -623,7 +632,7 @@ import '@fontsource/ibm-plex-mono/500.css';
 
       // ---------- Settings ----------
       type Rule = { type: 'int' | 'double' | 'bool'; min?: number; max?: number };
-      let rules: Record<string, Rule> = {}, settingsRevision = 0, balance: Record<string, Record<string, number | boolean>> = {}, scope = '*', extraLocks: string[] = [];
+      let rules: Record<string, Rule> = {}, settingsRevision = 0, balance: Record<string, Record<string, number | boolean>> = {}, scope = '*', extraLocks: string[] = [], hadLocks = false;
       const LOBBY = [{ key: 'pvpCooldownSeconds', label: 'Задержка перед выключением PvP', unit: 'сек', min: 0, max: 600, def: 10 }];
       const ROOMS = [
         { key: 'maxRooms', label: 'Сколько матчей может идти одновременно', unit: 'шт', min: 1, max: 16, def: 2 },
@@ -632,29 +641,29 @@ import '@fontsource/ibm-plex-mono/500.css';
       ];
       const SETTING_LABELS: Record<string, string> = { pvpEnabled: 'PvP в лобби', classLocks: 'Закрытые классы', ...Object.fromEntries([...LOBBY, ...ROOMS].map(f => [f.key, f.label])), ...BALANCE_LABELS };
       function numberField(label: string, name: string, min: number, max: number, step: string, value: unknown, fallback: string, unit?: string, about?: string) {
-        // The placeholder shows the fallback number only when it is a single value; the hint always explains it.
-        const placeholder = /^[\d\s,]+(\s|$)/.test(fallback) ? fallback.match(/^[\d\s,]+/)![0].trim() : '';
-        const input = el('input', { type: 'number', name, min, max, step, inputMode: step === '1' ? 'numeric' : 'decimal', value: value ?? '', placeholder });
+        const input = el('input', { type: 'number', name, min, max, step, inputMode: step === '1' ? 'numeric' : 'decimal', value: value ?? '' });
         const wrap = unit ? el('div', { className: 'unit' }, input, el('span', { textContent: unit, ariaHidden: 'true' })) : undefined;
-        return field(label, input, `${about ? `${about} ` : ''}От ${number(min)} до ${number(max)}. Если пусто: ${fallback}.`, wrap);
+        return field(label, input, `${about ? `${about} ` : ''}От ${number(min)} до ${number(max)}. Пустое поле — ${fallback}.`, wrap);
       }
       const shown = (v: number | boolean) => (typeof v === 'boolean' ? (v ? 'да' : 'нет') : number(v));
+      /** What the server uses when the field is empty, in words. */
       function fallbackFor(key: string) {
         if (scope !== '*') {
           const shared = balance['*']?.[key];
-          return shared !== undefined ? `${shown(shared)} (общее значение)` : `${shown(BALANCE_DEFAULTS[scope][key])} (из файлов игры)`;
+          return shared !== undefined ? `общее значение из «Все матчи»: ${shown(shared)}` : `по умолчанию ${shown(BALANCE_DEFAULTS[scope][key])} (из файлов игры)`;
         }
         const values = BALANCE_SCOPES.slice(1).map(s => [s.name, BALANCE_DEFAULTS[s.id][key]] as const);
-        return new Set(values.map(([, v]) => v)).size === 1 ? `${shown(values[0][1])} (из файлов игры)` : `как в файлах игры: ${values.map(([n, v]) => `${n} — ${shown(v)}`).join(', ')}`;
+        return new Set(values.map(([, v]) => v)).size === 1 ? `по умолчанию ${shown(values[0][1])} (из файлов игры)` : `по умолчанию как в файлах игры: ${values.map(([n, v]) => `${n} — ${shown(v)}`).join(', ')}`;
       }
+      const defaultValue = (key: string) => shown(scope === '*' ? BALANCE_DEFAULTS.room[key] : balance['*']?.[key] ?? BALANCE_DEFAULTS[scope][key]);
       function renderBalance() {
         const values = balance[scope] ?? {};
         $('#scope-hint').textContent = scope === '*' ? 'Общие значения для всех кампаний и обычных боёв.' : 'Значения только для этих матчей, поверх общих.';
         $('#balance-fields').replaceChildren(...BALANCE_GROUPS.map(group => el('div', { className: 'group' }, el('h4', { textContent: group.title }), el('div', { className: 'fields' }, ...group.fields.map(f => {
           const rule = rules[f.key], name = `b_${f.key}`;
           if (rule.type === 'bool') {
-            const select = el('select', { name }, ...[['', `По умолчанию (${fallbackFor(f.key).split(' ')[0]})`], ['true', 'Да'], ['false', 'Нет']].map(([value, text]) => el('option', { value, textContent: text, selected: String(values[f.key] ?? '') === value })));
-            return field(f.label, select, f.hint);
+            const select = el('select', { name }, ...[['', `По умолчанию (${defaultValue(f.key)})`], ['true', 'Да'], ['false', 'Нет']].map(([value, text]) => el('option', { value, textContent: text, selected: String(values[f.key] ?? '') === value })));
+            return field(f.label, select, `${f.hint ? `${f.hint} ` : ''}«По умолчанию» — ${fallbackFor(f.key)}.`);
           }
           return numberField(f.label, name, rule.min!, rule.max!, rule.type === 'int' ? '1' : '0.1', values[f.key], fallbackFor(f.key), f.unit, f.hint);
         })))));
@@ -683,44 +692,55 @@ import '@fontsource/ibm-plex-mono/500.css';
         });
       }
       let settingsPoll: ReturnType<typeof setTimeout> | undefined;
-      async function loadSettings(waitStarted = 0) {
+      async function loadSettings(waitStarted = 0, statusOnly = false) {
         const { settings, applied, balance: balanceRules } = await api('settings');
         rules = balanceRules; settingsRevision = settings.revision ?? 0;
+        if (!statusOnly) {
         const form = $<HTMLFormElement>('#settings-form');
-        (form.elements.namedItem('pvpEnabled') as HTMLInputElement).checked = settings.lobby?.pvpEnabled ?? false;
-        $('#lobby-fields').replaceChildren(...LOBBY.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.lobby?.[f.key], `${f.def} ${f.unit}`, f.unit)));
-        $('#room-fields').replaceChildren(...ROOMS.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.rooms?.[f.key], `${f.def} ${f.unit}`, f.unit)));
+        (form.elements.namedItem('pvpEnabled') as HTMLSelectElement).value = typeof settings.lobby?.pvpEnabled === 'boolean' ? String(settings.lobby.pvpEnabled) : '';
+        hadLocks = Array.isArray(settings.classLocks);
+        $('#lobby-fields').replaceChildren(...LOBBY.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.lobby?.[f.key], `значение сервера по умолчанию, ${f.def} ${f.unit}`, f.unit)));
+        $('#room-fields').replaceChildren(...ROOMS.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.rooms?.[f.key], `значение сервера по умолчанию, ${f.def} ${f.unit}`, f.unit)));
         const locks: string[] = settings.classLocks ?? [];
         extraLocks = locks.filter(id => !Object.hasOwn(CLASS_NAMES, id));
         $('#class-list').replaceChildren(...Object.entries(CLASS_NAMES).map(([id, name]) => el('label', { className: 'check' }, el('input', { type: 'checkbox', name: 'class', value: id, checked: !locks.includes(id) }), name)));
         balance = structuredClone(settings.campaignBalance ?? {});
         renderScopes(); renderBalance();
+        }
 
-        const state = $('#settings-state');
         clearTimeout(settingsPoll);
         const who = settings.updatedBy ? ` Последнее изменение: ${settings.updatedBy}, ${ago(settings.updatedAt)}.` : '';
-        if (!settings.revision) say(state, 'Настройки ещё не меняли — сервер работает на значениях по умолчанию.', 'ok');
-        else if (applied?.revision >= settings.revision && applied.errors?.length) say(state, `Сохранено, но сервер применил не всё: ${appliedErrors(applied.errors).join('; ')}.${who}`, 'error');
-        else if (applied?.revision >= settings.revision) say(state, `Сохранено и применено на сервере.${who}`, 'ok');
-        else if (waitStarted && Date.now() - waitStarted > 60_000) say(state, `Сохранено, но сервер пока не подтвердил применение. Возможно, он перезапускается или открыта мастерская — настройки применятся, когда игра запустится.${who}`, 'pending');
+        if (!settings.revision) settingsStatus('Настройки ещё не меняли — сервер работает на своих значениях по умолчанию.', 'ok', '');
+        else if (applied?.revision >= settings.revision && applied.errors?.length) settingsStatus(`Сохранено, но сервер применил не всё: ${appliedErrors(applied.errors).join('; ')}.${who}`, 'error', 'Применено не всё — подробности вверху.');
+        else if (applied?.revision >= settings.revision) settingsStatus(`Применено на сервере.${who}`, 'ok', 'Применено на сервере.');
+        else if (waitStarted && Date.now() - waitStarted > 60_000) settingsStatus(`Сохранено, но сервер пока не подтвердил применение. Возможно, он перезапускается или открыта мастерская — настройки применятся, когда игра запустится.${who}`, 'pending', 'Сохранено, сервер пока не подтвердил.');
         else {
-          say(state, 'Сохранено. Ждём, пока сервер применит настройки (обычно до 5 секунд)…', 'pending');
-          settingsPoll = setTimeout(() => loadSettings(waitStarted || Date.now()).catch(() => {}), 3000);
+          settingsStatus('Сохранено, сервер применяет настройки (обычно до 5 секунд)…', 'pending', 'Сохранено, сервер применяет…');
+          settingsPoll = setTimeout(() => loadSettings(waitStarted || Date.now(), true).catch(() => {}), 3000);
         }
       }
-      $<HTMLFormElement>('#settings-form').addEventListener('submit', e => {
+      /** One status in two places: the banner at the top and the sticky save bar. */
+      function settingsStatus(text: string, tone: 'ok' | 'error' | 'pending', short: string) {
+        say($('#settings-state'), text, tone);
+        const line = $('#settings-form .savebar .form-status');
+        if (short) say(line, short, tone); else line.textContent = '';
+      }
+      $<HTMLFormElement>('#settings-form').addEventListener('submit', async e => {
         e.preventDefault();
-        const form = e.currentTarget as HTMLFormElement;
-        run(form.querySelector('.form-status')!, async () => {
-          collectBalance();
-          const value = (name: string) => { const raw = (form.elements.namedItem(name) as HTMLInputElement).value; return raw === '' ? undefined : Number(raw); };
-          const lobby = { pvpEnabled: (form.elements.namedItem('pvpEnabled') as HTMLInputElement).checked, ...Object.fromEntries(LOBBY.map(f => [f.key, value(f.key)])) };
-          const rooms = Object.fromEntries(ROOMS.map(f => [f.key, value(f.key)]));
-          const classLocks = [...[...form.querySelectorAll<HTMLInputElement>('input[name=class]')].filter(c => !c.checked).map(c => c.value), ...extraLocks];
-          await api('settings', 'PUT', JSON.parse(JSON.stringify({ expectedRevision: settingsRevision, lobby, rooms, classLocks, campaignBalance: Object.keys(balance).length ? balance : undefined })));
-          await loadSettings();
-          return 'Сохранено.';
-        }, form.querySelector<HTMLElement>('.savebar'));
+        const form = e.currentTarget as HTMLFormElement, save = form.querySelector<HTMLButtonElement>('.savebar button')!;
+        collectBalance();
+        const value = (name: string) => (form.elements.namedItem(name) as HTMLInputElement).value;
+        const body = settingsBody(settingsRevision, {
+          pvpEnabled: value('pvpEnabled'),
+          lobby: Object.fromEntries(LOBBY.map(f => [f.key, value(f.key)])), rooms: Object.fromEntries(ROOMS.map(f => [f.key, value(f.key)])),
+          lockedClasses: [...[...form.querySelectorAll<HTMLInputElement>('input[name=class]')].filter(c => !c.checked).map(c => c.value), ...extraLocks],
+          hadLocks, balance,
+        });
+        save.disabled = true;
+        settingsStatus('Сохраняем…', 'pending', 'Сохраняем…');
+        try { await api('settings', 'PUT', body); await loadSettings(); }
+        catch (error) { settingsStatus((error as Error).message, 'error', (error as Error).message); }
+        finally { save.disabled = false; }
       });
 
       // ---------- Team ----------
@@ -836,45 +856,50 @@ import '@fontsource/ibm-plex-mono/500.css';
       });
 
       // ---------- Journal ----------
-      function sentence(a: any): string {
+      /** [past tense, infinitive for a failed attempt, rest of the sentence]. */
+      function sentence(a: any): [string, string, string] {
         let d: any = {};
         try { d = a.detail ? JSON.parse(a.detail) : {}; } catch {}
         const player = d.player ?? a.target, reason = d.reason ? `, причина: «${d.reason}»` : '';
-        const match = d.room ? `«${d.room.name}»${d.room.map ? ` на карте ${d.room.map}` : ''}` : '';
+        const match = d.room ? ` «${d.room.name}»${d.room.map ? ` на карте ${d.room.map}` : ''}` : '';
         const result = d.mode ? ` «${matchTitle(d)}» от ${date(d.endedAt)}` : '';
+        const cls = ` «${CLASS_NAMES[a.target] ?? 'неизвестный'}»`;
         switch (a.action) {
-          case 'mode': return a.target === 'workshop' ? 'включил мастерскую' : d.recover ? 'восстановил игровой режим' : 'вернул игровой режим';
-          case 'message': return `изменил сообщение для игроков: «${d.message ?? ''}»`;
-          case 'rcon:say': return `написал всем: «${d.text ?? ''}»`;
-          case 'rcon:kick': return `выгнал игрока ${player}${reason}`;
-          case 'rcon:ban': return `забанил игрока ${player}${reason}`;
-          case 'rcon:pardon': return `разбанил игрока ${player}`;
-          case 'rcon:team-kick': return `убрал игрока ${player} из матча`;
-          case 'rcon:class-lock': return `закрыл класс «${CLASS_NAMES[a.target] ?? 'неизвестный'}»`;
-          case 'rcon:class-unlock': return `открыл класс «${CLASS_NAMES[a.target] ?? 'неизвестный'}»`;
-          case 'rcon:range': return ({ open: 'открыл полигон', close: 'закрыл полигон', reset: 'сбросил полигон' } as Record<string, string>)[a.target] ?? 'изменил полигон';
-          case 'rcon:stop-room': return `завершил матч ${match}${match ? ' ' : ''}— ${(OUTCOMES.find(o => o[0] === d.outcome)?.[1] ?? 'без итога').toLowerCase()}${reason}`;
-          case 'rcon:maintenance-status': return 'проверил состояние техработ';
-          case 'rcon:drain': return 'запретил начинать новые матчи';
-          case 'rcon:interrupt': return `прервал все матчи${reason}`;
-          case 'settings': return 'изменил настройки игры';
-          case 'role-grant': return `назначил ${d.name ?? 'игрока'} на роль «${ROLES[d.role]?.name ?? 'участник'}»`;
-          case 'role-revoke': return `убрал ${d.name ?? 'игрока'} из команды`;
-          case 'workshop-sync': return 'обновил доступ в мастерскую';
-          case 'result-void': return `исключил из статистики матч${result}`;
-          case 'result-restore': return `вернул в статистику матч${result}`;
-          case 'ingest-key-create': return `создал ключ приёма результатов «${d.label ?? ''}»`;
-          case 'ingest-key-revoke': return 'отозвал ключ приёма результатов';
-          default: return 'выполнил действие в панели';
+          case 'mode': return a.target === 'workshop' ? ['включил', 'включить', ' мастерскую'] : d.recover ? ['восстановил', 'восстановить', ' игровой режим'] : ['вернул', 'вернуть', ' игровой режим'];
+          case 'message': return ['изменил', 'изменить', ` сообщение для игроков: «${d.message ?? ''}»`];
+          case 'rcon:say': return ['написал', 'написать', ` всем: «${d.text ?? ''}»`];
+          case 'rcon:kick': return ['выгнал', 'выгнать', ` игрока ${player}${reason}`];
+          case 'rcon:ban': return ['забанил', 'забанить', ` игрока ${player}${reason}`];
+          case 'rcon:pardon': return ['разбанил', 'разбанить', ` игрока ${player}`];
+          case 'rcon:team-kick': return ['убрал', 'убрать', ` игрока ${player} из матча`];
+          case 'rcon:class-lock': return ['закрыл', 'закрыть', ` класс${cls}`];
+          case 'rcon:class-unlock': return ['открыл', 'открыть', ` класс${cls}`];
+          case 'rcon:range': return a.target === 'open' ? ['открыл', 'открыть', ' полигон'] : a.target === 'close' ? ['закрыл', 'закрыть', ' полигон'] : ['сбросил', 'сбросить', ' полигон'];
+          case 'rcon:stop-room': return ['завершил', 'завершить', ` матч${match} — ${(OUTCOMES.find(o => o[0] === d.outcome)?.[1] ?? 'без итога').toLowerCase()}${reason}`];
+          case 'rcon:maintenance-status': return ['проверил', 'проверить', ' состояние техработ'];
+          case 'rcon:drain': return ['запретил', 'запретить', ' начинать новые матчи'];
+          case 'rcon:interrupt': return ['прервал', 'прервать', ` все матчи${reason}`];
+          case 'settings': return ['изменил', 'изменить', ' настройки игры'];
+          case 'role-grant': return ['назначил', 'назначить', ` ${d.name ?? 'игрока'} на роль «${ROLES[d.role]?.name ?? 'участник'}»`];
+          case 'role-revoke': return ['убрал', 'убрать', ` ${d.name ?? 'игрока'} из команды`];
+          case 'workshop-sync': return ['обновил', 'обновить', ' доступ в мастерскую'];
+          case 'result-void': return ['исключил', 'исключить', ` из статистики матч${result}`];
+          case 'result-restore': return ['вернул', 'вернуть', ` в статистику матч${result}`];
+          case 'ingest-key-create': return ['создал', 'создать', ` ключ приёма результатов «${d.label ?? ''}»`];
+          case 'ingest-key-revoke': return ['отозвал', 'отозвать', ' ключ приёма результатов'];
+          default: return ['выполнил', 'выполнить', ' действие в панели'];
         }
       }
       async function loadAudit() {
         const { entries } = await api('audit');
         const shown = entries.filter((a: any) => a.action !== 'rcon:list');
-        $('#audit-list').replaceChildren(...(shown.length ? shown.map((a: any) => el('li', {},
-          el('span', {}, el('strong', { textContent: a.actorName }), ` ${sentence(a)}`),
-          el('time', { dateTime: new Date(a.at).toISOString(), title: date(a.at), textContent: ago(a.at) }),
-          a.ok ? null : el('span', { className: 'fail', textContent: `Не получилось: ${friendly(String(a.error ?? '').replace(/\s\(.*\)$/, ''), 400)}` })))
+        $('#audit-list').replaceChildren(...(shown.length ? shown.map((a: any) => {
+          const [past, attempt, rest] = sentence(a), error = friendly(String(a.error ?? '').replace(/\s\(.*\)$/, ''), 400);
+          return el('li', { className: a.ok ? '' : 'failed' },
+            el('span', {}, el('strong', { textContent: a.actorName }), a.ok ? ` ${past}${rest}` : ` пытался ${attempt}${rest} — `,
+              a.ok ? null : el('span', { className: 'fail', textContent: `не получилось: ${error.charAt(0).toLowerCase()}${error.slice(1)}` })),
+            el('time', { dateTime: new Date(a.at).toISOString(), title: date(a.at), textContent: ago(a.at) }));
+        })
           : [el('li', { className: 'empty', textContent: 'Пока никто ничего не делал.' })]));
       }
 
@@ -932,6 +957,7 @@ import '@fontsource/ibm-plex-mono/500.css';
         if (!me.role) { who.textContent = 'У вашего аккаунта нет доступа к панели. Попросите администратора добавить вас в команду.'; return; }
         who.replaceChildren('Вы вошли как ', el('strong', { textContent: me.name }), ` — ${ROLES[me.role].name.toLowerCase()}. ${ROLES[me.role].about}`);
         document.querySelectorAll<HTMLElement>('[data-perm]').forEach(node => { node.hidden = !can(node.dataset.perm!); });
+        if (!can('ban')) $('#byname-about').textContent = 'Если игрока нет в списке «Сейчас на сервере», его можно выгнать по никнейму.';
         const sections = [...document.querySelectorAll<HTMLElement>('main > section:not([hidden])')];
         const nav = $('#tabs');
         nav.replaceChildren(...sections.map(s => el('a', { href: `#${s.id}`, textContent: s.dataset.tab })));
