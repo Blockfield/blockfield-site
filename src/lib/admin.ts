@@ -227,6 +227,12 @@ async function lookupName(name: unknown): Promise<{ uuid: string; name: string }
   return { uuid: playerId(data.id)!, name: data.name };
 }
 const ownerNames = new Map<string, string>();
+/** Last name seen in match results; used when Drasl cannot be reached. */
+function knownName(store: StatsStore, uuid: string): string | null {
+  const dashed = uuid.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
+  const row = store.db.prepare('SELECT name FROM profiles WHERE uuid=?').get(dashed) as { name: string } | undefined;
+  return row && nickname.test(row.name) ? row.name : null;
+}
 async function ownerName(uuid: string): Promise<string> {
   if (ownerNames.has(uuid)) return ownerNames.get(uuid)!;
   const base = (process.env.DRASL_URL || 'https://skins.blockfield.pro').replace(/\/+$/, '');
@@ -237,7 +243,7 @@ async function ownerName(uuid: string): Promise<string> {
 }
 async function syncWorkshop(store: StatsStore, actor: Actor, resolve = ownerName) {
   const names = new Map<string, string>();
-  for (const uuid of owners()) names.set(uuid, await resolve(uuid));
+  for (const uuid of owners()) names.set(uuid, await resolve(uuid).catch(error => knownName(store, uuid) ?? Promise.reject(error)));
   const members = workshopMembers(store.staff(), names);
   const id = writeRequest(inboxDir(), actor, { kind: 'members', members });
   return { id, members };
@@ -278,8 +284,9 @@ const routes: Record<string, Route> = {
     await Promise.all([...ids].map(uuid => ownerName(uuid).catch(() => null)));
     const last = (store.auditLog(200) as any[]).find(e => e.action === 'workshop-sync' && e.ok && e.target);
     const lastSync = last ? { id: last.target, at: last.at, result: readFile(join(adminDir(), 'results', `${last.target}.json`)) } : null;
-    return { owners: [...ids].map(uuid => ({ uuid, name: ownerNames.get(uuid) ?? null })), staff: store.staff(), workshop: readFile(join(adminDir(), 'members.json')),
-      expected: workshopMembers(store.staff(), new Map([...ids].map(uuid => [uuid, ownerNames.get(uuid) ?? '']))), lastSync };
+    const name = (uuid: string) => ownerNames.get(uuid) ?? knownName(store, uuid);
+    return { owners: [...ids].map(uuid => ({ uuid, name: name(uuid) ?? `Владелец ${uuid.slice(0, 8)}` })), staff: store.staff(), workshop: readFile(join(adminDir(), 'members.json')),
+      expected: workshopMembers(store.staff(), new Map([...ids].map(uuid => [uuid, name(uuid) ?? '']))), lastSync };
   } },
   'POST staff': { permission: 'roles', handler: async ({ actor, store, body }) => {
     if (body?.role !== null && !['builder', 'moderator', 'admin'].includes(body?.role)) throw bad('Неизвестная роль.');

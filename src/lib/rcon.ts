@@ -10,20 +10,21 @@ function packet(id: number, type: number, body: string): Buffer {
 
 /**
  * Source RCON over one connection: authenticate, run commands in order, return one output per command.
- * Minecraft splits long output into several packets and never marks the last one, so every command is
- * followed by an empty packet of an unknown type; its reply ("Unknown request") ends that command's output.
+ * Minecraft splits long output into several packets and never marks the last one, so after the first reply
+ * packet an empty packet of an unknown type is sent; its reply ("Unknown request …") ends that command's output.
+ * Vanilla RCON reads one packet per socket read and drops the connection otherwise: never write two packets at once.
  */
 export function rcon(commands: string[], { host, port, password, timeout = 5000 }: { host: string; port: number; password: string; timeout?: number }): Promise<string[]> {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host, port });
     const outputs: string[] = [];
-    let data = Buffer.alloc(0), step = 0, current = '', authed = false;
+    let data = Buffer.alloc(0), step = 0, current = '', authed = false, sentinel = false;
     const finish = (error?: Error) => { clearTimeout(timer); socket.destroy(); if (error) reject(error); else resolve(outputs); };
     const timer = setTimeout(() => finish(new Error('RCON timeout')), timeout);
     const send = () => {
       if (step >= commands.length) return finish();
-      current = '';
-      socket.write(Buffer.concat([packet(10 + step * 2, COMMAND, commands[step]), packet(11 + step * 2, 100, '')]));
+      current = ''; sentinel = false;
+      socket.write(packet(10 + step * 2, COMMAND, commands[step]));
     };
     socket.on('error', error => finish(error));
     socket.on('close', () => finish(new Error('RCON connection closed')));
@@ -40,7 +41,10 @@ export function rcon(commands: string[], { host, port, password, timeout = 5000 
         if (id === -1) return finish(new Error('RCON authentication failed'));
         // Source servers may send an empty value packet before the auth reply; only the auth reply (type 2, id 1) starts commands.
         if (!authed) { if (type === COMMAND && id === 1) { authed = true; send(); } continue; }
-        if (id === 10 + step * 2) current += body;
+        if (id === 10 + step * 2) {
+          current += body;
+          if (!sentinel) { sentinel = true; socket.write(packet(11 + step * 2, 100, '')); }
+        }
         else if (id === 11 + step * 2) { outputs.push(current); step++; send(); }
       }
     });

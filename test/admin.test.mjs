@@ -195,3 +195,17 @@ test('review: non-staff are refused before the body is read and never audited; R
   assert.equal(text, 'Игровой сервер не отвечает.'); assert.ok(!text.includes('127.0.0.1'));
   assert.match(s.auditLog()[0].error, /ECONNREFUSED/);
 });
+
+test('owner row falls back to the last known profile name, then to a short id, when Drasl is down', async t => {
+  const saved = { ...process.env };
+  t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
+  const second = 'dddddddddddddddddddddddddddddddd';
+  Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: `${OWNER},${second}`, NODE_ENV: 'test', BLOCKFIELD_ADMIN_DEV_USER: `${second}:Second`, BLOCKFIELD_ADMIN_DIR: temp(t) });
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  globalThis.fetch = async () => { throw new Error('offline'); };
+  const s = store(t);
+  s.db.prepare('INSERT INTO profiles VALUES (?,?,?)').run('e10438e4-797b-4971-8cfe-cec6a8fa171b', 'Nether', 1);
+  const url = new URL('http://site/api/admin/staff');
+  const response = await handleAdmin({ request: new Request(url), url, cookies: { get: () => undefined } }, 'staff', s);
+  assert.deepEqual((await response.json()).owners, [{ uuid: OWNER, name: 'Nether' }, { uuid: second, name: 'Владелец dddddddd' }]);
+});
