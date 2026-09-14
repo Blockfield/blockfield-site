@@ -2,4 +2,4 @@ User-agent: *
 Allow: /
 Disallow: /files/
 
-Sitemap: https://modpack.nether.pp.ua/sitemap.xml
+Sitemap: https://blockfield.pro/sitemap.xml
