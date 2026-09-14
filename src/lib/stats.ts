@@ -1,6 +1,6 @@
 /** Durable, Minecraft-independent result ingestion. Node >=22.19; no browser imports. */
 import { DatabaseSync } from 'node:sqlite';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { composite, inflate, initial, softReset, update, RULES_VERSION } from './glicko2.ts';
@@ -143,7 +143,7 @@ export class StatsStore {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number };
-    if (![0, 1, 2, 3].includes(version.user_version)) { this.db.close(); throw new Error('Unsupported statistics schema; restore/migrate explicitly'); }
+    if (![0, 1, 2, 3, 4].includes(version.user_version)) { this.db.close(); throw new Error('Unsupported statistics schema; restore/migrate explicitly'); }
     this.db.function('season_at', (time: any) => seasonAt(Number(time)).id);
     const columns = (table: string) => (this.db.prepare('SELECT name FROM pragma_table_info(?)').all(table) as { name: string }[]).map(c => c.name);
     this.db.exec('BEGIN IMMEDIATE');
@@ -185,12 +185,20 @@ export class StatsStore {
         PRIMARY KEY(server_id,event_id,uuid), FOREIGN KEY(server_id,event_id) REFERENCES results(server_id,event_id)
       );
       CREATE INDEX IF NOT EXISTS rating_changes_uuid ON rating_changes(uuid,rated_at);
+      CREATE TABLE IF NOT EXISTS admin_audit (
+        id INTEGER PRIMARY KEY, at INTEGER NOT NULL, actor_uuid TEXT NOT NULL, actor_name TEXT NOT NULL, role TEXT NOT NULL,
+        action TEXT NOT NULL, target TEXT, detail TEXT, ok INTEGER NOT NULL, error TEXT
+      );
+      CREATE TABLE IF NOT EXISTS staff_roles (uuid TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS ingest_keys (server_id TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
       `);
       if (legacyRatings) this.db.exec(`INSERT INTO ratings SELECT season_at(last_rated_at),uuid,rating,rd,volatility,rated_campaigns,last_rated_at FROM ratings_v2;
         DROP TABLE ratings_v2;`);
       if (!columns('rating_changes').includes('season_id')) this.db.exec(`ALTER TABLE rating_changes ADD COLUMN season_id TEXT NOT NULL DEFAULT '';
         UPDATE rating_changes SET season_id=season_at(rated_at);`);
-      this.db.exec('PRAGMA user_version=3; COMMIT');
+      // v3 -> v4: voided results stay stored but leave every aggregate.
+      if (!columns('results').includes('voided_at')) this.db.exec('ALTER TABLE results ADD COLUMN voided_at INTEGER; ALTER TABLE results ADD COLUMN voided_by TEXT;');
+      this.db.exec('PRAGMA user_version=4; COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
   }
   close() { this.db.close(); }
@@ -203,7 +211,7 @@ export class StatsStore {
         if (existing.digest !== digest) throw new StatsError(409, 'Result ID already exists with different content');
         this.db.exec('COMMIT'); return { inserted: false, eventId: result.eventId };
       }
-      this.db.prepare('INSERT INTO results VALUES (?,?,?,?,?,?,?,?,?,?)').run(result.serverId, result.eventId, result.kind, result.modeId, result.campaignSessionId, Date.parse(result.endedAt), result.endReason, result.winner, digest, payload);
+      this.db.prepare('INSERT INTO results (server_id,event_id,kind,mode,campaign_id,ended_at,reason,winner,digest,payload) VALUES (?,?,?,?,?,?,?,?,?,?)').run(result.serverId, result.eventId, result.kind, result.modeId, result.campaignSessionId, Date.parse(result.endedAt), result.endReason, result.winner, digest, payload);
       const participant = this.db.prepare('INSERT INTO participants VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
       const profile = this.db.prepare('INSERT INTO profiles VALUES (?,?,?) ON CONFLICT(uuid) DO UPDATE SET name=excluded.name,last_seen=excluded.last_seen WHERE excluded.last_seen>=profiles.last_seen');
       const cls = this.db.prepare('INSERT INTO classes VALUES (?,?,?,?,?,?,?,?,?)');
@@ -213,15 +221,15 @@ export class StatsStore {
         for (const c of p.classes) cls.run(result.serverId, result.eventId, p.uuid, c.classId, c.variantId, c.timeSeconds, c.kills, c.deaths, c.pointSeconds);
       }
       // Only a fresh insert rates: outbox replays return above, so one campaign changes MMR at most once.
-      if (result.kind === 'campaign' && result.modeId === 'campaign' && ['completed', 'draw'].includes(result.endReason)) this.rate(result);
+      if (rated(result)) this.rate(result);
       this.db.exec('COMMIT'); return { inserted: true, eventId: result.eventId };
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   /**
    * One Glicko-2 period per rated player: the whole opposing side as a composite opponent. Team NONE is unrated.
    * The season comes from endedAt. A player's first campaign in a season starts from their latest earlier season, soft-reset once per boundary crossed.
-   * ponytail: a late result rates only its own season; later seasons that already carried over from it are not recomputed.
-   * Replay rating_changes in endedAt order per season if late cross-season results become common.
+   * ponytail: a late result rates only its own season; later seasons that already carried over from it are not recomputed
+   * until an administrator voids/restores a rated result, which replays that season and every later one (rebuildRatings).
    */
   private rate(result: Result) {
     const sides = { RED: result.participants.filter(p => p.team === 'RED'), BLUE: result.participants.filter(p => p.team === 'BLUE') };
@@ -253,9 +261,69 @@ export class StatsStore {
       }
     }
   }
+  /** Deterministic replay of every non-voided rated campaign from `seasonId` on; earlier seasons (the carry-over source) stay untouched. Call inside a transaction. */
+  private rebuildRatings(season: Season) {
+    const number = Number(season.id.slice(1)), since = number === 1 ? Number.MIN_SAFE_INTEGER : Date.parse(season.startsAt);
+    this.db.prepare('DELETE FROM rating_changes WHERE CAST(substr(season_id,2) AS INTEGER)>=?').run(number);
+    this.db.prepare('DELETE FROM ratings WHERE CAST(substr(season_id,2) AS INTEGER)>=?').run(number);
+    const rows = this.db.prepare(`SELECT payload FROM results WHERE kind='campaign' AND mode='campaign' AND reason IN ('completed','draw') AND voided_at IS NULL AND ended_at>=?
+      ORDER BY ended_at,server_id,event_id`).all(since) as { payload: string }[];
+    for (const row of rows) this.rate(JSON.parse(row.payload));
+  }
+  setVoided(serverId: string, eventId: string, by: string | null): { rebuilt: string | null } {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = this.db.prepare('SELECT payload,voided_at FROM results WHERE server_id=? AND event_id=?').get(serverId, eventId) as { payload: string; voided_at: number | null } | undefined;
+      if (!row) throw new StatsError(404, 'Result not found');
+      if ((row.voided_at !== null) === (by !== null)) throw new StatsError(409, by ? 'Result is already voided' : 'Result is not voided');
+      this.db.prepare('UPDATE results SET voided_at=?,voided_by=? WHERE server_id=? AND event_id=?').run(by ? Date.now() : null, by, serverId, eventId);
+      // seasonAt generates seasons up to endedAt, which may be a few minutes ahead of now (and of the current season).
+      const result: Result = JSON.parse(row.payload), season = rated(result) ? seasonAt(Date.parse(result.endedAt)) : null;
+      if (season) this.rebuildRatings(season);
+      this.db.exec('COMMIT'); return { rebuilt: season?.id ?? null };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  results(mode: string | null, page: number, limit = 25) {
+    if (mode !== null && !MODES.includes(mode)) throw new StatsError(400, 'Unknown mode');
+    const rows = this.db.prepare(`SELECT server_id serverId,event_id eventId,kind,mode,ended_at endedAt,reason,winner,voided_at voidedAt,voided_by voidedBy,payload
+      FROM results WHERE (? IS NULL OR mode=?) ORDER BY ended_at DESC,server_id,event_id LIMIT ? OFFSET ?`).all(mode, mode, limit, (page - 1) * limit) as any[];
+    const { total } = this.db.prepare('SELECT COUNT(*) total FROM results WHERE (? IS NULL OR mode=?)').get(mode, mode) as { total: number };
+    return { total, page, limit, results: rows.map(({ payload, ...row }) => {
+      const participants: Participant[] = JSON.parse(payload).participants;
+      return { ...row, rated: rated(JSON.parse(payload)), participants: participants.length, names: participants.slice(0, 12).map(p => `${p.name}${p.team === 'NONE' ? '' : ` (${p.team})`}`) };
+    }) };
+  }
+  createIngestKey(serverId: string, label: string): string {
+    const key = randomBytes(32).toString('base64url');
+    this.db.prepare('INSERT INTO ingest_keys VALUES (?,?,?,?,NULL)').run(serverId, sha256(key).toString('hex'), label, Date.now());
+    return key;
+  }
+  ingestKeys() { return this.db.prepare('SELECT rowid id,server_id serverId,label,created_at createdAt,revoked_at revokedAt FROM ingest_keys ORDER BY rowid DESC').all(); }
+  revokeIngestKey(id: number): boolean { return this.db.prepare('UPDATE ingest_keys SET revoked_at=? WHERE rowid=? AND revoked_at IS NULL').run(Date.now(), id).changes === 1; }
+  ingestKeyHashes(serverId: string): Buffer[] {
+    return (this.db.prepare('SELECT key_hash h FROM ingest_keys WHERE server_id=? AND revoked_at IS NULL').all(serverId) as { h: string }[]).map(r => Buffer.from(r.h, 'hex'));
+  }
+  audit(entry: { actorUuid: string; actorName: string; role: string; action: string; target?: string | null; detail?: unknown; ok: boolean; error?: string | null }) {
+    const json = entry.detail === undefined ? null : JSON.stringify(entry.detail);
+    const detail = json !== null && json.length > 2048 ? `${json.slice(0, 2048)}…` : json;
+    this.db.prepare('INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(Date.now(), entry.actorUuid, entry.actorName, entry.role, entry.action, entry.target?.slice(0, 200) ?? null, detail, entry.ok ? 1 : 0, entry.error?.slice(0, 500) ?? null);
+    // ponytail: keeps the newest 10 000 entries; export them elsewhere first if a longer history is ever required.
+    this.db.prepare('DELETE FROM admin_audit WHERE id <= (SELECT id FROM admin_audit ORDER BY id DESC LIMIT 1 OFFSET 10000)').run();
+  }
+  staff(): { uuid: string; name: string; role: string; grantedBy: string; grantedAt: number }[] {
+    return this.db.prepare('SELECT uuid,name,role,granted_by grantedBy,granted_at grantedAt FROM staff_roles ORDER BY name COLLATE NOCASE,uuid').all() as any[];
+  }
+  setStaff(uuid: string, name: string, role: string | null, by: string) {
+    if (role === null) this.db.prepare('DELETE FROM staff_roles WHERE uuid=?').run(uuid);
+    else this.db.prepare('INSERT INTO staff_roles VALUES (?,?,?,?,?) ON CONFLICT(uuid) DO UPDATE SET name=excluded.name,role=excluded.role,granted_by=excluded.granted_by,granted_at=excluded.granted_at').run(uuid, name, role, by, Date.now());
+  }
+  auditLog(limit = 200) {
+    return this.db.prepare('SELECT id,at,actor_uuid actorUuid,actor_name actorName,role,action,target,detail,ok,error FROM admin_audit ORDER BY id DESC LIMIT ?').all(limit);
+  }
   leaderboard(query: Filters, uuid: string | null = null) {
     // Campaign summaries contain the same players/counters: count combat metrics from MATCHES ONLY.
-    const where = `r.kind='match' AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)`;
+    const where = `r.kind='match' AND r.voided_at IS NULL AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)`;
     const args = [query.since, query.until, query.mode, query.mode];
     // rank is numbered over the whole filtered aggregate BEFORE the uuid/page cut, so a player's rank matches the board.
     const rows = this.db.prepare(`SELECT * FROM (SELECT *,ROW_NUMBER() OVER (ORDER BY ${SORTS[query.sort]} DESC,uuid ASC) "rank" FROM (
@@ -281,14 +349,14 @@ export class StatsStore {
     if (!profile) throw new StatsError(404, 'No recorded gameplay for this player');
     const totals = this.leaderboard({ ...query, page: 1, limit: 1 }, uuid).players[0] || null;
     const history = this.db.prepare(`SELECT r.event_id eventId,r.server_id serverId,r.kind,r.mode,r.campaign_id campaignSessionId,r.ended_at endedAt,r.reason,r.winner,json_extract(r.payload,'$.winnerUuid') winnerUuid,p.team,p.score,p.kills,p.deaths
-      FROM participants p JOIN results r USING(server_id,event_id) WHERE p.uuid=? AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)
+      FROM participants p JOIN results r USING(server_id,event_id) WHERE p.uuid=? AND r.voided_at IS NULL AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)
       ORDER BY r.ended_at DESC,r.server_id,r.event_id LIMIT ? OFFSET ?`)
       .all(uuid, query.since, query.until, query.mode, query.mode, query.limit, (query.page - 1) * query.limit);
     const classes = this.db.prepare(`SELECT c.class_id classId,c.variant_id variantId,SUM(c.time_seconds) timeSeconds,SUM(c.kills) kills,SUM(c.deaths) deaths,SUM(c.point_seconds) pointSeconds
-      FROM classes c JOIN results r USING(server_id,event_id) WHERE r.kind='match' AND c.uuid=? AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)
+      FROM classes c JOIN results r USING(server_id,event_id) WHERE r.kind='match' AND r.voided_at IS NULL AND c.uuid=? AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)
       GROUP BY c.class_id,c.variant_id ORDER BY timeSeconds DESC,c.class_id,c.variant_id`).all(uuid, query.since, query.until, query.mode, query.mode);
     const campaigns = this.db.prepare(`SELECT COUNT(*) completed,COALESCE(SUM(CASE WHEN r.winner=p.team AND p.team!='NONE' THEN 1 ELSE 0 END),0) wins
-      FROM participants p JOIN results r USING(server_id,event_id) WHERE r.kind='campaign' AND r.reason IN ('completed','draw') AND p.uuid=?
+      FROM participants p JOIN results r USING(server_id,event_id) WHERE r.kind='campaign' AND r.voided_at IS NULL AND r.reason IN ('completed','draw') AND p.uuid=?
       AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)`).get(uuid, query.since, query.until, query.mode, query.mode);
     // mmr and ratingHistory belong to mmrSeason (selected or current); history is also cut to the requested window (Ranked campaigns only).
     const rating = this.db.prepare('SELECT rating,rd,rated_campaigns ratedCampaigns FROM ratings WHERE season_id=? AND uuid=?').get(query.mmrSeason, uuid) as any;
@@ -319,12 +387,16 @@ export function ingestKeys(): Record<string, string[]> {
     return result;
   } catch { throw new StatsError(503, 'Statistics ingestion keys are not configured correctly'); }
 }
-function authorized(request: Request, keys: Record<string, string[]>): string {
+const sha256 = (text: string) => createHash('sha256').update(text).digest();
+const rated = (result: Result) => result.kind === 'campaign' && result.modeId === 'campaign' && ['completed', 'draw'].includes(result.endReason);
+/** Env keys or non-revoked DB keys (created in /admin); both compared as SHA-256 digests in constant time. */
+function authorized(request: Request, keys: Record<string, string[]>, store: () => StatsStore): string {
   const server = request.headers.get('X-Blockfield-Server-Id') || '', header = request.headers.get('Authorization') || '';
-  if (!UUID.test(server) || !Object.hasOwn(keys, server)) throw new StatsError(401, 'Invalid producer credentials');
-  const provided = createHash('sha256').update(header).digest();
+  if (!UUID.test(server)) throw new StatsError(401, 'Invalid producer credentials');
+  const provided = sha256(header), bare = sha256(header.startsWith('Bearer ') ? header.slice(7) : '');
   let match = false;
-  for (const token of keys[server] || []) match = timingSafeEqual(provided, createHash('sha256').update(`Bearer ${token}`).digest()) || match;
+  for (const token of Object.hasOwn(keys, server) ? keys[server] : []) match = timingSafeEqual(provided, sha256(`Bearer ${token}`)) || match;
+  if (header.startsWith('Bearer ')) for (const hash of store().ingestKeyHashes(server)) match = timingSafeEqual(bare, hash) || match;
   if (!match) throw new StatsError(401, 'Invalid producer credentials');
   return server;
 }
@@ -350,8 +422,8 @@ export async function handleStatsRequest(request: Request, dependencies?: { stor
     const url = new URL(request.url), path = url.pathname.replace(/\/$/, '');
     if (path === '/api/stats/results') {
       if (request.method !== 'POST') return Response.json({ error: 'Method not allowed' }, { status: 405, headers: { ...headers, Allow: 'POST' } });
-      // Authenticate before reading any request body or opening the database.
-      const server = authorized(request, dependencies?.keys ?? ingestKeys()), input = validateResult(await boundedJson(request));
+      // Authenticate before reading any request body.
+      const server = authorized(request, dependencies?.keys ?? ingestKeys(), () => dependencies?.store ?? statsStore()), input = validateResult(await boundedJson(request));
       if (input.serverId !== server) throw new StatsError(403, 'Producer cannot submit another server identity');
       const result = (dependencies?.store ?? statsStore()).ingest(input);
       return Response.json(result, { status: result.inserted ? 201 : 200, headers });
