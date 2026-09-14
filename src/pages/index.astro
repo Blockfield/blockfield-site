@@ -18,19 +18,19 @@ Astro.response.headers.set('Vary', 'User-Agent, Sec-CH-UA-Platform');
 
 const manual = [
   {
-    href: 'https://modpack.nether.pp.ua/Blockfield-client.zip',
+    href: 'https://blockfield.pro/Blockfield-client.zip',
     title: 'Модпак ZIP',
     note: 'Распаковать в папку игры',
     icon: ui.file_archive,
   },
   {
-    href: 'https://modpack.nether.pp.ua/Blockfield.mrpack',
+    href: 'https://blockfield.pro/Blockfield.mrpack',
     title: 'Модпак mrpack',
     note: 'Для совместимых лаунчеров',
     icon: ui.package,
   },
   {
-    href: 'https://modpack.nether.pp.ua/Blockfield-prism.zip',
+    href: 'https://blockfield.pro/Blockfield-prism.zip',
     title: 'Инстанс Prism',
     note: 'Проверяет обновления перед запуском',
     icon: ui.refresh_cw,
@@ -61,18 +61,18 @@ const features = [
       name="description"
       content="Blockfield — командные бои в Minecraft 1.21.1 на Fabric: захват точек, классы, выбор снаряжения. Лаунчер установит модпак и подключит к серверу."
     />
-    <link rel="canonical" href="https://modpack.nether.pp.ua/" />
+    <link rel="canonical" href="https://blockfield.pro/" />
     <meta name="theme-color" content="#070604" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Blockfield" />
     <meta property="og:locale" content="ru_RU" />
-    <meta property="og:url" content="https://modpack.nether.pp.ua/" />
+    <meta property="og:url" content="https://blockfield.pro/" />
     <meta property="og:title" content="BLOCKFIELD — командный шутер в Minecraft" />
     <meta
       property="og:description"
       content="Захват точек, классы и снаряжение в Minecraft 1.21.1 на Fabric. Лаунчер ставит модпак сам."
     />
-    <meta property="og:image" content="https://modpack.nether.pp.ua/og.jpg" />
+    <meta property="og:image" content="https://blockfield.pro/og.jpg" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content="Отряд Blockfield в ночном рейде и кнопка «Скачать лаунчер»" />
@@ -82,7 +82,7 @@ const features = [
       name="twitter:description"
       content="Захват точек, классы и снаряжение в Minecraft 1.21.1 на Fabric. Лаунчер ставит модпак сам."
     />
-    <meta name="twitter:image" content="https://modpack.nether.pp.ua/og.jpg" />
+    <meta name="twitter:image" content="https://blockfield.pro/og.jpg" />
     <link rel="icon" href="/logo.svg" type="image/svg+xml" />
     <script
       type="application/ld+json"
@@ -90,14 +90,14 @@ const features = [
         '@context': 'https://schema.org',
         '@type': 'VideoGame',
         name: 'Blockfield',
-        url: 'https://modpack.nether.pp.ua/',
+        url: 'https://blockfield.pro/',
         inLanguage: 'ru',
         gamePlatform: 'PC',
         applicationCategory: 'Game',
         operatingSystem: 'Windows, Linux',
         description:
           'Командный шутер в Minecraft 1.21.1 на Fabric: захват точек, классы, выбор снаряжения.',
-        image: 'https://modpack.nether.pp.ua/og.jpg',
+        image: 'https://blockfield.pro/og.jpg',
         publisher: { '@type': 'Organization', name: 'Blockfield', url: 'https://github.com/netherg-io' },
         downloadUrl: [launcher.windows, launcher.linux],
         softwareVersion: launcher.version || undefined,
@@ -230,8 +230,8 @@ const features = [
     <section class="server voxel" data-reveal>
       <div class="server__info">
         <p class="rule"><span class="rule__square"></span><span class="rule__label">Сервер</span><span class="rule__line"></span><span class="rule__code">АДРЕС</span></p>
-        <button class="server__address" type="button" data-copy="minecraft.play.nether.pp.ua">
-          minecraft.play.nether.pp.ua
+        <button class="server__address" type="button" data-copy="play.blockfield.pro">
+          play.blockfield.pro
           <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.copy} />
           <span class="server__copied" hidden>Скопировано</span>
         </button>
@@ -251,7 +251,7 @@ const features = [
       <nav>
         <a href="https://github.com/netherg-io/blockfield-releases">Релизы клиента</a>
         <a href={RELEASES}>Релизы лаунчера</a>
-        <a href="https://modpack.nether.pp.ua/pack.toml">packwiz-пак</a>
+        <a href="https://blockfield.pro/pack.toml">packwiz-пак</a>
         <a href="/terms">Условия использования</a>
         <a href="/privacy">Конфиденциальность</a>
       </nav>

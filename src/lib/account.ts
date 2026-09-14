@@ -40,7 +40,7 @@ export function draslError(status: number, message?: unknown): string {
 export const fail = (status: number, error: string) => Response.json({ error }, { status, headers: { 'Cache-Control': 'no-store' } });
 
 export async function drasl(path: string, { method = 'GET', token, body }: { method?: string; token?: string; body?: unknown } = {}): Promise<any> {
-  const base = (process.env.DRASL_URL || 'https://skins.nether.pp.ua').replace(/\/+$/, '');
+  const base = (process.env.DRASL_URL || 'https://skins.blockfield.pro').replace(/\/+$/, '');
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';

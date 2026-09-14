@@ -100,7 +100,7 @@ let inflight: Promise<RoomStatus> | undefined;
 export function currentRooms(): Promise<RoomStatus> {
   if (Date.now() < until) return Promise.resolve(cache);
   const env = process.env;
-  const publicHost = 'minecraft.play.nether.pp.ua';
+  const publicHost = 'play.blockfield.pro';
   // За Velocity комнаты отдаёт только игровой сервер (внутренний адрес), а публичный адрес — это прокси с лобби.
   return inflight ??= readGate(env.BLOCKFIELD_GATE_FILE).then(maintenance => Promise.all([
     maintenance ? { available: false, checkedAt: Date.now(), rooms: [], maintenance }

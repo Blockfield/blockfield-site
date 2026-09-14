@@ -55,10 +55,10 @@ test('тело без Content-Length обрывается на лимите, а 
 });
 
 test('изменяющий запрос принимается только с Origin этого же хоста', async () => {
-  const request = (headers) => new Request('http://modpack.nether.pp.ua/api/account/login', { method: 'POST', headers });
-  assert.equal(sameOrigin(request({ origin: 'https://modpack.nether.pp.ua', host: 'modpack.nether.pp.ua' })), true, 'за nginx протоколы расходятся');
-  assert.equal(sameOrigin(request({ origin: 'https://evil.example', host: 'modpack.nether.pp.ua' })), false);
-  assert.equal(sameOrigin(request({ origin: 'https://modpack.nether.pp.ua.evil.example' })), false);
+  const request = (headers) => new Request('http://blockfield.pro/api/account/login', { method: 'POST', headers });
+  assert.equal(sameOrigin(request({ origin: 'https://blockfield.pro', host: 'blockfield.pro' })), true, 'за nginx протоколы расходятся');
+  assert.equal(sameOrigin(request({ origin: 'https://evil.example', host: 'blockfield.pro' })), false);
+  assert.equal(sameOrigin(request({ origin: 'https://blockfield.pro.evil.example' })), false);
   assert.equal(sameOrigin(request({ origin: 'null' })), false);
   assert.equal(sameOrigin(request({})), false, 'без Origin не пускаем');
 
