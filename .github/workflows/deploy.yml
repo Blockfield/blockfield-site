@@ -2,7 +2,6 @@ name: Build and deploy the landing page
 on:
   push:
     branches: [main]
-  workflow_dispatch:
 concurrency:
   group: blockfield-web
   cancel-in-progress: true
@@ -11,7 +10,7 @@ permissions:
   packages: write
 jobs:
   deploy:
-    runs-on: ubuntu-24.04
+    runs-on: tenki-standard-small-2c-4g
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
