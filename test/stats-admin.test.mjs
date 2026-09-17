@@ -77,7 +77,7 @@ test('schema 3 file upgrades to 4: results gain void columns, new tables appear,
     legacy.close();
     const upgraded = new StatsStore(path);
     try {
-      assert.equal(upgraded.db.prepare('PRAGMA user_version').get().user_version, 4);
+      assert.equal(upgraded.db.prepare('PRAGMA user_version').get().user_version, 5);
       assert.deepEqual(ratings(upgraded), before);
       assert.equal(upgraded.ingest(result).inserted, false);
       assert.equal(upgraded.setVoided(server, uid(50), 'Adm').rebuilt, 's1');

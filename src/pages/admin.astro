@@ -123,7 +123,6 @@ import '@fontsource/ibm-plex-mono/500.css';
 
       <section id="settings" data-perm="settings" data-tab="Настройки игры" hidden aria-labelledby="settings-title">
         <h2 id="settings-title" tabindex="-1">Настройки игры</h2>
-        <p class="muted">Пустое поле или «По умолчанию» не сохраняется: сервер использует своё значение, оно написано под полем.</p>
         <p id="settings-state" class="banner" role="status">Загружаем настройки…</p>
         <form id="settings-form">
           <fieldset class="card">
@@ -131,8 +130,7 @@ import '@fontsource/ibm-plex-mono/500.css';
             <div class="fields">
               <div class="field">
                 <label for="pvp">PvP в лобби</label>
-                <select id="pvp" name="pvpEnabled" aria-describedby="pvp-hint"><option value="">По умолчанию (включено)</option><option value="true">Включено</option><option value="false">Выключено</option></select>
-                <small id="pvp-hint">«По умолчанию» — решает сервер, обычно PvP включено. При смене у всех в лобби PvP сбросится в «выключено».</small>
+                <select id="pvp" name="pvpEnabled"><option value="true">Включено</option><option value="false">Выключено</option></select>
               </div>
             </div>
             <div id="lobby-fields" class="fields"></div>
@@ -142,13 +140,17 @@ import '@fontsource/ibm-plex-mono/500.css';
             <div id="room-fields" class="fields"></div>
           </fieldset>
           <fieldset class="card">
+            <legend>Каждый сам за себя</legend>
+            <div id="deathmatch-fields" class="fields"></div>
+          </fieldset>
+          <fieldset class="card">
             <legend>Классы</legend>
-            <p class="muted">Снимите галочку, чтобы закрыть класс. Кто уже играет этим классом, доиграет ещё 3 минуты.</p>
+            <small class="muted">Доиграют ещё 3 минуты после снятия галочки.</small>
             <div id="class-list" class="checks"></div>
           </fieldset>
           <fieldset class="card">
             <legend>Баланс матчей</legend>
-            <p class="muted">Пустое поле — значение из файлов игры, оно указано под полем. Идущие матчи не меняются: новые значения действуют со следующего матча.</p>
+            <small class="muted">Действует со следующего матча.</small>
             <div class="scope">
               <label for="scope">Для каких матчей</label>
               <select id="scope"></select>
@@ -291,7 +293,24 @@ import '@fontsource/ibm-plex-mono/500.css';
       input:not([type=checkbox]):not([type=radio]), select, textarea { font: inherit; color: #F3E7D0; background: #070604; border: 1px solid #3A2C1D; border-radius: 6px; padding: 10px 12px; width: 100%; min-height: 44px; }
       textarea { resize: vertical; }
       input:user-invalid, textarea:user-invalid { border-color: var(--red); }
-      input[type=checkbox], input[type=radio] { accent-color: var(--amber); width: 20px; height: 20px; margin: 0; flex: none; }
+      input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { appearance: none; margin: 0; }
+      input[type=number] { appearance: textfield; }
+      /* Checkbox/radio stay native inputs (full keyboard + AT semantics) with the OS box painted over. */
+      input[type=checkbox], input[type=radio] { appearance: none; width: 20px; height: 20px; margin: 0; flex: none; border: 1px solid #3A2C1D; border-radius: 4px; background: #070604; display: inline-grid; place-content: center; cursor: pointer; }
+      input[type=radio] { border-radius: 50%; }
+      input[type=checkbox]:checked, input[type=radio]:checked { background: var(--amber); border-color: var(--amber); }
+      input[type=checkbox]:checked::after { content: ''; width: 5px; height: 9px; border: solid #070604; border-width: 0 2px 2px 0; transform: rotate(45deg) translateY(-1px); }
+      input[type=radio]:checked::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #070604; }
+      /* Custom select: a hidden native <select> stays the single source of truth for value/name/events; only its UI is replaced. */
+      select[hidden] { display: none; }
+      .cselect { position: relative; }
+      .cselect-btn { display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; font-weight: 400; border-color: #3A2C1D; }
+      .cselect-btn:hover { background: #070604; }
+      .cselect-btn::after { content: ''; width: 9px; height: 9px; border: solid var(--muted); border-width: 0 2px 2px 0; transform: rotate(45deg); margin-top: -4px; flex: none; }
+      .cselect-list { position: absolute; z-index: 6; top: calc(100% + 4px); left: 0; right: 0; margin: 0; padding: 6px; list-style: none; max-height: 260px; overflow-y: auto; background: var(--panel); border: 1px solid #3A2C1D; border-radius: 8px; box-shadow: 0 12px 28px #0008; }
+      .cselect-list li { padding: 9px 10px; border-radius: 6px; cursor: pointer; }
+      .cselect-list li.active, .cselect-list li:hover { background: #2A2116; }
+      .cselect-list li[aria-selected="true"] { color: var(--amber); font-weight: 650; }
       button { font: inherit; font-weight: 650; color: #F3E7D0; background: transparent; border: 1px solid var(--amber); border-radius: 6px; padding: 10px 16px; min-height: 44px; cursor: pointer; }
       button:hover { background: #2A2116; }
       button.primary { background: var(--amber); color: #070604; }
@@ -331,8 +350,11 @@ import '@fontsource/ibm-plex-mono/500.css';
       .banner { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--muted); border-radius: 8px; padding: 14px 16px; }
       .banner.ok { border-left-color: var(--green); color: #F3E7D0; } .banner.pending { border-left-color: var(--amber); color: #F3E7D0; } .banner.error { border-left-color: var(--red); color: #F3E7D0; }
       #settings-form { gap: 16px; }
-      .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 16px 20px; }
-      .field { display: grid; gap: 6px; align-content: start; }
+      /* One label column, one control column, aligned across every field in a fieldset. */
+      .fields { display: grid; gap: 10px 16px; }
+      .field { display: grid; grid-template-columns: minmax(140px, 260px) minmax(0, 340px); align-items: center; gap: 4px 16px; }
+      .field label { padding-top: 0; }
+      .field small { grid-column: 2; }
       .unit { display: flex; align-items: stretch; }
       .unit input { border-top-right-radius: 0 !important; border-bottom-right-radius: 0 !important; }
       .unit span { display: flex; align-items: center; padding: 0 12px; border: 1px solid #3A2C1D; border-left: 0; border-radius: 0 6px 6px 0; color: var(--muted); background: #0b0a08; white-space: nowrap; font-size: 14px; }
@@ -381,6 +403,8 @@ import '@fontsource/ibm-plex-mono/500.css';
         .log li { grid-template-columns: 1fr; }
         .row > .actions { width: 100%; }
         .savebar button { width: 100%; }
+        .field { grid-template-columns: 1fr; gap: 6px; }
+        .field small { grid-column: 1; }
       }
     </style>
 
@@ -483,6 +507,64 @@ import '@fontsource/ibm-plex-mono/500.css';
         return el('div', { className: 'field' }, el('label', { for: id, textContent: label }), wrap ?? input, hint ? el('small', { id: `${id}-hint`, textContent: hint }) : null);
       }
       const reasonField = (label = 'Причина (игрок её увидит)', required = false) => field(label, el('input', { name: 'reason', maxLength: 120, required, autocomplete: 'off' }), required ? undefined : 'Необязательно.');
+
+      // ---------- Custom select (button + listbox), replacing the native OS dropdown ----------
+      /** Closers for every open custom select's listbox, so a click anywhere else closes it. */
+      const openCustomSelects = new Set<(target: Node) => void>();
+      document.addEventListener('pointerdown', e => { for (const close of [...openCustomSelects]) close(e.target as Node); }, true);
+      /**
+       * Hides `select` and paints a button+listbox UI kept in sync with it; the select stays the single source of
+       * truth (value, name, form submission, `change` listeners), so the rest of the code never has to know about
+       * this wrapper. Safe to call again after `select`'s options or value change externally — it repaints in place.
+       */
+      function customSelect(select: HTMLSelectElement) {
+        select.hidden = true;
+        let wrap = select.nextElementSibling as HTMLElement | null;
+        if (!wrap?.classList.contains('cselect')) {
+          const btnId = `${select.id || `cs${++fieldId}`}-btn`, listId = `${btnId}-list`;
+          const button = el('button', { type: 'button', className: 'cselect-btn', id: btnId, ariaHaspopup: 'listbox', ariaExpanded: 'false', ariaControls: listId });
+          const list = el('ul', { className: 'cselect-list', id: listId, role: 'listbox', tabIndex: -1, hidden: true });
+          wrap = el('div', { className: 'cselect' }, button, list);
+          select.after(wrap);
+          const describedBy = select.getAttribute('aria-describedby'), ariaLabel = select.getAttribute('aria-label');
+          if (describedBy) button.setAttribute('aria-describedby', describedBy);
+          if (ariaLabel) button.setAttribute('aria-label', ariaLabel);
+          const label = select.id ? document.querySelector<HTMLLabelElement>(`label[for="${select.id}"]`) : null;
+          if (label) label.htmlFor = btnId;
+          let active = 0;
+          const close = (focusButton: boolean) => {
+            list.hidden = true; button.setAttribute('aria-expanded', 'false'); list.removeAttribute('aria-activedescendant');
+            openCustomSelects.delete(closeIfOutside);
+            if (focusButton) button.focus();
+          };
+          const highlight = (index: number) => {
+            active = Math.max(0, Math.min(index, select.options.length - 1));
+            [...list.children].forEach((li, i) => li.classList.toggle('active', i === active));
+            list.setAttribute('aria-activedescendant', `${listId}-${active}`);
+            (list.children[active] as HTMLElement | undefined)?.scrollIntoView({ block: 'nearest' });
+          };
+          // Repaints via a recursive customSelect() call so the button/list reflect the new value regardless of whether anything else listens for `change`.
+          const commit = (index: number) => { select.selectedIndex = index; select.dispatchEvent(new Event('change', { bubbles: true })); customSelect(select); };
+          function closeIfOutside(target: Node) { if (!wrap!.contains(target)) close(false); }
+          button.addEventListener('click', () => {
+            if (!list.hidden) { close(true); return; }
+            list.hidden = false; button.setAttribute('aria-expanded', 'true'); highlight(select.selectedIndex); list.focus();
+            openCustomSelects.add(closeIfOutside);
+          });
+          list.addEventListener('keydown', e => {
+            const keys: Record<string, () => void> = {
+              Escape: () => close(true), ArrowDown: () => highlight(active + 1), ArrowUp: () => highlight(active - 1),
+              Home: () => highlight(0), End: () => highlight(select.options.length - 1),
+              Enter: () => { commit(active); close(true); }, ' ': () => { commit(active); close(true); },
+            };
+            if (keys[e.key]) { keys[e.key](); e.preventDefault(); } else if (e.key === 'Tab') close(false);
+          });
+          list.addEventListener('click', e => { const li = (e.target as HTMLElement).closest('li'); if (li) { commit(Number(li.dataset.index)); close(true); } });
+        }
+        const button = wrap.querySelector<HTMLButtonElement>('.cselect-btn')!, list = wrap.querySelector<HTMLUListElement>('.cselect-list')!;
+        button.textContent = select.options[select.selectedIndex]?.textContent ?? '';
+        list.replaceChildren(...[...select.options].map((o, i) => el('li', { role: 'option', id: `${list.id}-${i}`, textContent: o.textContent, dataIndex: i, ariaSelected: String(i === select.selectedIndex), className: i === select.selectedIndex ? 'active' : '' })));
+      }
 
       /** Controller requests are applied by the host within ~15 s; poll its result file for up to a minute. */
       async function follow(line: HTMLElement, id: string, done: string) {
@@ -633,46 +715,44 @@ import '@fontsource/ibm-plex-mono/500.css';
       // ---------- Settings ----------
       type Rule = { type: 'int' | 'double' | 'bool'; min?: number; max?: number };
       let rules: Record<string, Rule> = {}, settingsRevision = 0, balance: Record<string, Record<string, number | boolean>> = {}, scope = '*', extraLocks: string[] = [], hadLocks = false;
+      // Every field's server default, keyed by its form name, in the shape settingsBody compares against (strings for numbers, 'true'/'false' for bools).
+      let defaults: Record<string, string> = {};
       const LOBBY = [{ key: 'pvpCooldownSeconds', label: 'Задержка перед выключением PvP', unit: 'сек', min: 0, max: 600, def: 10 }];
       const ROOMS = [
-        { key: 'maxRooms', label: 'Сколько матчей может идти одновременно', unit: 'шт', min: 1, max: 16, def: 2 },
+        { key: 'maxRooms', label: 'Матчей одновременно', unit: 'шт', min: 1, max: 16, def: 2 },
         { key: 'idleCloseSeconds', label: 'Закрывать пустую комнату через', unit: 'сек', min: 30, max: 3600, def: 600 },
-        { key: 'abandonCloseSeconds', label: 'Завершать матч, если все вышли, через', unit: 'сек', min: 5, max: 600, def: 30 },
+        { key: 'abandonCloseSeconds', label: 'Завершать матч без игроков через', unit: 'сек', min: 5, max: 600, def: 30 },
       ];
-      const SETTING_LABELS: Record<string, string> = { pvpEnabled: 'PvP в лобби', classLocks: 'Закрытые классы', ...Object.fromEntries([...LOBBY, ...ROOMS].map(f => [f.key, f.label])), ...BALANCE_LABELS };
-      function numberField(label: string, name: string, min: number, max: number, step: string, value: unknown, fallback: string, unit?: string, about?: string) {
-        const input = el('input', { type: 'number', name, min, max, step, inputMode: step === '1' ? 'numeric' : 'decimal', value: value ?? '' });
+      const DEATHMATCH = [{ key: 'minPlayers', label: 'Игроков для старта', unit: 'чел', min: 2, max: 24, def: 2 }];
+      const SETTING_LABELS: Record<string, string> = { pvpEnabled: 'PvP в лобби', classLocks: 'Закрытые классы', ...Object.fromEntries([...LOBBY, ...ROOMS, ...DEATHMATCH].map(f => [f.key, f.label])), ...BALANCE_LABELS };
+      function numberField(label: string, name: string, min: number, max: number, step: string, value: number, unit?: string, about?: string) {
+        const input = el('input', { type: 'number', name, min, max, step, inputMode: step === '1' ? 'numeric' : 'decimal', value });
         const wrap = unit ? el('div', { className: 'unit' }, input, el('span', { textContent: unit, ariaHidden: 'true' })) : undefined;
-        return field(label, input, `${about ? `${about} ` : ''}От ${number(min)} до ${number(max)}. Пустое поле — ${fallback}.`, wrap);
+        return field(label, input, `${about ? `${about} ` : ''}${number(min)}–${number(max)}`, wrap);
       }
       const shown = (v: number | boolean) => (typeof v === 'boolean' ? (v ? 'да' : 'нет') : number(v));
-      /** What the server uses when the field is empty, in words. */
-      function fallbackFor(key: string) {
-        if (scope !== '*') {
-          const shared = balance['*']?.[key];
-          return shared !== undefined ? `общее значение из «Все матчи»: ${shown(shared)}` : `по умолчанию ${shown(BALANCE_DEFAULTS[scope][key])} (из файлов игры)`;
-        }
-        const values = BALANCE_SCOPES.slice(1).map(s => [s.name, BALANCE_DEFAULTS[s.id][key]] as const);
-        return new Set(values.map(([, v]) => v)).size === 1 ? `по умолчанию ${shown(values[0][1])} (из файлов игры)` : `по умолчанию как в файлах игры: ${values.map(([n, v]) => `${n} — ${shown(v)}`).join(', ')}`;
-      }
-      const defaultValue = (key: string) => shown(scope === '*' ? BALANCE_DEFAULTS.room[key] : balance['*']?.[key] ?? BALANCE_DEFAULTS[scope][key]);
+      /** The value the mod uses for `key` at the current scope: the campaign/room file default, overridden by the site's «Все матчи», like the mod merges them. */
+      const scopeDefault = (key: string) => scope === '*' ? BALANCE_DEFAULTS.room[key] : balance['*']?.[key] ?? BALANCE_DEFAULTS[scope][key];
       function renderBalance() {
         const values = balance[scope] ?? {};
         $('#scope-hint').textContent = scope === '*' ? 'Общие значения для всех кампаний и обычных боёв.' : 'Значения только для этих матчей, поверх общих.';
         $('#balance-fields').replaceChildren(...BALANCE_GROUPS.map(group => el('div', { className: 'group' }, el('h4', { textContent: group.title }), el('div', { className: 'fields' }, ...group.fields.map(f => {
-          const rule = rules[f.key], name = `b_${f.key}`;
+          const rule = rules[f.key], name = `b_${f.key}`, def = scopeDefault(f.key);
+          defaults[f.key] = rule.type === 'bool' ? String(def) : String(def);
           if (rule.type === 'bool') {
-            const select = el('select', { name }, ...[['', `По умолчанию (${defaultValue(f.key)})`], ['true', 'Да'], ['false', 'Нет']].map(([value, text]) => el('option', { value, textContent: text, selected: String(values[f.key] ?? '') === value })));
-            return field(f.label, select, `${f.hint ? `${f.hint} ` : ''}«По умолчанию» — ${fallbackFor(f.key)}.`);
+            const value = values[f.key] ?? def;
+            const select = el('select', { name }, ...[['true', 'Да'], ['false', 'Нет']].map(([v, text]) => el('option', { value: v, textContent: text, selected: String(value) === v })));
+            customSelect(select);
+            return field(f.label, select, f.hint);
           }
-          return numberField(f.label, name, rule.min!, rule.max!, rule.type === 'int' ? '1' : '0.1', values[f.key], fallbackFor(f.key), f.unit, f.hint);
+          return numberField(f.label, name, rule.min!, rule.max!, rule.type === 'int' ? '1' : '0.1', Number(values[f.key] ?? def), f.unit, f.hint);
         })))));
       }
       function collectBalance() {
         const form = $<HTMLFormElement>('#settings-form'), values: Record<string, number | boolean> = {};
         for (const key of Object.keys(rules)) {
           const raw = (form.elements.namedItem(`b_${key}`) as HTMLInputElement | null)?.value ?? '';
-          if (raw !== '') values[key] = rules[key].type === 'bool' ? raw === 'true' : Number(raw);
+          if (raw !== '' && raw !== defaults[key]) values[key] = rules[key].type === 'bool' ? raw === 'true' : Number(raw);
         }
         if (Object.keys(values).length) balance[scope] = values; else delete balance[scope];
       }
@@ -681,6 +761,7 @@ import '@fontsource/ibm-plex-mono/500.css';
         $('#scope').replaceChildren(...BALANCE_SCOPES.map(s => el('option', { value: s.id, textContent: `${s.name}${balance[s.id] ? ' — есть изменения' : ''}`, selected: s.id === scope })));
         // Sections for campaigns the site does not know are kept as they are.
         for (const id of Object.keys(balance)) if (!known.has(id)) $('#scope').append(el('option', { value: id, textContent: 'Другая кампания — есть изменения', selected: id === scope }));
+        customSelect($<HTMLSelectElement>('#scope'));
       }
       $('#scope').addEventListener('change', e => { collectBalance(); scope = (e.target as HTMLSelectElement).value; renderScopes(); renderBalance(); });
 
@@ -697,10 +778,15 @@ import '@fontsource/ibm-plex-mono/500.css';
         rules = balanceRules; settingsRevision = settings.revision ?? 0;
         if (!statusOnly) {
         const form = $<HTMLFormElement>('#settings-form');
-        (form.elements.namedItem('pvpEnabled') as HTMLSelectElement).value = typeof settings.lobby?.pvpEnabled === 'boolean' ? String(settings.lobby.pvpEnabled) : '';
+        defaults = Object.fromEntries([...LOBBY, ...ROOMS, ...DEATHMATCH].map(f => [f.key, String(f.def)]));
+        defaults.pvpEnabled = 'true';
+        const pvp = form.elements.namedItem('pvpEnabled') as HTMLSelectElement;
+        pvp.value = String(settings.lobby?.pvpEnabled ?? true);
+        customSelect(pvp);
         hadLocks = Array.isArray(settings.classLocks);
-        $('#lobby-fields').replaceChildren(...LOBBY.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.lobby?.[f.key], `значение сервера по умолчанию, ${f.def} ${f.unit}`, f.unit)));
-        $('#room-fields').replaceChildren(...ROOMS.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.rooms?.[f.key], `значение сервера по умолчанию, ${f.def} ${f.unit}`, f.unit)));
+        $('#lobby-fields').replaceChildren(...LOBBY.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.lobby?.[f.key] ?? f.def, f.unit)));
+        $('#room-fields').replaceChildren(...ROOMS.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.rooms?.[f.key] ?? f.def, f.unit)));
+        $('#deathmatch-fields').replaceChildren(...DEATHMATCH.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.deathmatch?.[f.key] ?? f.def, f.unit)));
         const locks: string[] = settings.classLocks ?? [];
         extraLocks = locks.filter(id => !Object.hasOwn(CLASS_NAMES, id));
         $('#class-list').replaceChildren(...Object.entries(CLASS_NAMES).map(([id, name]) => el('label', { className: 'check' }, el('input', { type: 'checkbox', name: 'class', value: id, checked: !locks.includes(id) }), name)));
@@ -733,9 +819,10 @@ import '@fontsource/ibm-plex-mono/500.css';
         const body = settingsBody(settingsRevision, {
           pvpEnabled: value('pvpEnabled'),
           lobby: Object.fromEntries(LOBBY.map(f => [f.key, value(f.key)])), rooms: Object.fromEntries(ROOMS.map(f => [f.key, value(f.key)])),
+          deathmatch: Object.fromEntries(DEATHMATCH.map(f => [f.key, value(f.key)])),
           lockedClasses: [...[...form.querySelectorAll<HTMLInputElement>('input[name=class]')].filter(c => !c.checked).map(c => c.value), ...extraLocks],
           hadLocks, balance,
-        });
+        }, defaults);
         save.disabled = true;
         settingsStatus('Сохраняем…', 'pending', 'Сохраняем…');
         try { await api('settings', 'PUT', body); await loadSettings(); }
@@ -750,25 +837,31 @@ import '@fontsource/ibm-plex-mono/500.css';
         $('#role-legend').replaceChildren(...Object.values(ROLES).map(r => el('div', {}, el('dt', { textContent: r.name }), el('dd', { textContent: r.about }))));
         const line = $('#staff-status');
         const rows = data.owners.map((o: any) => el('li', { className: 'row' }, el('div', { className: 'row-main' }, el('strong', { textContent: o.name }), el('small', { textContent: 'Владелец. Назначается в настройках сервера, здесь не меняется.' }))));
+        const roleSelects: HTMLSelectElement[] = [];
         for (const s of data.staff) {
           const editable = s.name !== me.name && (s.role !== 'admin' || can('roles-admin'));
           const main = el('div', { className: 'row-main' }, el('strong', { textContent: s.name }), el('small', { textContent: `${ROLES[s.role]?.name ?? 'Участник'} · добавил ${s.grantedBy} ${ago(s.grantedAt)}` }));
           const row = el('li', { className: 'row' }, main);
           if (editable) {
             const select = el('select', { ariaLabel: `Роль игрока ${s.name}` }, ...assignable().map(r => el('option', { value: r, textContent: ROLES[r].name, selected: r === s.role })));
+            roleSelects.push(select);
             select.addEventListener('change', async () => {
               const role = select.value;
-              if (!(await ask({ title: `Сделать ${s.name} — ${ROLES[role].name.toLowerCase()}?`, text: ROLES[role].about, ok: 'Сменить роль' }))) { select.value = s.role; return; }
+              if (!(await ask({ title: `Сделать ${s.name} — ${ROLES[role].name.toLowerCase()}?`, text: ROLES[role].about, ok: 'Сменить роль' }))) { select.value = s.role; customSelect(select); return; }
               changeRole({ uuid: s.uuid, role }, `${s.name} теперь ${ROLES[role].name.toLowerCase()}.`, line);
             });
-            row.append(el('div', { className: 'actions' }, select, button('Убрать из команды', async () => {
+            const actions = el('div', { className: 'actions' }, select);
+            if (can('workshop') && s.role === 'builder') actions.append(button(`Карты: ${s.maps?.length ? s.maps.map((id: string) => MAP_NAMES[id] ?? id).join(', ') : 'все'}`, () => editMaps(s, line), 'small', `Карты для ${s.name} в мастерской`));
+            actions.append(button('Убрать из команды', async () => {
               if (await ask({ title: `Убрать ${s.name} из команды?`, text: `${s.name} потеряет доступ к панели и мастерской. Играть на сервере он сможет как обычно.`, ok: 'Убрать', danger: true }))
                 changeRole({ uuid: s.uuid, role: null }, `${s.name} больше не в команде.`, line);
-            }, 'small danger', `Убрать ${s.name} из команды`)));
+            }, 'small danger', `Убрать ${s.name} из команды`));
+            row.append(actions);
           }
           rows.push(row);
         }
         $('#staff-list').replaceChildren(...rows);
+        roleSelects.forEach(customSelect);
         $('#grant-roles').replaceChildren(...assignable().map((r, i) => el('label', { className: 'radio' }, el('input', { type: 'radio', name: 'role', value: r, required: true, checked: i === 0 }), el('span', {}, ROLES[r].name, el('small', { textContent: ROLES[r].about })))));
         const key = (list: any[]) => JSON.stringify((list ?? []).map(m => [m.draslId, m.role]).sort());
         const inSync = Array.isArray(data.workshop) && key(data.workshop) === key(data.expected);
@@ -780,6 +873,20 @@ import '@fontsource/ibm-plex-mono/500.css';
           const data = await api('staff', 'POST', body);
           await loadTeam();
           return data.sync.error ? `${done} Но доступ в мастерскую обновить не удалось — нажмите «Обновить доступ» позже.` : done;
+        });
+      }
+      /** Which maps a builder may open in the workshop. Missing/every map checked means no restriction (`maps: null`). */
+      async function editMaps(s: { uuid: string; name: string; maps: string[] | null }, line: HTMLElement) {
+        const known = Object.keys(MAP_NAMES), current = new Set(s.maps ?? known);
+        const list = el('div', { className: 'checks' }, ...known.map(id => el('label', { className: 'check' }, el('input', { type: 'checkbox', name: 'map', value: id, checked: current.has(id) }), MAP_NAMES[id])));
+        const answer = await ask({ title: `Карты для ${s.name} в мастерской`, text: 'Без отмеченных карт строитель не сможет войти в мастерскую вовсе. Отметьте все, чтобы снять ограничение.', ok: 'Сохранить', fields: [list] });
+        if (!answer) return;
+        const ids = answer.getAll('map').map(String), maps = ids.length === known.length ? null : ids;
+        await run(line, async () => {
+          if (!ids.length) throw new Error('Отметьте хотя бы одну карту.');
+          await api('staff/maps', 'POST', { uuid: s.uuid, maps });
+          await loadTeam();
+          return `Карты для ${s.name} обновлены.`;
         });
       }
       $<HTMLFormElement>('#grant-form').addEventListener('submit', async e => {
@@ -829,6 +936,7 @@ import '@fontsource/ibm-plex-mono/500.css';
         $<HTMLButtonElement>('#next').disabled = resultPage * data.limit >= data.total;
       }
       $('#result-mode').addEventListener('change', () => { resultPage = 1; loadResults(); });
+      customSelect($<HTMLSelectElement>('#result-mode'));
       $('#prev').addEventListener('click', () => { resultPage--; loadResults(); });
       $('#next').addEventListener('click', () => { resultPage++; loadResults(); });
       const dayFormat = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
