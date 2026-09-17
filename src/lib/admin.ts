@@ -134,8 +134,8 @@ export function writeRequest(directory: string, actor: Actor, body: any): string
 const range = (min: number, max: number) => (v: unknown) => Number.isSafeInteger(v) && (v as number) >= min && (v as number) <= max;
 const LOBBY: Record<string, (v: unknown) => boolean> = { pvpEnabled: v => typeof v === 'boolean', pvpCooldownSeconds: range(0, 600) };
 const ROOMS: Record<string, (v: unknown) => boolean> = { maxRooms: range(1, 16), idleCloseSeconds: range(30, 3600), abandonCloseSeconds: range(5, 600) };
-/** Must match the mod's DeathmatchMode: at least 2 players, arenas are small so 24 is a generous ceiling. */
-const DEATHMATCH: Record<string, (v: unknown) => boolean> = { minPlayers: range(2, 24) };
+/** Must match the mod's DeathmatchMode: at least 1 player (owner can start alone), arenas are small so 24 is a generous ceiling. */
+const DEATHMATCH: Record<string, (v: unknown) => boolean> = { minPlayers: range(1, 24) };
 /** Must match the mod's campaign balance parser: type and inclusive range per key. */
 export const BALANCE: Record<string, { type: 'int' | 'double' | 'bool'; min?: number; max?: number }> = {
   max_tickets: { type: 'int', min: 1, max: 100_000 }, ticket_bleed_multiplier: { type: 'int', min: 0, max: 100 }, ticket_bleed_timer_seconds: { type: 'int', min: 1, max: 600 },

@@ -725,7 +725,7 @@ import '@fontsource/ibm-plex-mono/500.css';
         { key: 'idleCloseSeconds', label: 'Закрывать пустую комнату через', unit: 'сек', min: 30, max: 3600, def: 600 },
         { key: 'abandonCloseSeconds', label: 'Завершать матч без игроков через', unit: 'сек', min: 5, max: 600, def: 30 },
       ];
-      const DEATHMATCH = [{ key: 'minPlayers', label: 'Игроков для старта', unit: 'чел', min: 2, max: 24, def: 2 }];
+      const DEATHMATCH = [{ key: 'minPlayers', label: 'Игроков для старта', unit: 'чел', min: 1, max: 24, def: 2 }];
       const SETTING_LABELS: Record<string, string> = { pvpEnabled: 'PvP в лобби', classLocks: 'Закрытые классы', ...Object.fromEntries([...LOBBY, ...ROOMS, ...DEATHMATCH].map(f => [f.key, f.label])), ...BALANCE_LABELS };
       function numberField(label: string, name: string, min: number, max: number, step: string, value: number, unit?: string, about?: string) {
         const input = el('input', { type: 'number', name, min, max, step, inputMode: step === '1' ? 'numeric' : 'decimal', value });
