@@ -97,9 +97,11 @@ test('settings validation and optimistic revision conflict', t => {
     { lobby: { pvpCooldownSeconds: 601 } }, { lobby: { pvp: true } }, { rooms: { maxRooms: 0 } }, { rooms: { idleCloseSeconds: 29.5 } },
     { classLocks: ['Sniper'] }, { classLocks: ['a', 'a'] }, { campaignBalance: { '*': { rm_rf: 1 } } }, { campaignBalance: { '*': { enable_spawn_shield: 1 } } },
     { campaignBalance: { 'bad id!': { max_tickets: 1 } } }, { campaignBalance: { '*': { max_tickets: Infinity } } }, { extra: 1 },
-    { deathmatch: { minPlayers: 1 } }, { deathmatch: { minPlayers: 25 } }, { deathmatch: { minPlayers: 2.5 } }, { deathmatch: { minPlayer: 3 } },
+    { deathmatch: { minPlayers: 0 } }, { deathmatch: { minPlayers: 25 } }, { deathmatch: { minPlayers: 2.5 } }, { deathmatch: { minPlayer: 3 } },
   ]) assert.throws(() => validateSettings(body), e => status(e) === 400, JSON.stringify(body));
   assert.deepEqual(validateSettings({ deathmatch: { minPlayers: 3 } }), { deathmatch: { minPlayers: 3 } });
+  // Owner wants to be able to start deathmatch alone.
+  assert.deepEqual(validateSettings({ deathmatch: { minPlayers: 1 } }), { deathmatch: { minPlayers: 1 } });
 });
 
 test('RCON allowlist builds exact commands and rejects injection', () => {
