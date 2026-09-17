@@ -540,8 +540,10 @@ const features = [
       .nav__burger {
         display: none;
         flex: none;
+        flex-direction: column;
         width: 40px;
         height: 40px;
+        margin-left: auto;
         align-items: center;
         justify-content: center;
         gap: 5px;
@@ -614,6 +616,8 @@ const features = [
       .mobile-menu__links a {
         padding: 16px 2px;
         border-bottom: 1px solid var(--line);
+        /* Источник даёт "Лидерборд" в смешанном регистре — тут все ссылки должны выглядеть одинаково. */
+        text-transform: uppercase;
       }
 
       .mobile-menu__links a:hover,
