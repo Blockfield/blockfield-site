@@ -307,7 +307,8 @@ import '@fontsource/ibm-plex-mono/500.css';
       .cselect-btn { display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; font-weight: 400; border-color: #3A2C1D; }
       .cselect-btn:hover { background: #070604; }
       .cselect-btn::after { content: ''; width: 9px; height: 9px; border: solid var(--muted); border-width: 0 2px 2px 0; transform: rotate(45deg); margin-top: -4px; flex: none; }
-      .cselect-list { position: absolute; z-index: 6; top: calc(100% + 4px); left: 0; right: 0; margin: 0; padding: 6px; list-style: none; max-height: 260px; overflow-y: auto; background: var(--panel); border: 1px solid #3A2C1D; border-radius: 8px; box-shadow: 0 12px 28px #0008; }
+      /* Sized to content, never narrower than the trigger, capped so it can't push past the viewport edge; overflow-x hidden since width already fits the widest option. */
+      .cselect-list { position: absolute; z-index: 6; top: calc(100% + 4px); left: 0; min-width: 100%; width: max-content; max-width: min(90vw, 420px); margin: 0; padding: 6px; list-style: none; max-height: 260px; overflow-y: auto; overflow-x: hidden; background: var(--panel); border: 1px solid #3A2C1D; border-radius: 8px; box-shadow: 0 12px 28px #0008; }
       .cselect-list li { padding: 9px 10px; border-radius: 6px; cursor: pointer; }
       .cselect-list li.active, .cselect-list li:hover { background: #2A2116; }
       .cselect-list li[aria-selected="true"] { color: var(--amber); font-weight: 650; }
@@ -369,8 +370,8 @@ import '@fontsource/ibm-plex-mono/500.css';
       .radio:has(input:checked) { border-color: var(--amber); }
       .radio span { display: grid; gap: 2px; } .radio small { font-weight: 400; }
       .scope { display: grid; gap: 6px; max-width: 420px; }
-      /* In normal flow, not sticky: a fixed/sticky bar here would sit over whatever field is scrolled underneath it. */
-      .savebar { border-top: 1px solid var(--line); padding: 16px 0 0; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+      /* Sticky so the save action stays reachable while scrolling a long form; opaque background hides fields scrolling underneath it. */
+      .savebar { position: sticky; bottom: 0; z-index: 3; background: #070604f2; backdrop-filter: blur(4px); border-top: 1px solid var(--line); padding: 16px 0; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
 
       .legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 10px; margin: 0; }
       .legend div { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
