@@ -60,8 +60,9 @@ test('workshop members: a builder\'s map list rides along, lead/admin never carr
     { draslId: ADMIN, name: 'Adm', role: 'admin' }, { draslId: MOD, name: 'Mod', role: 'lead' },
     { draslId: OTHER, name: 'Bob', role: 'builder', maps: ['fields', 'konstaxa'] },
   ]);
-  // null/absent maps means every map: the key is left out entirely.
+  // null/absent maps means every map: the key is left out entirely. [] is a real, different value: no maps, and it must ride along too.
   assert.deepEqual(workshopMembers([{ uuid: OTHER, name: 'Bob', role: 'builder', maps: null }], new Map()), [{ draslId: OTHER, name: 'Bob', role: 'builder' }]);
+  assert.deepEqual(workshopMembers([{ uuid: OTHER, name: 'Bob', role: 'builder', maps: [] }], new Map()), [{ draslId: OTHER, name: 'Bob', role: 'builder', maps: [] }]);
 });
 
 test('inbox request is validated and written atomically as <id>.json', t => {
@@ -81,6 +82,9 @@ test('inbox request is validated and written atomically as <id>.json', t => {
   ]) assert.throws(() => writeRequest(dir, actor, body), e => status(e) === code, JSON.stringify(body));
   writeRequest(dir, admin, { kind: 'mode', profile: 'game', expectedRevision: 0, recover: true });
   assert.equal(readdirSync(dir).length, 2);
+  // maps: [] is a valid, distinct value (no maps, not "every map"), and must survive the request as written.
+  const mapsId = writeRequest(dir, admin, { kind: 'members', members: [{ draslId: OTHER, name: 'Bob', role: 'builder', maps: [] }] });
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, `${mapsId}.json`))).members, [{ draslId: OTHER, name: 'Bob', role: 'builder', maps: [] }]);
 });
 
 test('settings validation and optimistic revision conflict', t => {
@@ -250,10 +254,13 @@ test('POST staff/maps: only a builder row accepts a map list, ids must be known 
   assert.equal((await call('staff/maps', { uuid: MOD, maps: ['fields'] })).status, 400, 'a moderator has every map, cannot be given a list');
   assert.equal((await call('staff/maps', { uuid: OTHER, maps: ['not_a_map'] })).status, 400);
   assert.equal((await call('staff/maps', { uuid: OTHER, maps: ['fields', 'fields'] })).status, 400, 'duplicates rejected');
-  assert.equal((await call('staff/maps', { uuid: OTHER, maps: [] })).status, 400, 'empty array is not how "every map" is spelled');
   const ok = await call('staff/maps', { uuid: OTHER, maps: ['fields', 'konstaxa'] });
   assert.equal(ok.status, 200);
   assert.deepEqual(s.staff().find(row => row.uuid === OTHER).maps, ['fields', 'konstaxa']);
+  // [] is a real, distinct value: the builder keeps a workshop account but has nothing to edit.
+  const none = await call('staff/maps', { uuid: OTHER, maps: [] });
+  assert.equal(none.status, 200);
+  assert.deepEqual(s.staff().find(row => row.uuid === OTHER).maps, []);
   const cleared = await call('staff/maps', { uuid: OTHER, maps: null });
   assert.equal(cleared.status, 200);
   assert.equal(s.staff().find(row => row.uuid === OTHER).maps, null);

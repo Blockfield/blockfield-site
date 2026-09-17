@@ -369,7 +369,8 @@ import '@fontsource/ibm-plex-mono/500.css';
       .radio:has(input:checked) { border-color: var(--amber); }
       .radio span { display: grid; gap: 2px; } .radio small { font-weight: 400; }
       .scope { display: grid; gap: 6px; max-width: 420px; }
-      .savebar { position: sticky; bottom: 0; background: #070604f2; border-top: 1px solid var(--line); padding: 12px 0; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; z-index: 1; }
+      /* In normal flow, not sticky: a fixed/sticky bar here would sit over whatever field is scrolled underneath it. */
+      .savebar { border-top: 1px solid var(--line); padding: 16px 0 0; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
 
       .legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 10px; margin: 0; }
       .legend div { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
@@ -851,7 +852,7 @@ import '@fontsource/ibm-plex-mono/500.css';
               changeRole({ uuid: s.uuid, role }, `${s.name} теперь ${ROLES[role].name.toLowerCase()}.`, line);
             });
             const actions = el('div', { className: 'actions' }, select);
-            if (can('workshop') && s.role === 'builder') actions.append(button(`Карты: ${s.maps?.length ? s.maps.map((id: string) => MAP_NAMES[id] ?? id).join(', ') : 'все'}`, () => editMaps(s, line), 'small', `Карты для ${s.name} в мастерской`));
+            if (can('workshop') && s.role === 'builder') actions.append(button(`Карты: ${mapsLabel(s.maps)}`, () => editMaps(s, line), 'small', `Карты для ${s.name} в мастерской`));
             actions.append(button('Убрать из команды', async () => {
               if (await ask({ title: `Убрать ${s.name} из команды?`, text: `${s.name} потеряет доступ к панели и мастерской. Играть на сервере он сможет как обычно.`, ok: 'Убрать', danger: true }))
                 changeRole({ uuid: s.uuid, role: null }, `${s.name} больше не в команде.`, line);
@@ -875,15 +876,15 @@ import '@fontsource/ibm-plex-mono/500.css';
           return data.sync.error ? `${done} Но доступ в мастерскую обновить не удалось — нажмите «Обновить доступ» позже.` : done;
         });
       }
-      /** Which maps a builder may open in the workshop. Missing/every map checked means no restriction (`maps: null`). */
+      /** `null`/absent = every map, including ones added later; `[]` = the builder enters the workshop hub but can edit nothing. */
+      const mapsLabel = (maps: string[] | null) => maps === null ? 'все' : maps.length ? maps.map(id => MAP_NAMES[id] ?? id).join(', ') : 'нет';
       async function editMaps(s: { uuid: string; name: string; maps: string[] | null }, line: HTMLElement) {
         const known = Object.keys(MAP_NAMES), current = new Set(s.maps ?? known);
         const list = el('div', { className: 'checks' }, ...known.map(id => el('label', { className: 'check' }, el('input', { type: 'checkbox', name: 'map', value: id, checked: current.has(id) }), MAP_NAMES[id])));
-        const answer = await ask({ title: `Карты для ${s.name} в мастерской`, text: 'Без отмеченных карт строитель не сможет войти в мастерскую вовсе. Отметьте все, чтобы снять ограничение.', ok: 'Сохранить', fields: [list] });
+        const answer = await ask({ title: `Карты для ${s.name} в мастерской`, text: 'Отметьте карты, которые строитель может редактировать. Все отмечены — доступ ко всем картам, включая новые.', ok: 'Сохранить', fields: [list] });
         if (!answer) return;
         const ids = answer.getAll('map').map(String), maps = ids.length === known.length ? null : ids;
         await run(line, async () => {
-          if (!ids.length) throw new Error('Отметьте хотя бы одну карту.');
           await api('staff/maps', 'POST', { uuid: s.uuid, maps });
           await loadTeam();
           return `Карты для ${s.name} обновлены.`;

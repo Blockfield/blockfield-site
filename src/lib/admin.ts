@@ -98,7 +98,7 @@ export function workshopMembers(staff: { uuid: string; name: string; role: strin
   const members = new Map<string, WorkshopMember>();
   for (const s of staff) if (s.role in WORKSHOP_ROLE) {
     const role = WORKSHOP_ROLE[s.role as Role];
-    members.set(s.uuid, { draslId: s.uuid, name: s.name, role, ...(role === 'builder' && s.maps?.length ? { maps: s.maps } : {}) });
+    members.set(s.uuid, { draslId: s.uuid, name: s.name, role, ...(role === 'builder' && s.maps != null ? { maps: s.maps } : {}) });
   }
   for (const [uuid, name] of ownerNames) members.set(uuid, { draslId: uuid, name, role: 'admin' });
   return [...members.values()].sort((a, b) => a.draslId.localeCompare(b.draslId));
@@ -121,7 +121,8 @@ export function writeRequest(directory: string, actor: Actor, body: any): string
     if (message === null || [...message].length > 200) throw bad('Сообщение: до 200 символов.');
     request = { ...base, message };
   } else if (body?.kind === 'members') {
-    const validMaps = (m: any) => m.maps === undefined || (Array.isArray(m.maps) && m.maps.length && new Set(m.maps).size === m.maps.length && m.maps.every((id: unknown) => typeof id === 'string' && MAP_IDS.has(id)));
+    // `maps` absent/null: every map, including ones added later. `maps: []`: no map (the builder still gets a workshop account, just nothing to edit).
+    const validMaps = (m: any) => m.maps === undefined || (Array.isArray(m.maps) && new Set(m.maps).size === m.maps.length && m.maps.every((id: unknown) => typeof id === 'string' && MAP_IDS.has(id)));
     const valid = Array.isArray(body.members) && body.members.every((m: any) => playerId(m?.draslId) === m.draslId && nickname.test(m.name) && ['admin', 'lead', 'builder'].includes(m.role) && validMaps(m));
     if (!valid) throw bad('Некорректный список участников.');
     request = { ...base, members: body.members.map(({ draslId, name, role, maps }: WorkshopMember) => ({ draslId, name, role, ...(maps ? { maps } : {}) })) };
@@ -348,8 +349,9 @@ const routes: Record<string, Route> = {
     const uuid = playerId(body?.uuid), row = uuid ? store.staff().find(s => s.uuid === uuid) : undefined;
     if (!row) throw fail(404, 'Участник не найден.');
     if (row.role !== 'builder') throw bad('Список карт задаётся только строителям.');
+    // null = every map, including ones added later; [] = the builder gets a workshop account but nothing to edit.
     const maps = body?.maps;
-    if (maps !== null && (!Array.isArray(maps) || !maps.length || new Set(maps).size !== maps.length || !maps.every((id: unknown) => typeof id === 'string' && MAP_IDS.has(id))))
+    if (maps !== null && (!Array.isArray(maps) || new Set(maps).size !== maps.length || !maps.every((id: unknown) => typeof id === 'string' && MAP_IDS.has(id))))
       throw bad('Некорректный список карт.');
     store.setStaffMaps(uuid!, maps);
     const sync = await syncWorkshop(store, actor).then(({ id }) => ({ id }), (error: unknown) => ({ error: error instanceof Response ? 'Не удалось отправить список в мастерскую.' : String((error as Error).message) }));

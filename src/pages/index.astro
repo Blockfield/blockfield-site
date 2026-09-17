@@ -121,8 +121,8 @@ const features = [
         <a href="#download">СКАЧАТЬ</a>
         <a href="https://github.com/netherg-io/blockfield-releases">GITHUB</a>
       </nav>
-      {identity?.hasAdminAccess && <a class="nav__admin" href="/admin">ПАНЕЛЬ</a>}
       <a class="nav__account" href="/account" aria-label={identity ? `Аккаунт: ${identity.name}` : undefined}>{identity ? identity.name : 'АККАУНТ'}</a>
+      {identity?.hasAdminAccess && <a class="nav__admin" href="/admin">ПАНЕЛЬ</a>}
       <a class="nav__cta" href={download.href} aria-label={download.label} data-platform-download>
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
         СКАЧАТЬ
