@@ -6,11 +6,14 @@ import '@fontsource/ibm-plex-mono/600.css';
 import { latestLauncher, RELEASES } from '../lib/launcher';
 import { detectPlatform, launcherDownload } from '../lib/platform';
 import { brand, ui } from '../lib/icons';
+import { siteIdentity } from '../lib/admin';
 
 const launcher = await latestLauncher();
 const platform = detectPlatform(Astro.request.headers.get('user-agent') || '', Astro.request.headers.get('sec-ch-ua-platform') || '');
 const download = launcherDownload(platform, launcher);
 const supported = platform === 'windows' || platform === 'linux';
+// Rendered server-side so the nickname is in the initial HTML, not swapped in after hydration.
+const identity = await siteIdentity(Astro.cookies).catch(() => null);
 
 // HTML содержит ссылку для ОС посетителя; общий кэш не должен отдавать её другой платформе.
 Astro.response.headers.set('Cache-Control', 'private, no-store');
@@ -118,7 +121,8 @@ const features = [
         <a href="#download">СКАЧАТЬ</a>
         <a href="https://github.com/netherg-io/blockfield-releases">GITHUB</a>
       </nav>
-      <a class="nav__account" href="/account">АККАУНТ</a>
+      <a class="nav__account" href="/account" aria-label={identity ? `Аккаунт: ${identity.name}` : undefined}>{identity ? identity.name : 'АККАУНТ'}</a>
+      {identity?.hasAdminAccess && <a class="nav__admin" href="/admin">ПАНЕЛЬ</a>}
       <a class="nav__cta" href={download.href} aria-label={download.label} data-platform-download>
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
         СКАЧАТЬ
@@ -473,6 +477,23 @@ const features = [
 
       .nav__account:hover {
         color: var(--amber);
+      }
+
+      .nav__admin {
+        margin-left: 20px;
+        font-family: var(--mono);
+        font-weight: 600;
+        font-size: clamp(12px, 0.95vw, 14px);
+        letter-spacing: 0.14em;
+        color: var(--bg);
+        background: var(--amber);
+        border-radius: 999px;
+        padding: 6px 14px;
+        transition: background 0.15s ease;
+      }
+
+      .nav__admin:hover {
+        background: var(--amber-hi);
       }
 
       .nav__cta {
@@ -1281,12 +1302,6 @@ const features = [
       const roomList = document.querySelector('#rooms-list')!;
       const roomStatus = document.querySelector('#rooms-status')!;
       const invitedRoom = new URL(window.location.href).searchParams.get('room');
-      fetch('/api/account/me', { credentials: 'same-origin', cache: 'no-store' }).then(r => r.json()).then(({ account }) => {
-        if (!account?.username) return;
-        const link = document.querySelector<HTMLElement>('.nav__account')!;
-        link.textContent = account.username;
-        link.setAttribute('aria-label', `Аккаунт: ${account.username}`);
-      }).catch(() => {});
       const lobbyJoin = document.querySelector<HTMLElement>('#lobby-join')!;
       lobbyJoin.addEventListener('click', () => {
         const note = document.querySelector('#room-launch-status') as HTMLElement;

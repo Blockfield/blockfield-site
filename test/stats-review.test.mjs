@@ -103,7 +103,7 @@ test('schema 1 database with results opens under schema 4 without losing data', 
     legacy.exec('DROP TABLE rating_changes; DROP TABLE ratings; PRAGMA user_version=1;'); legacy.close();
     const upgraded = new StatsStore(path);
     try {
-      assert.equal(upgraded.db.prepare('PRAGMA user_version').get().user_version, 4);
+      assert.equal(upgraded.db.prepare('PRAGMA user_version').get().user_version, 5);
       assert.equal(upgraded.ingest(result).inserted, false);
       assert.equal(upgraded.player(alpha, query()).totals.wins, 1);
       assert.equal(upgraded.db.prepare('SELECT COUNT(*) n FROM ratings').get().n, 0);
@@ -132,7 +132,7 @@ test('schema 2 lifetime ratings migrate in place to schema 4 season 1 rows', asy
     legacy.close();
     const upgraded = new StatsStore(path);
     try {
-      assert.equal(upgraded.db.prepare('PRAGMA user_version').get().user_version, 4);
+      assert.equal(upgraded.db.prepare('PRAGMA user_version').get().user_version, 5);
       const ratings = () => upgraded.db.prepare(`SELECT season_id,${columns} FROM ratings ORDER BY uuid`).all().map(r => ({ ...r }));
       assert.equal(before.length, 2); assert.deepEqual(ratings(), before);
       assert.deepEqual(upgraded.db.prepare('SELECT DISTINCT season_id FROM rating_changes').all().map(r => r.season_id), ['s1']);
@@ -150,7 +150,7 @@ test('winner UUID survives reopen', () => {
     const first = new StatsStore(path); first.ingest(result); first.close();
     const second = new StatsStore(path);
     try {
-      assert.equal(second.db.prepare('PRAGMA user_version').get().user_version, 4);
+      assert.equal(second.db.prepare('PRAGMA user_version').get().user_version, 5);
       assert.equal(second.ingest(result).inserted, false);
       assert.equal(second.player(alpha, query()).totals.wins, 1);
     } finally { second.close(); }

@@ -143,7 +143,7 @@ export class StatsStore {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number };
-    if (![0, 1, 2, 3, 4].includes(version.user_version)) { this.db.close(); throw new Error('Unsupported statistics schema; restore/migrate explicitly'); }
+    if (![0, 1, 2, 3, 4, 5].includes(version.user_version)) { this.db.close(); throw new Error('Unsupported statistics schema; restore/migrate explicitly'); }
     this.db.function('season_at', (time: any) => seasonAt(Number(time)).id);
     this.db.function('uuid_like', { deterministic: true }, (name: any) => (uuidLike(String(name)) ? 1 : 0));
     const columns = (table: string) => (this.db.prepare('SELECT name FROM pragma_table_info(?)').all(table) as { name: string }[]).map(c => c.name);
@@ -199,7 +199,9 @@ export class StatsStore {
         UPDATE rating_changes SET season_id=season_at(rated_at);`);
       // v3 -> v4: voided results stay stored but leave every aggregate.
       if (!columns('results').includes('voided_at')) this.db.exec('ALTER TABLE results ADD COLUMN voided_at INTEGER; ALTER TABLE results ADD COLUMN voided_by TEXT;');
-      this.db.exec('PRAGMA user_version=4; COMMIT');
+      // v4 -> v5: workshop map access per builder (null = every map).
+      if (!columns('staff_roles').includes('maps')) this.db.exec('ALTER TABLE staff_roles ADD COLUMN maps TEXT;');
+      this.db.exec('PRAGMA user_version=5; COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
   }
   close() { this.db.close(); }
@@ -326,12 +328,18 @@ export class StatsStore {
     // ponytail: keeps the newest 10 000 entries; export them elsewhere first if a longer history is ever required.
     this.db.prepare('DELETE FROM admin_audit WHERE id <= (SELECT id FROM admin_audit ORDER BY id DESC LIMIT 1 OFFSET 10000)').run();
   }
-  staff(): { uuid: string; name: string; role: string; grantedBy: string; grantedAt: number }[] {
-    return this.db.prepare('SELECT uuid,name,role,granted_by grantedBy,granted_at grantedAt FROM staff_roles ORDER BY name COLLATE NOCASE,uuid').all() as any[];
+  staff(): { uuid: string; name: string; role: string; grantedBy: string; grantedAt: number; maps: string[] | null }[] {
+    return (this.db.prepare('SELECT uuid,name,role,granted_by grantedBy,granted_at grantedAt,maps FROM staff_roles ORDER BY name COLLATE NOCASE,uuid').all() as any[])
+      .map(({ maps, ...row }) => ({ ...row, maps: maps ? JSON.parse(maps) : null }));
   }
   setStaff(uuid: string, name: string, role: string | null, by: string) {
     if (role === null) this.db.prepare('DELETE FROM staff_roles WHERE uuid=?').run(uuid);
-    else this.db.prepare('INSERT INTO staff_roles VALUES (?,?,?,?,?) ON CONFLICT(uuid) DO UPDATE SET name=excluded.name,role=excluded.role,granted_by=excluded.granted_by,granted_at=excluded.granted_at').run(uuid, name, role, by, Date.now());
+    // A fresh grant starts with every map; maps are set separately through setStaffMaps.
+    else this.db.prepare('INSERT INTO staff_roles (uuid,name,role,granted_by,granted_at) VALUES (?,?,?,?,?) ON CONFLICT(uuid) DO UPDATE SET name=excluded.name,role=excluded.role,granted_by=excluded.granted_by,granted_at=excluded.granted_at').run(uuid, name, role, by, Date.now());
+  }
+  /** `maps` null means every map; only meaningful for `builder` rows (checked by the caller). Returns false if `uuid` has no staff row. */
+  setStaffMaps(uuid: string, maps: string[] | null): boolean {
+    return this.db.prepare('UPDATE staff_roles SET maps=? WHERE uuid=?').run(maps ? JSON.stringify(maps) : null, uuid).changes === 1;
   }
   auditLog(limit = 200) {
     return this.db.prepare('SELECT id,at,actor_uuid actorUuid,actor_name actorName,role,action,target,detail,ok,error FROM admin_audit ORDER BY id DESC LIMIT ?').all(limit);
