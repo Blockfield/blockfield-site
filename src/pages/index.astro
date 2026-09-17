@@ -115,7 +115,7 @@ const features = [
         BLOCKFIELD
       </a>
       <nav class="nav__links">
-        <a href="#rooms" id="rooms-nav" hidden>Комнаты</a>
+        <a href="#rooms" class="rooms-nav-link" hidden>Комнаты</a>
         <a href="/leaderboard">Лидерборд</a>
         <a href="#game">ИГРА</a>
         <a href="#download">СКАЧАТЬ</a>
@@ -127,7 +127,28 @@ const features = [
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
         СКАЧАТЬ
       </a>
+      <button class="nav__burger" type="button" aria-expanded="false" aria-controls="mobile-menu" aria-label="Открыть меню">
+        <span></span><span></span><span></span>
+      </button>
     </header>
+
+    <div class="mobile-menu" id="mobile-menu" hidden>
+      <nav class="mobile-menu__links" aria-label="Мобильное меню">
+        <a href="#rooms" class="rooms-nav-link" hidden>Комнаты</a>
+        <a href="/leaderboard">Лидерборд</a>
+        <a href="#game">ИГРА</a>
+        <a href="#download">СКАЧАТЬ</a>
+        <a href="https://github.com/netherg-io/blockfield-releases">GITHUB</a>
+      </nav>
+      <div class="mobile-menu__account">
+        <a class="mobile-menu__nick" href="/account" aria-label={identity ? `Аккаунт: ${identity.name}` : undefined}>{identity ? identity.name : 'АККАУНТ'}</a>
+        {identity?.hasAdminAccess && <a class="mobile-menu__admin" href="/admin">ПАНЕЛЬ</a>}
+      </div>
+      <a class="button button--amber mobile-menu__cta" href={download.href} aria-label={download.label} data-platform-download>
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
+        <span>{download.label}</span>
+      </a>
+    </div>
 
     <section class="hero">
       <div class="hero__art">
@@ -513,6 +534,117 @@ const features = [
       .nav__cta:hover {
         background: var(--amber-hi);
         transform: translateY(-1px);
+      }
+
+      /* ——— мобильное меню ——— */
+      .nav__burger {
+        display: none;
+        flex: none;
+        width: 40px;
+        height: 40px;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        background: transparent;
+        border: 1px solid var(--line-2);
+        cursor: pointer;
+        transition: border-color 0.15s ease;
+      }
+
+      .nav__burger:hover,
+      .nav__burger:focus-visible {
+        border-color: var(--amber);
+      }
+
+      .nav__burger span {
+        width: 18px;
+        height: 2px;
+        background: var(--cream);
+        transition: transform 0.2s ease, opacity 0.2s ease;
+      }
+
+      /* Открыт: три полоски складываются в крест. */
+      .nav__burger[aria-expanded='true'] span:nth-child(1) {
+        transform: translateY(7px) rotate(45deg);
+      }
+
+      .nav__burger[aria-expanded='true'] span:nth-child(2) {
+        opacity: 0;
+      }
+
+      .nav__burger[aria-expanded='true'] span:nth-child(3) {
+        transform: translateY(-7px) rotate(-45deg);
+      }
+
+      /* Оверлей во всю ширину под шапкой: высота шапки на мобильном фиксирована в 64px (clamp‑пол). */
+      .mobile-menu {
+        display: none;
+        position: fixed;
+        inset: 64px 0 0 0;
+        z-index: 45;
+        background: var(--bg);
+        overflow-y: auto;
+        padding: 8px clamp(16px, 4vw, 28px) 32px;
+        flex-direction: column;
+        gap: 24px;
+      }
+
+      .mobile-menu:not([hidden]) {
+        display: flex;
+      }
+
+      /* Бургер существует только ниже 760px; шире — панель не должна показываться,
+         даже если осталась открытой (resize с мобильного на десктоп без перезагрузки). */
+      @media (min-width: 761px) {
+        .mobile-menu {
+          display: none !important;
+        }
+      }
+
+      .mobile-menu__links {
+        display: flex;
+        flex-direction: column;
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: 15px;
+        letter-spacing: 0.12em;
+        color: var(--sand);
+      }
+
+      .mobile-menu__links a {
+        padding: 16px 2px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .mobile-menu__links a:hover,
+      .mobile-menu__links a:focus-visible {
+        color: var(--amber);
+      }
+
+      .mobile-menu__account {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        font-family: var(--mono);
+        font-size: 14px;
+        letter-spacing: 0.12em;
+      }
+
+      .mobile-menu__nick {
+        color: var(--sand);
+      }
+
+      .mobile-menu__admin {
+        font-weight: 600;
+        color: var(--bg);
+        background: var(--amber);
+        border-radius: 999px;
+        padding: 6px 14px;
+      }
+
+      .mobile-menu__cta {
+        width: 100%;
+        justify-content: center;
       }
 
       /* ——— первый экран ——— */
@@ -1012,10 +1144,18 @@ const features = [
         }
       }
 
-      /* Ссылки в шапке требуют места: ниже они не влезают рядом с кнопкой. */
+      /* Ссылки в шапке требуют места: ниже они не влезают рядом с кнопкой.
+         Всё, что скрыто здесь, дублируется в .mobile-menu через бургер. */
       @media (max-width: 760px) {
-        .nav__links {
+        .nav__links,
+        .nav__account,
+        .nav__admin,
+        .nav__cta {
           display: none;
+        }
+
+        .nav__burger {
+          display: flex;
         }
       }
 
@@ -1298,7 +1438,8 @@ const features = [
     <script>
       const phaseLabels: Record<string, string> = { IDLE: 'Ожидание игроков', VOTING: 'Голосование', PREPARING: 'Подготовка', GAME: 'Бой', MATCH_END: 'Матч завершён' };
       const roomSection = document.querySelector<HTMLElement>('#rooms')!;
-      const roomNav = document.querySelector<HTMLElement>('#rooms-nav')!;
+      const roomNavLinks = document.querySelectorAll<HTMLElement>('.rooms-nav-link');
+      const setRoomNavHidden = (hidden: boolean) => roomNavLinks.forEach((link) => (link.hidden = hidden));
       const roomList = document.querySelector('#rooms-list')!;
       const roomStatus = document.querySelector('#rooms-status')!;
       const invitedRoom = new URL(window.location.href).searchParams.get('room');
@@ -1318,13 +1459,13 @@ const features = [
           lobbyJoin.hidden = Boolean(status.maintenance);
           if (status.maintenance) {
             lastRooms = ''; roomList.replaceChildren();
-            roomSection.hidden = false; roomNav.hidden = false;
+            roomSection.hidden = false; setRoomNavHidden(false);
             roomStatus.textContent = status.maintenance.message;
             return;
           }
           if (!status.available && status.lobby) {
             lastRooms = ''; roomList.replaceChildren();
-            roomSection.hidden = !invitedRoom; roomNav.hidden = true;
+            roomSection.hidden = !invitedRoom; setRoomNavHidden(true);
             roomStatus.textContent = invitedRoom && invitedRoom !== 'lobby'
               ? 'Игровой сервер обновляется. Зайдите в лобби — после запуска сервера вас перенесут автоматически.'
               : 'Игровой сервер обновляется, лобби открыто. Нажмите «Войти в лобби» — после запуска сервера вас перенесут автоматически.';
@@ -1332,7 +1473,7 @@ const features = [
           }
           if (!status.available) throw new Error();
           roomSection.hidden = status.rooms.length === 0 && !invitedRoom;
-          roomNav.hidden = status.rooms.length === 0;
+          setRoomNavHidden(status.rooms.length === 0);
           roomStatus.textContent = status.rooms.length ? 'Состояние обновляется каждые 10 секунд.' : 'Открытых комнат пока нет. Создать комнату можно в игре.';
           if (invitedRoom === 'lobby') {
             roomStatus.textContent = 'Вас пригласили в лобби Blockfield. Нажмите «Войти в лобби» для запуска лаунчера.';
@@ -1389,7 +1530,7 @@ const features = [
           }
         } catch {
           lastRooms = ''; roomList.replaceChildren();
-          roomSection.hidden = !invitedRoom; roomNav.hidden = true;
+          roomSection.hidden = !invitedRoom; setRoomNavHidden(true);
           roomStatus.textContent = 'Не удалось получить список комнат. Повторим запрос автоматически.';
         }
       }
@@ -1432,6 +1573,25 @@ const features = [
         const badge = button.querySelector('.server__copied') as HTMLElement;
         badge.hidden = false;
         setTimeout(() => (badge.hidden = true), 1600);
+      });
+
+      const burger = document.querySelector<HTMLButtonElement>('.nav__burger')!;
+      const mobileMenu = document.querySelector<HTMLElement>('#mobile-menu')!;
+      const setMenuOpen = (open: boolean) => {
+        burger.setAttribute('aria-expanded', String(open));
+        mobileMenu.hidden = !open;
+        // Оверлей во весь экран — скролл фона под ним только мешает.
+        document.body.style.overflow = open ? 'hidden' : '';
+      };
+      burger.addEventListener('click', () => setMenuOpen(mobileMenu.hidden));
+      mobileMenu.addEventListener('click', (event) => {
+        if ((event.target as HTMLElement).closest('a')) setMenuOpen(false);
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !mobileMenu.hidden) {
+          setMenuOpen(false);
+          burger.focus();
+        }
       });
     </script>
   </body>
