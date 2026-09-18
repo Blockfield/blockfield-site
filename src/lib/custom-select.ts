@@ -84,14 +84,17 @@ function listbox(anchor: HTMLElement, control: HTMLElement, id: string, onPick: 
   return { wrap, list, setItems, show, hide, active: () => active };
 }
 
+/** One listbox per select, reused across redraws so its open/close state stays live. */
+const boxes = new WeakMap<HTMLSelectElement, List>();
+
 /**
  * Прячет `select` и рисует кнопку + список, синхронизированные с ним. Можно вызывать повторно
  * после смены опций или значения — перерисует на месте.
  */
 export function customSelect(select: HTMLSelectElement) {
   select.hidden = true;
-  let wrap = select.nextElementSibling as HTMLElement | null;
-  if (!wrap?.classList.contains('cselect')) {
+  let box = boxes.get(select);
+  if (!box) {
     const buttonId = `${select.id || `cs${++seq}`}-btn`, listId = `${buttonId}-list`;
     const button = document.createElement('button');
     button.type = 'button';
@@ -108,29 +111,20 @@ export function customSelect(select: HTMLSelectElement) {
     if (label) label.htmlFor = buttonId;
     // Перерисовка через повторный customSelect(): кнопка и список отражают новое значение
     // независимо от того, слушает ли кто-нибудь ещё событие change.
-    const box = listbox(select, button, listId, index => {
+    box = listbox(select, button, listId, index => {
       select.selectedIndex = index;
       select.dispatchEvent(new Event('change', { bubbles: true }));
       customSelect(select);
     });
-    button.addEventListener('click', () => (box.list.hidden ? (box.show(), box.list.focus()) : box.hide(true)));
-    button.addEventListener('keydown', e => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); box.show(); box.list.focus(); } });
-    wrap = box.wrap;
+    boxes.set(select, box);
+    button.addEventListener('click', () => (box!.list.hidden ? (box!.show(), box!.list.focus()) : box!.hide(true)));
+    button.addEventListener('keydown', e => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); box!.show(); box!.list.focus(); } });
   }
-  const button = wrap.querySelector<HTMLButtonElement>('.cselect-btn')!;
-  const list = wrap.querySelector<HTMLUListElement>('.cselect-list')!;
+  const button = box.wrap.querySelector<HTMLButtonElement>('.cselect-btn')!;
   button.textContent = select.options[select.selectedIndex]?.textContent ?? '';
-  list.replaceChildren(...[...select.options].map((option, i) => {
-    const li = document.createElement('li');
-    li.id = `${list.id}-${i}`;
-    li.role = 'option';
-    li.textContent = option.textContent;
-    li.setAttribute('aria-selected', String(i === select.selectedIndex));
-    if (i === select.selectedIndex) li.classList.add('active');
-    li.addEventListener('mousedown', e => e.preventDefault());
-    li.addEventListener('click', () => { select.selectedIndex = i; select.dispatchEvent(new Event('change', { bubbles: true })); customSelect(select); list.hidden = true; button.setAttribute('aria-expanded', 'false'); button.focus(); });
-    return li;
-  }));
+  // setItems (not a manual rebuild) keeps the listbox's own item count and click/hide wiring in sync — a
+  // parallel rebuild here previously left that count at 0 forever, so the popup could never open (#admin role select bug).
+  box.setItems([...select.options].map(option => option.textContent ?? ''), select.selectedIndex);
 }
 
 /**
