@@ -1,0 +1,18 @@
+---
+import Community from '../layouts/Community.astro';
+---
+<Community title="Страница не найдена" description="Такой страницы на сайте нет." bare>
+  <section class="oops">
+    <p class="rule"><span class="rule__square"></span><span class="rule__label">404</span><span class="rule__line"></span><span class="rule__code">NOT FOUND</span></p>
+    <h1>Здесь пусто</h1>
+    <p class="intro">Такой страницы нет. Возможно, ссылка устарела или в адресе опечатка.</p>
+    <div class="actions">
+      <a class="button button--amber" href="/">На главную</a>
+      <a class="button" href="/leaderboard">В лидерборд</a>
+    </div>
+  </section>
+  <style is:global>
+    .oops { display: grid; gap: 16px; justify-items: start; max-width: 34em; padding: clamp(16px, 5vw, 56px) 0; }
+    .oops h1 { font-size: clamp(38px, 7vw, 76px); }
+  </style>
+</Community>

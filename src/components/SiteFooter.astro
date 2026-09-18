@@ -1,0 +1,21 @@
+---
+import { RELEASES } from '../lib/launcher';
+interface Props { full?: boolean }
+const { full = false } = Astro.props;
+---
+
+<footer class="site-footer">
+  <span class="site-footer__mark">
+    <img class="mark" src="/logo.svg" alt="" width="64" height="64" />
+    BLOCKFIELD
+  </span>
+  <nav aria-label="Ссылки в подвале">
+    {full && <a href="https://github.com/netherg-io/blockfield-releases">Сборки клиента</a>}
+    {full && <a href={RELEASES}>Сборки лаунчера</a>}
+    {full && <a href="https://blockfield.pro/pack.toml">packwiz-пак</a>}
+    <a href="/leaderboard">Лидерборд</a>
+    <a href="/terms">Условия использования</a>
+    <a href="/privacy">Конфиденциальность</a>
+  </nav>
+  <small>Minecraft 1.21.1 · Fabric. Проект не связан с Mojang и Microsoft.</small>
+</footer>

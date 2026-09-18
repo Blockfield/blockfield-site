@@ -322,6 +322,11 @@ const routes: Record<string, Route> = {
     return { output, room, players: body.action === 'list' ? (output.split(':')[1] ?? '').split(',').map(s => s.trim()).filter(Boolean) : undefined };
   }, audit: (body, result) => ({ action: `rcon:${body?.action}`, target: body?.player ?? body?.roomId ?? body?.classId ?? body?.op ?? null, detail: { ...body, room: result?.room, output: result?.output?.slice(0, 500) } }) },
   'GET bans': { permission: 'ban', handler: ({ store }) => ({ bans: siteBans(store) }) },
+  // Подсказки к полям с никнеймом: кого сайт уже видел в матчах, начиная с недавних.
+  'GET players': { permission: 'moderate', handler: ({ store }) => ({
+    players: (store.db.prepare('SELECT name FROM profiles WHERE uuid_like(name)=0 ORDER BY last_seen DESC LIMIT 300').all() as { name: string }[])
+      .map(row => row.name).filter(name => nickname.test(name)),
+  }) },
   'GET settings': { permission: 'settings', handler: () => ({ ...readSettings(settingsDir()), balance: BALANCE }) },
   'PUT settings': { permission: 'settings', handler: ({ actor, body }) => ({ settings: saveSettings(settingsDir(), body, actor.name) }),
     audit: (body, result) => ({ action: 'settings', target: result?.settings ? `revision ${result.settings.revision}` : null, detail: body }) },
