@@ -50,36 +50,39 @@ Astro.response.headers.set('Cache-Control', 'no-store');
               <p class="form-status" role="status"></p>
             </form>
           </article>
-          <article class="card" data-perm="moderate" aria-labelledby="range-title">
-            <h3 id="range-title">Полигон</h3>
-            <p class="muted">Площадка в лобби, где пристреливают оружие.</p>
-            <div class="actions">
-              <button type="button" data-range="open">Открыть</button>
-              <button type="button" data-range="close">Закрыть</button>
-              <button type="button" data-range="reset">Сбросить</button>
+          <article class="card" data-perm="moderate" aria-labelledby="quick-title">
+            <h3 id="quick-title">Быстрые действия</h3>
+            <div class="quick-group">
+              <h4 id="range-title">Полигон</h4>
+              <p class="muted">Площадка в лобби, где пристреливают оружие.</p>
+              <div class="actions">
+                <button type="button" data-range="open">Открыть</button>
+                <button type="button" data-range="close">Закрыть</button>
+                <button type="button" data-range="reset">Сбросить</button>
+              </div>
+              <p class="form-status" id="range-status" role="status"></p>
             </div>
-            <p class="form-status" id="range-status" role="status"></p>
-          </article>
-          <article class="card warn" data-perm="maintenance" aria-labelledby="maint-title">
-            <h3 id="maint-title">Техработы и аварии</h3>
-            <p class="muted">Если сервер нужно освободить прямо сейчас. Обычно хватает мастерской: она дождётся конца матчей сама.</p>
-            <div class="actions">
-              <button type="button" id="drain">Не начинать новые матчи</button>
-              <button type="button" id="interrupt" class="danger">Прервать все матчи</button>
+            <div class="quick-group quick-group--warn" data-perm="maintenance">
+              <h4 id="maint-title">Техработы и аварии</h4>
+              <p class="muted">Если сервер нужно освободить прямо сейчас. Обычно хватает мастерской: она дождётся конца матчей сама.</p>
+              <div class="actions">
+                <button type="button" id="drain">Не начинать новые матчи</button>
+                <button type="button" id="interrupt" class="danger">Прервать все матчи</button>
+              </div>
+              <p class="form-status" id="maint-status" role="status"></p>
             </div>
-            <p class="form-status" id="maint-status" role="status"></p>
           </article>
         </div>
       </section>
 
       <section id="players" data-perm="moderate" data-tab="Игроки" hidden aria-labelledby="players-title">
         <h2 id="players-title" tabindex="-1">Игроки</h2>
+        <article class="card" aria-labelledby="online-title">
+          <div class="card-head"><h3 id="online-title">Сейчас на сервере</h3><button type="button" id="online-refresh" class="small">Обновить</button></div>
+          <p id="online-summary" class="muted" role="status">Загружаем список…</p>
+          <ul id="online-list" class="rows"></ul>
+        </article>
         <div class="cards">
-          <article class="card wide" aria-labelledby="online-title">
-            <div class="card-head"><h3 id="online-title">Сейчас на сервере</h3><button type="button" id="online-refresh" class="small">Обновить</button></div>
-            <p id="online-summary" class="muted" role="status">Загружаем список…</p>
-            <ul id="online-list" class="rows"></ul>
-          </article>
           <article class="card" aria-labelledby="say-title">
             <h3 id="say-title">Объявление всем</h3>
             <p class="muted">Сообщение сразу появится в чате у всех, кто сейчас на сервере.</p>
@@ -105,13 +108,13 @@ Astro.response.headers.set('Cache-Control', 'no-store');
               <p class="form-status" role="status"></p>
             </form>
           </article>
-          <article class="card wide" data-perm="ban" aria-labelledby="bans-title">
-            <h3 id="bans-title">Забаненные игроки</h3>
-            <p class="muted">Кого забанили отсюда. Если бан выдали прямо в игре, снимайте его в «Найти по никнейму».</p>
-            <ul id="ban-list" class="rows"></ul>
-            <p class="form-status" id="ban-status" role="status"></p>
-          </article>
         </div>
+        <article class="card" data-perm="ban" aria-labelledby="bans-title">
+          <h3 id="bans-title">Забаненные игроки</h3>
+          <p class="muted">Кого забанили отсюда. Если бан выдали прямо в игре, снимайте его в «Найти по никнейму».</p>
+          <ul id="ban-list" class="rows"></ul>
+          <p class="form-status" id="ban-status" role="status"></p>
+        </article>
       </section>
 
       <section id="matches" data-perm="view" data-tab="Матчи" hidden aria-labelledby="matches-title">
@@ -241,7 +244,8 @@ Astro.response.headers.set('Cache-Control', 'no-store');
 
     <style is:global>
       body { background: radial-gradient(60% 40% at 50% -10%, #1c150a 0%, transparent 100%), var(--bg); }
-      main { max-width: 1120px; margin: 0 auto; padding: clamp(28px, 4vw, 40px) clamp(14px, 5vw, 48px) 96px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; }
+      /* Console container: wider than the 1200px reading-page default so staff cards pack instead of running down a mid-screen column on a wide monitor. */
+      main { max-width: 1320px; margin: 0 auto; padding: clamp(28px, 4vw, 40px) clamp(14px, 5vw, 48px) 96px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; }
       .top { display: grid; gap: 10px; }
       h2 { margin: 0 0 4px; }
       h3 { margin: 0; }
@@ -261,6 +265,10 @@ Astro.response.headers.set('Cache-Control', 'no-store');
 
       .card.warn { border-color: var(--line-warn); }
       .card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+      /* «Быстрые действия»: several small action groups share one card instead of each stretching a whole grid row for three buttons. */
+      .quick-group + .quick-group { padding-top: 12px; border-top: 1px solid var(--line); }
+      .quick-group--warn { border-top-color: var(--line-warn); }
+      .quick-group h4 { margin: 0; font-size: 15px; font-weight: 700; }
       fieldset.card { padding-top: 8px; }
       legend { font-size: 17px; font-weight: 700; text-transform: uppercase; letter-spacing: -0.01em; padding: 0 6px; margin-left: -6px; }
       fieldset.plain { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; }
@@ -296,8 +304,8 @@ Astro.response.headers.set('Cache-Control', 'no-store');
       .banner.error { border-color: rgb(255 157 153 / 0.45); color: var(--cream); }
 
       #settings-form { gap: 16px; }
-      /* Одна колонка подписей и одна колонка полей, выровненные во всём разделе. */
-      .fields { display: grid; gap: 10px 16px; }
+      /* Поля пакуются в несколько колонок на широком экране, а не тянутся в одну узкую полосу. */
+      .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: start; gap: 10px 24px; }
       .field { display: grid; grid-template-columns: minmax(140px, 260px) minmax(0, 340px); align-items: center; gap: 4px 16px; }
       .field small { grid-column: 2; }
       .group { display: grid; gap: 12px; padding-top: 16px; border-top: 1px solid var(--line); }
@@ -337,7 +345,8 @@ Astro.response.headers.set('Cache-Control', 'no-store');
 
       @media (max-width: 600px) {
         main { padding-top: 24px; gap: 20px; }
-        .tabs { position: static; flex-wrap: wrap; overflow: visible; }
+        /* Скроллится горизонтально, а не переносится в два ряда — как задано в системе (.tabs). */
+        .tabs { position: static; }
         .tabs a { padding: 8px 12px; }
         .log li { grid-template-columns: 1fr; }
         .row > .actions { width: 100%; }
