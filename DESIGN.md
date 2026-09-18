@@ -260,12 +260,17 @@ The product uses two container widths and one gutter ramp:
 
 - **Full-bleed sections** (landing): `padding: clamp(48px, 5vw, 86px) clamp(20px, 4.5vw, 70px)`,
   separated by a 1px Seam top border. Sections alternate Chassis Black and Chassis Black Recessed.
-- **Reading and console pages** (leaderboard, profile, account, admin, legal): `max-width: 1200px`
-  centred, `padding: 24px clamp(20px, 5vw, 48px)`. Legal prose narrows further to 78ch.
+- **Reading and console pages** (leaderboard, profile, account, legal): `max-width: 1200px`
+  centred, `padding: 24px clamp(20px, 5vw, 48px)`. Legal prose narrows further to 78ch. The admin
+  console (`/admin`) is the one exception — see below.
 - **Spacing rhythm:** 4 / 8 / 12 / 16 / 24 / 32 / 48 / 64 / 96. Inside a group, 8–12. Between
   groups, 16–24. Between sections, 48–96. More space above a heading than below it, always.
-- **Card grids:** `repeat(auto-fit, minmax(min(100%, 320px), 1fr))` with a 16px gutter. A card that
-  must span is `grid-column: 1 / -1`, never a second grid.
+- **Card grids:** `repeat(auto-fit, minmax(min(100%, 320px), 1fr))` with a 16px gutter and
+  `align-items: start` — a card is only ever as tall as its own content; it never stretches to
+  match a taller row neighbour and grows a blank body. A card that must span is
+  `grid-column: 1 / -1`, never a second grid, and a spanning card lives outside any `.cards` grid
+  it would otherwise share a row with (a spanning item forces the grid's columns to stay allocated
+  for every row, so a later short row of non-spanning cards would leave a visibly blank column).
 - **Breakpoints:** 900px (two-column layouts collapse), 760px (header links move into the burger),
   600px (phone: gutters drop to 14px, buttons go full width, tables scroll).
 - **Minimum width 320px.** Below that the page is allowed to scroll horizontally rather than be
@@ -273,6 +278,29 @@ The product uses two container widths and one gutter ramp:
 - **Tables** live in a focusable `.table-wrap` with `overflow-x: auto` and an `aria-label` that
   mentions the scroll. Numeric columns are right-aligned; the player column is the only one that
   wraps.
+
+### Admin console (`/admin`)
+
+Staff open this page mid-session, often to fix one thing fast (Product Principle 5: staff speed
+beats staff elegance) — on a wide monitor the reading-page width (1200px) reads as a narrow column
+with the rest of the screen empty, and unequal card content in the same row visibly stretches the
+shorter card. The console gets its own, denser rules:
+
+- **Container:** `max-width: 1320px` (wider than the 1200px reading-page default), same padding
+  ramp otherwise. A left-rail tab layout was considered and rejected for now — the horizontal tab
+  strip already scrolls under 600px and a rail would add a second navigation pattern to the system
+  for one page; revisit only if a future tab count makes the horizontal strip unwieldy.
+- **Small action-only groups merge into one card.** Two or more cards whose entire body is a short
+  description plus a row of buttons (no form, no list) become one card titled «Быстрые действия»
+  with each action group as a labelled subsection (`h4`) separated by a 1px Seam hairline — never a
+  fresh `.cards` grid cell each, which forces a whole grid row for three buttons and leaves the rest
+  of the row (or, if it is the last card, the rest of that page width) blank. A subsection keeps its
+  own `data-perm` gate so permission-based hiding still works per subsection.
+- **Field grids pack too.** `.fields` (the label/input rows inside a settings `fieldset`) is
+  `repeat(auto-fit, minmax(300px, 1fr))` with `align-items: start`, so short fieldsets (one field)
+  still take one row and long ones (several fields) wrap into two or three columns on a wide screen
+  instead of running one field per row down a narrow strip. Each `.field` keeps its own internal
+  label/input column template; alignment is shared within a column, not across the whole fieldset.
 
 ## Elevation & Depth
 

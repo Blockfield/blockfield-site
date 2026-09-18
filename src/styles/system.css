@@ -489,7 +489,8 @@ select[hidden] { display: none; }
   background: var(--panel);
 }
 
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; }
+/* align-items: start — a short card never stretches to match a taller row neighbour with a blank body. */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; align-items: start; }
 .card.wide { grid-column: 1 / -1; }
 
 .notice { border: 1px solid var(--line); background: var(--panel); padding: 16px 18px; color: var(--sand); }
