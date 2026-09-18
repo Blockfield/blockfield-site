@@ -665,8 +665,11 @@ Astro.response.headers.set('Cache-Control', 'no-store');
           if (rule.type === 'bool') {
             const value = values[f.key] ?? def;
             const select = el('select', { name }, ...[['true', 'Да'], ['false', 'Нет']].map(([v, text]) => el('option', { value: v, textContent: text, selected: String(value) === v })));
+            // customSelect() must run after the select has a parent — it inserts its painted button as select's
+            // next sibling, which is a no-op on a detached node (this select is field()'s child, not yet attached here).
+            const wrapped = field(f.label, select, f.hint);
             customSelect(select);
-            return field(f.label, select, f.hint);
+            return wrapped;
           }
           return numberField(f.label, name, rule.min!, rule.max!, rule.type === 'int' ? '1' : '0.1', Number(values[f.key] ?? def), f.unit, f.hint);
         })))));
