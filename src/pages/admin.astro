@@ -36,6 +36,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
           <article class="card" data-perm="mode" aria-labelledby="mode-title">
             <h3 id="mode-title">Режим сервера</h3>
             <p class="muted">Кто сейчас может зайти на сервер. Переключение перезапускает игру.</p>
+            <p class="form-status" id="mode-progress" role="status"></p>
             <div id="mode-options" class="options"></div>
             <p class="form-status" id="mode-status" role="status"></p>
           </article>
@@ -360,6 +361,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
       import { BALANCE_DEFAULTS, BALANCE_GROUPS, BALANCE_LABELS, BALANCE_SCOPES, CLASS_NAMES, MAP_NAMES, MODE_NAMES, TEAM_NAMES } from '../lib/game-names';
       import { settingsBody } from '../lib/settings-form';
       import { customSelect, customCombo } from '../lib/custom-select';
+      import { switchView } from '../lib/switch-status';
 
       type Me = { name: string; role: string | null; permissions: string[] };
       const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
@@ -474,16 +476,22 @@ Astro.response.headers.set('Cache-Control', 'no-store');
 
       // ---------- Overview and matches ----------
       let controller: any = null;
+      /** since/deadline are ms timestamps; ago() naturally reads a future one as "через …" and a past one as "… назад". */
+      function timing(view: ReturnType<typeof switchView>): string {
+        return [typeof view.since === 'number' ? `началось ${ago(view.since)}` : null,
+          typeof view.deadline === 'number' ? `автоматический откат ${ago(view.deadline)}` : null].filter(Boolean).join(' · ');
+      }
       function describe(state: any, rooms: any): { tone: string; title: string; detail: string } {
         const matches = rooms.rooms?.length ?? 0;
         const counts = [typeof rooms.online === 'number' ? `Игроков онлайн: ${rooms.online}` : null, rooms.available ? `Идёт матчей: ${matches}` : null].filter(Boolean).join(' · ');
-        const target = state?.desired?.profile === 'workshop' ? 'мастерскую' : 'игровой режим';
+        const target = state?.desired?.profile === 'workshop' ? 'мастерскую' : state?.desired?.profile === 'test' ? 'тестовый режим' : 'игровой режим';
+        const view = switchView(state), when = timing(view);
         switch (state?.phase) {
           case 'workshop': return { tone: 'warn', title: 'Открыта мастерская', detail: 'Заходить могут только участники команды. Обычные игроки видят сообщение о техработах.' };
           case 'test': return { tone: 'warn', title: 'Тестовый режим', detail: 'Заходить могут только тестеры.' };
-          case 'DRAINING': return { tone: 'warn', title: 'Готовимся к мастерской', detail: `Новые матчи не начинаются. Сервер ждёт, пока закончатся идущие, — это может занять целую кампанию. ${counts}` };
-          case 'REQUESTED': case 'SAVING': case 'STARTING': return { tone: 'warn', title: `Сервер переключается в ${target}`, detail: 'Сохраняем мир и перезапускаем сервер, обычно это несколько минут. Игроки пока не могут зайти.' };
-          case 'ERROR': return { tone: 'bad', title: 'Сервер остановлен из-за ошибки', detail: can('recover') ? 'Игроки не могут зайти. Восстановите игровой режим в карточке «Режим сервера».' : 'Игроки не могут зайти. Сообщите администратору.' };
+          case 'DRAINING': return { tone: 'warn', title: 'Готовимся к мастерской', detail: [`${view.step}: новые матчи не начинаются, сервер ждёт, пока закончатся идущие.`, counts, when].filter(Boolean).join(' · ') };
+          case 'REQUESTED': case 'SAVING': case 'STARTING': return { tone: 'warn', title: `Сервер переключается в ${target}`, detail: [`${view.step}.`, when].filter(Boolean).join(' · ') || 'Игроки пока не могут зайти.' };
+          case 'ERROR': return { tone: 'bad', title: 'Сервер остановлен из-за ошибки', detail: [view.errorMessage ? `Причина: ${view.errorMessage}.` : null, can('recover') ? 'Игроки не могут зайти. Восстановите игровой режим в карточке «Режим сервера».' : 'Игроки не могут зайти. Сообщите администратору.'].filter(Boolean).join(' ') };
         }
         if (rooms.maintenance) return { tone: 'warn', title: 'Вход на сервер закрыт', detail: rooms.maintenance.message };
         if (rooms.available) return { tone: 'ok', title: 'Сервер работает', detail: counts };
@@ -506,10 +514,24 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         { id: 'game', title: 'Игра', about: 'Обычный режим: все игроки заходят и играют матчи.' },
         { id: 'workshop', title: 'Мастерская', about: 'Сервер для строителей карт. Обычные игроки зайти не смогут.' },
       ];
+      /** Empty text collapses per the status-line convention; busy wins over an error, which wins over a stale rollback notice. */
+      function renderProgress(view: ReturnType<typeof switchView>) {
+        const line = $('#mode-progress');
+        if (view.busy) say(line, [view.step, timing(view)].filter(Boolean).join(' · '), 'pending');
+        else if (view.errorMessage) say(line, `Причина: ${view.errorMessage}.`, 'error');
+        else if (view.notice) say(line, view.notice, 'error');
+        else say(line, '');
+      }
       function renderModes() {
         const box = $('#mode-options');
-        if (!controller || controller.phase === 'UNINITIALIZED') { box.replaceChildren(el('p', { className: 'muted', textContent: 'Переключение режимов недоступно: управляющая программа сервера ещё не сообщила своё состояние.' })); return; }
-        const busy = ['REQUESTED', 'DRAINING', 'SAVING', 'STARTING'].includes(controller.phase), broken = controller.phase === 'ERROR';
+        if (!controller || controller.phase === 'UNINITIALIZED') {
+          box.replaceChildren(el('p', { className: 'muted', textContent: 'Переключение режимов недоступно: управляющая программа сервера ещё не сообщила своё состояние.' }));
+          say($('#mode-progress'), '');
+          return;
+        }
+        const view = switchView(controller);
+        renderProgress(view);
+        const busy = view.busy, broken = controller.phase === 'ERROR';
         const target = controller.desired?.profile;
         box.replaceChildren(...MODES.map(mode => {
           const current = !busy && !broken && controller.phase === mode.id, pending = busy && target === mode.id;
@@ -518,9 +540,19 @@ Astro.response.headers.set('Cache-Control', 'no-store');
           const option = el('div', { className: 'option', ...(current ? { dataCurrent: '' } : {}) }, head, el('p', { textContent: mode.about }));
           if (!current && !pending && !broken) option.append(button(mode.id === 'game' ? 'Вернуть игровой режим' : 'Включить мастерскую', () => switchMode(mode.id, false), 'small', undefined));
           if (busy && !pending) option.lastElementChild instanceof HTMLButtonElement && ((option.lastElementChild as HTMLButtonElement).disabled = true);
+          if (pending && view.canCancel && can('mode')) option.append(button('Отменить переключение', cancelSwitch, 'small danger'));
           if (broken && mode.id === 'game' && can('recover')) option.append(button('Восстановить игровой режим', () => switchMode('game', true), 'small primary'));
           return option;
         }));
+      }
+      async function cancelSwitch() {
+        if (!(await ask({ title: 'Отменить переключение?', text: 'Сервер вернётся в тот режим, в котором был до переключения. Отменить можно только пока идёт переключение — позже потребуется восстановление вручную.', ok: 'Отменить переключение', danger: true }))) return;
+        const line = $('#mode-status');
+        run(line, async () => {
+          const { id } = await api('cancel', 'POST', {});
+          follow(line, id, 'Переключение отменено, сервер возвращается в прежний режим.');
+          return 'Запрос отправлен. Сервер применит его в течение 15 секунд…';
+        }, $('#mode-options'));
       }
       async function switchMode(profile: string, recover: boolean) {
         const texts = recover
@@ -865,6 +897,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         const cls = ` «${CLASS_NAMES[a.target] ?? 'неизвестный'}»`;
         switch (a.action) {
           case 'mode': return a.target === 'workshop' ? ['включил', 'включить', ' мастерскую'] : d.recover ? ['восстановил', 'восстановить', ' игровой режим'] : ['вернул', 'вернуть', ' игровой режим'];
+          case 'cancel': return ['отменил', 'отменить', ' переключение режима'];
           case 'message': return ['изменил', 'изменить', ` сообщение для игроков: «${d.message ?? ''}»`];
           case 'rcon:say': return ['написал', 'написать', ` всем: «${d.text ?? ''}»`];
           case 'rcon:kick': return ['выгнал', 'выгнать', ` игрока ${player}${reason}`];

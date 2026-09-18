@@ -87,6 +87,13 @@ test('inbox request is validated and written atomically as <id>.json', t => {
   assert.deepEqual(JSON.parse(readFileSync(join(dir, `${mapsId}.json`))).members, [{ draslId: OTHER, name: 'Bob', role: 'builder', maps: [] }]);
 });
 
+test('cancel request: same shape as mode/message, no extra fields, no extra validation to bypass', t => {
+  const dir = temp(t), lead = { uuid: MOD, name: 'Mod', role: 'moderator' };
+  const id = writeRequest(dir, lead, { kind: 'cancel' });
+  const request = JSON.parse(readFileSync(join(dir, `${id}.json`)));
+  assert.deepEqual({ ...request, createdAt: 0 }, { schema: 1, id, kind: 'cancel', actor: { draslId: MOD, name: 'Mod' }, createdAt: 0 });
+});
+
 test('settings validation and optimistic revision conflict', t => {
   const dir = temp(t);
   const first = saveSettings(dir, { expectedRevision: 0, lobby: { pvpEnabled: true, pvpCooldownSeconds: 30 }, classLocks: ['sniper'], campaignBalance: { '*': { max_tickets: 300, enable_spawn_shield: false } } }, 'Adm');
@@ -163,12 +170,19 @@ test('API: role gate, audit of success and refusal, members request on role chan
   assert.equal((await call(`${MOD}:Moddy`, 'POST', 'rcon', { action: 'kick', player: 'Bob\nstop' })).status, 400);
   assert.equal((await call(`${ADMIN}:Adm`, 'POST', 'staff', { uuid: ADMIN, role: null })).status, 403);
 
+  // cancel: same "mode" gate as switching, and it writes a plain inbox request the controller can process.
+  assert.equal((await call(`${OTHER}:Nobody`, 'POST', 'cancel', {})).status, 403);
+  const cancelled = await call(`${MOD}:Moddy`, 'POST', 'cancel', {});
+  assert.equal(cancelled.status, 200);
+  const { id: cancelId } = await cancelled.json();
+  assert.deepEqual(JSON.parse(readFileSync(join(dirs.BLOCKFIELD_INBOX_DIR, `${cancelId}.json`))).kind, 'cancel');
+
   const log = (await (await call(`${OWNER}:Nether`, 'GET', 'audit')).json()).entries;
   assert.deepEqual(log.map(e => [e.actorName, e.action, e.ok, e.error !== null]), [
-    ['Adm', 'role-revoke', 0, true], ['Moddy', 'rcon:kick', 0, true], ['Moddy', 'rcon:ban', 0, true],
+    ['Moddy', 'cancel', 1, false], ['Adm', 'role-revoke', 0, true], ['Moddy', 'rcon:kick', 0, true], ['Moddy', 'rcon:ban', 0, true],
     ['Adm', 'role-grant', 1, false], ['Adm', 'role-grant', 0, true],
   ]);
-  assert.equal(log[3].target, MOD); assert.equal(JSON.parse(log[3].detail).role, 'moderator');
+  assert.equal(log[4].target, MOD); assert.equal(JSON.parse(log[4].detail).role, 'moderator');
 });
 
 test('review: range goes through /bf, Brigadier rejections are detected', () => {

@@ -120,6 +120,8 @@ export function writeRequest(directory: string, actor: Actor, body: any): string
     const message = typeof body.message === 'string' ? body.message.replace(/[\p{Cc}§]/gu, '').trim() : null;
     if (message === null || [...message].length > 200) throw bad('Сообщение: до 200 символов.');
     request = { ...base, message };
+  } else if (body?.kind === 'cancel') {
+    request = { ...base };
   } else if (body?.kind === 'members') {
     // `maps` absent/null: every map, including ones added later. `maps: []`: no map (the builder still gets a workshop account, just nothing to edit).
     const validMaps = (m: any) => m.maps === undefined || (Array.isArray(m.maps) && new Set(m.maps).size === m.maps.length && m.maps.every((id: unknown) => typeof id === 'string' && MAP_IDS.has(id)));
@@ -306,6 +308,9 @@ const routes: Record<string, Route> = {
     audit: body => ({ action: 'mode', target: String(body?.profile), detail: { expectedRevision: body?.expectedRevision, recover: body?.recover === true } }) },
   'POST message': { permission: 'message', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'message', message: body?.message }) }),
     audit: body => ({ action: 'message', detail: { message: body?.message } }) },
+  // Same gate as switching: an unprivileged rollback of a switch that is still DRAINING/STARTING, no --recover/root needed.
+  'POST cancel': { permission: 'mode', handler: ({ actor }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'cancel' }) }),
+    audit: () => ({ action: 'cancel' }) },
   'POST rcon': { permission: 'moderate', handler: async ({ actor, body }) => {
     const { permission, commands } = rconCommand(body);
     if (!can(actor.role, permission)) throw fail(403, 'Недостаточно прав.');
