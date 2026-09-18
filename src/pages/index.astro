@@ -1363,7 +1363,7 @@ const features = [
               info.append(score, points);
             }
             const admission = joinLabels[room.admission] ? room.admission : undefined;
-            const closed = admission === 'closed';
+            const closed = admission === 'closed' || !room.joinable;
             const label = admission ? joinLabels[admission] : 'Войти';
             if (room.joinable || admission) {
               const join = document.createElement('a'); join.className = 'room-join'; join.textContent = label;
