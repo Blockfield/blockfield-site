@@ -112,7 +112,7 @@ const features = [
         BLOCKFIELD
       </a>
       <nav class="nav__links">
-        <a href="#rooms" id="rooms-nav" hidden>Комнаты</a>
+        <a href="#rooms" id="rooms-nav" hidden>Матчи</a>
         <a href="/leaderboard">Лидерборд</a>
         <a href="#game">ИГРА</a>
         <a href="#download">СКАЧАТЬ</a>
@@ -134,7 +134,7 @@ const features = [
       <div class="hero__copy">
         <p class="tag"><span class="tag__dot"></span>MINECRAFT 1.21.1 · FABRIC</p>
         <h1><span>Командные бои</span><span>в Minecraft</span></h1>
-        <p class="hero__sub">Захват точек, выбор класса и снаряжения.<br />Игровые комнаты на сервере Blockfield.</p>
+        <p class="hero__sub">Захват точек, выбор класса и снаряжения.<br />Идущие матчи на сервере Blockfield.</p>
         <a class="button button--amber hero__cta" href={download.href} data-platform-download>
           <span>{download.label}</span>
           <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
@@ -161,7 +161,7 @@ const features = [
         <h2>Blockfield Launcher</h2>
         <p class="path__text">
           Лаунчер установит модпак, Minecraft и Fabric. После установки нажмите «Играть»
-          для входа на сервер или выберите комнату на этой странице.
+          для входа на сервер или выберите матч на этой странице.
         </p>
         <a class="button button--amber" href={supported ? download.href : '#manual-install'} data-platform-download>
           <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
@@ -220,8 +220,8 @@ const features = [
     </section>
 
     <section hidden class="rooms" id="rooms" aria-labelledby="rooms-title">
-      <div class="rooms-heading"><h2 id="rooms-title">Игровые комнаты</h2><a class="room-join" id="lobby-join" href="blockfield://join/lobby">Войти в лобби</a></div>
-      <p id="rooms-status" role="status">Загружаем список комнат…</p>
+      <div class="rooms-heading"><h2 id="rooms-title">Идущие матчи</h2><a class="room-join" id="lobby-join" href="blockfield://join/lobby">Войти в лобби</a></div>
+      <p id="rooms-status" role="status">Загружаем список матчей…</p>
       <div id="rooms-list"></div>
       <p class="rooms-help">Кнопки входа откроют Blockfield Launcher. <a href="#download">Установить лаунчер</a></p>
       <p id="room-launch-status" role="status" hidden></p>
@@ -278,6 +278,7 @@ const features = [
       .rooms .room-row h3 { font-size: 18px; margin-bottom: 6px; }
       .rooms .room-join { padding: 12px 18px; border: 1px solid #F5A524; color: #F3E7D0; white-space: nowrap; }
       .rooms .room-join:hover { background: #2A2116; }
+      .rooms .room-join[aria-disabled='true'] { opacity: .5; pointer-events: none; }
       .rooms a:focus-visible { outline: 2px solid #F5A524; outline-offset: 4px; }
       .rooms-help { margin-top: 24px; }
       .rooms-help a { text-decoration: underline; text-underline-offset: 4px; }
@@ -1276,6 +1277,9 @@ const features = [
 
     <script>
       const phaseLabels: Record<string, string> = { IDLE: 'Ожидание игроков', VOTING: 'Голосование', PREPARING: 'Подготовка', GAME: 'Бой', MATCH_END: 'Матч завершён' };
+      const formatLabels: Record<string, string> = { casual: 'Casual', ranked: 'Ranked' };
+      // Unknown/absent admission falls back to "Войти" — matches pre-#28 payloads.
+      const joinLabels: Record<string, string> = { open: 'Войти', waiting: 'Встать в очередь', closed: 'Мест нет' };
       const roomSection = document.querySelector<HTMLElement>('#rooms')!;
       const roomNav = document.querySelector<HTMLElement>('#rooms-nav')!;
       const roomList = document.querySelector('#rooms-list')!;
@@ -1318,12 +1322,12 @@ const features = [
           if (!status.available) throw new Error();
           roomSection.hidden = status.rooms.length === 0 && !invitedRoom;
           roomNav.hidden = status.rooms.length === 0;
-          roomStatus.textContent = status.rooms.length ? 'Состояние обновляется каждые 10 секунд.' : 'Открытых комнат пока нет. Создать комнату можно в игре.';
+          roomStatus.textContent = status.rooms.length ? 'Состояние обновляется каждые 10 секунд.' : 'Сейчас матчей нет. Зайдите в игру и выберите режим в хабе: Casual или Рейтинг.';
           if (invitedRoom === 'lobby') {
             roomStatus.textContent = 'Вас пригласили в лобби Blockfield. Нажмите «Войти в лобби» для запуска лаунчера.';
           } else if (invitedRoom) {
             const invited = status.rooms.find((room: any) => room.id === invitedRoom);
-            roomStatus.textContent = invited ? `Приглашение: ${invited.name}. Нажмите «Войти в комнату» для запуска лаунчера.` : 'Комната из приглашения уже закрыта. Выберите другую комнату или создайте новую в игре.';
+            roomStatus.textContent = invited ? `Приглашение: ${invited.name}. Нажмите «Войти» для запуска лаунчера.` : 'Матч из приглашения уже завершён. Выберите другой матч или зайдите в хаб в игре.';
             status.rooms.sort((a: any, b: any) => Number(b.id === invitedRoom) - Number(a.id === invitedRoom));
           }
           const signature = JSON.stringify(status.rooms);
@@ -1334,7 +1338,8 @@ const features = [
             const row = document.createElement('article'); row.className = 'room-row';
             const info = document.createElement('div'); info.className = 'room-info';
             const title = document.createElement('h3'); title.textContent = room.name;
-            const details = document.createElement('p'); details.textContent = [room.mode, room.map, phaseLabels[room.phase], `Игроков: ${room.players}`].filter(Boolean).join(' · ');
+            const ready = room.ready && Number.isInteger(room.ready.ready) && Number.isInteger(room.ready.required) ? room.ready : null;
+            const details = document.createElement('p'); details.textContent = [formatLabels[room.format], room.mode, room.map, phaseLabels[room.phase], `Игроков: ${room.players}`, ready && `Готовы: ${ready.ready}/${ready.required}`].filter(Boolean).join(' · ');
             info.append(title, details);
             if (room.battle) {
               const score = document.createElement('div'); score.className = 'battle-score'; score.setAttribute('aria-label', 'Очки команд');
@@ -1357,15 +1362,26 @@ const features = [
               }
               info.append(score, points);
             }
-            const join = document.createElement('a'); join.className = 'room-join'; join.textContent = 'Войти в комнату';
-            join.setAttribute('aria-label', `Войти в комнату: ${room.name}`);
-            join.href = `blockfield://join/${room.id}`;
-            join.dataset.roomId = room.id;
-            join.addEventListener('click', () => {
-              const note = document.querySelector('#room-launch-status') as HTMLElement;
-              note.hidden = false; note.textContent = 'Подтвердите открытие лаунчера в браузере. Если он не открылся, установите или обновите лаунчер и нажмите кнопку ещё раз.';
-            });
-            row.append(info); if (room.joinable) row.append(join);
+            const admission = joinLabels[room.admission] ? room.admission : undefined;
+            const closed = admission === 'closed';
+            const label = admission ? joinLabels[admission] : 'Войти';
+            if (room.joinable || admission) {
+              const join = document.createElement('a'); join.className = 'room-join'; join.textContent = label;
+              join.setAttribute('aria-label', `${label}: ${room.name}`);
+              join.dataset.roomId = room.id;
+              if (closed) {
+                join.setAttribute('aria-disabled', 'true');
+              } else {
+                join.href = `blockfield://join/${room.id}`;
+                join.addEventListener('click', () => {
+                  const note = document.querySelector('#room-launch-status') as HTMLElement;
+                  note.hidden = false; note.textContent = 'Подтвердите открытие лаунчера в браузере. Если он не открылся, установите или обновите лаунчер и нажмите кнопку ещё раз.';
+                });
+              }
+              row.append(info, join);
+            } else {
+              row.append(info);
+            }
             return row;
           }));
           if (focusedRoom) {
@@ -1375,7 +1391,7 @@ const features = [
         } catch {
           lastRooms = ''; roomList.replaceChildren();
           roomSection.hidden = !invitedRoom; roomNav.hidden = true;
-          roomStatus.textContent = 'Не удалось получить список комнат. Повторим запрос автоматически.';
+          roomStatus.textContent = 'Не удалось получить список матчей. Повторим запрос автоматически.';
         }
       }
       void refreshRooms();

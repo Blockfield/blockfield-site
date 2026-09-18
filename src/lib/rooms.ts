@@ -9,7 +9,8 @@ export function validBattle(battle: any): boolean {
       && ['RED', 'BLUE', 'NEUTRAL'].includes(p.owner) && ['RED', 'BLUE', 'NONE'].includes(p.claiming) && ['RED', 'BLUE', 'NONE'].includes(p.capturing)
       && Number.isInteger(p.progress) && p.progress >= 0 && p.progress <= 100));
 }
-export type Room = { id: string; name: string; mode: string; map: string; phase: string; players: number; joinable: boolean; battle?: Battle | null };
+// format/admission/ready come from blockfield-mod#28; pass through untouched, the client ignores unknown values.
+export type Room = { id: string; name: string; mode: string; map: string; phase: string; players: number; joinable: boolean; battle?: Battle | null; format?: string; admission?: string; ready?: { ready: number; required: number } };
 // available — игровой сервер отвечает; lobby — прокси с лобби отвечает (при рестарте игрового сервера туда можно зайти).
 export type Maintenance = { message: string; since: number | null };
 // online — игроков на прокси (все серверы за ним), если прокси отдал это число.
