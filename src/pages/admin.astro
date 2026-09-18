@@ -1,6 +1,9 @@
 ---
 import '@fontsource-variable/inter';
 import '@fontsource/ibm-plex-mono/500.css';
+import '../styles/system.css';
+import SiteHeader from '../components/SiteHeader.astro';
+Astro.response.headers.set('Cache-Control', 'no-store');
 ---
 <!doctype html>
 <html lang="ru">
@@ -14,13 +17,10 @@ import '@fontsource/ibm-plex-mono/500.css';
   </head>
   <body>
     <a class="skip" href="#content">Перейти к содержимому</a>
-    <header>
-      <a class="brand" href="/" aria-label="Blockfield — главная"><img src="/logo.svg" width="40" height="40" alt="" />BLOCKFIELD</a>
-      <nav aria-label="Сайт"><a href="/leaderboard">Лидерборд</a><a href="/account">Аккаунт</a></nav>
-    </header>
+    <SiteHeader />
     <main id="content">
       <div class="top">
-        <p class="eyebrow">Панель управления</p>
+        <p class="rule"><span class="rule__square"></span><span class="rule__label">Панель</span><span class="rule__line"></span><span class="rule__code">CONSOLE</span></p>
         <h1>Сервер Blockfield</h1>
         <p id="whoami" role="status">Проверяем доступ…</p>
       </div>
@@ -35,51 +35,55 @@ import '@fontsource/ibm-plex-mono/500.css';
         <div class="cards">
           <article class="card" data-perm="mode" aria-labelledby="mode-title">
             <h3 id="mode-title">Режим сервера</h3>
-            <p class="muted">Кто может зайти на сервер. Переключение перезапускает сервер.</p>
+            <p class="muted">Кто сейчас может зайти на сервер. Переключение перезапускает игру.</p>
+            <p class="form-status" id="mode-progress" role="status"></p>
             <div id="mode-options" class="options"></div>
             <p class="form-status" id="mode-status" role="status"></p>
           </article>
           <article class="card" data-perm="message" aria-labelledby="message-title">
             <h3 id="message-title">Сообщение для игроков</h3>
-            <p class="muted">Игроки видят его при входе, когда сервер закрыт на техработы или открыта мастерская.</p>
+            <p class="muted">Что игроки увидят при попытке зайти, пока сервер закрыт.</p>
             <form id="message-form">
               <label for="message">Текст сообщения</label>
               <textarea id="message" name="message" maxlength="200" rows="3" required aria-describedby="message-hint"></textarea>
-              <small id="message-hint">До 200 символов. Например: «Обновляем карты, вернёмся к 20:00».</small>
+              <small id="message-hint">Например: «Обновляем карты, вернёмся к 20:00». До 200 символов.</small>
               <button class="primary" type="submit">Сохранить сообщение</button>
               <p class="form-status" role="status"></p>
             </form>
           </article>
-          <article class="card" data-perm="moderate" aria-labelledby="range-title">
-            <h3 id="range-title">Полигон</h3>
-            <p class="muted">Тренировочная площадка в лобби, где игроки пристреливают оружие.</p>
-            <div class="actions">
-              <button type="button" data-range="open">Открыть</button>
-              <button type="button" data-range="close">Закрыть</button>
-              <button type="button" data-range="reset">Сбросить</button>
+          <article class="card" data-perm="moderate" aria-labelledby="quick-title">
+            <h3 id="quick-title">Быстрые действия</h3>
+            <div class="quick-group">
+              <h4 id="range-title">Полигон</h4>
+              <p class="muted">Площадка в лобби, где пристреливают оружие.</p>
+              <div class="actions">
+                <button type="button" data-range="open">Открыть</button>
+                <button type="button" data-range="close">Закрыть</button>
+                <button type="button" data-range="reset">Сбросить</button>
+              </div>
+              <p class="form-status" id="range-status" role="status"></p>
             </div>
-            <p class="form-status" id="range-status" role="status"></p>
-          </article>
-          <article class="card warn" data-perm="maintenance" aria-labelledby="maint-title">
-            <h3 id="maint-title">Техработы и аварии</h3>
-            <p class="muted">Когда нужно срочно освободить сервер. Обычно достаточно включить мастерскую — она сама дождётся конца матчей.</p>
-            <div class="actions">
-              <button type="button" id="drain">Не начинать новые матчи</button>
-              <button type="button" id="interrupt" class="danger">Прервать все матчи</button>
+            <div class="quick-group quick-group--warn" data-perm="maintenance">
+              <h4 id="maint-title">Техработы и аварии</h4>
+              <p class="muted">Если сервер нужно освободить прямо сейчас. Обычно хватает мастерской: она дождётся конца матчей сама.</p>
+              <div class="actions">
+                <button type="button" id="drain">Не начинать новые матчи</button>
+                <button type="button" id="interrupt" class="danger">Прервать все матчи</button>
+              </div>
+              <p class="form-status" id="maint-status" role="status"></p>
             </div>
-            <p class="form-status" id="maint-status" role="status"></p>
           </article>
         </div>
       </section>
 
       <section id="players" data-perm="moderate" data-tab="Игроки" hidden aria-labelledby="players-title">
         <h2 id="players-title" tabindex="-1">Игроки</h2>
+        <article class="card" aria-labelledby="online-title">
+          <div class="card-head"><h3 id="online-title">Сейчас на сервере</h3><button type="button" id="online-refresh" class="small">Обновить</button></div>
+          <p id="online-summary" class="muted" role="status">Загружаем список…</p>
+          <ul id="online-list" class="rows"></ul>
+        </article>
         <div class="cards">
-          <article class="card wide" aria-labelledby="online-title">
-            <div class="card-head"><h3 id="online-title">Сейчас на сервере</h3><button type="button" id="online-refresh" class="small">Обновить</button></div>
-            <p id="online-summary" class="muted" role="status">Загружаем список…</p>
-            <ul id="online-list" class="rows"></ul>
-          </article>
           <article class="card" aria-labelledby="say-title">
             <h3 id="say-title">Объявление всем</h3>
             <p class="muted">Сообщение сразу появится в чате у всех, кто сейчас на сервере.</p>
@@ -92,11 +96,11 @@ import '@fontsource/ibm-plex-mono/500.css';
           </article>
           <article class="card" aria-labelledby="byname-title">
             <h3 id="byname-title">Найти по никнейму</h3>
-            <p class="muted" id="byname-about">Если игрока нет в списке — например, чтобы забанить или разбанить его, пока он не в сети.</p>
+            <p class="muted" id="byname-about">Для тех, кого сейчас нет на сервере. Начните вводить никнейм — подскажем знакомые.</p>
             <form id="byname-form">
               <label for="byname">Никнейм игрока</label>
               <input id="byname" name="player" required pattern="[A-Za-z0-9_]{3,16}" autocomplete="off" aria-describedby="byname-hint" />
-              <small id="byname-hint">Как в игре: латинские буквы, цифры и _, от 3 до 16 символов.</small>
+              <small id="byname-hint">Точно как в игре: латинские буквы, цифры и _.</small>
               <div class="actions">
                 <button type="submit" value="kick">Выгнать</button>
                 <button type="submit" value="ban" data-perm="ban" class="danger">Забанить</button>
@@ -105,25 +109,24 @@ import '@fontsource/ibm-plex-mono/500.css';
               <p class="form-status" role="status"></p>
             </form>
           </article>
-          <article class="card wide" data-perm="ban" aria-labelledby="bans-title">
-            <h3 id="bans-title">Забаненные игроки</h3>
-            <p class="muted">Кого забанили через эту панель. Забаненных командой в игре разбаньте через «Найти по никнейму».</p>
-            <ul id="ban-list" class="rows"></ul>
-            <p class="form-status" id="ban-status" role="status"></p>
-          </article>
         </div>
+        <article class="card" data-perm="ban" aria-labelledby="bans-title">
+          <h3 id="bans-title">Забаненные игроки</h3>
+          <p class="muted">Кого забанили отсюда. Если бан выдали прямо в игре, снимайте его в «Найти по никнейму».</p>
+          <ul id="ban-list" class="rows"></ul>
+          <p class="form-status" id="ban-status" role="status"></p>
+        </article>
       </section>
 
       <section id="matches" data-perm="view" data-tab="Матчи" hidden aria-labelledby="matches-title">
         <h2 id="matches-title" tabindex="-1">Матчи</h2>
-        <p class="muted">Комнаты, которые сейчас открыты на сервере. Список обновляется сам.</p>
+        <p class="muted">Что сейчас идёт на сервере. Список обновляется сам.</p>
         <p class="form-status" id="room-status" role="status"></p>
         <div id="room-list" class="cards"></div>
       </section>
 
       <section id="settings" data-perm="settings" data-tab="Настройки игры" hidden aria-labelledby="settings-title">
         <h2 id="settings-title" tabindex="-1">Настройки игры</h2>
-        <p class="muted">Пустое поле или «По умолчанию» не сохраняется: сервер использует своё значение, оно написано под полем.</p>
         <p id="settings-state" class="banner" role="status">Загружаем настройки…</p>
         <form id="settings-form">
           <fieldset class="card">
@@ -131,8 +134,7 @@ import '@fontsource/ibm-plex-mono/500.css';
             <div class="fields">
               <div class="field">
                 <label for="pvp">PvP в лобби</label>
-                <select id="pvp" name="pvpEnabled" aria-describedby="pvp-hint"><option value="">По умолчанию (включено)</option><option value="true">Включено</option><option value="false">Выключено</option></select>
-                <small id="pvp-hint">«По умолчанию» — решает сервер, обычно PvP включено. При смене у всех в лобби PvP сбросится в «выключено».</small>
+                <select id="pvp" name="pvpEnabled"><option value="true">Включено</option><option value="false">Выключено</option></select>
               </div>
             </div>
             <div id="lobby-fields" class="fields"></div>
@@ -142,13 +144,17 @@ import '@fontsource/ibm-plex-mono/500.css';
             <div id="room-fields" class="fields"></div>
           </fieldset>
           <fieldset class="card">
+            <legend>Каждый сам за себя</legend>
+            <div id="deathmatch-fields" class="fields"></div>
+          </fieldset>
+          <fieldset class="card">
             <legend>Классы</legend>
-            <p class="muted">Снимите галочку, чтобы закрыть класс. Кто уже играет этим классом, доиграет ещё 3 минуты.</p>
+            <small class="muted">Кто уже играет этим классом, доиграет ещё три минуты.</small>
             <div id="class-list" class="checks"></div>
           </fieldset>
           <fieldset class="card">
             <legend>Баланс матчей</legend>
-            <p class="muted">Пустое поле — значение из файлов игры, оно указано под полем. Идущие матчи не меняются: новые значения действуют со следующего матча.</p>
+            <small class="muted">Новые значения подхватит следующий матч.</small>
             <div class="scope">
               <label for="scope">Для каких матчей</label>
               <select id="scope"></select>
@@ -165,7 +171,7 @@ import '@fontsource/ibm-plex-mono/500.css';
 
       <section id="team" data-perm="roles" data-tab="Команда" hidden aria-labelledby="team-title">
         <h2 id="team-title" tabindex="-1">Команда</h2>
-        <p class="muted">Кто помогает управлять сервером. Каждая следующая роль умеет всё, что предыдущая, и больше.</p>
+        <p class="muted">Кто помогает вести сервер. Каждая роль умеет всё, что предыдущая, и чуть больше.</p>
         <dl id="role-legend" class="legend"></dl>
         <ul id="staff-list" class="rows"></ul>
         <p class="form-status" id="staff-status" role="status"></p>
@@ -175,7 +181,7 @@ import '@fontsource/ibm-plex-mono/500.css';
             <form id="grant-form">
               <label for="grant-name">Никнейм игрока</label>
               <input id="grant-name" name="nickname" required pattern="[A-Za-z0-9_]{3,16}" autocomplete="off" aria-describedby="grant-hint" />
-              <small id="grant-hint">У игрока должен быть аккаунт Blockfield.</small>
+              <small id="grant-hint">Начните вводить — подскажем тех, кто уже играл. Нужен аккаунт Blockfield.</small>
               <fieldset class="plain"><legend>Роль</legend><div id="grant-roles" class="radios"></div></fieldset>
               <button class="primary" type="submit">Добавить в команду</button>
               <p class="form-status" role="status"></p>
@@ -183,7 +189,7 @@ import '@fontsource/ibm-plex-mono/500.css';
           </article>
           <article class="card" data-perm="workshop" aria-labelledby="ws-title">
             <h3 id="ws-title">Доступ в мастерскую</h3>
-            <p id="workshop-state" class="muted">Проверяем…</p>
+            <p id="workshop-state" class="muted">Проверяем список…</p>
             <button type="button" id="sync">Обновить доступ</button>
             <p class="form-status" id="sync-status" role="status"></p>
           </article>
@@ -192,7 +198,7 @@ import '@fontsource/ibm-plex-mono/500.css';
 
       <section id="stats" data-perm="stats" data-tab="Статистика" hidden aria-labelledby="stats-title">
         <h2 id="stats-title" tabindex="-1">Статистика</h2>
-        <p class="muted">Сыгранные матчи, которые попали в лидерборд (время — UTC). Если матч сыгран нечестно или с ошибкой, его можно не учитывать: он пропадёт из лидерборда и профилей, а рейтинг пересчитается.</p>
+        <p class="muted">Матчи, которые попали в лидерборд. Время UTC. Нечестный или сломанный матч можно убрать из статистики — и вернуть обратно, если передумаете.</p>
         <div class="scope">
           <label for="result-mode">Показать</label>
           <select id="result-mode"><option value="">Все матчи</option><option value="campaign">Ranked-кампании</option><option value="room">Обычные бои</option><option value="deathmatch">Каждый сам за себя</option></select>
@@ -203,13 +209,13 @@ import '@fontsource/ibm-plex-mono/500.css';
         <h3>Сезоны</h3>
         <ul id="season-list" class="plain-list"></ul>
         <details class="dev">
-          <summary>Для разработчиков: ключи приёма результатов</summary>
-          <p class="muted">Игровой сервер отправляет результаты матчей на сайт с секретным ключом. Создайте ключ, когда подключаете новый игровой сервер, и отзовите его, если он мог попасть в чужие руки. Ключ показывается только один раз.</p>
+          <summary>Ключи для игровых серверов</summary>
+          <p class="muted">Игровой сервер отправляет результаты матчей с секретным ключом. Заведите ключ, когда подключаете новый сервер, и отзовите, если он мог утечь. Ключ показывается один раз.</p>
           <form id="key-form">
-            <label for="key-server">Идентификатор игрового сервера</label>
+            <label for="key-server">ID игрового сервера</label>
             <input id="key-server" name="serverId" required autocomplete="off" aria-describedby="key-server-hint" />
-            <small id="key-server-hint">Берётся из настроек статистики на игровом сервере.</small>
-            <label for="key-label">Название, чтобы не перепутать</label>
+            <small id="key-server-hint">Лежит в настройках статистики на самом сервере.</small>
+            <label for="key-label">Как его называть</label>
             <input id="key-label" name="label" required maxlength="64" placeholder="Например: основной сервер" />
             <button type="submit">Создать ключ</button>
             <p class="form-status" role="status"></p>
@@ -220,7 +226,7 @@ import '@fontsource/ibm-plex-mono/500.css';
 
       <section id="journal" data-perm="audit" data-tab="Журнал действий" hidden aria-labelledby="journal-title">
         <h2 id="journal-title" tabindex="-1">Журнал действий</h2>
-        <p class="muted">Последние действия команды в этой панели.</p>
+        <p class="muted">Что команда делала здесь в последнее время.</p>
         <ul id="audit-list" class="log"></ul>
       </section>
     </main>
@@ -238,163 +244,132 @@ import '@fontsource/ibm-plex-mono/500.css';
     </dialog>
 
     <style is:global>
-      :root { color-scheme: dark; font-family: 'Inter Variable', sans-serif; background: #070604; color: #F3E7D0; --line: #2A2116; --panel: #11100D; --muted: #C7AE86; --amber: #F5A524; --red: #FF9D99; --green: #82D66B; }
-      * { box-sizing: border-box; }
-      body { margin: 0; min-width: 320px; background: radial-gradient(60% 40% at 50% -10%, #1c150a 0%, transparent 100%); }
-      [hidden] { display: none !important; }
-      a { color: var(--amber); text-underline-offset: 4px; text-decoration-thickness: 1px; }
-      a:hover { color: #F3E7D0; }
-      :focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
-      h2:focus { outline: none; }
-      .skip { position: absolute; top: -80px; left: 16px; padding: 12px; background: var(--panel); z-index: 5; } .skip:focus { top: 12px; }
-      header { max-width: 1200px; margin: 0 auto; padding: 20px clamp(16px, 5vw, 48px); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px 24px; border-bottom: 1px solid var(--line); }
-      header nav { display: flex; gap: 20px; }
-      .brand { display: flex; align-items: center; gap: 12px; color: #F3E7D0; font-weight: 750; text-decoration: none; letter-spacing: .04em; }
-      main { max-width: 1120px; margin: 0 auto; padding: 40px clamp(16px, 5vw, 48px) 96px; display: grid; gap: 24px; }
-      .top { display: grid; gap: 8px; }
-      .eyebrow { font-family: var(--mono, 'IBM Plex Mono', monospace); font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: var(--amber); margin: 0; }
-      h1 { font-size: clamp(32px, 5vw, 48px); line-height: 1.05; letter-spacing: -.025em; font-weight: 800; margin: 0; }
-      h2 { font-size: clamp(24px, 3.5vw, 30px); margin: 0 0 4px; letter-spacing: -.01em; }
-      h3 { font-size: 18px; margin: 0; }
-      p { margin: 0; line-height: 1.55; }
-      .muted, small { color: var(--muted); }
-      small { font-size: 14px; line-height: 1.45; }
-      #whoami { color: var(--muted); }
-      #whoami strong { color: #F3E7D0; }
-      section { display: grid; gap: 16px; min-width: 0; scroll-margin-top: 80px; }
-      .row .actions select { width: auto; min-width: 170px; }
+      body { background: radial-gradient(60% 40% at 50% -10%, #1c150a 0%, transparent 100%), var(--bg); }
+      /* Console container: wider than the 1200px reading-page default so staff cards pack instead of running down a mid-screen column on a wide monitor. */
+      main { max-width: 1320px; margin: 0 auto; padding: clamp(28px, 4vw, 40px) clamp(14px, 5vw, 48px) 96px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; }
+      .top { display: grid; gap: 10px; }
+      h2 { margin: 0 0 4px; }
+      h3 { margin: 0; }
+      #whoami { color: var(--sand); }
+      #whoami strong { color: var(--cream); }
+      section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; scroll-margin-top: 80px; }
 
-      .tabs { display: flex; gap: 4px; overflow-x: auto; position: sticky; top: 0; z-index: 2; background: #070604f2; border-bottom: 1px solid var(--line); padding: 8px 0; scrollbar-width: thin; }
-      .tabs a { flex: none; padding: 10px 14px; border-radius: 6px; color: var(--muted); text-decoration: none; font-weight: 600; white-space: nowrap; }
-      .tabs a:hover { color: #F3E7D0; background: #1a150e; }
-      .tabs a[aria-current="page"] { color: #070604; background: var(--amber); }
+      .tabs { position: sticky; top: 0; z-index: 2; background: rgb(7 6 4 / 0.95); border-bottom: 1px solid var(--line); padding: 8px 0; }
 
-      .hero { display: flex; gap: 16px; align-items: flex-start; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--muted); padding: 20px 22px; border-radius: 8px; }
-      .hero .headline { font-size: clamp(20px, 3vw, 24px); font-weight: 700; }
-      .dot { flex: none; width: 14px; height: 14px; border-radius: 50%; margin-top: 7px; background: var(--muted); }
-      [data-tone="ok"] { border-left-color: var(--green); } [data-tone="ok"] .dot { background: var(--green); box-shadow: 0 0 0 4px #82d66b26; }
-      [data-tone="warn"] { border-left-color: var(--amber); } [data-tone="warn"] .dot { background: var(--amber); }
-      [data-tone="bad"] { border-left-color: var(--red); } [data-tone="bad"] .dot { background: var(--red); }
+      /* Карточка состояния сервера: тон несёт точка и слово, а не толстая полоса сбоку. */
+      .hero { display: flex; gap: 14px; align-items: flex-start; background: var(--panel); border: 1px solid var(--line); padding: 18px 20px; }
+      .hero .headline { font-size: clamp(19px, 3vw, 23px); font-weight: 700; }
+      .dot { flex: none; width: 12px; height: 12px; border-radius: 50%; margin-top: 7px; background: var(--muted); }
+      [data-tone='ok'] { border-color: rgb(130 214 107 / 0.45); } [data-tone='ok'] .dot { background: var(--ok); box-shadow: 0 0 0 4px rgb(130 214 107 / 0.15); }
+      [data-tone='warn'] { border-color: rgb(245 165 36 / 0.45); } [data-tone='warn'] .dot { background: var(--amber); }
+      [data-tone='bad'] { border-color: rgb(255 157 153 / 0.45); } [data-tone='bad'] .dot { background: var(--danger); }
 
-      .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; }
-      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: clamp(16px, 3vw, 22px); display: grid; gap: 12px; align-content: start; min-width: 0; margin: 0; }
-      .card.wide { grid-column: 1 / -1; }
-      .card.warn { border-color: #4a3317; }
+      .card.warn { border-color: var(--line-warn); }
       .card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+      /* «Быстрые действия»: several small action groups share one card instead of each stretching a whole grid row for three buttons. */
+      .quick-group + .quick-group { padding-top: 12px; border-top: 1px solid var(--line); }
+      .quick-group--warn { border-top-color: var(--line-warn); }
+      .quick-group h4 { margin: 0; font-size: 15px; font-weight: 700; }
       fieldset.card { padding-top: 8px; }
-      legend { font-size: 18px; font-weight: 700; padding: 0 6px; margin-left: -6px; }
+      legend { font-size: 17px; font-weight: 700; text-transform: uppercase; letter-spacing: -0.01em; padding: 0 6px; margin-left: -6px; }
       fieldset.plain { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; }
-      fieldset.plain legend { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+      fieldset.plain legend { font-size: 15px; font-weight: 600; text-transform: none; letter-spacing: normal; margin-bottom: 8px; }
 
       form { display: grid; gap: 10px; }
-      label { font-weight: 600; }
-      input:not([type=checkbox]):not([type=radio]), select, textarea { font: inherit; color: #F3E7D0; background: #070604; border: 1px solid #3A2C1D; border-radius: 6px; padding: 10px 12px; width: 100%; min-height: 44px; }
-      textarea { resize: vertical; }
-      input:user-invalid, textarea:user-invalid { border-color: var(--red); }
-      input[type=checkbox], input[type=radio] { accent-color: var(--amber); width: 20px; height: 20px; margin: 0; flex: none; }
-      button { font: inherit; font-weight: 650; color: #F3E7D0; background: transparent; border: 1px solid var(--amber); border-radius: 6px; padding: 10px 16px; min-height: 44px; cursor: pointer; }
-      button:hover { background: #2A2116; }
-      button.primary { background: var(--amber); color: #070604; }
-      button.primary:hover { background: #FFC861; }
-      button.danger { border-color: var(--red); color: var(--red); }
-      button.danger.primary { background: var(--red); color: #070604; }
-      button.small { padding: 6px 12px; min-height: 38px; font-size: 15px; }
-      button:disabled { opacity: .55; cursor: not-allowed; }
+      textarea { min-height: 88px; }
       form > button, .card > button { justify-self: start; }
-      .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-      .actions.end { justify-content: flex-end; }
-      .form-status { min-height: 0; font-weight: 500; }
-      .form-status:empty { display: none; }
-      .ok { color: var(--green); } .error { color: var(--red); } .pending { color: var(--amber); }
+      .row .actions select { width: auto; min-width: 170px; }
 
       .options { display: grid; gap: 10px; }
-      .option { border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 8px; }
-      .option[data-current] { border-color: var(--green); background: #82d66b0d; }
-      .option p { color: var(--muted); font-size: 15px; }
+      .option { border: 1px solid var(--line); padding: 14px; display: grid; gap: 8px; }
+      .option[data-current] { border-color: var(--ok); background: rgb(130 214 107 / 0.05); }
+      .option p { color: var(--sand); font-size: 15px; }
       .option-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; font-weight: 700; }
-      .badge { font-size: 13px; font-weight: 600; padding: 3px 8px; border-radius: 999px; background: #2A2116; color: var(--muted); white-space: nowrap; }
-      .badge.ok { background: #82d66b1f; color: var(--green); } .badge.warn { background: #f5a5241f; color: var(--amber); } .badge.bad { background: #ff9d991f; color: var(--red); }
 
       .rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-      .row { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
-      .card .row { background: #0b0a08; }
+      .row { background: var(--panel); border: 1px solid var(--line); padding: 12px 14px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
+      .card .row { background: var(--bg-2); }
       .row-main { display: grid; gap: 4px; min-width: 0; flex: 1 1 240px; }
       .row-main strong { overflow-wrap: anywhere; }
-      .row.voided { opacity: .75; border-style: dashed; }
+      .row.voided { opacity: 0.75; border-style: dashed; }
       .empty { color: var(--muted); padding: 8px 0; }
-      .team-RED { color: #ff8a80; } .team-BLUE { color: #82b1ff; }
+      .team-RED { color: var(--danger); } .team-BLUE { color: var(--info); }
 
       .room { gap: 14px; }
       .facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
-      .facts dt { color: var(--muted); } .facts dd { margin: 0; font-weight: 600; }
+      .facts dt { color: var(--sand); } .facts dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 
-      .banner { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--muted); border-radius: 8px; padding: 14px 16px; }
-      .banner.ok { border-left-color: var(--green); color: #F3E7D0; } .banner.pending { border-left-color: var(--amber); color: #F3E7D0; } .banner.error { border-left-color: var(--red); color: #F3E7D0; }
+      .banner { background: var(--panel); border: 1px solid var(--line); padding: 14px 16px; }
+      .banner.ok { border-color: rgb(130 214 107 / 0.45); color: var(--cream); }
+      .banner.pending { border-color: rgb(245 165 36 / 0.45); color: var(--cream); }
+      .banner.error { border-color: rgb(255 157 153 / 0.45); color: var(--cream); }
+
       #settings-form { gap: 16px; }
-      .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 16px 20px; }
-      .field { display: grid; gap: 6px; align-content: start; }
-      .unit { display: flex; align-items: stretch; }
-      .unit input { border-top-right-radius: 0 !important; border-bottom-right-radius: 0 !important; }
-      .unit span { display: flex; align-items: center; padding: 0 12px; border: 1px solid #3A2C1D; border-left: 0; border-radius: 0 6px 6px 0; color: var(--muted); background: #0b0a08; white-space: nowrap; font-size: 14px; }
+      /* Поля пакуются в несколько колонок на широком экране, а не тянутся в одну узкую полосу. */
+      .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: start; gap: 10px 24px; }
+      .field { display: grid; grid-template-columns: minmax(140px, 260px) minmax(0, 340px); align-items: center; gap: 4px 16px; }
+      .field small { grid-column: 2; }
       .group { display: grid; gap: 12px; padding-top: 16px; border-top: 1px solid var(--line); }
       .group h4 { margin: 0; font-size: 15px; color: var(--amber); font-weight: 650; }
       .switch, .check, .radio { display: flex; gap: 10px; align-items: flex-start; font-weight: 600; cursor: pointer; }
       .switch input, .check input, .radio input { margin-top: 2px; }
       .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 10px; }
-      .check { border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+      .check, .radio { border: 1px solid var(--line); padding: 12px; }
       .radios { display: grid; gap: 8px; }
-      .radio { border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
       .radio:has(input:checked) { border-color: var(--amber); }
       .radio span { display: grid; gap: 2px; } .radio small { font-weight: 400; }
       .scope { display: grid; gap: 6px; max-width: 420px; }
-      .savebar { position: sticky; bottom: 0; background: #070604f2; border-top: 1px solid var(--line); padding: 12px 0; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; z-index: 1; }
+      /* Липкая полоса, чтобы «сохранить» не уезжало вверх на длинной форме. */
+      .savebar { position: sticky; bottom: 0; z-index: 3; background: rgb(7 6 4 / 0.95); backdrop-filter: blur(4px); border-top: 1px solid var(--line); padding: 16px 0; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
 
       .legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 10px; margin: 0; }
-      .legend div { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
-      .legend dt { font-weight: 700; } .legend dd { margin: 4px 0 0; color: var(--muted); font-size: 15px; line-height: 1.45; }
+      .legend div { background: var(--panel); border: 1px solid var(--line); padding: 12px 14px; }
+      .legend dt { font-weight: 700; } .legend dd { margin: 4px 0 0; color: var(--sand); font-size: 15px; line-height: 1.45; }
 
       .pager { justify-content: space-between; }
-      .plain-list { margin: 0; padding-left: 20px; color: var(--muted); line-height: 1.7; }
-      details.dev { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; display: grid; gap: 12px; }
-      details.dev[open] { display: grid; }
-      details.dev summary { cursor: pointer; font-weight: 600; color: var(--muted); }
+      .plain-list { margin: 0; padding-left: 20px; color: var(--sand); line-height: 1.7; }
+      .plain-list li::marker { color: var(--amber-dim); }
+      details.dev { border: 1px solid var(--line); padding: 12px 16px; display: grid; gap: 12px; }
+      details.dev summary { cursor: pointer; font-weight: 600; color: var(--sand); }
+      details.dev summary::marker { color: var(--amber); }
       details.dev > * + * { margin-top: 12px; }
-      .secret { font-family: 'IBM Plex Mono', monospace; background: #18130D; padding: 8px 10px; border-radius: 6px; overflow-wrap: anywhere; color: #F3E7D0; }
+      .secret { font-family: var(--mono); background: var(--panel-2); padding: 8px 10px; overflow-wrap: anywhere; color: var(--cream); }
 
       .log { list-style: none; margin: 0; padding: 0; display: grid; }
       .log li { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
-      .log time { color: var(--muted); font-size: 14px; white-space: nowrap; }
-      .log li.failed { border-left: 3px solid var(--red); padding-left: 12px; }
-      .log .fail { color: var(--red); font-weight: 600; }
+      .log time { color: var(--muted); font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+      .log li.failed .fail { color: var(--danger); font-weight: 600; }
 
-      dialog { background: var(--panel); color: #F3E7D0; border: 1px solid #5C4526; border-radius: 10px; padding: 0; width: min(520px, calc(100vw - 24px)); }
-      dialog::backdrop { background: #000b; }
-      dialog form { padding: 22px; gap: 14px; }
       dialog h2 { font-size: 22px; }
       #dialog-fields { display: grid; gap: 10px; }
       #dialog-fields:empty { display: none; }
 
       @media (max-width: 600px) {
-        main { padding-top: 28px; gap: 20px; }
-        .tabs { position: static; flex-wrap: wrap; overflow: visible; }
+        main { padding-top: 24px; gap: 20px; }
+        /* Скроллится горизонтально, а не переносится в два ряда — как задано в системе (.tabs). */
+        .tabs { position: static; }
         .tabs a { padding: 8px 12px; }
         .log li { grid-template-columns: 1fr; }
         .row > .actions { width: 100%; }
         .savebar button { width: 100%; }
+        .field { grid-template-columns: 1fr; gap: 6px; }
+        .field small { grid-column: 1; }
       }
     </style>
 
     <script>
       import { BALANCE_DEFAULTS, BALANCE_GROUPS, BALANCE_LABELS, BALANCE_SCOPES, CLASS_NAMES, MAP_NAMES, MODE_NAMES, TEAM_NAMES } from '../lib/game-names';
       import { settingsBody } from '../lib/settings-form';
+      import { customSelect, customCombo } from '../lib/custom-select';
+      import { switchView } from '../lib/switch-status';
 
       type Me = { name: string; role: string | null; permissions: string[] };
       const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
       const ROLES: Record<string, { name: string; about: string }> = {
-        builder: { name: 'Строитель', about: 'Заходит в мастерскую и строит карты. В панели видит состояние сервера и матчи.' },
-        moderator: { name: 'Модератор', about: 'Выгоняет игроков, пишет объявления, завершает матчи, включает мастерскую и управляет полигоном.' },
-        admin: { name: 'Администратор', about: 'Банит, меняет настройки игры, исключает матчи из статистики, видит журнал, добавляет строителей и модераторов.' },
-        owner: { name: 'Владелец', about: 'Полный доступ, в том числе назначение администраторов. Задаётся в настройках сервера.' },
+        builder: { name: 'Строитель', about: 'Делает карты в мастерской. В панели только смотрит, что происходит на сервере.' },
+        moderator: { name: 'Модератор', about: 'Следит за порядком в игре: может выгнать, объявить что-то всем и завершить зависший матч.' },
+        admin: { name: 'Администратор', about: 'Отвечает за сервер целиком: баны, настройки игры, честность статистики и состав команды.' },
+        owner: { name: 'Владелец', about: 'Полный доступ, включая назначение администраторов. Владельцы задаются в настройках сервера.' },
       };
       const PHASES: Record<string, string> = { IDLE: 'Ждёт игроков', VOTING: 'Голосование за карту', PREPARING: 'Подготовка к бою', GAME: 'Идёт бой', MATCH_END: 'Подведение итогов' };
       const OUTCOMES: [string, string, string][] = [
@@ -501,16 +476,22 @@ import '@fontsource/ibm-plex-mono/500.css';
 
       // ---------- Overview and matches ----------
       let controller: any = null;
+      /** since/deadline are ms timestamps; ago() naturally reads a future one as "через …" and a past one as "… назад". */
+      function timing(view: ReturnType<typeof switchView>): string {
+        return [typeof view.since === 'number' ? `началось ${ago(view.since)}` : null,
+          typeof view.deadline === 'number' ? `автоматический откат ${ago(view.deadline)}` : null].filter(Boolean).join(' · ');
+      }
       function describe(state: any, rooms: any): { tone: string; title: string; detail: string } {
         const matches = rooms.rooms?.length ?? 0;
         const counts = [typeof rooms.online === 'number' ? `Игроков онлайн: ${rooms.online}` : null, rooms.available ? `Идёт матчей: ${matches}` : null].filter(Boolean).join(' · ');
-        const target = state?.desired?.profile === 'workshop' ? 'мастерскую' : 'игровой режим';
+        const target = state?.desired?.profile === 'workshop' ? 'мастерскую' : state?.desired?.profile === 'test' ? 'тестовый режим' : 'игровой режим';
+        const view = switchView(state), when = timing(view);
         switch (state?.phase) {
           case 'workshop': return { tone: 'warn', title: 'Открыта мастерская', detail: 'Заходить могут только участники команды. Обычные игроки видят сообщение о техработах.' };
           case 'test': return { tone: 'warn', title: 'Тестовый режим', detail: 'Заходить могут только тестеры.' };
-          case 'DRAINING': return { tone: 'warn', title: 'Готовимся к мастерской', detail: `Новые матчи не начинаются. Сервер ждёт, пока закончатся идущие, — это может занять целую кампанию. ${counts}` };
-          case 'REQUESTED': case 'SAVING': case 'STARTING': return { tone: 'warn', title: `Сервер переключается в ${target}`, detail: 'Сохраняем мир и перезапускаем сервер, обычно это несколько минут. Игроки пока не могут зайти.' };
-          case 'ERROR': return { tone: 'bad', title: 'Сервер остановлен из-за ошибки', detail: can('recover') ? 'Игроки не могут зайти. Восстановите игровой режим в карточке «Режим сервера».' : 'Игроки не могут зайти. Сообщите администратору.' };
+          case 'DRAINING': return { tone: 'warn', title: 'Готовимся к мастерской', detail: [`${view.step}: новые матчи не начинаются, сервер ждёт, пока закончатся идущие.`, counts, when].filter(Boolean).join(' · ') };
+          case 'REQUESTED': case 'SAVING': case 'STARTING': return { tone: 'warn', title: `Сервер переключается в ${target}`, detail: [`${view.step}.`, when].filter(Boolean).join(' · ') || 'Игроки пока не могут зайти.' };
+          case 'ERROR': return { tone: 'bad', title: 'Сервер остановлен из-за ошибки', detail: [view.errorMessage ? `Причина: ${view.errorMessage}.` : null, can('recover') ? 'Игроки не могут зайти. Восстановите игровой режим в карточке «Режим сервера».' : 'Игроки не могут зайти. Сообщите администратору.'].filter(Boolean).join(' ') };
         }
         if (rooms.maintenance) return { tone: 'warn', title: 'Вход на сервер закрыт', detail: rooms.maintenance.message };
         if (rooms.available) return { tone: 'ok', title: 'Сервер работает', detail: counts };
@@ -533,10 +514,24 @@ import '@fontsource/ibm-plex-mono/500.css';
         { id: 'game', title: 'Игра', about: 'Обычный режим: все игроки заходят и играют матчи.' },
         { id: 'workshop', title: 'Мастерская', about: 'Сервер для строителей карт. Обычные игроки зайти не смогут.' },
       ];
+      /** Empty text collapses per the status-line convention; busy wins over an error, which wins over a stale rollback notice. */
+      function renderProgress(view: ReturnType<typeof switchView>) {
+        const line = $('#mode-progress');
+        if (view.busy) say(line, [view.step, timing(view)].filter(Boolean).join(' · '), 'pending');
+        else if (view.errorMessage) say(line, `Причина: ${view.errorMessage}.`, 'error');
+        else if (view.notice) say(line, view.notice, 'error');
+        else say(line, '');
+      }
       function renderModes() {
         const box = $('#mode-options');
-        if (!controller || controller.phase === 'UNINITIALIZED') { box.replaceChildren(el('p', { className: 'muted', textContent: 'Переключение режимов недоступно: управляющая программа сервера ещё не сообщила своё состояние.' })); return; }
-        const busy = ['REQUESTED', 'DRAINING', 'SAVING', 'STARTING'].includes(controller.phase), broken = controller.phase === 'ERROR';
+        if (!controller || controller.phase === 'UNINITIALIZED') {
+          box.replaceChildren(el('p', { className: 'muted', textContent: 'Переключение режимов недоступно: управляющая программа сервера ещё не сообщила своё состояние.' }));
+          say($('#mode-progress'), '');
+          return;
+        }
+        const view = switchView(controller);
+        renderProgress(view);
+        const busy = view.busy, broken = controller.phase === 'ERROR';
         const target = controller.desired?.profile;
         box.replaceChildren(...MODES.map(mode => {
           const current = !busy && !broken && controller.phase === mode.id, pending = busy && target === mode.id;
@@ -545,9 +540,19 @@ import '@fontsource/ibm-plex-mono/500.css';
           const option = el('div', { className: 'option', ...(current ? { dataCurrent: '' } : {}) }, head, el('p', { textContent: mode.about }));
           if (!current && !pending && !broken) option.append(button(mode.id === 'game' ? 'Вернуть игровой режим' : 'Включить мастерскую', () => switchMode(mode.id, false), 'small', undefined));
           if (busy && !pending) option.lastElementChild instanceof HTMLButtonElement && ((option.lastElementChild as HTMLButtonElement).disabled = true);
+          if (pending && view.canCancel && can('mode')) option.append(button('Отменить переключение', cancelSwitch, 'small danger'));
           if (broken && mode.id === 'game' && can('recover')) option.append(button('Восстановить игровой режим', () => switchMode('game', true), 'small primary'));
           return option;
         }));
+      }
+      async function cancelSwitch() {
+        if (!(await ask({ title: 'Отменить переключение?', text: 'Сервер вернётся в тот режим, в котором был до переключения. Отменить можно только пока идёт переключение — позже потребуется восстановление вручную.', ok: 'Отменить переключение', danger: true }))) return;
+        const line = $('#mode-status');
+        run(line, async () => {
+          const { id } = await api('cancel', 'POST', {});
+          follow(line, id, 'Переключение отменено, сервер возвращается в прежний режим.');
+          return 'Запрос отправлен. Сервер применит его в течение 15 секунд…';
+        }, $('#mode-options'));
       }
       async function switchMode(profile: string, recover: boolean) {
         const texts = recover
@@ -633,46 +638,47 @@ import '@fontsource/ibm-plex-mono/500.css';
       // ---------- Settings ----------
       type Rule = { type: 'int' | 'double' | 'bool'; min?: number; max?: number };
       let rules: Record<string, Rule> = {}, settingsRevision = 0, balance: Record<string, Record<string, number | boolean>> = {}, scope = '*', extraLocks: string[] = [], hadLocks = false;
+      // Every field's server default, keyed by its form name, in the shape settingsBody compares against (strings for numbers, 'true'/'false' for bools).
+      let defaults: Record<string, string> = {};
       const LOBBY = [{ key: 'pvpCooldownSeconds', label: 'Задержка перед выключением PvP', unit: 'сек', min: 0, max: 600, def: 10 }];
       const ROOMS = [
-        { key: 'maxRooms', label: 'Сколько матчей может идти одновременно', unit: 'шт', min: 1, max: 16, def: 2 },
+        { key: 'maxRooms', label: 'Матчей одновременно', unit: 'шт', min: 1, max: 16, def: 2 },
         { key: 'idleCloseSeconds', label: 'Закрывать пустую комнату через', unit: 'сек', min: 30, max: 3600, def: 600 },
-        { key: 'abandonCloseSeconds', label: 'Завершать матч, если все вышли, через', unit: 'сек', min: 5, max: 600, def: 30 },
+        { key: 'abandonCloseSeconds', label: 'Завершать матч без игроков через', unit: 'сек', min: 5, max: 600, def: 30 },
       ];
-      const SETTING_LABELS: Record<string, string> = { pvpEnabled: 'PvP в лобби', classLocks: 'Закрытые классы', ...Object.fromEntries([...LOBBY, ...ROOMS].map(f => [f.key, f.label])), ...BALANCE_LABELS };
-      function numberField(label: string, name: string, min: number, max: number, step: string, value: unknown, fallback: string, unit?: string, about?: string) {
-        const input = el('input', { type: 'number', name, min, max, step, inputMode: step === '1' ? 'numeric' : 'decimal', value: value ?? '' });
-        const wrap = unit ? el('div', { className: 'unit' }, input, el('span', { textContent: unit, ariaHidden: 'true' })) : undefined;
-        return field(label, input, `${about ? `${about} ` : ''}От ${number(min)} до ${number(max)}. Пустое поле — ${fallback}.`, wrap);
+      const DEATHMATCH = [{ key: 'minPlayers', label: 'Игроков для старта', unit: 'чел', min: 1, max: 24, def: 2 }];
+      const SETTING_LABELS: Record<string, string> = { pvpEnabled: 'PvP в лобби', classLocks: 'Закрытые классы', ...Object.fromEntries([...LOBBY, ...ROOMS, ...DEATHMATCH].map(f => [f.key, f.label])), ...BALANCE_LABELS };
+      function numberField(label: string, name: string, min: number, max: number, step: string, value: number, unit?: string, about?: string) {
+        const input = el('input', { type: 'number', name, min, max, step, inputMode: step === '1' ? 'numeric' : 'decimal', value });
+        const wrap = unit ? el('div', { className: 'unit' }, input, el('span', { className: 'unit__suffix', textContent: unit, ariaHidden: 'true' })) : undefined;
+        return field(label, input, `${about ? `${about} ` : ''}${number(min)}–${number(max)}`, wrap);
       }
       const shown = (v: number | boolean) => (typeof v === 'boolean' ? (v ? 'да' : 'нет') : number(v));
-      /** What the server uses when the field is empty, in words. */
-      function fallbackFor(key: string) {
-        if (scope !== '*') {
-          const shared = balance['*']?.[key];
-          return shared !== undefined ? `общее значение из «Все матчи»: ${shown(shared)}` : `по умолчанию ${shown(BALANCE_DEFAULTS[scope][key])} (из файлов игры)`;
-        }
-        const values = BALANCE_SCOPES.slice(1).map(s => [s.name, BALANCE_DEFAULTS[s.id][key]] as const);
-        return new Set(values.map(([, v]) => v)).size === 1 ? `по умолчанию ${shown(values[0][1])} (из файлов игры)` : `по умолчанию как в файлах игры: ${values.map(([n, v]) => `${n} — ${shown(v)}`).join(', ')}`;
-      }
-      const defaultValue = (key: string) => shown(scope === '*' ? BALANCE_DEFAULTS.room[key] : balance['*']?.[key] ?? BALANCE_DEFAULTS[scope][key]);
+      /** The value the mod uses for `key` at the current scope: the campaign/room file default, overridden by the site's «Все матчи», like the mod merges them. */
+      const scopeDefault = (key: string) => scope === '*' ? BALANCE_DEFAULTS.room[key] : balance['*']?.[key] ?? BALANCE_DEFAULTS[scope][key];
       function renderBalance() {
         const values = balance[scope] ?? {};
         $('#scope-hint').textContent = scope === '*' ? 'Общие значения для всех кампаний и обычных боёв.' : 'Значения только для этих матчей, поверх общих.';
         $('#balance-fields').replaceChildren(...BALANCE_GROUPS.map(group => el('div', { className: 'group' }, el('h4', { textContent: group.title }), el('div', { className: 'fields' }, ...group.fields.map(f => {
-          const rule = rules[f.key], name = `b_${f.key}`;
+          const rule = rules[f.key], name = `b_${f.key}`, def = scopeDefault(f.key);
+          defaults[f.key] = rule.type === 'bool' ? String(def) : String(def);
           if (rule.type === 'bool') {
-            const select = el('select', { name }, ...[['', `По умолчанию (${defaultValue(f.key)})`], ['true', 'Да'], ['false', 'Нет']].map(([value, text]) => el('option', { value, textContent: text, selected: String(values[f.key] ?? '') === value })));
-            return field(f.label, select, `${f.hint ? `${f.hint} ` : ''}«По умолчанию» — ${fallbackFor(f.key)}.`);
+            const value = values[f.key] ?? def;
+            const select = el('select', { name }, ...[['true', 'Да'], ['false', 'Нет']].map(([v, text]) => el('option', { value: v, textContent: text, selected: String(value) === v })));
+            // customSelect() must run after the select has a parent — it inserts its painted button as select's
+            // next sibling, which is a no-op on a detached node (this select is field()'s child, not yet attached here).
+            const wrapped = field(f.label, select, f.hint);
+            customSelect(select);
+            return wrapped;
           }
-          return numberField(f.label, name, rule.min!, rule.max!, rule.type === 'int' ? '1' : '0.1', values[f.key], fallbackFor(f.key), f.unit, f.hint);
+          return numberField(f.label, name, rule.min!, rule.max!, rule.type === 'int' ? '1' : '0.1', Number(values[f.key] ?? def), f.unit, f.hint);
         })))));
       }
       function collectBalance() {
         const form = $<HTMLFormElement>('#settings-form'), values: Record<string, number | boolean> = {};
         for (const key of Object.keys(rules)) {
           const raw = (form.elements.namedItem(`b_${key}`) as HTMLInputElement | null)?.value ?? '';
-          if (raw !== '') values[key] = rules[key].type === 'bool' ? raw === 'true' : Number(raw);
+          if (raw !== '' && raw !== defaults[key]) values[key] = rules[key].type === 'bool' ? raw === 'true' : Number(raw);
         }
         if (Object.keys(values).length) balance[scope] = values; else delete balance[scope];
       }
@@ -681,6 +687,7 @@ import '@fontsource/ibm-plex-mono/500.css';
         $('#scope').replaceChildren(...BALANCE_SCOPES.map(s => el('option', { value: s.id, textContent: `${s.name}${balance[s.id] ? ' — есть изменения' : ''}`, selected: s.id === scope })));
         // Sections for campaigns the site does not know are kept as they are.
         for (const id of Object.keys(balance)) if (!known.has(id)) $('#scope').append(el('option', { value: id, textContent: 'Другая кампания — есть изменения', selected: id === scope }));
+        customSelect($<HTMLSelectElement>('#scope'));
       }
       $('#scope').addEventListener('change', e => { collectBalance(); scope = (e.target as HTMLSelectElement).value; renderScopes(); renderBalance(); });
 
@@ -697,10 +704,15 @@ import '@fontsource/ibm-plex-mono/500.css';
         rules = balanceRules; settingsRevision = settings.revision ?? 0;
         if (!statusOnly) {
         const form = $<HTMLFormElement>('#settings-form');
-        (form.elements.namedItem('pvpEnabled') as HTMLSelectElement).value = typeof settings.lobby?.pvpEnabled === 'boolean' ? String(settings.lobby.pvpEnabled) : '';
+        defaults = Object.fromEntries([...LOBBY, ...ROOMS, ...DEATHMATCH].map(f => [f.key, String(f.def)]));
+        defaults.pvpEnabled = 'true';
+        const pvp = form.elements.namedItem('pvpEnabled') as HTMLSelectElement;
+        pvp.value = String(settings.lobby?.pvpEnabled ?? true);
+        customSelect(pvp);
         hadLocks = Array.isArray(settings.classLocks);
-        $('#lobby-fields').replaceChildren(...LOBBY.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.lobby?.[f.key], `значение сервера по умолчанию, ${f.def} ${f.unit}`, f.unit)));
-        $('#room-fields').replaceChildren(...ROOMS.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.rooms?.[f.key], `значение сервера по умолчанию, ${f.def} ${f.unit}`, f.unit)));
+        $('#lobby-fields').replaceChildren(...LOBBY.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.lobby?.[f.key] ?? f.def, f.unit)));
+        $('#room-fields').replaceChildren(...ROOMS.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.rooms?.[f.key] ?? f.def, f.unit)));
+        $('#deathmatch-fields').replaceChildren(...DEATHMATCH.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.deathmatch?.[f.key] ?? f.def, f.unit)));
         const locks: string[] = settings.classLocks ?? [];
         extraLocks = locks.filter(id => !Object.hasOwn(CLASS_NAMES, id));
         $('#class-list').replaceChildren(...Object.entries(CLASS_NAMES).map(([id, name]) => el('label', { className: 'check' }, el('input', { type: 'checkbox', name: 'class', value: id, checked: !locks.includes(id) }), name)));
@@ -733,9 +745,10 @@ import '@fontsource/ibm-plex-mono/500.css';
         const body = settingsBody(settingsRevision, {
           pvpEnabled: value('pvpEnabled'),
           lobby: Object.fromEntries(LOBBY.map(f => [f.key, value(f.key)])), rooms: Object.fromEntries(ROOMS.map(f => [f.key, value(f.key)])),
+          deathmatch: Object.fromEntries(DEATHMATCH.map(f => [f.key, value(f.key)])),
           lockedClasses: [...[...form.querySelectorAll<HTMLInputElement>('input[name=class]')].filter(c => !c.checked).map(c => c.value), ...extraLocks],
           hadLocks, balance,
-        });
+        }, defaults);
         save.disabled = true;
         settingsStatus('Сохраняем…', 'pending', 'Сохраняем…');
         try { await api('settings', 'PUT', body); await loadSettings(); }
@@ -750,25 +763,31 @@ import '@fontsource/ibm-plex-mono/500.css';
         $('#role-legend').replaceChildren(...Object.values(ROLES).map(r => el('div', {}, el('dt', { textContent: r.name }), el('dd', { textContent: r.about }))));
         const line = $('#staff-status');
         const rows = data.owners.map((o: any) => el('li', { className: 'row' }, el('div', { className: 'row-main' }, el('strong', { textContent: o.name }), el('small', { textContent: 'Владелец. Назначается в настройках сервера, здесь не меняется.' }))));
+        const roleSelects: HTMLSelectElement[] = [];
         for (const s of data.staff) {
           const editable = s.name !== me.name && (s.role !== 'admin' || can('roles-admin'));
           const main = el('div', { className: 'row-main' }, el('strong', { textContent: s.name }), el('small', { textContent: `${ROLES[s.role]?.name ?? 'Участник'} · добавил ${s.grantedBy} ${ago(s.grantedAt)}` }));
           const row = el('li', { className: 'row' }, main);
           if (editable) {
             const select = el('select', { ariaLabel: `Роль игрока ${s.name}` }, ...assignable().map(r => el('option', { value: r, textContent: ROLES[r].name, selected: r === s.role })));
+            roleSelects.push(select);
             select.addEventListener('change', async () => {
               const role = select.value;
-              if (!(await ask({ title: `Сделать ${s.name} — ${ROLES[role].name.toLowerCase()}?`, text: ROLES[role].about, ok: 'Сменить роль' }))) { select.value = s.role; return; }
+              if (!(await ask({ title: `Сделать ${s.name} — ${ROLES[role].name.toLowerCase()}?`, text: ROLES[role].about, ok: 'Сменить роль' }))) { select.value = s.role; customSelect(select); return; }
               changeRole({ uuid: s.uuid, role }, `${s.name} теперь ${ROLES[role].name.toLowerCase()}.`, line);
             });
-            row.append(el('div', { className: 'actions' }, select, button('Убрать из команды', async () => {
+            const actions = el('div', { className: 'actions' }, select);
+            if (can('workshop') && s.role === 'builder') actions.append(button(`Карты: ${mapsLabel(s.maps)}`, () => editMaps(s, line), 'small', `Карты для ${s.name} в мастерской`));
+            actions.append(button('Убрать из команды', async () => {
               if (await ask({ title: `Убрать ${s.name} из команды?`, text: `${s.name} потеряет доступ к панели и мастерской. Играть на сервере он сможет как обычно.`, ok: 'Убрать', danger: true }))
                 changeRole({ uuid: s.uuid, role: null }, `${s.name} больше не в команде.`, line);
-            }, 'small danger', `Убрать ${s.name} из команды`)));
+            }, 'small danger', `Убрать ${s.name} из команды`));
+            row.append(actions);
           }
           rows.push(row);
         }
         $('#staff-list').replaceChildren(...rows);
+        roleSelects.forEach(customSelect);
         $('#grant-roles').replaceChildren(...assignable().map((r, i) => el('label', { className: 'radio' }, el('input', { type: 'radio', name: 'role', value: r, required: true, checked: i === 0 }), el('span', {}, ROLES[r].name, el('small', { textContent: ROLES[r].about })))));
         const key = (list: any[]) => JSON.stringify((list ?? []).map(m => [m.draslId, m.role]).sort());
         const inSync = Array.isArray(data.workshop) && key(data.workshop) === key(data.expected);
@@ -780,6 +799,20 @@ import '@fontsource/ibm-plex-mono/500.css';
           const data = await api('staff', 'POST', body);
           await loadTeam();
           return data.sync.error ? `${done} Но доступ в мастерскую обновить не удалось — нажмите «Обновить доступ» позже.` : done;
+        });
+      }
+      /** `null`/absent = every map, including ones added later; `[]` = the builder enters the workshop hub but can edit nothing. */
+      const mapsLabel = (maps: string[] | null) => maps === null ? 'все' : maps.length ? maps.map(id => MAP_NAMES[id] ?? id).join(', ') : 'нет';
+      async function editMaps(s: { uuid: string; name: string; maps: string[] | null }, line: HTMLElement) {
+        const known = Object.keys(MAP_NAMES), current = new Set(s.maps ?? known);
+        const list = el('div', { className: 'checks' }, ...known.map(id => el('label', { className: 'check' }, el('input', { type: 'checkbox', name: 'map', value: id, checked: current.has(id) }), MAP_NAMES[id])));
+        const answer = await ask({ title: `Карты для ${s.name} в мастерской`, text: 'Отметьте карты, которые строитель может редактировать. Все отмечены — доступ ко всем картам, включая новые.', ok: 'Сохранить', fields: [list] });
+        if (!answer) return;
+        const ids = answer.getAll('map').map(String), maps = ids.length === known.length ? null : ids;
+        await run(line, async () => {
+          await api('staff/maps', 'POST', { uuid: s.uuid, maps });
+          await loadTeam();
+          return `Карты для ${s.name} обновлены.`;
         });
       }
       $<HTMLFormElement>('#grant-form').addEventListener('submit', async e => {
@@ -829,6 +862,7 @@ import '@fontsource/ibm-plex-mono/500.css';
         $<HTMLButtonElement>('#next').disabled = resultPage * data.limit >= data.total;
       }
       $('#result-mode').addEventListener('change', () => { resultPage = 1; loadResults(); });
+      customSelect($<HTMLSelectElement>('#result-mode'));
       $('#prev').addEventListener('click', () => { resultPage--; loadResults(); });
       $('#next').addEventListener('click', () => { resultPage++; loadResults(); });
       const dayFormat = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
@@ -866,6 +900,7 @@ import '@fontsource/ibm-plex-mono/500.css';
         const cls = ` «${CLASS_NAMES[a.target] ?? 'неизвестный'}»`;
         switch (a.action) {
           case 'mode': return a.target === 'workshop' ? ['включил', 'включить', ' мастерскую'] : d.recover ? ['восстановил', 'восстановить', ' игровой режим'] : ['вернул', 'вернуть', ' игровой режим'];
+          case 'cancel': return ['отменил', 'отменить', ' переключение режима'];
           case 'message': return ['изменил', 'изменить', ` сообщение для игроков: «${d.message ?? ''}»`];
           case 'rcon:say': return ['написал', 'написать', ` всем: «${d.text ?? ''}»`];
           case 'rcon:kick': return ['выгнал', 'выгнать', ` игрока ${player}${reason}`];
@@ -950,6 +985,15 @@ import '@fontsource/ibm-plex-mono/500.css';
       });
       $('#online-refresh').addEventListener('click', () => { $('#online-summary').textContent = 'Обновляем…'; loadOnline(); });
 
+      /** Знакомые никнеймы в поля ввода: подсказка, а не ограничение — своё значение всегда можно вписать. */
+      async function loadPlayerHints() {
+        const inputs = [$<HTMLInputElement>('#byname'), $<HTMLInputElement>('#grant-name')].filter(Boolean);
+        if (!inputs.length) return;
+        const setters = inputs.map(input => customCombo(input));
+        const { players } = await api('players');
+        setters.forEach(set => set(players));
+      }
+
       const failed = (where: string) => (error: Error) => { const w = $('#whoami'); w.append(el('span', { className: 'error', textContent: ` ${where}: ${error.message}` })); };
       api('me').then(async (data: Me & { role: string | null }) => {
         me = data;
@@ -964,7 +1008,8 @@ import '@fontsource/ibm-plex-mono/500.css';
         nav.hidden = false;
         showTab(location.hash.slice(1), false);
         const loaders: [string, () => Promise<void>, string][] = [['view', loadOverview, 'Обзор'], ['moderate', loadOnline, 'Игроки'], ['ban', loadBans, 'Забаненные'], ['settings', () => loadSettings(), 'Настройки'],
-          ['roles', loadTeam, 'Команда'], ['stats', loadResults, 'Статистика'], ['stats', loadSeasons, 'Сезоны'], ['stats', loadKeys, 'Ключи'], ['audit', loadAudit, 'Журнал']];
+          ['roles', loadTeam, 'Команда'], ['stats', loadResults, 'Статистика'], ['stats', loadSeasons, 'Сезоны'], ['stats', loadKeys, 'Ключи'], ['audit', loadAudit, 'Журнал'],
+          ['moderate', loadPlayerHints, 'Подсказки игроков']];
         await Promise.all(loaders.filter(([permission]) => can(permission)).map(([, load, where]) => load().catch(failed(where))));
         setInterval(() => { if (document.visibilityState === 'visible') loadOverview().catch(() => {}); }, 15_000);
       }, (error: Error & { raw?: string }) => {

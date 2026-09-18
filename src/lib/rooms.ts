@@ -14,7 +14,8 @@ export type Room = { id: string; name: string; mode: string; map: string; phase:
 // available — игровой сервер отвечает; lobby — прокси с лобби отвечает (при рестарте игрового сервера туда можно зайти).
 export type Maintenance = { message: string; since: number | null };
 // online — игроков на прокси (все серверы за ним), если прокси отдал это число.
-export type RoomStatus = { available: boolean; checkedAt: number; rooms: Room[]; lobby?: boolean; online?: number; maintenance?: Maintenance };
+// build — тег релиза пака, на котором запущен игровой сервер (проверка деплоя в blockfield-modpack).
+export type RoomStatus = { available: boolean; checkedAt: number; rooms: Room[]; build?: string; lobby?: boolean; online?: number; maintenance?: Maintenance };
 export const maintenanceMessage = 'На сервере проводятся технические работы. Обычный вход временно недоступен.';
 // Любое значение, кроме валидного mode "game", закрывает вход (fail closed).
 export function maintenanceFrom(value: any): Maintenance | null {
@@ -41,7 +42,8 @@ export function parseRooms(value: any): RoomStatus {
   if (!value || !Number.isFinite(value.checkedAt) || Math.abs(Date.now() - value.checkedAt) > 30_000 || !Array.isArray(value.rooms)) throw new Error('Room status unavailable');
   const rooms = value.rooms.filter((r: any) => r && roomId.test(r.id) && typeof r.name === 'string' && typeof r.mode === 'string' && typeof r.map === 'string' && r.phase in phases && Number.isInteger(r.players) && r.players >= 0 && typeof r.joinable === 'boolean' && validBattle(r.battle)).slice(0, 100);
   if (rooms.length !== value.rooms.length) throw new Error('Invalid room status');
-  return { available: true, checkedAt: value.checkedAt, rooms };
+  const build = typeof value.build === 'string' && /^v\d+\.\d+\.\d+$/.test(value.build) ? { build: value.build } : {};
+  return { available: true, checkedAt: value.checkedAt, rooms, ...build };
 }
 export function varint(value: number): Buffer {
   const bytes = [];

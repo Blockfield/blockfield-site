@@ -33,14 +33,14 @@ export type Field = { key: string; label: string; unit?: string; hint?: string }
 export const BALANCE_GROUPS: { title: string; fields: Field[] }[] = [
   { title: 'Тикеты и победа', fields: [
     { key: 'max_tickets', label: 'Тикеты команды на старте', hint: 'Команда проигрывает, когда тикеты кончаются.' },
-    { key: 'death_ticket_cost', label: 'Тикеты за одну смерть', hint: 'Сколько тикетов теряет команда, когда погибает её игрок.' },
+    { key: 'death_ticket_cost', label: 'Тикеты за одну смерть' },
     { key: 'ticket_bleed_multiplier', label: 'Потеря тикетов за перевес по точкам', hint: 'За каждую точку, которой у врага больше.' },
     { key: 'ticket_bleed_timer_seconds', label: 'Как часто списываются тикеты за точки', unit: 'сек' },
   ] },
   { title: 'Захват точек', fields: [
     { key: 'capture_speed_percent_per_tick', label: 'Скорость захвата', unit: '% в сек' },
     { key: 'uncapture_speed_percent_per_tick', label: 'Скорость нейтрализации', unit: '% в сек', hint: 'Как быстро точка врага становится ничьей.' },
-    { key: 'safe_spawn_threshold', label: 'Точка годится для возрождения от', unit: '%', hint: 'Минимальный процент захвата точки своей командой.' },
+    { key: 'safe_spawn_threshold', label: 'Точка годится для возрождения от', unit: '%' },
   ] },
   { title: 'Очки игроков', fields: [
     { key: 'score_per_kill', label: 'Очки за убийство' },

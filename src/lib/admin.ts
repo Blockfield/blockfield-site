@@ -2,11 +2,12 @@ import type { APIContext } from 'astro';
 import { randomUUID } from 'node:crypto';
 import { openSync, readSync, closeSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { account, drasl, fail, nickname, readJson, token } from './account.ts';
+import type { AstroCookies } from 'astro';
+import { account, drasl, fail, nickname, readJson, session, token } from './account.ts';
 import { rcon } from './rcon.ts';
 import { currentRooms, roomId } from './rooms.ts';
 import { resolveNames, seasons, statsStore, StatsError, UNKNOWN_PLAYER, type StatsStore } from './stats.ts';
-import { BALANCE_LABELS, BALANCE_SCOPES } from './game-names.ts';
+import { BALANCE_LABELS, BALANCE_SCOPES, MAP_NAMES } from './game-names.ts';
 
 export const ROLES = ['builder', 'moderator', 'admin', 'owner'] as const;
 export type Role = typeof ROLES[number];
@@ -60,6 +61,20 @@ async function currentActor(context: APIContext, store: StatsStore): Promise<Act
   return { ...who, role: who.uuid ? roleOf(who.uuid, store) : null };
 }
 
+/** For the site header (SSR, no client round trip): the signed-in player's name and whether `/admin` would let them in. Never throws. */
+export async function siteIdentity(cookies: Pick<AstroCookies, 'get'>): Promise<{ name: string; hasAdminAccess: boolean } | null> {
+  const dev = devUser();
+  if (dev) return { name: dev.name, hasAdminAccess: roleOf(dev.uuid, statsStore()) !== null };
+  const value = cookies.get(session)?.value;
+  if (!value) return null;
+  try {
+    const { username, uuid } = account(await drasl('/user', { token: value }));
+    if (!username) return null;
+    const id = playerId(uuid);
+    return { name: String(username), hasAdminAccess: id !== null && roleOf(id, statsStore()) !== null };
+  } catch { return null; }
+}
+
 function readFile(path: string, max = 65_536): any {
   let fd: number;
   try { fd = openSync(path, 'r'); } catch { return null; }
@@ -75,11 +90,16 @@ export function writeAtomic(directory: string, name: string, value: unknown) {
   catch (error) { try { unlinkSync(temp); } catch {} throw error; }
 }
 
-export type WorkshopMember = { draslId: string; name: string; role: 'admin' | 'lead' | 'builder' };
+export const MAP_IDS = new Set(Object.keys(MAP_NAMES));
+export type WorkshopMember = { draslId: string; name: string; role: 'admin' | 'lead' | 'builder'; maps?: string[] };
 const WORKSHOP_ROLE: Record<Role, WorkshopMember['role']> = { owner: 'admin', admin: 'admin', moderator: 'lead', builder: 'builder' };
-export function workshopMembers(staff: { uuid: string; name: string; role: string }[], ownerNames: Map<string, string>): WorkshopMember[] {
+/** `lead`/`admin` always have every map; only a `builder` row's `maps` (null = every map) is carried over. */
+export function workshopMembers(staff: { uuid: string; name: string; role: string; maps?: string[] | null }[], ownerNames: Map<string, string>): WorkshopMember[] {
   const members = new Map<string, WorkshopMember>();
-  for (const s of staff) if (s.role in WORKSHOP_ROLE) members.set(s.uuid, { draslId: s.uuid, name: s.name, role: WORKSHOP_ROLE[s.role as Role] });
+  for (const s of staff) if (s.role in WORKSHOP_ROLE) {
+    const role = WORKSHOP_ROLE[s.role as Role];
+    members.set(s.uuid, { draslId: s.uuid, name: s.name, role, ...(role === 'builder' && s.maps != null ? { maps: s.maps } : {}) });
+  }
   for (const [uuid, name] of ownerNames) members.set(uuid, { draslId: uuid, name, role: 'admin' });
   return [...members.values()].sort((a, b) => a.draslId.localeCompare(b.draslId));
 }
@@ -100,10 +120,14 @@ export function writeRequest(directory: string, actor: Actor, body: any): string
     const message = typeof body.message === 'string' ? body.message.replace(/[\p{Cc}§]/gu, '').trim() : null;
     if (message === null || [...message].length > 200) throw bad('Сообщение: до 200 символов.');
     request = { ...base, message };
+  } else if (body?.kind === 'cancel') {
+    request = { ...base };
   } else if (body?.kind === 'members') {
-    const valid = Array.isArray(body.members) && body.members.every((m: any) => playerId(m?.draslId) === m.draslId && nickname.test(m.name) && ['admin', 'lead', 'builder'].includes(m.role));
+    // `maps` absent/null: every map, including ones added later. `maps: []`: no map (the builder still gets a workshop account, just nothing to edit).
+    const validMaps = (m: any) => m.maps === undefined || (Array.isArray(m.maps) && new Set(m.maps).size === m.maps.length && m.maps.every((id: unknown) => typeof id === 'string' && MAP_IDS.has(id)));
+    const valid = Array.isArray(body.members) && body.members.every((m: any) => playerId(m?.draslId) === m.draslId && nickname.test(m.name) && ['admin', 'lead', 'builder'].includes(m.role) && validMaps(m));
     if (!valid) throw bad('Некорректный список участников.');
-    request = { ...base, members: body.members.map(({ draslId, name, role }: WorkshopMember) => ({ draslId, name, role })) };
+    request = { ...base, members: body.members.map(({ draslId, name, role, maps }: WorkshopMember) => ({ draslId, name, role, ...(maps ? { maps } : {}) })) };
   } else throw bad('Неизвестный тип запроса.');
   writeAtomic(directory, `${base.id}.json`, request);
   return base.id;
@@ -112,6 +136,8 @@ export function writeRequest(directory: string, actor: Actor, body: any): string
 const range = (min: number, max: number) => (v: unknown) => Number.isSafeInteger(v) && (v as number) >= min && (v as number) <= max;
 const LOBBY: Record<string, (v: unknown) => boolean> = { pvpEnabled: v => typeof v === 'boolean', pvpCooldownSeconds: range(0, 600) };
 const ROOMS: Record<string, (v: unknown) => boolean> = { maxRooms: range(1, 16), idleCloseSeconds: range(30, 3600), abandonCloseSeconds: range(5, 600) };
+/** Must match the mod's DeathmatchMode: at least 1 player (owner can start alone), arenas are small so 24 is a generous ceiling. */
+const DEATHMATCH: Record<string, (v: unknown) => boolean> = { minPlayers: range(1, 24) };
 /** Must match the mod's campaign balance parser: type and inclusive range per key. */
 export const BALANCE: Record<string, { type: 'int' | 'double' | 'bool'; min?: number; max?: number }> = {
   max_tickets: { type: 'int', min: 1, max: 100_000 }, ticket_bleed_multiplier: { type: 'int', min: 0, max: 100 }, ticket_bleed_timer_seconds: { type: 'int', min: 1, max: 600 },
@@ -131,10 +157,11 @@ function section(value: unknown, rules: Record<string, (v: unknown) => boolean>,
 }
 /** Settings sections are optional and replace the stored ones as a whole; an absent key means the server default. */
 export function validateSettings(body: any) {
-  if (!plain(body) || Object.keys(body).some(k => !['expectedRevision', 'lobby', 'rooms', 'classLocks', 'campaignBalance'].includes(k))) throw bad('Некорректные настройки.');
+  if (!plain(body) || Object.keys(body).some(k => !['expectedRevision', 'lobby', 'rooms', 'deathmatch', 'classLocks', 'campaignBalance'].includes(k))) throw bad('Некорректные настройки.');
   const out: Record<string, unknown> = {};
   if (body.lobby !== undefined) out.lobby = section(body.lobby, LOBBY, 'лобби');
   if (body.rooms !== undefined) out.rooms = section(body.rooms, ROOMS, 'комнаты');
+  if (body.deathmatch !== undefined) out.deathmatch = section(body.deathmatch, DEATHMATCH, 'каждый сам за себя');
   if (body.classLocks !== undefined) {
     const list = body.classLocks;
     if (!Array.isArray(list) || list.length > 64 || new Set(list).size !== list.length || !list.every((c: unknown) => typeof c === 'string' && /^[a-z0-9_]{1,32}$/.test(c))) throw bad('Настройки: неверный список закрытых классов.');
@@ -281,6 +308,9 @@ const routes: Record<string, Route> = {
     audit: body => ({ action: 'mode', target: String(body?.profile), detail: { expectedRevision: body?.expectedRevision, recover: body?.recover === true } }) },
   'POST message': { permission: 'message', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'message', message: body?.message }) }),
     audit: body => ({ action: 'message', detail: { message: body?.message } }) },
+  // Same gate as switching: an unprivileged rollback of a switch that is still DRAINING/STARTING, no --recover/root needed.
+  'POST cancel': { permission: 'mode', handler: ({ actor }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'cancel' }) }),
+    audit: () => ({ action: 'cancel' }) },
   'POST rcon': { permission: 'moderate', handler: async ({ actor, body }) => {
     const { permission, commands } = rconCommand(body);
     if (!can(actor.role, permission)) throw fail(403, 'Недостаточно прав.');
@@ -297,6 +327,11 @@ const routes: Record<string, Route> = {
     return { output, room, players: body.action === 'list' ? (output.split(':')[1] ?? '').split(',').map(s => s.trim()).filter(Boolean) : undefined };
   }, audit: (body, result) => ({ action: `rcon:${body?.action}`, target: body?.player ?? body?.roomId ?? body?.classId ?? body?.op ?? null, detail: { ...body, room: result?.room, output: result?.output?.slice(0, 500) } }) },
   'GET bans': { permission: 'ban', handler: ({ store }) => ({ bans: siteBans(store) }) },
+  // Подсказки к полям с никнеймом: кого сайт уже видел в матчах, начиная с недавних.
+  'GET players': { permission: 'moderate', handler: ({ store }) => ({
+    players: (store.db.prepare('SELECT name FROM profiles WHERE uuid_like(name)=0 ORDER BY last_seen DESC LIMIT 300').all() as { name: string }[])
+      .map(row => row.name).filter(name => nickname.test(name)),
+  }) },
   'GET settings': { permission: 'settings', handler: () => ({ ...readSettings(settingsDir()), balance: BALANCE }) },
   'PUT settings': { permission: 'settings', handler: ({ actor, body }) => ({ settings: saveSettings(settingsDir(), body, actor.name) }),
     audit: (body, result) => ({ action: 'settings', target: result?.settings ? `revision ${result.settings.revision}` : null, detail: body }) },
@@ -319,6 +354,19 @@ const routes: Record<string, Route> = {
     return { uuid: target.uuid, name: target.name, role: body.role, sync };
   }, audit: (body, result) => ({ action: body?.role === null ? 'role-revoke' : 'role-grant', target: result?.uuid ?? body?.uuid ?? body?.name ?? null, detail: { name: result?.name ?? body?.name, role: body?.role, sync: result?.sync } }) },
   'POST staff/sync': { permission: 'workshop', handler: async ({ actor, store }) => syncWorkshop(store, actor), audit: (_, result) => ({ action: 'workshop-sync', target: result?.id ?? null, detail: { members: result?.members } }) },
+  // `maps: null` means every map; only meaningful for a `builder` row, checked here rather than trusted from the client.
+  'POST staff/maps': { permission: 'roles', handler: async ({ actor, store, body }) => {
+    const uuid = playerId(body?.uuid), row = uuid ? store.staff().find(s => s.uuid === uuid) : undefined;
+    if (!row) throw fail(404, 'Участник не найден.');
+    if (row.role !== 'builder') throw bad('Список карт задаётся только строителям.');
+    // null = every map, including ones added later; [] = the builder gets a workshop account but nothing to edit.
+    const maps = body?.maps;
+    if (maps !== null && (!Array.isArray(maps) || new Set(maps).size !== maps.length || !maps.every((id: unknown) => typeof id === 'string' && MAP_IDS.has(id))))
+      throw bad('Некорректный список карт.');
+    store.setStaffMaps(uuid!, maps);
+    const sync = await syncWorkshop(store, actor).then(({ id }) => ({ id }), (error: unknown) => ({ error: error instanceof Response ? 'Не удалось отправить список в мастерскую.' : String((error as Error).message) }));
+    return { uuid, name: row.name, maps, sync };
+  }, audit: (body, result) => ({ action: 'workshop-maps', target: result?.uuid ?? body?.uuid ?? null, detail: { name: result?.name, maps: body?.maps, sync: result?.sync } }) },
   'GET results': { permission: 'stats', handler: async ({ context, store }) => {
     const load = () => store.results(context.url.searchParams.get('mode') || null, page(context.url)), data = load();
     const unknown = data.results.flatMap(r => r.players.filter(p => p.name === UNKNOWN_PLAYER).map(p => p.uuid));

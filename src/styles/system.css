@@ -1,0 +1,663 @@
+/*
+ * Blockfield design system — see DESIGN.md.
+ * Палитра и типографика общие с лаунчером (его src/styles/theme.css): менять только вместе с ним.
+ * Единственное место в сайте, где допустимы литеральные цвета; страницы берут только переменные.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #070604;
+  --bg-2: #0b0906;
+  --panel: #11100d;
+  --panel-2: #18130d;
+  --line: #2a2116;
+  --line-2: #3a2c1d;
+  --amber: #f5a524;
+  --amber-hi: #ffc861;
+  --amber-dim: #8a571c;
+  --cream: #f3e7d0;
+  --sand: #c7ae86;
+  --muted: #8e7a5e;
+  --dim: #5e5040;
+  --ok: #82d66b;
+  --danger: #ff9d99;
+  --info: #91c8ff;
+  --line-warn: #4a3317;
+  --stage-glow: #3a2410;
+  --shade: rgb(0 0 0 / 0.7);
+
+  --display: 'Inter Variable', system-ui, sans-serif;
+  --text: 'Inter Variable', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+
+  /* Радиус в системе один и равен нулю: переменная существует, чтобы его нельзя было «забыть». */
+  --radius: 0;
+  --control-height: 44px;
+  --shadow-popover: 0 12px 28px rgb(0 0 0 / 0.55);
+  --shadow-energised: 0 0.3em 1.6em rgb(245 165 36 / 0.16);
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  font-family: var(--text);
+  background: var(--bg);
+  color: var(--cream);
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+/* Ниже 320px вёрстку не сжимаем: страница честно уезжает в горизонтальный скролл. */
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--bg);
+  color: var(--cream);
+  font-family: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--amber); color: var(--bg); }
+:root { accent-color: var(--amber); caret-color: var(--amber); scrollbar-color: var(--line-2) transparent; }
+
+h1, h2, h3 {
+  font-family: var(--display);
+  font-weight: 800;
+  text-transform: uppercase;
+  margin: 0;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+
+h1 { font-size: clamp(32px, 5vw, 48px); }
+h2 { font-size: clamp(24px, 3.2vw, 34px); }
+h3 { font-size: clamp(17px, 1.4vw, 20px); letter-spacing: -0.01em; line-height: 1.15; }
+
+p { margin: 0; line-height: 1.6; }
+a { color: var(--amber); text-underline-offset: 4px; text-decoration-thickness: 1px; }
+a:hover { color: var(--cream); }
+
+:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
+h1:focus, h2:focus, h3:focus { outline: none; }
+
+.muted { color: var(--sand); }
+small { font-size: 14px; line-height: 1.45; color: var(--sand); }
+code, .mono { font-family: var(--mono); }
+code { color: var(--cream); background: var(--panel-2); padding: 1px 6px; overflow-wrap: anywhere; }
+
+/* Мелкая моношапка: подписи метрик, заголовки таблиц, коды секций. Никогда не целое предложение. */
+.label {
+  font-family: var(--mono);
+  font-size: clamp(10px, 0.8vw, 12px);
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0;
+}
+
+.skip { position: absolute; top: -80px; left: 16px; z-index: 60; padding: 12px; background: var(--panel); border: 1px solid var(--line-2); color: var(--cream); }
+.skip:focus { top: 12px; }
+
+/* ——— подпись секции: ▪ ЛАБЕЛ ───── CODE ——— */
+.rule { display: flex; align-items: center; gap: clamp(8px, 0.9vw, 14px); margin: 0; min-width: 0; }
+.rule__square { flex: none; width: 6px; height: 6px; background: var(--amber); }
+.rule__label { font-family: var(--mono); font-size: clamp(10px, 0.8vw, 12px); letter-spacing: 0.18em; text-transform: uppercase; color: var(--cream); white-space: nowrap; }
+.rule__line { height: 1px; flex: 1 1 12px; min-width: 12px; background: var(--line); }
+.rule__code { font-family: var(--mono); flex: none; font-size: clamp(9px, 0.7vw, 11px); letter-spacing: 0.28em; color: var(--dim); }
+
+/* Точечная сетка вместо линий: линии сливались в полосы. 16px — тексель Minecraft, 96px — шесть блоков. */
+.voxel { position: relative; isolation: isolate; }
+.voxel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    radial-gradient(rgb(245 165 36 / 0.11) 1px, transparent 1.5px),
+    radial-gradient(rgb(245 165 36 / 0.22) 1.5px, transparent 2px);
+  background-size: 16px 16px, 96px 96px;
+  background-position: 8px 8px, 8px 8px;
+}
+
+/* Lucide рисуется скруглённой обводкой, Simple Icons — заливкой. */
+.i { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.i--fill { fill: currentColor; stroke: none; }
+
+/* ——— шапка и подвал ——— */
+.site-header {
+  display: flex;
+  align-items: center;
+  gap: clamp(16px, 3vw, 46px);
+  min-width: 0;
+  min-height: clamp(64px, 6.64vw, 102px);
+  padding: 0 clamp(14px, 1.6vw, 26px) 0 clamp(14px, 2.1vw, 32px);
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+.site-header__mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  color: var(--cream);
+  text-decoration: none;
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: clamp(20px, 1.75vw, 27px);
+  letter-spacing: 0.02em;
+}
+
+.mark { flex: none; width: 1.5em; height: 1.5em; }
+
+.site-header__links { display: flex; gap: clamp(16px, 2.4vw, 37px); min-width: 0; }
+
+.site-header__links a,
+.site-header__account {
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: clamp(12px, 0.95vw, 14px);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sand);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.site-header__links a:hover, .site-header__account:hover { color: var(--amber); }
+
+.site-header__account {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Вход в панель — квадратная метка с янтарной рамкой, не «таблетка». */
+.site-header__console {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--amber);
+  color: var(--amber);
+  background: transparent;
+  text-decoration: none;
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: clamp(11px, 0.9vw, 13px);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.site-header__console:hover { background: var(--amber); color: var(--bg); }
+
+.site-header__cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6em;
+  background: var(--amber);
+  color: var(--bg);
+  text-decoration: none;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(12px, 0.92vw, 14px);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.95em 1.6em;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.site-header__cta:hover { background: var(--amber-hi); transform: translateY(-1px); }
+
+.site-header__burger {
+  display: none;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 40px;
+  height: 40px;
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--line-2);
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.site-header__burger:hover, .site-header__burger:focus-visible { border-color: var(--amber); }
+.site-header__burger span { width: 18px; height: 2px; background: var(--cream); transition: transform 0.2s ease, opacity 0.2s ease; }
+.site-header__burger[aria-expanded='true'] span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+.site-header__burger[aria-expanded='true'] span:nth-child(2) { opacity: 0; }
+.site-header__burger[aria-expanded='true'] span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+/* Оверлей во всю ширину под шапкой: высота шапки на мобильном фиксирована нижней границей clamp. */
+.mobile-menu {
+  display: none;
+  position: fixed;
+  inset: 64px 0 0 0;
+  z-index: 45;
+  flex-direction: column;
+  gap: 24px;
+  padding: 8px clamp(14px, 4vw, 28px) 32px;
+  background: var(--bg);
+  overflow-y: auto;
+}
+
+.mobile-menu:not([hidden]) { display: flex; }
+.mobile-menu__links { display: flex; flex-direction: column; }
+
+.mobile-menu__links a {
+  padding: 16px 2px;
+  border-bottom: 1px solid var(--line);
+  color: var(--sand);
+  text-decoration: none;
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.mobile-menu__links a:hover, .mobile-menu__links a:focus-visible { color: var(--amber); }
+.mobile-menu__account { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; font-family: var(--mono); font-size: 14px; letter-spacing: 0.12em; }
+.mobile-menu__account > a:first-child { color: var(--sand); text-decoration: none; text-transform: uppercase; }
+.mobile-menu__cta { width: 100%; justify-content: center; }
+
+.site-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: clamp(14px, 2vw, 32px);
+  padding: clamp(28px, 3vw, 46px) clamp(14px, 4.5vw, 70px);
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: clamp(13px, 1vw, 15px);
+}
+
+.site-footer__mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: clamp(18px, 1.45vw, 22px);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--cream);
+}
+
+.site-footer nav { display: flex; flex-wrap: wrap; gap: clamp(12px, 1.6vw, 25px); }
+.site-footer nav a { color: inherit; text-decoration: none; }
+.site-footer nav a:hover { color: var(--amber); }
+.site-footer small { margin-left: auto; color: var(--dim); }
+
+@media (max-width: 760px) {
+  .site-header__links, .site-header__account, .site-header__console, .site-header__cta { display: none; }
+  .site-header__burger { display: flex; }
+}
+
+/* Бургер существует только ниже 760px; шире панель не должна показываться,
+   даже если осталась открытой (resize с мобильного на десктоп без перезагрузки). */
+@media (min-width: 761px) { .mobile-menu { display: none !important; } }
+@media (max-width: 600px) { .site-header { gap: 12px; padding: 0 12px; } .site-footer small { margin-left: 0; } }
+
+/* ——— кнопки ——— */
+button, .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6em;
+  min-height: var(--control-height);
+  padding: 0 18px;
+  border: 1px solid var(--amber);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--cream);
+  font: inherit;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+button:hover, .button:hover { background: var(--line); color: var(--cream); }
+
+.primary, .button--amber { background: var(--amber); border-color: var(--amber); color: var(--bg); }
+.primary:hover, .button--amber:hover { background: var(--amber-hi); border-color: var(--amber-hi); color: var(--bg); }
+
+/* Крупная посадочная кнопка: единственное место, где у кнопки есть «свечение». */
+.button--amber {
+  justify-content: flex-start;
+  gap: 0.7em;
+  height: clamp(48px, 3.9vw, 58px);
+  padding: 0 clamp(18px, 1.7vw, 26px);
+  font-size: clamp(13px, 1.05vw, 15px);
+  letter-spacing: 0.1em;
+  box-shadow: var(--shadow-energised);
+  transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.button--amber:hover { transform: translateY(-2px); box-shadow: 0 0.5em 1.8em rgb(245 165 36 / 0.26); }
+.button--amber .i { flex: none; width: 1.35em; height: 1.35em; stroke-width: 2.2; }
+
+.danger { border-color: var(--danger); color: var(--danger); }
+.danger:hover { background: rgb(255 157 153 / 0.12); color: var(--danger); }
+.danger.primary { background: var(--danger); border-color: var(--danger); color: var(--bg); }
+.danger.primary:hover { background: var(--danger); filter: brightness(1.12); }
+
+.ghost { border-color: transparent; color: var(--sand); }
+.ghost:hover { background: var(--line); color: var(--cream); }
+
+.small { min-height: 38px; padding: 0 12px; font-size: 14px; }
+button:disabled, .button[aria-disabled='true'] { opacity: 0.55; cursor: not-allowed; }
+
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.actions.end { justify-content: flex-end; }
+
+/* ——— поля ——— */
+label { font-weight: 600; }
+
+input:not([type='checkbox']):not([type='radio']),
+select,
+textarea {
+  width: 100%;
+  min-height: var(--control-height);
+  padding: 10px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--cream);
+  font: inherit;
+}
+
+input[type='file'] { padding: 9px 12px; }
+textarea { resize: vertical; line-height: 1.5; }
+::placeholder { color: var(--muted); opacity: 1; }
+input:user-invalid, textarea:user-invalid { border-color: var(--danger); }
+input[type='number'] { appearance: textfield; }
+input[type='number']::-webkit-inner-spin-button, input[type='number']::-webkit-outer-spin-button { appearance: none; margin: 0; }
+
+/* Чекбокс и радио остаются нативными (клавиатура и семантика), поверх рисуется своя коробка. */
+input[type='checkbox'], input[type='radio'] {
+  appearance: none;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  background: var(--bg);
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+}
+
+input[type='radio'] { border-radius: 50%; }
+input[type='checkbox']:checked, input[type='radio']:checked { background: var(--amber); border-color: var(--amber); }
+input[type='checkbox']:checked::after { content: ''; width: 5px; height: 9px; border: solid var(--bg); border-width: 0 2px 2px 0; transform: rotate(45deg) translateY(-1px); }
+input[type='radio']:checked::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--bg); }
+
+/*
+ * Составное поле: ввод + приставка («сек») или кнопка. Рамку фокуса получает обёртка целиком,
+ * иначе она обводит только часть элемента, который пользователь воспринимает как один.
+ */
+.unit { display: flex; align-items: stretch; min-width: 0; }
+.unit > input { flex: 1 1 auto; min-width: 0; border-right: 0; }
+.unit:focus-within { outline: 2px solid var(--amber); outline-offset: 3px; }
+.unit :focus-visible { outline: none; }
+
+.unit__suffix {
+  display: flex;
+  align-items: center;
+  flex: none;
+  padding: 0 12px;
+  border: 1px solid var(--line-2);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+/* ——— свой select и combobox ——— */
+select[hidden] { display: none; }
+.cselect { position: relative; min-width: 0; }
+
+.cselect-btn {
+  width: 100%;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-color: var(--line-2);
+  background: var(--bg);
+  color: var(--cream);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  text-align: left;
+}
+
+.cselect-btn:hover, .cselect[data-open] .cselect-btn { background: var(--bg); border-color: var(--amber-dim); }
+.cselect-btn::after { content: ''; flex: none; width: 9px; height: 9px; margin-top: -4px; border: solid var(--sand); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+
+/* Ширина по содержимому, но не уже триггера и не за край экрана. */
+.cselect-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: min(90vw, 420px);
+  max-height: 260px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-popover);
+}
+
+.cselect-list:focus { outline: none; }
+.cselect-list li { padding: 9px 10px; border-radius: var(--radius); color: var(--cream); white-space: nowrap; cursor: pointer; }
+.cselect-list li.active, .cselect-list li[data-active], .cselect-list li:hover { background: var(--line); }
+.cselect-list li[aria-selected='true'] { color: var(--amber); font-weight: 650; }
+.cselect-list .empty { color: var(--muted); cursor: default; }
+.cselect-list .empty:hover { background: transparent; }
+
+/* ——— карточки, плашки, бейджи ——— */
+.card, .panel {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  min-width: 0;
+  margin: 0;
+  padding: clamp(16px, 3vw, 24px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+/* align-items: start — a short card never stretches to match a taller row neighbour with a blank body. */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; align-items: start; }
+.card.wide { grid-column: 1 / -1; }
+
+.notice { border: 1px solid var(--line); background: var(--panel); padding: 16px 18px; color: var(--sand); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: var(--radius);
+  background: var(--line);
+  color: var(--sand);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge.ok { background: rgb(130 214 107 / 0.12); color: var(--ok); }
+.badge.warn { background: rgb(245 165 36 / 0.12); color: var(--amber); }
+.badge.bad { background: rgb(255 157 153 / 0.12); color: var(--danger); }
+
+.ok { color: var(--ok); }
+.error { color: var(--danger); }
+.pending { color: var(--amber); }
+
+/* ——— таблицы ——— */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: 14px 12px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--sand); font-family: var(--mono); font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.12em; }
+td { color: var(--cream); }
+td.num, th.num { text-align: right; font-family: var(--mono); }
+td.num { font-size: 15px; }
+
+/* ——— вкладки ——— */
+.tabs { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: thin; }
+.tabs a, .tabs button {
+  flex: none;
+  min-height: 0;
+  padding: 10px 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--sand);
+  font-weight: 600;
+  font-size: 15px;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.tabs a:hover, .tabs button:hover { background: var(--panel); color: var(--cream); }
+.tabs a[aria-current='page'], .tabs button[aria-pressed='true'] { background: var(--amber); border-color: var(--amber); color: var(--bg); }
+
+/* ——— диалог ——— */
+dialog {
+  width: min(520px, calc(100vw - 24px));
+  padding: 0;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--cream);
+  box-shadow: var(--shadow-popover);
+}
+
+dialog::backdrop { background: var(--shade); }
+dialog form { display: grid; gap: 14px; padding: 22px; }
+
+/* ——— строка состояния ——— */
+.form-status { min-height: 0; margin: 0; font-weight: 500; line-height: 1.5; }
+.form-status:empty { display: none; }
+
+/*
+ * Голова игрока: грань 8×8 текселей из скина, увеличенная целым числом раз.
+ * Сдвиги заданы длинами, а не процентами: процент у фона считается от разницы размеров, а не от шага.
+ */
+.head {
+  --head: 32px;
+  position: relative;
+  flex: none;
+  width: var(--head);
+  height: var(--head);
+  border: 1px solid var(--line-2);
+  background-color: var(--line);
+  background-image: var(--skin, none);
+  background-repeat: no-repeat;
+  background-size: calc(var(--head) * 8) auto;
+  background-position: calc(var(--head) * -1) calc(var(--head) * -1);
+  image-rendering: pixelated;
+}
+
+/* Второй слой скина (шапка) лежит поверх грани лица. */
+.head::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: var(--skin, none);
+  background-repeat: no-repeat;
+  background-size: calc(var(--head) * 8) auto;
+  background-position: calc(var(--head) * -5) calc(var(--head) * -1);
+  image-rendering: pixelated;
+}
+
+/* Игрок без скина: не «сломанная картинка», а намеренно пустая клетка. */
+.head--none { background-image: linear-gradient(135deg, transparent calc(50% - 1px), var(--line-2) calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px)); background-size: auto; background-position: 0 0; }
+.head--none::after { background-image: none; }
+
+/* ——— 3D-фигура из CSS-кубоидов: --s — размер текселя, --tex — картинка скина или плаща ——— */
+.stage {
+  --s: 8px;
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: 380px;
+  overflow: hidden;
+  perspective: 1400px;
+  cursor: grab;
+  touch-action: pan-y;
+  user-select: none;
+  border: 1px solid var(--line);
+  background:
+    radial-gradient(80% 45% at 50% 100%, var(--stage-glow) 0%, transparent 70%),
+    repeating-linear-gradient(0deg, #17120c 0 1px, transparent 1px 24px),
+    repeating-linear-gradient(90deg, #17120c 0 1px, transparent 1px 24px),
+    var(--bg-2);
+}
+
+.stage.grabbed { cursor: grabbing; }
+.stage.grabbed .rig { animation-play-state: paused; }
+.floor { position: absolute; left: 50%; bottom: 44px; width: 160px; height: 28px; translate: -50% 0; border-radius: 50%; background: radial-gradient(var(--shade) 0%, transparent 70%); }
+.rig, .figure, .box { transform-style: preserve-3d; }
+.rig { transform: rotateX(-12deg); animation: spin 18s linear infinite; }
+.figure { --yaw: 0deg; position: relative; width: calc(16 * var(--s)); height: calc(32 * var(--s)); transform: rotateY(var(--yaw)); }
+.box { position: absolute; transform-origin: 50% 0; }
+.box.swing { animation: swing 1.6s ease-in-out infinite alternate; }
+.box.swing.back { animation-delay: -1.6s; }
+.overlay { inset: 0; transform-origin: 50% 50%; }
+
+.face {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  backface-visibility: hidden;
+  image-rendering: pixelated;
+  background-repeat: no-repeat;
+  background-image: var(--tex, none);
+  background-color: var(--fill, transparent);
+  background-size: calc(64 * var(--s)) auto;
+}
+
+.blank { --fill: var(--line); }
+.blank .overlay { display: none; }
+.face:nth-child(2) { filter: brightness(0.75); }
+.face:nth-child(3), .face:nth-child(4) { filter: brightness(0.85); }
+.face:nth-child(5) { filter: brightness(1.12); }
+.face:nth-child(6) { filter: brightness(0.55); }
+
+@keyframes spin { to { transform: rotateX(-12deg) rotateY(360deg); } }
+@keyframes swing { from { rotate: x -22deg; } to { rotate: x 22deg; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .rig, .box { animation: none; }
+  *, *::before, *::after { transition-duration: 0.01ms !important; }
+}
+
+@media (max-width: 600px) {
+  .stage { height: 320px; --s: 7px; }
+  th, td { padding: 12px 10px; }
+}

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rejectedByServer, can, checkRoleChange, devUser, handleAdmin, owners, playerId, rconCommand, roleOf, saveSettings, validateSettings, workshopMembers, writeRequest } from '../src/lib/admin.ts';
+import { rejectedByServer, can, checkRoleChange, devUser, handleAdmin, owners, playerId, rconCommand, roleOf, saveSettings, siteIdentity, validateSettings, workshopMembers, writeRequest } from '../src/lib/admin.ts';
 import { StatsStore } from '../src/lib/stats.ts';
 
 const OWNER = 'e10438e4797b49718cfecec6a8fa171b', ADMIN = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', MOD = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', OTHER = 'cccccccccccccccccccccccccccccccc';
@@ -50,6 +50,21 @@ test('workshop members mapping: owner/admin→admin, moderator→lead, builder�
   ]);
 });
 
+test('workshop members: a builder\'s map list rides along, lead/admin never carry one even if stored', () => {
+  const members = workshopMembers([
+    { uuid: OTHER, name: 'Bob', role: 'builder', maps: ['fields', 'konstaxa'] },
+    { uuid: MOD, name: 'Mod', role: 'moderator', maps: ['fields'] },
+    { uuid: ADMIN, name: 'Adm', role: 'admin', maps: null },
+  ], new Map());
+  assert.deepEqual(members, [
+    { draslId: ADMIN, name: 'Adm', role: 'admin' }, { draslId: MOD, name: 'Mod', role: 'lead' },
+    { draslId: OTHER, name: 'Bob', role: 'builder', maps: ['fields', 'konstaxa'] },
+  ]);
+  // null/absent maps means every map: the key is left out entirely. [] is a real, different value: no maps, and it must ride along too.
+  assert.deepEqual(workshopMembers([{ uuid: OTHER, name: 'Bob', role: 'builder', maps: null }], new Map()), [{ draslId: OTHER, name: 'Bob', role: 'builder' }]);
+  assert.deepEqual(workshopMembers([{ uuid: OTHER, name: 'Bob', role: 'builder', maps: [] }], new Map()), [{ draslId: OTHER, name: 'Bob', role: 'builder', maps: [] }]);
+});
+
 test('inbox request is validated and written atomically as <id>.json', t => {
   const dir = temp(t), lead = { uuid: MOD, name: 'Mod', role: 'moderator' }, admin = { uuid: ADMIN, name: 'Adm', role: 'admin' };
   const id = writeRequest(dir, lead, { kind: 'mode', profile: 'workshop', expectedRevision: 3 });
@@ -67,6 +82,16 @@ test('inbox request is validated and written atomically as <id>.json', t => {
   ]) assert.throws(() => writeRequest(dir, actor, body), e => status(e) === code, JSON.stringify(body));
   writeRequest(dir, admin, { kind: 'mode', profile: 'game', expectedRevision: 0, recover: true });
   assert.equal(readdirSync(dir).length, 2);
+  // maps: [] is a valid, distinct value (no maps, not "every map"), and must survive the request as written.
+  const mapsId = writeRequest(dir, admin, { kind: 'members', members: [{ draslId: OTHER, name: 'Bob', role: 'builder', maps: [] }] });
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, `${mapsId}.json`))).members, [{ draslId: OTHER, name: 'Bob', role: 'builder', maps: [] }]);
+});
+
+test('cancel request: same shape as mode/message, no extra fields, no extra validation to bypass', t => {
+  const dir = temp(t), lead = { uuid: MOD, name: 'Mod', role: 'moderator' };
+  const id = writeRequest(dir, lead, { kind: 'cancel' });
+  const request = JSON.parse(readFileSync(join(dir, `${id}.json`)));
+  assert.deepEqual({ ...request, createdAt: 0 }, { schema: 1, id, kind: 'cancel', actor: { draslId: MOD, name: 'Mod' }, createdAt: 0 });
 });
 
 test('settings validation and optimistic revision conflict', t => {
@@ -79,7 +104,11 @@ test('settings validation and optimistic revision conflict', t => {
     { lobby: { pvpCooldownSeconds: 601 } }, { lobby: { pvp: true } }, { rooms: { maxRooms: 0 } }, { rooms: { idleCloseSeconds: 29.5 } },
     { classLocks: ['Sniper'] }, { classLocks: ['a', 'a'] }, { campaignBalance: { '*': { rm_rf: 1 } } }, { campaignBalance: { '*': { enable_spawn_shield: 1 } } },
     { campaignBalance: { 'bad id!': { max_tickets: 1 } } }, { campaignBalance: { '*': { max_tickets: Infinity } } }, { extra: 1 },
+    { deathmatch: { minPlayers: 0 } }, { deathmatch: { minPlayers: 25 } }, { deathmatch: { minPlayers: 2.5 } }, { deathmatch: { minPlayer: 3 } },
   ]) assert.throws(() => validateSettings(body), e => status(e) === 400, JSON.stringify(body));
+  assert.deepEqual(validateSettings({ deathmatch: { minPlayers: 3 } }), { deathmatch: { minPlayers: 3 } });
+  // Owner wants to be able to start deathmatch alone.
+  assert.deepEqual(validateSettings({ deathmatch: { minPlayers: 1 } }), { deathmatch: { minPlayers: 1 } });
 });
 
 test('RCON allowlist builds exact commands and rejects injection', () => {
@@ -141,12 +170,19 @@ test('API: role gate, audit of success and refusal, members request on role chan
   assert.equal((await call(`${MOD}:Moddy`, 'POST', 'rcon', { action: 'kick', player: 'Bob\nstop' })).status, 400);
   assert.equal((await call(`${ADMIN}:Adm`, 'POST', 'staff', { uuid: ADMIN, role: null })).status, 403);
 
+  // cancel: same "mode" gate as switching, and it writes a plain inbox request the controller can process.
+  assert.equal((await call(`${OTHER}:Nobody`, 'POST', 'cancel', {})).status, 403);
+  const cancelled = await call(`${MOD}:Moddy`, 'POST', 'cancel', {});
+  assert.equal(cancelled.status, 200);
+  const { id: cancelId } = await cancelled.json();
+  assert.deepEqual(JSON.parse(readFileSync(join(dirs.BLOCKFIELD_INBOX_DIR, `${cancelId}.json`))).kind, 'cancel');
+
   const log = (await (await call(`${OWNER}:Nether`, 'GET', 'audit')).json()).entries;
   assert.deepEqual(log.map(e => [e.actorName, e.action, e.ok, e.error !== null]), [
-    ['Adm', 'role-revoke', 0, true], ['Moddy', 'rcon:kick', 0, true], ['Moddy', 'rcon:ban', 0, true],
+    ['Moddy', 'cancel', 1, false], ['Adm', 'role-revoke', 0, true], ['Moddy', 'rcon:kick', 0, true], ['Moddy', 'rcon:ban', 0, true],
     ['Adm', 'role-grant', 1, false], ['Adm', 'role-grant', 0, true],
   ]);
-  assert.equal(log[3].target, MOD); assert.equal(JSON.parse(log[3].detail).role, 'moderator');
+  assert.equal(log[4].target, MOD); assert.equal(JSON.parse(log[4].detail).role, 'moderator');
 });
 
 test('review: range goes through /bf, Brigadier rejections are detected', () => {
@@ -208,6 +244,42 @@ test('owner row falls back to the last known profile name, the signed-in owner n
   const url = new URL('http://site/api/admin/staff');
   const response = await handleAdmin({ request: new Request(url), url, cookies: { get: () => undefined } }, 'staff', s);
   assert.deepEqual((await response.json()).owners, [{ uuid: OWNER, name: 'Nether' }, { uuid: second, name: 'Second' }, { uuid: third, name: 'Неизвестный игрок' }]);
+});
+
+test('siteIdentity: dev user short-circuits, missing/invalid cookie is anonymous, role decides admin access', async t => {
+  const saved = { ...process.env };
+  t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
+  Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test', BLOCKFIELD_ADMIN_DEV_USER: `${OTHER}:Guest`, BLOCKFIELD_STATS_DB: join(temp(t), 'stats.sqlite') });
+  assert.deepEqual(await siteIdentity({ get: () => undefined }), { name: 'Guest', hasAdminAccess: false }, 'dev user with no staff row can still open /admin as no-role');
+  process.env.BLOCKFIELD_ADMIN_DEV_USER = `${OWNER}:Nether`;
+  assert.deepEqual(await siteIdentity({ get: () => undefined }), { name: 'Nether', hasAdminAccess: true });
+  delete process.env.BLOCKFIELD_ADMIN_DEV_USER;
+  assert.equal(await siteIdentity({ get: () => undefined }), null, 'no session cookie, no dev user: signed out');
+});
+
+test('POST staff/maps: only a builder row accepts a map list, ids must be known and unique', async t => {
+  const dirs = { BLOCKFIELD_ADMIN_DIR: temp(t), BLOCKFIELD_INBOX_DIR: temp(t), BLOCKFIELD_SETTINGS_DIR: temp(t) };
+  const saved = { ...process.env };
+  t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test', BLOCKFIELD_ADMIN_DEV_USER: `${OWNER}:Nether` });
+  const s = store(t);
+  s.setStaff(OTHER, 'Bob', 'builder', 'seed'); s.setStaff(MOD, 'Moddy', 'moderator', 'seed');
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  globalThis.fetch = async () => new Response('', { status: 404 });
+  const call = (path, body) => { const url = new URL(`http://site/api/admin/${path}`); return handleAdmin({ request: new Request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), url, cookies: { get: () => undefined } }, path, s).then(r => r, e => e); };
+  assert.equal((await call('staff/maps', { uuid: MOD, maps: ['fields'] })).status, 400, 'a moderator has every map, cannot be given a list');
+  assert.equal((await call('staff/maps', { uuid: OTHER, maps: ['not_a_map'] })).status, 400);
+  assert.equal((await call('staff/maps', { uuid: OTHER, maps: ['fields', 'fields'] })).status, 400, 'duplicates rejected');
+  const ok = await call('staff/maps', { uuid: OTHER, maps: ['fields', 'konstaxa'] });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(s.staff().find(row => row.uuid === OTHER).maps, ['fields', 'konstaxa']);
+  // [] is a real, distinct value: the builder keeps a workshop account but has nothing to edit.
+  const none = await call('staff/maps', { uuid: OTHER, maps: [] });
+  assert.equal(none.status, 200);
+  assert.deepEqual(s.staff().find(row => row.uuid === OTHER).maps, []);
+  const cleared = await call('staff/maps', { uuid: OTHER, maps: null });
+  assert.equal(cleared.status, 200);
+  assert.equal(s.staff().find(row => row.uuid === OTHER).maps, null);
 });
 
 test('review: stop-room without RCON configured fails fast, before querying rooms', async t => {

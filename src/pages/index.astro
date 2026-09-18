@@ -3,14 +3,25 @@ import '@fontsource-variable/inter';
 import '@fontsource/ibm-plex-mono/400.css';
 import '@fontsource/ibm-plex-mono/500.css';
 import '@fontsource/ibm-plex-mono/600.css';
-import { latestLauncher, RELEASES } from '../lib/launcher';
+import '../styles/system.css';
+import { latestLauncher } from '../lib/launcher';
 import { detectPlatform, launcherDownload } from '../lib/platform';
 import { brand, ui } from '../lib/icons';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
 
 const launcher = await latestLauncher();
 const platform = detectPlatform(Astro.request.headers.get('user-agent') || '', Astro.request.headers.get('sec-ch-ua-platform') || '');
 const download = launcherDownload(platform, launcher);
 const supported = platform === 'windows' || platform === 'linux';
+
+const navLinks = [
+  { href: '#rooms', label: 'Матчи', class: 'rooms-nav-link', hidden: true },
+  { href: '/leaderboard', label: 'Лидерборд' },
+  { href: '#game', label: 'Игра' },
+  { href: '#download', label: 'Скачать' },
+  { href: 'https://github.com/netherg-io/blockfield-releases', label: 'GitHub' },
+];
 
 // HTML содержит ссылку для ОС посетителя; общий кэш не должен отдавать её другой платформе.
 Astro.response.headers.set('Cache-Control', 'private, no-store');
@@ -45,9 +56,9 @@ const manual = [
 ];
 
 const features = [
-  { code: '01', icon: ui.flag, title: 'Захват точек', text: 'Две команды, контрольные точки и счёт билетов. Контроль точек уменьшает билеты противника.' },
-  { code: '02', icon: ui.swords, title: 'Классы и оружие', text: 'Штурмовик, марксман, инженер, снайпер и оператор FPV. Доступность классов зависит от настроек матча и числа игроков.' },
-  { code: '03', icon: ui.swords, title: 'Выбор снаряжения', text: 'Комплекты оружия доступны в меню класса. Состав снаряжения зависит от выбранного класса.' },
+  { icon: ui.flag, label: 'Точки', title: 'Захват точек', text: 'Две команды делят карту по контрольным точкам. Держите точки — у противника тают билеты, и матч заканчивается в вашу пользу.' },
+  { icon: ui.swords, label: 'Классы', title: 'Пять ролей', text: 'Штурмовик, марксман, инженер, снайпер и оператор FPV. Какие роли открыты, зависит от настроек матча и того, сколько вас на карте.' },
+  { icon: ui.package, label: 'Снаряжение', title: 'Своё оружие', text: 'У каждой роли несколько комплектов оружия. Комплект выбирается в меню класса — перед боем и при каждом возрождении.' },
 ];
 ---
 
@@ -106,24 +117,7 @@ const features = [
     <script is:inline>document.documentElement.classList.add('js');</script>
   </head>
   <body>
-    <header class="nav">
-      <a class="nav__mark" href="/">
-        <img class="mark" src="/logo.svg" alt="" width="64" height="64" />
-        BLOCKFIELD
-      </a>
-      <nav class="nav__links">
-        <a href="#rooms" id="rooms-nav" hidden>Матчи</a>
-        <a href="/leaderboard">Лидерборд</a>
-        <a href="#game">ИГРА</a>
-        <a href="#download">СКАЧАТЬ</a>
-        <a href="https://github.com/netherg-io/blockfield-releases">GITHUB</a>
-      </nav>
-      <a class="nav__account" href="/account">АККАУНТ</a>
-      <a class="nav__cta" href={download.href} aria-label={download.label} data-platform-download>
-        <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
-        СКАЧАТЬ
-      </a>
-    </header>
+    <SiteHeader links={navLinks} cta={{ href: download.href, label: 'Скачать', title: download.label }} />
 
     <section class="hero">
       <div class="hero__art">
@@ -210,7 +204,7 @@ const features = [
           <li data-reveal>
             <p class="game__code">
               <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={item.icon} />
-              {item.code}
+              {item.label}
             </p>
             <h3>{item.title}</h3>
             <p>{item.text}</p>
@@ -243,20 +237,7 @@ const features = [
       </a>
     </section>
 
-    <footer class="footer">
-      <span class="footer__mark">
-        <img class="mark" src="/logo.svg" alt="" width="64" height="64" />
-        BLOCKFIELD
-      </span>
-      <nav>
-        <a href="https://github.com/netherg-io/blockfield-releases">Релизы клиента</a>
-        <a href={RELEASES}>Релизы лаунчера</a>
-        <a href="https://blockfield.pro/pack.toml">packwiz-пак</a>
-        <a href="/terms">Условия использования</a>
-        <a href="/privacy">Конфиденциальность</a>
-      </nav>
-      <small>Minecraft 1.21.1 · Fabric. Проект не связан с Mojang и Microsoft.</small>
-    </footer>
+    <SiteFooter full />
 
     <style is:global>
       [hidden] { display: none !important; }
@@ -283,217 +264,6 @@ const features = [
       .rooms-help { margin-top: 24px; }
       .rooms-help a { text-decoration: underline; text-underline-offset: 4px; }
       @media (max-width: 600px) { .rooms .room-row { align-items: flex-start; flex-direction: column; gap: 16px; } }
-
-      /* Палитра — та же, что в лаунчере (src/styles/theme.css), менять только вместе с ним. */
-      :root {
-        --bg: #070604;
-        --bg-2: #0b0906;
-        --panel: #11100d;
-        --panel-2: #18130d;
-        --line: #2a2116;
-        --line-2: #3a2c1d;
-        --amber: #f5a524;
-        --amber-hi: #ffc861;
-        --amber-dim: #8a571c;
-        --cream: #f3e7d0;
-        --sand: #c7ae86;
-        --muted: #8e7a5e;
-        --dim: #5e5040;
-        --ok: #82d66b;
-        --display: 'Inter Variable', system-ui, sans-serif;
-        --text: 'Inter Variable', system-ui, sans-serif;
-        --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
-      }
-
-      * {
-        box-sizing: border-box;
-      }
-
-      /* Ниже 320px верстку не сжимаем: страница честно уезжает в горизонтальный скролл. */
-      body {
-        margin: 0;
-        min-width: 320px;
-        background: var(--bg);
-        color: var(--cream);
-        font-family: var(--text);
-        -webkit-font-smoothing: antialiased;
-      }
-
-      h1,
-      h2,
-      h3 {
-        font-family: var(--display);
-        font-weight: 800;
-        text-transform: uppercase;
-        margin: 0;
-        line-height: 1;
-        letter-spacing: -0.02em;
-      }
-
-      a {
-        color: inherit;
-        text-decoration: none;
-      }
-
-      /* Lucide рисуется скруглённой обводкой, Simple Icons — заливкой. */
-      .i {
-        width: 1em;
-        height: 1em;
-        fill: none;
-        stroke: currentColor;
-        stroke-width: 2;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-      }
-
-      .i--fill {
-        fill: currentColor;
-        stroke: none;
-      }
-
-      /* Точечная сетка вместо линий: линии сливались в полосы. 16px — тексель Minecraft, 96px — шесть блоков. */
-      .voxel {
-        position: relative;
-        isolation: isolate;
-      }
-
-      .voxel::before {
-        content: '';
-        position: absolute;
-        inset: 0;
-        z-index: -1;
-        pointer-events: none;
-        background-image:
-          radial-gradient(rgb(245 165 36 / 0.11) 1px, transparent 1.5px),
-          radial-gradient(rgb(245 165 36 / 0.22) 1.5px, transparent 2px);
-        background-size: 16px 16px, 96px 96px;
-        background-position: 8px 8px, 8px 8px;
-      }
-
-      /* ——— подпись секции, как SectionHeader лаунчера ——— */
-      .rule {
-        display: flex;
-        align-items: center;
-        gap: clamp(8px, 0.9vw, 14px);
-        margin: 0;
-        min-width: 0;
-      }
-
-      .rule__square {
-        flex: none;
-        width: 6px;
-        height: 6px;
-        background: var(--amber);
-      }
-
-      .rule__label {
-        font-family: var(--mono);
-        font-size: clamp(10px, 0.8vw, 12px);
-        letter-spacing: 0.18em;
-        text-transform: uppercase;
-        color: var(--cream);
-        white-space: nowrap;
-      }
-
-      .rule__line {
-        height: 1px;
-        flex: 1 1 12px;
-        min-width: 12px;
-        background: var(--line);
-      }
-
-      .rule__code {
-        font-family: var(--mono);
-        flex: none;
-        font-size: clamp(9px, 0.7vw, 11px);
-        letter-spacing: 0.28em;
-        color: var(--dim);
-      }
-
-      /* ——— навигация ——— */
-      .nav {
-        min-width: 0;
-        height: clamp(64px, 6.64vw, 102px);
-        background: var(--bg);
-        border-bottom: 1px solid var(--line);
-        color: var(--cream);
-        display: flex;
-        align-items: center;
-        gap: clamp(20px, 3vw, 46px);
-        padding: 0 clamp(16px, 1.6vw, 26px) 0 clamp(20px, 2.1vw, 32px);
-      }
-
-      .nav__mark {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5em;
-        font-family: var(--display);
-        font-weight: 800;
-        font-size: clamp(22px, 1.75vw, 27px);
-        letter-spacing: 0.02em;
-      }
-
-      .mark {
-        flex: none;
-        width: 1.5em;
-        height: 1.5em;
-      }
-
-      .nav__links {
-        display: flex;
-        gap: clamp(18px, 2.4vw, 37px);
-        font-family: var(--mono);
-        font-weight: 500;
-        font-size: clamp(12px, 0.95vw, 14px);
-        letter-spacing: 0.14em;
-        color: var(--sand);
-      }
-
-      .nav__links a {
-        transition: color 0.15s ease;
-      }
-
-      .nav__links a:hover {
-        color: var(--amber);
-      }
-
-      /* Не в .nav__links: ссылка на аккаунт нужна и на телефоне, где остальные ссылки скрыты. */
-      .nav__account {
-        margin-left: auto;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        font-family: var(--mono);
-        font-weight: 500;
-        font-size: clamp(12px, 0.95vw, 14px);
-        letter-spacing: 0.14em;
-        color: var(--sand);
-        transition: color 0.15s ease;
-      }
-
-      .nav__account:hover {
-        color: var(--amber);
-      }
-
-      .nav__cta {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.6em;
-        background: var(--amber);
-        color: var(--bg);
-        font-family: var(--display);
-        font-weight: 700;
-        font-size: clamp(12px, 0.92vw, 14px);
-        letter-spacing: 0.1em;
-        padding: 0.95em 1.6em;
-        transition: background 0.15s ease, transform 0.15s ease;
-      }
-
-      .nav__cta:hover {
-        background: var(--amber-hi);
-        transform: translateY(-1px);
-      }
 
       /* ——— первый экран ——— */
       .hero {
@@ -640,43 +410,6 @@ const features = [
         letter-spacing: 0.18em;
         text-transform: uppercase;
         color: var(--dim);
-      }
-
-      /* ——— кнопки ——— */
-      .button {
-        display: inline-flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 1em;
-        font-family: var(--display);
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        padding: 0 clamp(18px, 1.7vw, 26px);
-        height: clamp(48px, 3.9vw, 58px);
-        font-size: clamp(13px, 1.05vw, 15px);
-        transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
-      }
-
-      .button .i {
-        flex: none;
-        width: 1.35em;
-        height: 1.35em;
-        stroke-width: 2.2;
-      }
-
-      .button--amber {
-        background: var(--amber);
-        color: var(--bg);
-        justify-content: flex-start;
-        gap: 0.7em;
-        box-shadow: 0 0.3em 1.6em rgb(245 165 36 / 0.16);
-      }
-
-      .button--amber:hover {
-        background: var(--amber-hi);
-        transform: translateY(-2px);
-        box-shadow: 0 0.5em 1.8em rgb(245 165 36 / 0.26);
       }
 
       .hero__cta {
@@ -895,45 +628,6 @@ const features = [
         color: var(--muted);
       }
 
-      /* ——— подвал ——— */
-      .footer {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: clamp(14px, 2vw, 32px);
-        background: var(--bg);
-        color: var(--muted);
-        padding: clamp(28px, 3vw, 46px) clamp(20px, 4.5vw, 70px);
-        font-size: clamp(13px, 1vw, 15px);
-      }
-
-      .footer__mark {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5em;
-        font-family: var(--display);
-        font-weight: 800;
-        font-size: clamp(18px, 1.45vw, 22px);
-        letter-spacing: 0.02em;
-        color: var(--cream);
-        text-transform: uppercase;
-      }
-
-      .footer nav {
-        display: flex;
-        flex-wrap: wrap;
-        gap: clamp(12px, 1.6vw, 25px);
-      }
-
-      .footer nav a:hover {
-        color: var(--amber);
-      }
-
-      .footer small {
-        margin-left: auto;
-        color: var(--dim);
-      }
-
       /* Ниже 900px диагональ первого экрана душит заголовок, а две колонки «пути» —
          карточки. Дальше планшет и телефон расходятся: у них разные первые экраны. */
       @media (max-width: 900px) {
@@ -992,24 +686,8 @@ const features = [
         }
       }
 
-      /* Ссылки в шапке требуют места: ниже они не влезают рядом с кнопкой. */
-      @media (max-width: 760px) {
-        .nav__links {
-          display: none;
-        }
-      }
-
       /* ——— телефон ——— */
       @media (max-width: 600px) {
-        .nav {
-          gap: 12px;
-          padding: 0 12px;
-        }
-
-        .nav__cta {
-          display: none;
-        }
-
         .hero {
           min-height: 0;
           display: grid;
@@ -1183,11 +861,11 @@ const features = [
         }
 
         /* Реакции на наведение поверх обычных transition. */
-        .nav__links a {
+        .site-header__links a {
           position: relative;
         }
 
-        .nav__links a::after {
+        .site-header__links a::after {
           content: '';
           position: absolute;
           left: 0;
@@ -1200,7 +878,7 @@ const features = [
           transition: transform 0.2s cubic-bezier(0.2, 0.7, 0.2, 1);
         }
 
-        .nav__links a:hover::after {
+        .site-header__links a:hover::after {
           transform: scaleX(1);
         }
 
@@ -1281,16 +959,11 @@ const features = [
       // Unknown/absent admission falls back to "Войти" — matches pre-#28 payloads.
       const joinLabels: Record<string, string> = { open: 'Войти', waiting: 'Встать в очередь', closed: 'Мест нет' };
       const roomSection = document.querySelector<HTMLElement>('#rooms')!;
-      const roomNav = document.querySelector<HTMLElement>('#rooms-nav')!;
+      const roomNavLinks = document.querySelectorAll<HTMLElement>('.rooms-nav-link');
+      const setRoomNavHidden = (hidden: boolean) => roomNavLinks.forEach((link) => (link.hidden = hidden));
       const roomList = document.querySelector('#rooms-list')!;
       const roomStatus = document.querySelector('#rooms-status')!;
       const invitedRoom = new URL(window.location.href).searchParams.get('room');
-      fetch('/api/account/me', { credentials: 'same-origin', cache: 'no-store' }).then(r => r.json()).then(({ account }) => {
-        if (!account?.username) return;
-        const link = document.querySelector<HTMLElement>('.nav__account')!;
-        link.textContent = account.username;
-        link.setAttribute('aria-label', `Аккаунт: ${account.username}`);
-      }).catch(() => {});
       const lobbyJoin = document.querySelector<HTMLElement>('#lobby-join')!;
       lobbyJoin.addEventListener('click', () => {
         const note = document.querySelector('#room-launch-status') as HTMLElement;
@@ -1307,13 +980,13 @@ const features = [
           lobbyJoin.hidden = Boolean(status.maintenance);
           if (status.maintenance) {
             lastRooms = ''; roomList.replaceChildren();
-            roomSection.hidden = false; roomNav.hidden = false;
+            roomSection.hidden = false; setRoomNavHidden(false);
             roomStatus.textContent = status.maintenance.message;
             return;
           }
           if (!status.available && status.lobby) {
             lastRooms = ''; roomList.replaceChildren();
-            roomSection.hidden = !invitedRoom; roomNav.hidden = true;
+            roomSection.hidden = !invitedRoom; setRoomNavHidden(true);
             roomStatus.textContent = invitedRoom && invitedRoom !== 'lobby'
               ? 'Игровой сервер обновляется. Зайдите в лобби — после запуска сервера вас перенесут автоматически.'
               : 'Игровой сервер обновляется, лобби открыто. Нажмите «Войти в лобби» — после запуска сервера вас перенесут автоматически.';
@@ -1321,7 +994,7 @@ const features = [
           }
           if (!status.available) throw new Error();
           roomSection.hidden = status.rooms.length === 0 && !invitedRoom;
-          roomNav.hidden = status.rooms.length === 0;
+          setRoomNavHidden(status.rooms.length === 0);
           roomStatus.textContent = status.rooms.length ? 'Состояние обновляется каждые 10 секунд.' : 'Сейчас матчей нет. Зайдите в игру и выберите режим в хабе: Casual или Рейтинг.';
           if (invitedRoom === 'lobby') {
             roomStatus.textContent = 'Вас пригласили в лобби Blockfield. Нажмите «Войти в лобби» для запуска лаунчера.';
@@ -1390,7 +1063,7 @@ const features = [
           }
         } catch {
           lastRooms = ''; roomList.replaceChildren();
-          roomSection.hidden = !invitedRoom; roomNav.hidden = true;
+          roomSection.hidden = !invitedRoom; setRoomNavHidden(true);
           roomStatus.textContent = 'Не удалось получить список матчей. Повторим запрос автоматически.';
         }
       }

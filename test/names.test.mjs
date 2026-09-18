@@ -86,8 +86,18 @@ test('balance defaults follow the mod: no file sets min_players_per_team, Campai
 });
 
 test('settings form: untouched fields, including PvP, are not written; explicit values are', () => {
-  const empty = { pvpEnabled: '', lobby: { pvpCooldownSeconds: '' }, rooms: { maxRooms: '' }, lockedClasses: [], hadLocks: false, balance: { '*': {} } };
+  const empty = { pvpEnabled: '', lobby: { pvpCooldownSeconds: '' }, rooms: { maxRooms: '' }, deathmatch: { minPlayers: '' }, lockedClasses: [], hadLocks: false, balance: { '*': {} } };
   assert.deepEqual(settingsBody(3, empty), { expectedRevision: 3 });
-  assert.deepEqual(settingsBody(3, { ...empty, pvpEnabled: 'false', rooms: { maxRooms: '4' }, hadLocks: true, balance: { South: { max_tickets: 150 } } }),
-    { expectedRevision: 3, lobby: { pvpEnabled: false }, rooms: { maxRooms: 4 }, classLocks: [], campaignBalance: { South: { max_tickets: 150 } } });
+  assert.deepEqual(settingsBody(3, { ...empty, pvpEnabled: 'false', rooms: { maxRooms: '4' }, deathmatch: { minPlayers: '3' }, hadLocks: true, balance: { South: { max_tickets: 150 } } }),
+    { expectedRevision: 3, lobby: { pvpEnabled: false }, rooms: { maxRooms: 4 }, deathmatch: { minPlayers: 3 }, classLocks: [], campaignBalance: { South: { max_tickets: 150 } } });
+});
+
+test('settings form: a field prefilled with (and left at) its default is the same as leaving it empty', () => {
+  const form = { pvpEnabled: '', lobby: {}, rooms: { maxRooms: '2' }, deathmatch: { minPlayers: '2' }, lockedClasses: [], hadLocks: false, balance: { '*': {} } };
+  assert.deepEqual(settingsBody(3, form, { maxRooms: '2', minPlayers: '2' }), { expectedRevision: 3 }, 'prefilled defaults, untouched, write nothing');
+  assert.deepEqual(settingsBody(3, { ...form, rooms: { maxRooms: '5' } }, { maxRooms: '2', minPlayers: '2' }),
+    { expectedRevision: 3, rooms: { maxRooms: 5 } }, 'only the changed field is written; the untouched default is still omitted');
+  const withPvp = { maxRooms: '2', minPlayers: '2', pvpEnabled: 'true' };
+  assert.deepEqual(settingsBody(3, { ...form, pvpEnabled: 'true' }, withPvp), { expectedRevision: 3 }, 'PvP prefilled at its default is also omitted');
+  assert.deepEqual(settingsBody(3, { ...form, pvpEnabled: 'false' }, withPvp), { expectedRevision: 3, lobby: { pvpEnabled: false } });
 });
