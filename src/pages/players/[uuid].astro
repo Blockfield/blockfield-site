@@ -1,7 +1,7 @@
 ---
 import Community from '../../layouts/Community.astro';
 import { statsStore, filters, seasons, StatsError, resolveNames, displayName } from '../../lib/stats';
-import { resolveSkins, type Skin } from '../../lib/skins';
+import { resolveSkins, DEFAULT_SKIN, type Skin } from '../../lib/skins';
 import { outcomeLabel } from '../../lib/stats-outcome';
 import { CLASS_NAMES } from '../../lib/game-names';
 let data: any = null, error = '', skin: Skin | null = null;
@@ -9,7 +9,7 @@ try {
   data = statsStore().player(Astro.params.uuid || '', filters(Astro.url.searchParams));
   const resolved = (await resolveNames(statsStore(), [data.profile.uuid])).get(data.profile.uuid);
   data.profile.name = displayName(resolved ?? data.profile.name);
-  skin = (await resolveSkins([data.profile.uuid])).get(data.profile.uuid) ?? null;
+  skin = (await resolveSkins([data.profile.uuid])).get(data.profile.uuid) ?? DEFAULT_SKIN;
 }
 catch (e) {
   Astro.response.status = e instanceof StatsError ? e.status : 503;
@@ -40,7 +40,7 @@ const stats = data?.totals ? [
   </> : data && <>
     <section class="hero" aria-labelledby="player-name">
       <div class="hero__figure">
-        <div id="stage" class="stage" role="img" aria-label={`Скин игрока ${name} в 3D. Потяните, чтобы повернуть.`} data-skin={skin?.url ?? ''} data-slim={skin?.slim ? '1' : ''}>
+        <div id="stage" class="stage" role="img" aria-label={`Скин игрока ${name} в 3D. Потяните, чтобы повернуть.`} data-skin={skin?.url ?? ''} data-slim={skin?.slim ? '1' : ''} data-cape={skin?.capeUrl ?? ''}>
           <div class="rig"><div id="figure" class="figure"></div></div>
           <span class="floor"></span>
           <span id="figure-fallback" class:list={['head', 'head--big', !skin && 'head--none']} style={skin ? `--skin:url("${skin.url}")` : undefined} aria-hidden="true"></span>
@@ -110,7 +110,7 @@ const stats = data?.totals ? [
     const stage = document.querySelector<HTMLElement>('#stage');
     const figure = document.querySelector<HTMLElement>('#figure');
     if (stage && figure) {
-      drawFigure(stage, figure, { skinUrl: stage.dataset.skin || null, slim: stage.dataset.slim === '1' });
+      drawFigure(stage, figure, { skinUrl: stage.dataset.skin || null, capeUrl: stage.dataset.cape || null, slim: stage.dataset.slim === '1' });
       document.querySelector('#figure-fallback')?.remove();
     }
   </script>

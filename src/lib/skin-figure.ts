@@ -53,9 +53,10 @@ export function drawFigure(stage: HTMLElement, figure: HTMLElement, skin: Figure
     stage.addEventListener('pointercancel', release);
   }
   // Старые скины 64×32 зеркалят правые конечности и не имеют второго слоя — различаем их по высоте файла.
-  if (!skin.skinUrl) return build(figure, skin, false);
+  const fallback = () => build(figure, { ...skin, skinUrl: '/skins/steve.png', slim: false }, false);
+  if (!skin.skinUrl) return fallback();
   const image = new Image();
   image.onload = () => build(figure, skin, image.height === 32);
-  image.onerror = () => build(figure, { ...skin, skinUrl: null }, false);
+  image.onerror = fallback;
   image.src = skin.skinUrl;
 }

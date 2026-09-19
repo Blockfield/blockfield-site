@@ -1,5 +1,6 @@
-/** Текстуры скинов из Drasl по UUID: для голов в списках и 3D-фигуры в профиле. */
-export type Skin = { url: string; slim: boolean };
+/** Как в лаунчере: Drasl → Mojang по нику → ванильный Steve. */
+export type Skin = { url: string; slim: boolean; capeUrl?: string };
+export const DEFAULT_SKIN: Skin = { url: '/skins/steve.png', slim: false };
 
 const TTL = 600_000;
 const cache = new Map<string, { skin: Skin | null; until: number }>();
@@ -12,9 +13,28 @@ export function skinFromProfile(profile: any): Skin | null {
   const encoded = profile?.properties?.find((p: any) => p?.name === 'textures')?.value;
   if (typeof encoded !== 'string') return null;
   try {
-    const skin = JSON.parse(Buffer.from(encoded, 'base64').toString()).textures?.SKIN;
-    return typeof skin?.url === 'string' && /^https?:\/\//.test(skin.url) ? { url: skin.url, slim: skin.metadata?.model === 'slim' } : null;
+    const textures = JSON.parse(Buffer.from(encoded, 'base64').toString()).textures;
+    const skin = textures?.SKIN;
+    const url = (value: unknown) => typeof value === 'string' && /^https?:\/\//.test(value) ? value.replace('http://textures.minecraft.net/', 'https://textures.minecraft.net/') : undefined;
+    const skinUrl = url(skin?.url);
+    return skinUrl ? { url: skinUrl, slim: skin.metadata?.model === 'slim', capeUrl: url(textures?.CAPE?.url) } : null;
   } catch { return null; }
+}
+
+export async function resolveProfileSkin(uuid: string, fetcher: typeof fetch = fetch): Promise<Skin> {
+  const json = async (url: string) => {
+    const response = await fetcher(url, { signal: AbortSignal.timeout(5000) });
+    return response.ok ? response.json() : null;
+  };
+  try {
+    const profile = await json(`${draslBase()}/session/minecraft/profile/${uuid.replaceAll('-', '')}`);
+    const custom = skinFromProfile(profile);
+    if (custom) return custom;
+    if (!/^[A-Za-z0-9_]{1,16}$/.test(profile?.name ?? '')) return DEFAULT_SKIN;
+    const mojang = await json(`https://api.mojang.com/users/profiles/minecraft/${profile.name}`);
+    if (!/^[0-9a-f]{32}$/i.test(mojang?.id ?? '') || mojang?.name?.toLowerCase() !== profile.name.toLowerCase()) return DEFAULT_SKIN;
+    return skinFromProfile(await json(`https://sessionserver.mojang.com/session/minecraft/profile/${mojang.id}`)) ?? DEFAULT_SKIN;
+  } catch { return DEFAULT_SKIN; }
 }
 
 /**
@@ -29,8 +49,7 @@ export async function resolveSkins(uuids: string[], budgetMs = 1200, fetcher: ty
     if (hit && hit.until > now) { if (hit.skin) found.set(uuid, hit.skin); continue; }
     let lookup = pending.get(uuid);
     if (!lookup) {
-      lookup = fetcher(`${draslBase()}/session/minecraft/profile/${uuid.replaceAll('-', '')}`, { signal: AbortSignal.timeout(10_000) })
-        .then(r => (r.ok ? r.json() : null)).then(skinFromProfile, () => null)
+      lookup = resolveProfileSkin(uuid, fetcher)
         .then(skin => { cache.set(uuid, { skin, until: Date.now() + TTL }); return skin; })
         .catch(() => null).finally(() => pending.delete(uuid));
       pending.set(uuid, lookup);
@@ -41,5 +60,5 @@ export async function resolveSkins(uuids: string[], budgetMs = 1200, fetcher: ty
   let timer: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([Promise.all(wait), new Promise(resolve => { timer = setTimeout(resolve, budgetMs); })]);
   clearTimeout(timer);
-  return new Map(found);
+  return new Map(uuids.map(uuid => [uuid, found.get(uuid) ?? DEFAULT_SKIN]));
 }
