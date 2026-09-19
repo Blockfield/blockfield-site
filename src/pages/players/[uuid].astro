@@ -6,8 +6,8 @@ import { outcomeLabel } from '../../lib/stats-outcome';
 import { CLASS_NAMES } from '../../lib/game-names';
 let data: any = null, error = '', skin: Skin | null = null;
 try {
-  data = statsStore().player(Astro.params.uuid || '', filters(Astro.url.searchParams));
-  const resolved = (await resolveNames(statsStore(), [data.profile.uuid])).get(data.profile.uuid);
+  data = await (await statsStore()).player(Astro.params.uuid || '', filters(Astro.url.searchParams));
+  const resolved = (await resolveNames(await statsStore(), [data.profile.uuid])).get(data.profile.uuid);
   data.profile.name = displayName(resolved ?? data.profile.name);
   skin = (await resolveSkins([data.profile.uuid])).get(data.profile.uuid) ?? DEFAULT_SKIN;
 }

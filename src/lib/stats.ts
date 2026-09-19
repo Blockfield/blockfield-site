@@ -1,8 +1,6 @@
 /** Durable, Minecraft-independent result ingestion. Node >=22.19; no browser imports. */
-import { DatabaseSync } from 'node:sqlite';
+import { Database } from './database.ts';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { dirname, isAbsolute } from 'node:path';
 import { composite, inflate, initial, softReset, update, RULES_VERSION } from './glicko2.ts';
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
@@ -137,26 +135,38 @@ export function filters(params: URLSearchParams, now = Date.now()): Filters {
   return { mode, season, mmrSeason, since: period === 'all' ? 0 : now - (period === 'week' ? 7 : 30) * 86400000, until: now + 300000, sort, limit, page };
 }
 export class StatsStore {
-  db: DatabaseSync;
-  constructor(path: string) {
-    if (path !== ':memory:') { if (!isAbsolute(path)) throw new Error('BLOCKFIELD_STATS_DB must be absolute'); mkdirSync(dirname(path), { recursive: true, mode: 0o700 }); }
-    this.db = new DatabaseSync(path);
-    this.db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
-    const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number };
-    if (![0, 1, 2, 3, 4, 5].includes(version.user_version)) { this.db.close(); throw new Error('Unsupported statistics schema; restore/migrate explicitly'); }
-    this.db.function('season_at', (time: any) => seasonAt(Number(time)).id);
-    this.db.function('uuid_like', { deterministic: true }, (name: any) => (uuidLike(String(name)) ? 1 : 0));
-    const columns = (table: string) => (this.db.prepare('SELECT name FROM pragma_table_info(?)').all(table) as { name: string }[]).map(c => c.name);
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      // v2 -> v3: lifetime ratings become per-season rows; existing rows move to the season of their rating time.
-      const legacyRatings = columns('ratings').length > 0 && !columns('ratings').includes('season_id');
-      if (legacyRatings) this.db.exec('ALTER TABLE ratings RENAME TO ratings_v2');
-      this.db.exec(`
+  db: Database;
+  private constructor(location: string) { this.db = new Database(location); }
+  static async open(location: string): Promise<StatsStore> {
+    const store = new StatsStore(location);
+    try { await store.initialize(); return store; }
+    catch (error) { await store.close(); throw error; }
+  }
+  private async initialize() {
+    const sqlite = this.db.sqlite;
+    const columns = async (table: string): Promise<string[]> => (await this.db.prepare('SELECT name FROM pragma_table_info(?)').all(table)).map(c => c.name);
+    if (sqlite) {
+      const version = await sqlite.prepare('PRAGMA user_version').get() as { user_version: number };
+      if (![0, 1, 2, 3, 4, 5, 6].includes(version.user_version)) throw new Error('Unsupported statistics schema; restore/migrate explicitly');
+      sqlite.function('season_at', (time: any) => seasonAt(Number(time)).id);
+      sqlite.function('uuid_like', { deterministic: true }, (name: any) => (uuidLike(String(name)) ? 1 : 0));
+    }
+    await this.db.transaction(async () => {
+      if (this.db.postgres) {
+        await this.db.exec(`CREATE TABLE IF NOT EXISTS blockfield_schema (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL);
+          INSERT INTO blockfield_schema VALUES (1,6) ON CONFLICT(id) DO NOTHING;`);
+        const { version } = await this.db.prepare('SELECT version FROM blockfield_schema WHERE id=1').get();
+        if (version !== 6) throw new Error('Unsupported statistics schema; restore/migrate explicitly');
+        await this.db.exec(`CREATE OR REPLACE FUNCTION uuid_like(name TEXT) RETURNS INTEGER LANGUAGE SQL IMMUTABLE AS
+          $$ SELECT CASE WHEN trim(name) ~* '^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$' THEN 1 ELSE 0 END $$;`);
+      }
+      const legacyRatings = sqlite && (await columns('ratings')).length > 0 && !(await columns('ratings')).includes('season_id');
+      if (legacyRatings) await this.db.exec('ALTER TABLE ratings RENAME TO ratings_v2');
+      const schema = `
       CREATE TABLE IF NOT EXISTS results (
         server_id TEXT NOT NULL, event_id TEXT NOT NULL, kind TEXT NOT NULL, mode TEXT NOT NULL,
         campaign_id TEXT, ended_at INTEGER NOT NULL, reason TEXT NOT NULL, winner TEXT NOT NULL,
-        digest TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(server_id,event_id)
+        digest TEXT NOT NULL, payload TEXT NOT NULL, voided_at INTEGER, voided_by TEXT, PRIMARY KEY(server_id,event_id)
       );
       CREATE INDEX IF NOT EXISTS results_mode_time ON results(mode,ended_at);
       CREATE TABLE IF NOT EXISTS profiles (uuid TEXT PRIMARY KEY, name TEXT NOT NULL, last_seen INTEGER NOT NULL);
@@ -190,47 +200,54 @@ export class StatsStore {
         id INTEGER PRIMARY KEY, at INTEGER NOT NULL, actor_uuid TEXT NOT NULL, actor_name TEXT NOT NULL, role TEXT NOT NULL,
         action TEXT NOT NULL, target TEXT, detail TEXT, ok INTEGER NOT NULL, error TEXT
       );
-      CREATE TABLE IF NOT EXISTS staff_roles (uuid TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS ingest_keys (server_id TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
-      `);
-      if (legacyRatings) this.db.exec(`INSERT INTO ratings SELECT season_at(last_rated_at),uuid,rating,rd,volatility,rated_campaigns,last_rated_at FROM ratings_v2;
+      CREATE TABLE IF NOT EXISTS staff_roles (uuid TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL, maps TEXT);
+      CREATE TABLE IF NOT EXISTS ingest_keys (id INTEGER PRIMARY KEY, server_id TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
+      `;
+      await this.db.exec(this.db.postgres ? schema.replace(/\bINTEGER\b/g, 'BIGINT').replace(/\bREAL\b/g, 'DOUBLE PRECISION').replace(/id BIGINT PRIMARY KEY/g, 'id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY') : schema);
+      if (legacyRatings) await this.db.exec(`INSERT INTO ratings SELECT season_at(last_rated_at),uuid,rating,rd,volatility,rated_campaigns,last_rated_at FROM ratings_v2;
         DROP TABLE ratings_v2;`);
-      if (!columns('rating_changes').includes('season_id')) this.db.exec(`ALTER TABLE rating_changes ADD COLUMN season_id TEXT NOT NULL DEFAULT '';
+      if (sqlite && !(await columns('rating_changes')).includes('season_id')) await this.db.exec(`ALTER TABLE rating_changes ADD COLUMN season_id TEXT NOT NULL DEFAULT '';
         UPDATE rating_changes SET season_id=season_at(rated_at);`);
       // v3 -> v4: voided results stay stored but leave every aggregate.
-      if (!columns('results').includes('voided_at')) this.db.exec('ALTER TABLE results ADD COLUMN voided_at INTEGER; ALTER TABLE results ADD COLUMN voided_by TEXT;');
+      if (sqlite && !(await columns('results')).includes('voided_at')) await this.db.exec('ALTER TABLE results ADD COLUMN voided_at INTEGER; ALTER TABLE results ADD COLUMN voided_by TEXT;');
       // v4 -> v5: workshop map access per builder (null = every map).
-      if (!columns('staff_roles').includes('maps')) this.db.exec('ALTER TABLE staff_roles ADD COLUMN maps TEXT;');
-      this.db.exec('PRAGMA user_version=5; COMMIT');
-    } catch (error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
+      if (sqlite && !(await columns('staff_roles')).includes('maps')) await this.db.exec('ALTER TABLE staff_roles ADD COLUMN maps TEXT;');
+      if (sqlite) {
+        if (!(await columns('ingest_keys')).includes('id')) await this.db.exec(`
+          ALTER TABLE ingest_keys RENAME TO ingest_keys_v5;
+          CREATE TABLE ingest_keys (id INTEGER PRIMARY KEY, server_id TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
+          INSERT INTO ingest_keys SELECT rowid,* FROM ingest_keys_v5;
+          DROP TABLE ingest_keys_v5;`);
+        await this.db.exec('PRAGMA user_version=6');
+      }
+    });
   }
-  close() { this.db.close(); }
-  ingest(input: unknown): { inserted: boolean; eventId: string } {
+  async close() { await this.db.close(); }
+  async ingest(input: unknown): Promise<{ inserted: boolean; eventId: string }> {
     const result = validateResult(input), payload = canonical(result), digest = createHash('sha256').update(payload).digest('hex');
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      const existing = this.db.prepare('SELECT digest FROM results WHERE server_id=? AND event_id=?').get(result.serverId, result.eventId) as { digest: string } | undefined;
+    return this.db.transaction(async () => {
+      const existing = await this.db.prepare('SELECT digest FROM results WHERE server_id=? AND event_id=?').get(result.serverId, result.eventId) as { digest: string } | undefined;
       if (existing) {
         if (existing.digest !== digest) throw new StatsError(409, 'Result ID already exists with different content');
-        this.db.exec('COMMIT'); return { inserted: false, eventId: result.eventId };
+        return { inserted: false, eventId: result.eventId };
       }
-      this.db.prepare('INSERT INTO results (server_id,event_id,kind,mode,campaign_id,ended_at,reason,winner,digest,payload) VALUES (?,?,?,?,?,?,?,?,?,?)').run(result.serverId, result.eventId, result.kind, result.modeId, result.campaignSessionId, Date.parse(result.endedAt), result.endReason, result.winner, digest, payload);
+      await this.db.prepare('INSERT INTO results (server_id,event_id,kind,mode,campaign_id,ended_at,reason,winner,digest,payload) VALUES (?,?,?,?,?,?,?,?,?,?)').run(result.serverId, result.eventId, result.kind, result.modeId, result.campaignSessionId, Date.parse(result.endedAt), result.endReason, result.winner, digest, payload);
       const participant = this.db.prepare('INSERT INTO participants VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
       // The mod sends the UUID as the name when it does not know the nickname: a real name always wins over a UUID-like one, regardless of order.
       const profile = this.db.prepare(`INSERT INTO profiles VALUES (?,?,?) ON CONFLICT(uuid) DO UPDATE SET
-        name=CASE WHEN uuid_like(excluded.name) AND NOT uuid_like(profiles.name) THEN profiles.name
-          WHEN excluded.last_seen>=profiles.last_seen OR uuid_like(profiles.name) THEN excluded.name ELSE profiles.name END,
-        last_seen=MAX(profiles.last_seen,excluded.last_seen)`);
+        name=CASE WHEN uuid_like(excluded.name)=1 AND uuid_like(profiles.name)=0 THEN profiles.name
+          WHEN excluded.last_seen>=profiles.last_seen OR uuid_like(profiles.name)=1 THEN excluded.name ELSE profiles.name END,
+        last_seen=greatest(profiles.last_seen,excluded.last_seen)`);
       const cls = this.db.prepare('INSERT INTO classes VALUES (?,?,?,?,?,?,?,?,?)');
       for (const p of result.participants) {
-        profile.run(p.uuid, p.name, Date.parse(result.endedAt));
-        participant.run(result.serverId, result.eventId, p.uuid, p.team, p.score, p.kills, p.deaths, p.captures, p.neutralizations, p.pointSeconds, p.playSeconds, p.suicides, p.teamKills, p.maxKillstreak);
-        for (const c of p.classes) cls.run(result.serverId, result.eventId, p.uuid, c.classId, c.variantId, c.timeSeconds, c.kills, c.deaths, c.pointSeconds);
+        await profile.run(p.uuid, p.name, Date.parse(result.endedAt));
+        await participant.run(result.serverId, result.eventId, p.uuid, p.team, p.score, p.kills, p.deaths, p.captures, p.neutralizations, p.pointSeconds, p.playSeconds, p.suicides, p.teamKills, p.maxKillstreak);
+        for (const c of p.classes) await cls.run(result.serverId, result.eventId, p.uuid, c.classId, c.variantId, c.timeSeconds, c.kills, c.deaths, c.pointSeconds);
       }
       // Only a fresh insert rates: outbox replays return above, so one campaign changes MMR at most once.
-      if (rated(result)) this.rate(result);
-      this.db.exec('COMMIT'); return { inserted: true, eventId: result.eventId };
-    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      if (rated(result)) await this.rate(result);
+      return { inserted: true, eventId: result.eventId };
+    });
   }
   /**
    * One Glicko-2 period per rated player: the whole opposing side as a composite opponent. Team NONE is unrated.
@@ -238,153 +255,154 @@ export class StatsStore {
    * ponytail: a late result rates only its own season; later seasons that already carried over from it are not recomputed
    * until an administrator voids/restores a rated result, which replays that season and every later one (rebuildRatings).
    */
-  private rate(result: Result) {
+  private async rate(result: Result) {
     const sides = { RED: result.participants.filter(p => p.team === 'RED'), BLUE: result.participants.filter(p => p.team === 'BLUE') };
     if (!sides.RED.length || !sides.BLUE.length) return;
     const ended = Date.parse(result.endedAt), season = seasonAt(ended), seasonNumber = Number(season.id.slice(1));
     const periods = (since: number) => Math.floor(Math.max(0, ended - since) / RATING_PERIOD_MS);
-    const load = this.db.prepare('SELECT rating,rd,volatility,rated_campaigns ratedCampaigns,last_rated_at lastRatedAt FROM ratings WHERE season_id=? AND uuid=?');
-    const carry = this.db.prepare(`SELECT rating,rd,volatility,CAST(substr(season_id,2) AS INTEGER) seasonNumber FROM ratings
-      WHERE uuid=? AND CAST(substr(season_id,2) AS INTEGER)<? ORDER BY seasonNumber DESC LIMIT 1`);
-    const before = new Map([...sides.RED, ...sides.BLUE].map(p => {
-      const row = load.get(season.id, p.uuid) as { rating: number; rd: number; volatility: number; ratedCampaigns: number; lastRatedAt: number } | undefined;
-      const previous = row ? undefined : carry.get(p.uuid, seasonNumber) as { rating: number; rd: number; volatility: number; seasonNumber: number } | undefined;
+    const load = this.db.prepare('SELECT rating,rd,volatility,rated_campaigns "ratedCampaigns",last_rated_at "lastRatedAt" FROM ratings WHERE season_id=? AND uuid=?');
+    const carry = this.db.prepare(`SELECT rating,rd,volatility,CAST(substr(season_id,2) AS INTEGER) "seasonNumber" FROM ratings
+      WHERE uuid=? AND CAST(substr(season_id,2) AS INTEGER)<? ORDER BY "seasonNumber" DESC LIMIT 1`);
+    const before = new Map(await Promise.all([...sides.RED, ...sides.BLUE].map(async p => {
+      const row = await load.get(season.id, p.uuid) as { rating: number; rd: number; volatility: number; ratedCampaigns: number; lastRatedAt: number } | undefined;
+      const previous = row ? undefined : await carry.get(p.uuid, seasonNumber) as { rating: number; rd: number; volatility: number; seasonNumber: number } | undefined;
       const rating = row ? inflate({ rating: row.rating, rd: row.rd, volatility: row.volatility }, periods(row.lastRatedAt))
         : previous ? inflate(softReset(previous, seasonNumber - previous.seasonNumber), periods(Date.parse(season.startsAt))) : initial();
-      return [p.uuid, { rating, campaigns: row?.ratedCampaigns ?? 0 }];
-    }));
+      return [p.uuid, { rating, campaigns: row?.ratedCampaigns ?? 0 }] as const;
+    })));
     const save = this.db.prepare(`INSERT INTO ratings (season_id,uuid,rating,rd,volatility,rated_campaigns,last_rated_at) VALUES (?,?,?,?,?,?,?)
       ON CONFLICT(season_id,uuid) DO UPDATE SET rating=excluded.rating,rd=excluded.rd,
-      volatility=excluded.volatility,rated_campaigns=excluded.rated_campaigns,last_rated_at=MAX(ratings.last_rated_at,excluded.last_rated_at)`);
+      volatility=excluded.volatility,rated_campaigns=excluded.rated_campaigns,last_rated_at=greatest(ratings.last_rated_at,excluded.last_rated_at)`);
     const change = this.db.prepare('INSERT INTO rating_changes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
     for (const team of ['RED', 'BLUE'] as const) {
       const opponent = composite(sides[team === 'RED' ? 'BLUE' : 'RED'].map(o => before.get(o.uuid)!.rating));
       const score = result.endReason === 'draw' ? 0.5 : result.winner === team ? 1 : 0;
       for (const p of sides[team]) {
         const { rating: from, campaigns } = before.get(p.uuid)!, to = update(from, [{ opponent, score }]);
-        save.run(season.id, p.uuid, to.rating, to.rd, to.volatility, campaigns + 1, ended);
-        change.run(result.serverId, result.eventId, p.uuid, RULES_VERSION, team, score, opponent.rating, opponent.rd,
+        await save.run(season.id, p.uuid, to.rating, to.rd, to.volatility, campaigns + 1, ended);
+        await change.run(result.serverId, result.eventId, p.uuid, RULES_VERSION, team, score, opponent.rating, opponent.rd,
           from.rating, from.rd, from.volatility, to.rating, to.rd, to.volatility, ended, season.id);
       }
     }
   }
   /** Deterministic replay of every non-voided rated campaign from `seasonId` on; earlier seasons (the carry-over source) stay untouched. Call inside a transaction. */
-  private rebuildRatings(season: Season) {
+  private async rebuildRatings(season: Season) {
     const number = Number(season.id.slice(1)), since = number === 1 ? Number.MIN_SAFE_INTEGER : Date.parse(season.startsAt);
-    this.db.prepare('DELETE FROM rating_changes WHERE CAST(substr(season_id,2) AS INTEGER)>=?').run(number);
-    this.db.prepare('DELETE FROM ratings WHERE CAST(substr(season_id,2) AS INTEGER)>=?').run(number);
-    const rows = this.db.prepare(`SELECT payload FROM results WHERE kind='campaign' AND mode='campaign' AND reason IN ('completed','draw') AND voided_at IS NULL AND ended_at>=?
+    await this.db.prepare('DELETE FROM rating_changes WHERE CAST(substr(season_id,2) AS INTEGER)>=?').run(number);
+    await this.db.prepare('DELETE FROM ratings WHERE CAST(substr(season_id,2) AS INTEGER)>=?').run(number);
+    const rows = await this.db.prepare(`SELECT payload FROM results WHERE kind='campaign' AND mode='campaign' AND reason IN ('completed','draw') AND voided_at IS NULL AND ended_at>=?
       ORDER BY ended_at,server_id,event_id`).all(since) as { payload: string }[];
-    for (const row of rows) this.rate(JSON.parse(row.payload));
+    for (const row of rows) await this.rate(JSON.parse(row.payload));
   }
-  setVoided(serverId: string, eventId: string, by: string | null): { rebuilt: string | null } {
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      const row = this.db.prepare('SELECT payload,voided_at FROM results WHERE server_id=? AND event_id=?').get(serverId, eventId) as { payload: string; voided_at: number | null } | undefined;
+  async setVoided(serverId: string, eventId: string, by: string | null) {
+    return this.db.transaction(async () => {
+      const row = await this.db.prepare('SELECT payload,voided_at FROM results WHERE server_id=? AND event_id=?').get(serverId, eventId) as { payload: string; voided_at: number | null } | undefined;
       if (!row) throw new StatsError(404, 'Result not found');
       if ((row.voided_at !== null) === (by !== null)) throw new StatsError(409, by ? 'Result is already voided' : 'Result is not voided');
-      this.db.prepare('UPDATE results SET voided_at=?,voided_by=? WHERE server_id=? AND event_id=?').run(by ? Date.now() : null, by, serverId, eventId);
+      await this.db.prepare('UPDATE results SET voided_at=?,voided_by=? WHERE server_id=? AND event_id=?').run(by ? Date.now() : null, by, serverId, eventId);
       // seasonAt generates seasons up to endedAt, which may be a few minutes ahead of now (and of the current season).
       const result: Result = JSON.parse(row.payload), season = rated(result) ? seasonAt(Date.parse(result.endedAt)) : null;
-      if (season) this.rebuildRatings(season);
-      this.db.exec('COMMIT'); return { rebuilt: season?.id ?? null, match: { kind: result.kind, mode: result.modeId, mapId: result.mapId, endedAt: Date.parse(result.endedAt) } };
-    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      if (season) await this.rebuildRatings(season);
+      return { rebuilt: season?.id ?? null, match: { kind: result.kind, mode: result.modeId, mapId: result.mapId, endedAt: Date.parse(result.endedAt) } };
+    });
   }
-  results(mode: string | null, page: number, limit = 25) {
+  async results(mode: string | null, page: number, limit = 25) {
     if (mode !== null && !MODES.includes(mode)) throw new StatsError(400, 'Unknown mode');
-    const rows = this.db.prepare(`SELECT server_id serverId,event_id eventId,kind,mode,ended_at endedAt,reason,winner,voided_at voidedAt,voided_by voidedBy,payload
-      FROM results WHERE (? IS NULL OR mode=?) ORDER BY ended_at DESC,server_id,event_id LIMIT ? OFFSET ?`).all(mode, mode, limit, (page - 1) * limit) as any[];
-    const { total } = this.db.prepare('SELECT COUNT(*) total FROM results WHERE (? IS NULL OR mode=?)').get(mode, mode) as { total: number };
+    const rows = await this.db.prepare(`SELECT server_id "serverId",event_id "eventId",kind,mode,ended_at "endedAt",reason,winner,voided_at "voidedAt",voided_by "voidedBy",payload
+      FROM results WHERE (CAST(? AS TEXT) IS NULL OR mode=?) ORDER BY ended_at DESC,server_id,event_id LIMIT ? OFFSET ?`).all(mode, mode, limit, (page - 1) * limit) as any[];
+    const { total } = await this.db.prepare('SELECT COUNT(*) total FROM results WHERE (CAST(? AS TEXT) IS NULL OR mode=?)').get(mode, mode) as { total: number };
     const known = this.db.prepare('SELECT name FROM profiles WHERE uuid=?');
-    return { total, page, limit, results: rows.map(({ payload, ...row }) => {
-      const result: Result = JSON.parse(payload), name = (p: Participant) => (known.get(p.uuid) as { name: string } | undefined)?.name ?? p.name;
+    return { total, page, limit, results: await Promise.all(rows.map(async ({ payload, ...row }) => {
+      const result: Result = JSON.parse(payload), name = async (p: Participant) => (await known.get(p.uuid) as { name: string } | undefined)?.name ?? p.name;
       const players = [...result.participants].sort((a, b) => b.score - a.score);
-      return { ...row, rated: rated(result), mapId: result.mapId, participants: players.length, winnerName: result.winnerUuid ? displayName(name(players.find(p => p.uuid === result.winnerUuid)!)) : null,
-        players: players.slice(0, 12).map(p => ({ uuid: p.uuid, name: displayName(name(p)), team: p.team })) };
-    }) };
+      return { ...row, rated: rated(result), mapId: result.mapId, participants: players.length, winnerName: result.winnerUuid ? displayName(await name(players.find(p => p.uuid === result.winnerUuid)!)) : null,
+        players: await Promise.all(players.slice(0, 12).map(async p => ({ uuid: p.uuid, name: displayName(await name(p)), team: p.team }))) };
+    })) };
   }
   /** Profiles whose stored name is a UUID (see ingest), among `uuids`. */
-  unnamed(uuids: string[]): string[] {
-    const row = this.db.prepare('SELECT 1 FROM profiles WHERE uuid=? AND uuid_like(name)');
-    return [...new Set(uuids)].filter(uuid => row.get(uuid));
+  async unnamed(uuids: string[]): Promise<string[]> {
+    const row = this.db.prepare('SELECT 1 FROM profiles WHERE uuid=? AND uuid_like(name)=1');
+    const missing: string[] = [];
+    for (const uuid of new Set(uuids)) if (await row.get(uuid)) missing.push(uuid);
+    return missing;
   }
   /** Stores a resolved nickname only over a UUID-like name, so a newer real name from ingest is never overwritten. */
-  rename(uuid: string, name: string) { this.db.prepare('UPDATE profiles SET name=? WHERE uuid=? AND uuid_like(name)').run(name, uuid); }
-  createIngestKey(serverId: string, label: string): string {
+  async rename(uuid: string, name: string) { await this.db.prepare('UPDATE profiles SET name=? WHERE uuid=? AND uuid_like(name)=1').run(name, uuid); }
+  async createIngestKey(serverId: string, label: string): Promise<string> {
     const key = randomBytes(32).toString('base64url');
-    this.db.prepare('INSERT INTO ingest_keys VALUES (?,?,?,?,NULL)').run(serverId, sha256(key).toString('hex'), label, Date.now());
+    await this.db.prepare('INSERT INTO ingest_keys (server_id,key_hash,label,created_at,revoked_at) VALUES (?,?,?,?,NULL)').run(serverId, sha256(key).toString('hex'), label, Date.now());
     return key;
   }
-  ingestKeys() { return this.db.prepare('SELECT rowid id,server_id serverId,label,created_at createdAt,revoked_at revokedAt FROM ingest_keys ORDER BY rowid DESC').all(); }
-  revokeIngestKey(id: number): boolean { return this.db.prepare('UPDATE ingest_keys SET revoked_at=? WHERE rowid=? AND revoked_at IS NULL').run(Date.now(), id).changes === 1; }
-  ingestKeyHashes(serverId: string): Buffer[] {
-    return (this.db.prepare('SELECT key_hash h FROM ingest_keys WHERE server_id=? AND revoked_at IS NULL').all(serverId) as { h: string }[]).map(r => Buffer.from(r.h, 'hex'));
+  async ingestKeys() { return await this.db.prepare('SELECT id,server_id "serverId",label,created_at "createdAt",revoked_at "revokedAt" FROM ingest_keys ORDER BY id DESC').all(); }
+  async revokeIngestKey(id: number): Promise<boolean> { return (await this.db.prepare('UPDATE ingest_keys SET revoked_at=? WHERE id=? AND revoked_at IS NULL').run(Date.now(), id)).changes === 1; }
+  async ingestKeyHashes(serverId: string): Promise<Buffer[]> {
+    return (await this.db.prepare('SELECT key_hash h FROM ingest_keys WHERE server_id=? AND revoked_at IS NULL').all(serverId) as { h: string }[]).map(r => Buffer.from(r.h, 'hex'));
   }
-  audit(entry: { actorUuid: string; actorName: string; role: string; action: string; target?: string | null; detail?: unknown; ok: boolean; error?: string | null }) {
+  async audit(entry: { actorUuid: string; actorName: string; role: string; action: string; target?: string | null; detail?: unknown; ok: boolean; error?: string | null }) {
     const json = entry.detail === undefined ? null : JSON.stringify(entry.detail);
     const detail = json !== null && json.length > 2048 ? `${json.slice(0, 2048)}…` : json;
-    this.db.prepare('INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error) VALUES (?,?,?,?,?,?,?,?,?)')
+    await this.db.prepare('INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error) VALUES (?,?,?,?,?,?,?,?,?)')
       .run(Date.now(), entry.actorUuid, entry.actorName, entry.role, entry.action, entry.target?.slice(0, 200) ?? null, detail, entry.ok ? 1 : 0, entry.error?.slice(0, 500) ?? null);
     // ponytail: keeps the newest 10 000 entries; export them elsewhere first if a longer history is ever required.
-    this.db.prepare('DELETE FROM admin_audit WHERE id <= (SELECT id FROM admin_audit ORDER BY id DESC LIMIT 1 OFFSET 10000)').run();
+    await this.db.prepare('DELETE FROM admin_audit WHERE id <= (SELECT id FROM admin_audit ORDER BY id DESC LIMIT 1 OFFSET 10000)').run();
   }
-  staff(): { uuid: string; name: string; role: string; grantedBy: string; grantedAt: number; maps: string[] | null }[] {
-    return (this.db.prepare('SELECT uuid,name,role,granted_by grantedBy,granted_at grantedAt,maps FROM staff_roles ORDER BY name COLLATE NOCASE,uuid').all() as any[])
+  async staff(): Promise<{ uuid: string; name: string; role: string; grantedBy: string; grantedAt: number; maps: string[] | null }[]> {
+    return (await this.db.prepare('SELECT uuid,name,role,granted_by "grantedBy",granted_at "grantedAt",maps FROM staff_roles ORDER BY lower(name),uuid').all() as any[])
       .map(({ maps, ...row }) => ({ ...row, maps: maps ? JSON.parse(maps) : null }));
   }
-  setStaff(uuid: string, name: string, role: string | null, by: string) {
-    if (role === null) this.db.prepare('DELETE FROM staff_roles WHERE uuid=?').run(uuid);
+  async setStaff(uuid: string, name: string, role: string | null, by: string) {
+    if (role === null) await this.db.prepare('DELETE FROM staff_roles WHERE uuid=?').run(uuid);
     // A fresh grant starts with every map; maps are set separately through setStaffMaps.
-    else this.db.prepare('INSERT INTO staff_roles (uuid,name,role,granted_by,granted_at) VALUES (?,?,?,?,?) ON CONFLICT(uuid) DO UPDATE SET name=excluded.name,role=excluded.role,granted_by=excluded.granted_by,granted_at=excluded.granted_at').run(uuid, name, role, by, Date.now());
+    else await this.db.prepare('INSERT INTO staff_roles (uuid,name,role,granted_by,granted_at) VALUES (?,?,?,?,?) ON CONFLICT(uuid) DO UPDATE SET name=excluded.name,role=excluded.role,granted_by=excluded.granted_by,granted_at=excluded.granted_at').run(uuid, name, role, by, Date.now());
   }
   /** `maps` null means every map; only meaningful for `builder` rows (checked by the caller). Returns false if `uuid` has no staff row. */
-  setStaffMaps(uuid: string, maps: string[] | null): boolean {
-    return this.db.prepare('UPDATE staff_roles SET maps=? WHERE uuid=?').run(maps ? JSON.stringify(maps) : null, uuid).changes === 1;
+  async setStaffMaps(uuid: string, maps: string[] | null): Promise<boolean> {
+    return (await this.db.prepare('UPDATE staff_roles SET maps=? WHERE uuid=?').run(maps ? JSON.stringify(maps) : null, uuid)).changes === 1;
   }
-  auditLog(limit = 200) {
-    return this.db.prepare('SELECT id,at,actor_uuid actorUuid,actor_name actorName,role,action,target,detail,ok,error FROM admin_audit ORDER BY id DESC LIMIT ?').all(limit);
+  async auditLog(limit = 200) {
+    return await this.db.prepare('SELECT id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error FROM admin_audit ORDER BY id DESC LIMIT ?').all(limit);
   }
-  leaderboard(query: Filters, uuid: string | null = null) {
+  async leaderboard(query: Filters, uuid: string | null = null) {
     // Campaign summaries contain the same players/counters: count combat metrics from MATCHES ONLY.
-    const where = `r.kind='match' AND r.voided_at IS NULL AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)`;
+    const where = `r.kind='match' AND r.voided_at IS NULL AND r.ended_at>=? AND r.ended_at<=? AND (CAST(? AS TEXT) IS NULL OR r.mode=?)`;
     const args = [query.since, query.until, query.mode, query.mode];
     // rank is numbered over the whole filtered aggregate BEFORE the uuid/page cut, so a player's rank matches the board.
-    const rows = this.db.prepare(`SELECT * FROM (SELECT *,ROW_NUMBER() OVER (ORDER BY ${SORTS[query.sort]} DESC,uuid ASC) "rank" FROM (
+    const rows = await this.db.prepare(`SELECT * FROM (SELECT *,ROW_NUMBER() OVER (ORDER BY ${SORTS[query.sort]} DESC,uuid ASC) "rank" FROM (
       SELECT p.uuid,pr.name,SUM(p.score) score,SUM(p.kills) kills,SUM(p.deaths) deaths,
-      SUM(p.captures) captures,SUM(p.neutralizations) neutralizations,SUM(p.point_seconds) pointSeconds,
-      SUM(p.play_seconds) playSeconds,SUM(p.suicides) suicides,SUM(p.team_kills) teamKills,MAX(p.max_streak) maxKillstreak,
+      SUM(p.captures) captures,SUM(p.neutralizations) neutralizations,SUM(p.point_seconds) "pointSeconds",
+      SUM(p.play_seconds) "playSeconds",SUM(p.suicides) suicides,SUM(p.team_kills) "teamKills",MAX(p.max_streak) "maxKillstreak",
       COUNT(*) matches,SUM(CASE WHEN r.reason='completed' AND (
-        (r.mode='deathmatch' AND json_extract(r.payload,'$.winnerUuid')=p.uuid) OR
+        (r.mode='deathmatch' AND ${this.db.postgres ? "(r.payload::jsonb->>'winnerUuid')" : "json_extract(r.payload,'$.winnerUuid')"}=p.uuid) OR
         (r.mode!='deathmatch' AND p.team!='NONE' AND r.winner=p.team)
       ) THEN 1 ELSE 0 END) wins,
-      ROUND(SUM(p.kills)*1.0/MAX(1,SUM(p.deaths)),3) kd,
-      MAX(rt.rating) rating,MAX(rt.rd) rd,MAX(rt.rated_campaigns) ratedCampaigns
+      ROUND(CAST(SUM(p.kills)*1.0/greatest(1,SUM(p.deaths)) AS NUMERIC),3) kd,
+      MAX(rt.rating) rating,MAX(rt.rd) rd,MAX(rt.rated_campaigns) "ratedCampaigns"
       FROM participants p JOIN results r USING(server_id,event_id) JOIN profiles pr ON pr.uuid=p.uuid LEFT JOIN ratings rt ON rt.season_id=? AND rt.uuid=p.uuid
-      WHERE ${where} GROUP BY p.uuid)) WHERE (? IS NULL OR uuid=?) ORDER BY "rank" LIMIT ? OFFSET ?`)
+      WHERE ${where} GROUP BY p.uuid,pr.name) aggregate_rows) ranked_rows WHERE (CAST(? AS TEXT) IS NULL OR uuid=?) ORDER BY "rank" LIMIT ? OFFSET ?`)
       .all(query.mmrSeason, ...args, uuid, uuid, query.limit, (query.page - 1) * query.limit) as any[];
-    const total = this.db.prepare(`SELECT COUNT(DISTINCT p.uuid) total FROM participants p JOIN results r USING(server_id,event_id) WHERE ${where}`).get(...args) as { total: number };
+    const total = await this.db.prepare(`SELECT COUNT(DISTINCT p.uuid) total FROM participants p JOIN results r USING(server_id,event_id) WHERE ${where}`).get(...args) as { total: number };
     return { schemaVersion: 1, checkedAt: new Date().toISOString(), mode: query.mode, season: query.season, mmrSeason: query.mmrSeason, page: query.page, limit: query.limit, total: total.total, ratingStatus: RULES_VERSION,
       players: rows.map(({ rating, rd, ratedCampaigns, ...row }) => ({ ...row, mmr: mmr({ rating, rd, ratedCampaigns }) })) };
   }
-  player(uuid: string, query: Filters) {
+  async player(uuid: string, query: Filters) {
     if (!UUID.test(uuid)) throw new StatsError(400, 'Invalid player UUID');
-    const profile = this.db.prepare('SELECT uuid,name,last_seen lastSeen FROM profiles WHERE uuid=?').get(uuid);
+    const profile = await this.db.prepare('SELECT uuid,name,last_seen "lastSeen" FROM profiles WHERE uuid=?').get(uuid);
     if (!profile) throw new StatsError(404, 'No recorded gameplay for this player');
-    const totals = this.leaderboard({ ...query, page: 1, limit: 1 }, uuid).players[0] || null;
-    const history = this.db.prepare(`SELECT r.event_id eventId,r.server_id serverId,r.kind,r.mode,r.campaign_id campaignSessionId,r.ended_at endedAt,r.reason,r.winner,json_extract(r.payload,'$.winnerUuid') winnerUuid,p.team,p.score,p.kills,p.deaths
-      FROM participants p JOIN results r USING(server_id,event_id) WHERE p.uuid=? AND r.voided_at IS NULL AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)
+    const totals = (await this.leaderboard({ ...query, page: 1, limit: 1 }, uuid)).players[0] || null;
+    const history = await this.db.prepare(`SELECT r.event_id "eventId",r.server_id "serverId",r.kind,r.mode,r.campaign_id "campaignSessionId",r.ended_at "endedAt",r.reason,r.winner,${this.db.postgres ? "(r.payload::jsonb->>'winnerUuid')" : "json_extract(r.payload,'$.winnerUuid')"} "winnerUuid",p.team,p.score,p.kills,p.deaths
+      FROM participants p JOIN results r USING(server_id,event_id) WHERE p.uuid=? AND r.voided_at IS NULL AND r.ended_at>=? AND r.ended_at<=? AND (CAST(? AS TEXT) IS NULL OR r.mode=?)
       ORDER BY r.ended_at DESC,r.server_id,r.event_id LIMIT ? OFFSET ?`)
       .all(uuid, query.since, query.until, query.mode, query.mode, query.limit, (query.page - 1) * query.limit);
-    const classes = this.db.prepare(`SELECT c.class_id classId,c.variant_id variantId,SUM(c.time_seconds) timeSeconds,SUM(c.kills) kills,SUM(c.deaths) deaths,SUM(c.point_seconds) pointSeconds
-      FROM classes c JOIN results r USING(server_id,event_id) WHERE r.kind='match' AND r.voided_at IS NULL AND c.uuid=? AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)
-      GROUP BY c.class_id,c.variant_id ORDER BY timeSeconds DESC,c.class_id,c.variant_id`).all(uuid, query.since, query.until, query.mode, query.mode);
-    const campaigns = this.db.prepare(`SELECT COUNT(*) completed,COALESCE(SUM(CASE WHEN r.winner=p.team AND p.team!='NONE' THEN 1 ELSE 0 END),0) wins
+    const classes = await this.db.prepare(`SELECT c.class_id "classId",c.variant_id "variantId",SUM(c.time_seconds) "timeSeconds",SUM(c.kills) kills,SUM(c.deaths) deaths,SUM(c.point_seconds) "pointSeconds"
+      FROM classes c JOIN results r USING(server_id,event_id) WHERE r.kind='match' AND r.voided_at IS NULL AND c.uuid=? AND r.ended_at>=? AND r.ended_at<=? AND (CAST(? AS TEXT) IS NULL OR r.mode=?)
+      GROUP BY c.class_id,c.variant_id ORDER BY "timeSeconds" DESC,c.class_id,c.variant_id`).all(uuid, query.since, query.until, query.mode, query.mode);
+    const campaigns = await this.db.prepare(`SELECT COUNT(*) completed,COALESCE(SUM(CASE WHEN r.winner=p.team AND p.team!='NONE' THEN 1 ELSE 0 END),0) wins
       FROM participants p JOIN results r USING(server_id,event_id) WHERE r.kind='campaign' AND r.voided_at IS NULL AND r.reason IN ('completed','draw') AND p.uuid=?
-      AND r.ended_at>=? AND r.ended_at<=? AND (? IS NULL OR r.mode=?)`).get(uuid, query.since, query.until, query.mode, query.mode);
+      AND r.ended_at>=? AND r.ended_at<=? AND (CAST(? AS TEXT) IS NULL OR r.mode=?)`).get(uuid, query.since, query.until, query.mode, query.mode);
     // mmr and ratingHistory belong to mmrSeason (selected or current); history is also cut to the requested window (Ranked campaigns only).
-    const rating = this.db.prepare('SELECT rating,rd,rated_campaigns ratedCampaigns FROM ratings WHERE season_id=? AND uuid=?').get(query.mmrSeason, uuid) as any;
-    const ratingHistory = this.db.prepare(`SELECT event_id campaignSessionId,rated_at ratedAt,team,score,ROUND(before_rating) before,ROUND(after_rating) after,ROUND(after_rd) rd
-      FROM rating_changes WHERE uuid=? AND season_id=? AND rated_at>=? AND rated_at<=? AND (? IS NULL OR ?='campaign') ORDER BY rated_at DESC,event_id LIMIT 20`)
+    const rating = await this.db.prepare('SELECT rating,rd,rated_campaigns "ratedCampaigns" FROM ratings WHERE season_id=? AND uuid=?').get(query.mmrSeason, uuid) as any;
+    const ratingHistory = await this.db.prepare(`SELECT event_id "campaignSessionId",rated_at "ratedAt",team,score,ROUND(before_rating) before,ROUND(after_rating) after,ROUND(after_rd) rd
+      FROM rating_changes WHERE uuid=? AND season_id=? AND rated_at>=? AND rated_at<=? AND (CAST(? AS TEXT) IS NULL OR ?='campaign') ORDER BY rated_at DESC,event_id LIMIT 20`)
       .all(uuid, query.mmrSeason, query.since, query.until, query.mode, query.mode);
     return { schemaVersion: 1, checkedAt: new Date().toISOString(), season: query.season, mmrSeason: query.mmrSeason, profile, totals, classes, campaigns, history, page: query.page, limit: query.limit,
       mmr: rating ? mmr(rating) : null, ratingHistory, ratingStatus: RULES_VERSION };
@@ -403,12 +421,12 @@ const missed = new Map<string, number>();
  */
 export async function resolveNames(store: StatsStore, uuids: string[], budgetMs = 1500, fetcher: typeof fetch = fetch): Promise<Map<string, string>> {
   const base = (process.env.DRASL_URL || 'https://skins.blockfield.pro').replace(/\/+$/, ''), now = Date.now(), found = new Map<string, string>();
-  const pending = store.unnamed(uuids).filter(uuid => (missed.get(uuid) ?? 0) < now).slice(0, 50).map(uuid => {
+  const pending = (await store.unnamed(uuids)).filter(uuid => (missed.get(uuid) ?? 0) < now).slice(0, 50).map(uuid => {
     let lookup = lookups.get(uuid);
     if (!lookup) {
       lookup = fetcher(`${base}/session/minecraft/profile/${uuid.replaceAll('-', '')}`, { signal: AbortSignal.timeout(10_000) })
         .then(r => (r.ok ? r.json() : null)).then(data => (typeof data?.name === 'string' && /^[A-Za-z0-9_]{3,16}$/.test(data.name) ? data.name : null), () => null)
-        .then(name => { if (name) store.rename(uuid, name); else missed.set(uuid, Date.now() + 600_000); return name; })
+        .then(async name => { if (name) await store.rename(uuid, name); else missed.set(uuid, Date.now() + 600_000); return name; })
         .catch(() => null).finally(() => lookups.delete(uuid));
       lookups.set(uuid, lookup);
     }
@@ -421,12 +439,14 @@ export async function resolveNames(store: StatsStore, uuids: string[], budgetMs 
   return new Map(found);
 }
 
-let singleton: StatsStore | undefined;
-export function statsStore(): StatsStore {
+let singleton: Promise<StatsStore> | undefined;
+export function statsStore(): Promise<StatsStore> {
   if (singleton) return singleton;
-  const path = process.env.BLOCKFIELD_STATS_DB;
+  const url = process.env.BLOCKFIELD_DATABASE_URL;
+  if (url && !/^postgres(?:ql)?:\/\//.test(url)) throw new StatsError(503, 'BLOCKFIELD_DATABASE_URL must be a PostgreSQL URL');
+  const path = url || process.env.BLOCKFIELD_STATS_DB;
   if (!path) throw new StatsError(503, 'Statistics storage is not configured');
-  return singleton = new StatsStore(path);
+  return singleton = StatsStore.open(path).catch(error => { singleton = undefined; throw error; });
 }
 export function ingestKeys(): Record<string, string[]> {
   try {
@@ -444,13 +464,13 @@ export function ingestKeys(): Record<string, string[]> {
 const sha256 = (text: string) => createHash('sha256').update(text).digest();
 const rated = (result: Result) => result.kind === 'campaign' && result.modeId === 'campaign' && ['completed', 'draw'].includes(result.endReason);
 /** Env keys or non-revoked DB keys (created in /admin); both compared as SHA-256 digests in constant time. */
-function authorized(request: Request, keys: Record<string, string[]>, store: () => StatsStore): string {
+async function authorized(request: Request, keys: Record<string, string[]>, store: () => StatsStore | Promise<StatsStore>): Promise<string> {
   const server = request.headers.get('X-Blockfield-Server-Id') || '', header = request.headers.get('Authorization') || '';
   if (!UUID.test(server)) throw new StatsError(401, 'Invalid producer credentials');
   const provided = sha256(header), bare = sha256(header.startsWith('Bearer ') ? header.slice(7) : '');
   let match = false;
   for (const token of Object.hasOwn(keys, server) ? keys[server] : []) match = timingSafeEqual(provided, sha256(`Bearer ${token}`)) || match;
-  if (header.startsWith('Bearer ')) for (const hash of store().ingestKeyHashes(server)) match = timingSafeEqual(bare, hash) || match;
+  if (header.startsWith('Bearer ')) for (const hash of (await (await store()).ingestKeyHashes(server))) match = timingSafeEqual(bare, hash) || match;
   if (!match) throw new StatsError(401, 'Invalid producer credentials');
   return server;
 }
@@ -477,24 +497,24 @@ export async function handleStatsRequest(request: Request, dependencies?: { stor
     if (path === '/api/stats/results') {
       if (request.method !== 'POST') return Response.json({ error: 'Method not allowed' }, { status: 405, headers: { ...headers, Allow: 'POST' } });
       // Authenticate before reading any request body.
-      const server = authorized(request, dependencies?.keys ?? ingestKeys(), () => dependencies?.store ?? statsStore()), input = validateResult(await boundedJson(request));
+      const server = await authorized(request, dependencies?.keys ?? ingestKeys(), async () => dependencies?.store ?? (await statsStore())), input = validateResult(await boundedJson(request));
       if (input.serverId !== server) throw new StatsError(403, 'Producer cannot submit another server identity');
-      const result = (dependencies?.store ?? statsStore()).ingest(input);
+      const result = await (dependencies?.store ?? (await statsStore())).ingest(input);
       return Response.json(result, { status: result.inserted ? 201 : 200, headers });
     }
     if (request.method !== 'GET') return Response.json({ error: 'Method not allowed' }, { status: 405, headers: { ...headers, Allow: 'GET' } });
     if (path === '/api/stats/seasons') { const list = seasons(); return Response.json({ schemaVersion: 1, current: list.at(-1)?.id ?? null, seasons: list }, { headers }); }
     const query = filters(url.searchParams);
-    const store = dependencies?.store ?? statsStore();
+    const store = dependencies?.store ?? (await statsStore());
     // Clients (site, launcher) show `name` as is, so a UUID-like name is resolved or replaced here.
     const named = async <T extends { uuid: string; name: string }>(rows: T[]) => {
       const names = await resolveNames(store, rows.filter(r => uuidLike(r.name)).map(r => r.uuid));
       for (const row of rows) row.name = displayName(names.get(row.uuid) ?? row.name);
     };
-    if (path === '/api/stats/leaderboard') { const board = store.leaderboard(query); await named(board.players); return Response.json(board, { headers }); }
+    if (path === '/api/stats/leaderboard') { const board = await store.leaderboard(query); await named(board.players); return Response.json(board, { headers }); }
     const player = /^\/api\/stats\/players\/([^/]+)$/.exec(path);
     if (player) {
-      const data = store.player(player[1], query) as any;
+      const data = await store.player(player[1], query) as any;
       await named([data.profile, ...(data.totals ? [data.totals] : [])]);
       return Response.json(data, { headers });
     }

@@ -111,3 +111,30 @@ Late results: a campaign that ended in an earlier season but arrives later updat
 Local review: submit the test fixture with a configured producer key, replay it, verify exactly one battle; submit a campaign summary, verify counters are unchanged; stop Minecraft, refresh leaderboard/account, and verify history still loads. Invalid/missing DB must show unavailable, not zero stats. Check layout at 360px and desktop, keyboard navigation, long display names and logout during a slow request.
 
 Not implemented by this site PR: a legacy CamelCase-log importer (historical mode/time/class IDs require an explicit mapping), recomputing later seasons after late results, class-filtered leaderboard, and large-dataset load testing. Existing log files are never silently reinterpreted or rewritten.
+
+## PostgreSQL and SQLite compatibility (schema 6)
+
+Set `BLOCKFIELD_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DATABASE` for PostgreSQL.
+Without it, `BLOCKFIELD_STATS_DB=/absolute/path/blockfield.sqlite` retains SQLite support.
+An unavailable or invalid PostgreSQL configuration returns an error; it never silently falls back to a different SQLite database.
+Both engines use the same validation, queries, ratings and admin roles. Storage methods and `StatsStore.open()` are asynchronous.
+PostgreSQL uses `pg`, parameterized queries, a pool and one connection per transaction. Ingestion and rating rebuilds take a transaction-level advisory lock across site replicas.
+SQLite serializes connection access so an asynchronous request cannot observe another request's uncommitted writes.
+Schema 6 gives ingestion keys explicit IDs and preserves existing SQLite row IDs when upgrading.
+
+### Migration from SQLite
+
+1. Build/test the new site before the cutover. Keep the existing SQLite volume and record the previous image and environment.
+2. Pause **site writes** for the final backup/copy. Game servers can continue queueing finalized results in their outboxes; do not stop the game server for this migration.
+3. Take a consistent SQLite backup (Node's `node:sqlite` `backup()` or SQLite backup tooling), including every committed WAL transaction. Never copy only a live `.sqlite` file.
+4. From this repository, with the target URL set in the environment, run:
+   ```sh
+   node --experimental-strip-types scripts/migrate-stats.mjs /absolute/path/backup.sqlite
+   ```
+   Use a backup copy: opening it upgrades its schema. The command requires an empty PostgreSQL target, copies all nine data tables, verifies row counts/content digests before committing, and preserves audit/key IDs. It copies existing ratings exactly rather than replaying them.
+5. Set `BLOCKFIELD_DATABASE_URL`, preserving all other environment settings, especially `BLOCKFIELD_OWNER_UUIDS`, RCON and admin mount paths. Deploy the new site, check statistics and owner access, and let the producer replay its queue.
+
+Keep the pre-cutover SQLite backup for recovery. SQLite is an alternative backend, **not a live replica**: switching back after PostgreSQL has accepted writes requires transferring those changes first. Before any new PostgreSQL writes, the previous image/environment and original SQLite volume remain a rollback option.
+Back up PostgreSQL with `pg_dump` and retain the SQLite snapshot independently.
+
+Tests: `npm test` covers SQLite. Set `BLOCKFIELD_TEST_DATABASE_URL` to a PostgreSQL database where the test user may create schemas, then run `npm run test:postgres`. Tests create isolated random schemas and remove only those schemas; migration/reopen fixtures still exercise legacy SQLite files. CI runs both engines.

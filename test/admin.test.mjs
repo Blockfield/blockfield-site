@@ -9,7 +9,7 @@ import { StatsStore } from '../src/lib/stats.ts';
 const OWNER = 'e10438e4797b49718cfecec6a8fa171b', ADMIN = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', MOD = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', OTHER = 'cccccccccccccccccccccccccccccccc';
 const status = (error) => error instanceof Response ? error.status : assert.fail(`expected Response, got ${error}`);
 const temp = (t) => { const dir = mkdtempSync(join(tmpdir(), 'bf-admin-')); t.after(() => rmSync(dir, { recursive: true, force: true })); return dir; };
-const store = (t) => { const s = new StatsStore(':memory:'); t.after(() => s.close()); return s; };
+import { database as store } from './storage.mjs';
 
 test('permission map: roles grow strictly, unknown/no role has nothing', () => {
   assert.equal(can('builder', 'view'), true); assert.equal(can('builder', 'moderate'), false);
@@ -19,15 +19,15 @@ test('permission map: roles grow strictly, unknown/no role has nothing', () => {
   assert.equal(can(null, 'view'), false); assert.equal(can('root', 'view'), false);
 });
 
-test('bootstrap fails closed: no env and no rows means nobody; owners come only from env', t => {
-  const s = store(t);
+test('bootstrap fails closed: no env and no rows means nobody; owners come only from env', async t => {
+  const s = await store(t);
   assert.equal(owners(undefined).size, 0); assert.equal(owners('').size, 0);
-  assert.equal(roleOf(OWNER, s, owners(undefined)), null);
+  assert.equal(await roleOf(OWNER, s, owners(undefined)), null);
   assert.deepEqual([...owners(`e10438e4-797b-4971-8cfe-cec6a8fa171b, junk,${ADMIN.toUpperCase()}`)], [OWNER, ADMIN]);
-  assert.equal(roleOf(OWNER, s, owners(OWNER)), 'owner');
-  s.setStaff(MOD, 'Mod', 'moderator', 'x'); s.setStaff(OTHER, 'Evil', 'owner', 'x');
-  assert.equal(roleOf(MOD, s, new Set()), 'moderator');
-  assert.equal(roleOf(OTHER, s, new Set()), null, 'a stored owner row is not an owner');
+  assert.equal(await roleOf(OWNER, s, owners(OWNER)), 'owner');
+  await s.setStaff(MOD, 'Mod', 'moderator', 'x'); await s.setStaff(OTHER, 'Evil', 'owner', 'x');
+  assert.equal(await roleOf(MOD, s, new Set()), 'moderator');
+  assert.equal(await roleOf(OTHER, s, new Set()), null, 'a stored owner row is not an owner');
   assert.equal(playerId('E10438E4-797B-4971-8CFE-CEC6A8FA171B'), OWNER); assert.equal(playerId('nope'), null);
 });
 
@@ -142,8 +142,8 @@ test('API: role gate, audit of success and refusal, members request on role chan
   t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
   Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' });
   delete process.env.BLOCKFIELD_RCON_HOST;
-  const s = store(t);
-  s.setStaff(ADMIN, 'Adm', 'admin', 'seed');
+  const s = await store(t);
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed');
   const call = async (as, method, path, body) => {
     process.env.BLOCKFIELD_ADMIN_DEV_USER = as;
     const url = new URL(`http://site/api/admin/${path}`);
@@ -213,7 +213,7 @@ test('review: non-staff are refused before the body is read and never audited; R
   const saved = { ...process.env };
   t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
   Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test', BLOCKFIELD_RCON_HOST: '127.0.0.1', BLOCKFIELD_RCON_PORT: '1', BLOCKFIELD_RCON_PASSWORD: 'x' });
-  const s = store(t);
+  const s = await store(t);
   let read = false;
   const call = (as, method, path, body) => {
     process.env.BLOCKFIELD_ADMIN_DEV_USER = as;
@@ -223,13 +223,13 @@ test('review: non-staff are refused before the body is read and never audited; R
     return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, s).then(r => r, e => e);
   };
   assert.equal((await call(`${OTHER}:Nobody`, 'PUT', 'settings', { expectedRevision: 0, x: 'y'.repeat(60000) })).status, 403);
-  assert.equal(read, false); assert.equal(s.auditLog().length, 0);
+  assert.equal(read, false); assert.equal((await s.auditLog()).length, 0);
   const failed = await handleAdmin((() => { process.env.BLOCKFIELD_ADMIN_DEV_USER = `${OWNER}:Nether`; const url = new URL('http://site/api/admin/rcon');
     return { request: new Request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'list' }) }), url, cookies: { get: () => undefined } }; })(), 'rcon', s).then(r => r, e => e);
   assert.equal(failed.status, 502);
   const text = (await failed.json()).error;
   assert.equal(text, 'Игровой сервер не отвечает.'); assert.ok(!text.includes('127.0.0.1'));
-  assert.match(s.auditLog()[0].error, /ECONNREFUSED/);
+  assert.match((await s.auditLog())[0].error, /ECONNREFUSED/);
 });
 
 test('owner row falls back to the last known profile name, the signed-in owner name, then «Неизвестный игрок», when Drasl is down', async t => {
@@ -239,8 +239,8 @@ test('owner row falls back to the last known profile name, the signed-in owner n
   Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: `${OWNER},${second},${third}`, NODE_ENV: 'test', BLOCKFIELD_ADMIN_DEV_USER: `${second}:Second`, BLOCKFIELD_ADMIN_DIR: temp(t) });
   const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
   globalThis.fetch = async () => { throw new Error('offline'); };
-  const s = store(t);
-  s.db.prepare('INSERT INTO profiles VALUES (?,?,?)').run('e10438e4-797b-4971-8cfe-cec6a8fa171b', 'Nether', 1);
+  const s = await store(t);
+  await s.db.prepare('INSERT INTO profiles VALUES (?,?,?)').run('e10438e4-797b-4971-8cfe-cec6a8fa171b', 'Nether', 1);
   const url = new URL('http://site/api/admin/staff');
   const response = await handleAdmin({ request: new Request(url), url, cookies: { get: () => undefined } }, 'staff', s);
   assert.deepEqual((await response.json()).owners, [{ uuid: OWNER, name: 'Nether' }, { uuid: second, name: 'Second' }, { uuid: third, name: 'Неизвестный игрок' }]);
@@ -262,8 +262,8 @@ test('POST staff/maps: only a builder row accepts a map list, ids must be known 
   const saved = { ...process.env };
   t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
   Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test', BLOCKFIELD_ADMIN_DEV_USER: `${OWNER}:Nether` });
-  const s = store(t);
-  s.setStaff(OTHER, 'Bob', 'builder', 'seed'); s.setStaff(MOD, 'Moddy', 'moderator', 'seed');
+  const s = await store(t);
+  await s.setStaff(OTHER, 'Bob', 'builder', 'seed'); await s.setStaff(MOD, 'Moddy', 'moderator', 'seed');
   const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
   globalThis.fetch = async () => new Response('', { status: 404 });
   const call = (path, body) => { const url = new URL(`http://site/api/admin/${path}`); return handleAdmin({ request: new Request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), url, cookies: { get: () => undefined } }, path, s).then(r => r, e => e); };
@@ -272,14 +272,14 @@ test('POST staff/maps: only a builder row accepts a map list, ids must be known 
   assert.equal((await call('staff/maps', { uuid: OTHER, maps: ['fields', 'fields'] })).status, 400, 'duplicates rejected');
   const ok = await call('staff/maps', { uuid: OTHER, maps: ['fields', 'konstaxa'] });
   assert.equal(ok.status, 200);
-  assert.deepEqual(s.staff().find(row => row.uuid === OTHER).maps, ['fields', 'konstaxa']);
+  assert.deepEqual((await s.staff()).find(row => row.uuid === OTHER).maps, ['fields', 'konstaxa']);
   // [] is a real, distinct value: the builder keeps a workshop account but has nothing to edit.
   const none = await call('staff/maps', { uuid: OTHER, maps: [] });
   assert.equal(none.status, 200);
-  assert.deepEqual(s.staff().find(row => row.uuid === OTHER).maps, []);
+  assert.deepEqual((await s.staff()).find(row => row.uuid === OTHER).maps, []);
   const cleared = await call('staff/maps', { uuid: OTHER, maps: null });
   assert.equal(cleared.status, 200);
-  assert.equal(s.staff().find(row => row.uuid === OTHER).maps, null);
+  assert.equal((await s.staff()).find(row => row.uuid === OTHER).maps, null);
 });
 
 test('review: stop-room without RCON configured fails fast, before querying rooms', async t => {
@@ -287,7 +287,7 @@ test('review: stop-room without RCON configured fails fast, before querying room
   t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
   Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test', BLOCKFIELD_ADMIN_DEV_USER: `${OWNER}:Nether`, BLOCKFIELD_SERVER_HOST: '10.255.255.1', BLOCKFIELD_LOBBY_HOST: '10.255.255.1' });
   delete process.env.BLOCKFIELD_RCON_HOST; delete process.env.BLOCKFIELD_GATE_FILE;
-  const s = store(t), url = new URL('http://site/api/admin/rcon'), started = Date.now();
+  const s = await store(t), url = new URL('http://site/api/admin/rcon'), started = Date.now();
   const request = new Request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'stop-room', roomId: '0f8e0c3a-1b2c-4d5e-8f90-123456789abc', outcome: 'draw' }) });
   const response = await handleAdmin({ request, url, cookies: { get: () => undefined } }, 'rcon', s).then(r => r, e => e);
   assert.equal(response.status, 503); assert.ok(Date.now() - started < 1000);

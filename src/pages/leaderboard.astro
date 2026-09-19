@@ -2,7 +2,7 @@
 import Community from '../layouts/Community.astro';
 import { statsStore, filters, seasons, StatsError, resolveNames, displayName, uuidLike } from '../lib/stats';
 import { resolveSkins } from '../lib/skins';
-let board: ReturnType<ReturnType<typeof statsStore>['leaderboard']> | null = null;
+let board: Awaited<ReturnType<Awaited<ReturnType<typeof statsStore>>['leaderboard']>> | null = null;
 let error = '';
 let skins = new Map<string, { url: string; slim: boolean }>();
 const started = seasons(), current = started.at(-1);
@@ -11,8 +11,8 @@ const seasonName = (id?: string) => started.find(s => s.id === id)?.name ?? 'Ð¡Ð
 const params = new URLSearchParams(Astro.url.searchParams);
 if (started.some(s => s.id === params.get('period'))) { params.set('season', params.get('period')!); params.delete('period'); }
 try {
-  board = statsStore().leaderboard(filters(params));
-  const names = await resolveNames(statsStore(), board.players.filter((p: any) => uuidLike(p.name)).map((p: any) => p.uuid));
+  board = await (await statsStore()).leaderboard(filters(params));
+  const names = await resolveNames(await statsStore(), board.players.filter((p: any) => uuidLike(p.name)).map((p: any) => p.uuid));
   for (const p of board.players as any[]) p.name = displayName(names.get(p.uuid) ?? p.name);
   skins = await resolveSkins(board.players.map((p: any) => p.uuid));
 }

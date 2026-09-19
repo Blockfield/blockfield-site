@@ -36,9 +36,9 @@ export function owners(env = process.env.BLOCKFIELD_OWNER_UUIDS): Set<string> {
   return new Set((env ?? '').split(',').map(playerId).filter((id): id is string => !!id));
 }
 /** Owners come only from the environment; anyone else needs a stored grant. No env and no rows = nobody. */
-export function roleOf(uuid: string, store: StatsStore, ownerIds = owners()): Role | null {
+export async function roleOf(uuid: string, store: StatsStore, ownerIds = owners()): Promise<Role | null> {
   if (ownerIds.has(uuid)) return 'owner';
-  const role = store.staff().find(s => s.uuid === uuid)?.role;
+  const role = (await store.staff()).find(s => s.uuid === uuid)?.role;
   return role === 'builder' || role === 'moderator' || role === 'admin' ? role : null;
 }
 
@@ -58,20 +58,20 @@ export function devUser(env = process.env): { uuid: string; name: string } | nul
 async function currentActor(context: APIContext, store: StatsStore): Promise<Actor> {
   const dev = devUser();
   const who = dev ?? (({ uuid, username }) => ({ uuid: playerId(uuid) ?? '', name: String(username) }))(account(await drasl('/user', { token: token(context.cookies) })));
-  return { ...who, role: who.uuid ? roleOf(who.uuid, store) : null };
+  return { ...who, role: who.uuid ? (await roleOf(who.uuid, store)) : null };
 }
 
 /** For the site header (SSR, no client round trip): the signed-in player's name and whether `/admin` would let them in. Never throws. */
 export async function siteIdentity(cookies: Pick<AstroCookies, 'get'>): Promise<{ name: string; hasAdminAccess: boolean } | null> {
   const dev = devUser();
-  if (dev) return { name: dev.name, hasAdminAccess: roleOf(dev.uuid, statsStore()) !== null };
+  if (dev) return { name: dev.name, hasAdminAccess: (await roleOf(dev.uuid, await statsStore())) !== null };
   const value = cookies.get(session)?.value;
   if (!value) return null;
   try {
     const { username, uuid } = account(await drasl('/user', { token: value }));
     if (!username) return null;
     const id = playerId(uuid);
-    return { name: String(username), hasAdminAccess: id !== null && roleOf(id, statsStore()) !== null };
+    return { name: String(username), hasAdminAccess: id !== null && (await roleOf(id, await statsStore())) !== null };
   } catch { return null; }
 }
 
@@ -261,9 +261,9 @@ async function lookupName(name: unknown): Promise<{ uuid: string; name: string }
 }
 const ownerNames = new Map<string, string>();
 /** Last name seen in match results; used when Drasl cannot be reached. */
-function knownName(store: StatsStore, uuid: string): string | null {
+async function knownName(store: StatsStore, uuid: string): Promise<string | null> {
   const dashed = uuid.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
-  const row = store.db.prepare('SELECT name FROM profiles WHERE uuid=?').get(dashed) as { name: string } | undefined;
+  const row = await store.db.prepare('SELECT name FROM profiles WHERE uuid=?').get(dashed) as { name: string } | undefined;
   return row && nickname.test(row.name) ? row.name : null;
 }
 async function ownerName(uuid: string): Promise<string> {
@@ -276,8 +276,8 @@ async function ownerName(uuid: string): Promise<string> {
 }
 async function syncWorkshop(store: StatsStore, actor: Actor, resolve = ownerName) {
   const names = new Map<string, string>();
-  for (const uuid of owners()) names.set(uuid, await resolve(uuid).catch(error => knownName(store, uuid) ?? Promise.reject(error)));
-  const members = workshopMembers(store.staff(), names);
+  for (const uuid of owners()) names.set(uuid, await resolve(uuid).catch(async error => (await knownName(store, uuid)) ?? Promise.reject(error)));
+  const members = workshopMembers(await store.staff(), names);
   const id = writeRequest(inboxDir(), actor, { kind: 'members', members });
   return { id, members };
 }
@@ -286,8 +286,8 @@ async function syncWorkshop(store: StatsStore, actor: Actor, resolve = ownerName
  * Players banned through the site: the latest successful ban/pardon per nickname in the audit log.
  * ponytail: bans made in-game or older than the newest 10 000 audit rows are not listed (RCON `banlist` output has no separators to parse); «Разбанить по нику» covers them.
  */
-export function siteBans(store: StatsStore) {
-  const rows = store.db.prepare(`SELECT action,target,actor_name actorName,at,detail FROM admin_audit WHERE ok=1 AND action IN ('rcon:ban','rcon:pardon') AND target IS NOT NULL ORDER BY id`).all() as any[];
+export async function siteBans(store: StatsStore) {
+  const rows = await store.db.prepare(`SELECT action,target,actor_name "actorName",at,detail FROM admin_audit WHERE ok=1 AND action IN ('rcon:ban','rcon:pardon') AND target IS NOT NULL ORDER BY id`).all() as any[];
   const latest = new Map<string, any>();
   for (const row of rows) latest.set(String(row.target).toLowerCase(), row);
   return [...latest.values()].filter(r => r.action === 'rcon:ban').reverse().map(r => {
@@ -330,10 +330,10 @@ const routes: Record<string, Route> = {
     if (rejected !== undefined) throw fail(502, `Сервер не принял команду: ${rejected.slice(0, 200)}`);
     return { output, room, players: body.action === 'list' ? (output.split(':')[1] ?? '').split(',').map(s => s.trim()).filter(Boolean) : undefined };
   }, audit: (body, result) => ({ action: `rcon:${body?.action}`, target: body?.player ?? body?.roomId ?? body?.classId ?? body?.op ?? null, detail: { ...body, room: result?.room, output: result?.output?.slice(0, 500) } }) },
-  'GET bans': { permission: 'ban', handler: ({ store }) => ({ bans: siteBans(store) }) },
+  'GET bans': { permission: 'ban', handler: async ({ store }) => ({ bans: await siteBans(store) }) },
   // Подсказки к полям с никнеймом: кого сайт уже видел в матчах, начиная с недавних.
-  'GET players': { permission: 'moderate', handler: ({ store }) => ({
-    players: (store.db.prepare('SELECT name FROM profiles WHERE uuid_like(name)=0 ORDER BY last_seen DESC LIMIT 300').all() as { name: string }[])
+  'GET players': { permission: 'moderate', handler: async ({ store }) => ({
+    players: (await store.db.prepare('SELECT name FROM profiles WHERE uuid_like(name)=0 ORDER BY last_seen DESC LIMIT 300').all() as { name: string }[])
       .map(row => row.name).filter(name => nickname.test(name)),
   }) },
   'GET settings': { permission: 'settings', handler: () => ({ ...readSettings(settingsDir()), balance: BALANCE }) },
@@ -341,57 +341,58 @@ const routes: Record<string, Route> = {
     audit: (body, result) => ({ action: 'settings', target: result?.settings ? `revision ${result.settings.revision}` : null, detail: body }) },
   'GET staff': { permission: 'roles', handler: async ({ actor, store }) => {
     const ids = owners();
-    await Promise.all([...ids].map(uuid => ownerName(uuid).catch(() => null)));
-    const last = (store.auditLog(200) as any[]).find(e => e.action === 'workshop-sync' && e.ok && e.target);
+    await Promise.all([...ids].map(async uuid => ownerName(uuid).catch(() => null)));
+    const last = (await store.auditLog(200) as any[]).find(e => e.action === 'workshop-sync' && e.ok && e.target);
     const lastSync = last ? { id: last.target, at: last.at, result: readFile(join(adminDir(), 'results', `${last.target}.json`)) } : null;
-    const name = (uuid: string) => ownerNames.get(uuid) ?? knownName(store, uuid) ?? (uuid === actor.uuid ? actor.name : null);
-    return { owners: [...ids].map(uuid => ({ uuid, name: name(uuid) ?? UNKNOWN_PLAYER })), staff: store.staff(), workshop: readFile(join(adminDir(), 'members.json')),
-      expected: workshopMembers(store.staff(), new Map([...ids].map(uuid => [uuid, name(uuid) ?? '']))), lastSync };
+    const names = new Map(await Promise.all([...ids].map(async uuid => [uuid, ownerNames.get(uuid) ?? await knownName(store, uuid) ?? (uuid === actor.uuid ? actor.name : null)] as const)));
+    const name = (uuid: string) => names.get(uuid);
+    return { owners: [...ids].map(uuid => ({ uuid, name: name(uuid) ?? UNKNOWN_PLAYER })), staff: await store.staff(), workshop: readFile(join(adminDir(), 'members.json')),
+      expected: workshopMembers(await store.staff(), new Map([...ids].map(uuid => [uuid, name(uuid) ?? '']))), lastSync };
   } },
   'POST staff': { permission: 'roles', handler: async ({ actor, store, body }) => {
     if (body?.role !== null && !['builder', 'moderator', 'admin'].includes(body?.role)) throw bad('Неизвестная роль.');
-    const target = body?.uuid ? { uuid: playerId(body.uuid), name: store.staff().find(s => s.uuid === playerId(body.uuid))?.name } : await lookupName(body?.name);
+    const target = body?.uuid ? { uuid: playerId(body.uuid), name: (await store.staff()).find(s => s.uuid === playerId(body.uuid))?.name } : await lookupName(body?.name);
     if (!target.uuid || !target.name) throw fail(404, 'Участник не найден.');
-    checkRoleChange(actor, target.uuid, roleOf(target.uuid, store), body.role);
-    store.setStaff(target.uuid, target.name, body.role, actor.name);
+    checkRoleChange(actor, target.uuid, await roleOf(target.uuid, store), body.role);
+    await store.setStaff(target.uuid, target.name, body.role, actor.name);
     const sync = await syncWorkshop(store, actor).then(({ id }) => ({ id }), (error: unknown) => ({ error: error instanceof Response ? 'Не удалось отправить список в мастерскую.' : String((error as Error).message) }));
     return { uuid: target.uuid, name: target.name, role: body.role, sync };
   }, audit: (body, result) => ({ action: body?.role === null ? 'role-revoke' : 'role-grant', target: result?.uuid ?? body?.uuid ?? body?.name ?? null, detail: { name: result?.name ?? body?.name, role: body?.role, sync: result?.sync } }) },
-  'POST staff/sync': { permission: 'workshop', handler: async ({ actor, store }) => syncWorkshop(store, actor), audit: (_, result) => ({ action: 'workshop-sync', target: result?.id ?? null, detail: { members: result?.members } }) },
+  'POST staff/sync': { permission: 'workshop', handler: async ({ actor, store }) => await syncWorkshop(store, actor), audit: (_, result) => ({ action: 'workshop-sync', target: result?.id ?? null, detail: { members: result?.members } }) },
   // `maps: null` means every map; only meaningful for a `builder` row, checked here rather than trusted from the client.
   'POST staff/maps': { permission: 'roles', handler: async ({ actor, store, body }) => {
-    const uuid = playerId(body?.uuid), row = uuid ? store.staff().find(s => s.uuid === uuid) : undefined;
+    const uuid = playerId(body?.uuid), row = uuid ? (await store.staff()).find(s => s.uuid === uuid) : undefined;
     if (!row) throw fail(404, 'Участник не найден.');
     if (row.role !== 'builder') throw bad('Список карт задаётся только строителям.');
     // null = every map, including ones added later; [] = the builder gets a workshop account but nothing to edit.
     const maps = body?.maps;
     if (maps !== null && (!Array.isArray(maps) || new Set(maps).size !== maps.length || !maps.every((id: unknown) => typeof id === 'string' && MAP_IDS.has(id))))
       throw bad('Некорректный список карт.');
-    store.setStaffMaps(uuid!, maps);
+    await store.setStaffMaps(uuid!, maps);
     const sync = await syncWorkshop(store, actor).then(({ id }) => ({ id }), (error: unknown) => ({ error: error instanceof Response ? 'Не удалось отправить список в мастерскую.' : String((error as Error).message) }));
     return { uuid, name: row.name, maps, sync };
   }, audit: (body, result) => ({ action: 'workshop-maps', target: result?.uuid ?? body?.uuid ?? null, detail: { name: result?.name, maps: body?.maps, sync: result?.sync } }) },
   'GET results': { permission: 'stats', handler: async ({ context, store }) => {
-    const load = () => store.results(context.url.searchParams.get('mode') || null, page(context.url)), data = load();
+    const load = async () => await store.results(context.url.searchParams.get('mode') || null, page(context.url)), data = await load();
     const unknown = data.results.flatMap(r => r.players.filter(p => p.name === UNKNOWN_PLAYER).map(p => p.uuid));
-    return unknown.length && (await resolveNames(store, unknown)).size ? load() : data;
+    return unknown.length && (await resolveNames(store, unknown)).size ? (await load()) : data;
   } },
-  'POST results/void': { permission: 'stats', handler: ({ actor, store, body }) => {
+  'POST results/void': { permission: 'stats', handler: async ({ actor, store, body }) => {
     if (!UUID.test(body?.serverId) || !UUID.test(body?.eventId) || typeof body.voided !== 'boolean') throw bad('Некорректный результат.');
-    return store.setVoided(body.serverId, body.eventId, body.voided ? actor.name : null);
+    return await store.setVoided(body.serverId, body.eventId, body.voided ? actor.name : null);
   }, audit: (body, result) => ({ action: body?.voided ? 'result-void' : 'result-restore', target: `${body?.serverId}/${body?.eventId}`, detail: result?.match }) },
-  'GET keys': { permission: 'stats', handler: ({ store }) => ({ keys: store.ingestKeys() }) },
-  'POST keys': { permission: 'stats', handler: ({ store, body }) => {
+  'GET keys': { permission: 'stats', handler: async ({ store }) => ({ keys: await store.ingestKeys() }) },
+  'POST keys': { permission: 'stats', handler: async ({ store, body }) => {
     if (!UUID.test(body?.serverId)) throw bad('ID сервера — UUID.');
     if (typeof body.label !== 'string' || !body.label.trim() || body.label.length > 64 || /[\x00-\x1f\x7f]/.test(body.label)) throw bad('Подпись: до 64 символов.');
-    return { key: store.createIngestKey(body.serverId, body.label.trim()) };
+    return { key: await store.createIngestKey(body.serverId, body.label.trim()) };
   }, audit: body => ({ action: 'ingest-key-create', target: body?.serverId ?? null, detail: { label: body?.label } }) },
-  'POST keys/revoke': { permission: 'stats', handler: ({ store, body }) => {
-    if (!Number.isSafeInteger(body?.id) || !store.revokeIngestKey(body.id)) throw fail(404, 'Ключ не найден или уже отозван.');
+  'POST keys/revoke': { permission: 'stats', handler: async ({ store, body }) => {
+    if (!Number.isSafeInteger(body?.id) || !(await store.revokeIngestKey(body.id))) throw fail(404, 'Ключ не найден или уже отозван.');
     return { revoked: body.id };
   }, audit: body => ({ action: 'ingest-key-revoke', target: String(body?.id) }) },
   'GET seasons': { permission: 'stats', handler: () => ({ seasons: seasons() }) },
-  'GET audit': { permission: 'audit', handler: ({ store }) => ({ entries: store.auditLog(200) }) },
+  'GET audit': { permission: 'audit', handler: async ({ store }) => ({ entries: await store.auditLog(200) }) },
 };
 
 /** Every /api/admin/* call: session → role → permission; every non-GET is audited, including refusals and failures. */
@@ -399,7 +400,7 @@ export async function handleAdmin(context: APIContext, path: string, storage?: S
   const method = context.request.method;
   let store: StatsStore, actor: Actor;
   // Roles and the audit log live in the statistics DB: without it nobody gets in.
-  try { store = storage ?? statsStore(); actor = await currentActor(context, store); }
+  try { store = storage ?? (await statsStore()); actor = await currentActor(context, store); }
   catch (error) { if (error instanceof StatsError) throw fail(503, 'Хранилище сайта недоступно: админка отключена.'); throw error; }
   if (method === 'GET' && path === 'me') return Response.json({ uuid: actor.uuid, name: actor.name, role: actor.role, permissions: permissions(actor.role) }, { headers: noStore });
   const route = routes[`${method} ${path}`];
@@ -411,16 +412,16 @@ export async function handleAdmin(context: APIContext, path: string, storage?: S
     if (!can(actor.role, route.permission)) throw fail(403, 'Недостаточно прав.');
     if (method !== 'GET') body = await readJson(context.request, 65_536);
     result = await route.handler({ context, actor, store, body });
-    if (method !== 'GET') record(store, actor, route, body, result, null);
+    if (method !== 'GET') await record(store, actor, route, body, result, null);
     return Response.json(result, { headers: noStore });
   } catch (thrown) {
     const error = thrown instanceof StatsError ? fail(thrown.status, thrown.message) : thrown;
     const message = error instanceof Response ? await error.clone().json().then(d => d.error, () => 'error') : 'internal error';
-    if (method !== 'GET') record(store, actor, route, body, result, (error as any)?.internal ? `${message} (${(error as any).internal})` : message);
+    if (method !== 'GET') await record(store, actor, route, body, result, (error as any)?.internal ? `${message} (${(error as any).internal})` : message);
     throw error;
   }
 }
-function record(store: StatsStore, actor: Actor, route: Route, body: any, result: any, error: string | null) {
-  const entry = route.audit?.(body, result) ?? { action: 'unknown' };
-  store.audit({ actorUuid: actor.uuid, actorName: actor.name, role: actor.role ?? 'none', ...entry, ok: error === null, error });
+async function record(store: StatsStore, actor: Actor, route: Route, body: any, result: any, error: string | null) {
+  const entry = (await route.audit?.(body, result)) ?? { action: 'unknown' };
+  await store.audit({ actorUuid: actor.uuid, actorName: actor.name, role: actor.role ?? 'none', ...entry, ok: error === null, error });
 }

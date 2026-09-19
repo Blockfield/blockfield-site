@@ -84,4 +84,4 @@ GitHub, а релиз меняется редко — так что почти �
 
 ## Statistics
 
-Persistent gameplay history, leaderboard and account statistics: see `docs/statistics.md`. The site uses its own SQLite volume and remains independent of the Minecraft backend. No MMR formula is enabled by this change.
+Persistent gameplay history, leaderboard and account statistics: see `docs/statistics.md`. The site uses PostgreSQL (`BLOCKFIELD_DATABASE_URL`) or a persistent SQLite volume (`BLOCKFIELD_STATS_DB`) and remains independent of the Minecraft backend. Both backends preserve statistics, seasonal ratings and admin roles; see the migration instructions before switching.
