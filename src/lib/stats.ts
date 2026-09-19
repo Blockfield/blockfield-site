@@ -1,5 +1,6 @@
 /** Durable, Minecraft-independent result ingestion. Node >=22.19; no browser imports. */
 import { Database } from './database.ts';
+import { playerId, roleOf } from './admin.ts';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { composite, inflate, initial, softReset, update, RULES_VERSION } from './glicko2.ts';
 
@@ -516,6 +517,8 @@ export async function handleStatsRequest(request: Request, dependencies?: { stor
     if (player) {
       const data = await store.player(player[1], query) as any;
       await named([data.profile, ...(data.totals ? [data.totals] : [])]);
+      // ponytail: staff without recorded gameplay 404 above, so the launcher shows them as a player; add a role endpoint if that matters.
+      data.profile.role = await roleOf(playerId(player[1])!, store);
       return Response.json(data, { headers });
     }
     throw new StatsError(404, 'Unknown statistics endpoint');

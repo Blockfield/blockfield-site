@@ -157,7 +157,10 @@ test('read APIs require no game process or producer credentials and distinguish 
   const board = await handleStatsRequest(new Request('https://example.test/api/stats/leaderboard'), deps);
   assert.equal(board.status, 200); assert.equal(board.headers.get('cache-control'), 'no-store');
   assert.equal((await board.json()).players.length, 1);
-  assert.equal((await handleStatsRequest(new Request(`https://example.test/api/stats/players/${player}`), deps)).status, 200);
+  const profileOf = async () => (await (await handleStatsRequest(new Request(`https://example.test/api/stats/players/${player}`), deps)).json()).profile;
+  assert.equal((await profileOf()).role, null);
+  process.env.BLOCKFIELD_OWNER_UUIDS = `${'0'.repeat(32)},${player}`; t.after(() => delete process.env.BLOCKFIELD_OWNER_UUIDS);
+  assert.equal((await profileOf()).role, 'owner');
 });
 test('result write and derived rows roll back together on storage failure', async t => {
   const db = await database(t);
