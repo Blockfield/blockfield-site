@@ -21,10 +21,11 @@ for (const [name, ua, hint, expected] of [
     const action = launcherDownload(platform, links);
     if (platform === 'windows') assert.equal(action.href, links.windows);
     else if (platform === 'linux') assert.equal(action.href, links.linux);
+    else if (platform === 'macos') assert.equal(action.href, '#macos-download');
     else assert.equal(action.href, '#download', 'unsupported/unknown platforms must not download an exe');
   });
 }
 
-test('Mac does not promise a launcher installer', () => {
-  assert.match(launcherDownload('macos', links).note, /для macOS пока нет/);
+test('Mac offers an explicit choice of architecture', () => {
+  assert.match(launcherDownload('macos', links).note, /Apple Silicon или Intel/);
 });

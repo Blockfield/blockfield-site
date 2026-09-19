@@ -20,10 +20,10 @@ export function launcherDownload(platform: Platform, links: { windows: string; l
     case 'linux':
       return { href: links.linux, label: 'СКАЧАТЬ ДЛЯ LINUX', note: 'Лаунчер для Linux x86_64 · AppImage' };
     case 'macos':
-      return { href: '#download', label: 'ВАРИАНТЫ УСТАНОВКИ', note: 'Лаунчера для macOS пока нет. Модпак доступен для ручной установки.' };
+      return { href: '#macos-download', label: 'ВЫБРАТЬ ВЕРСИЮ ДЛЯ MAC', note: 'Лаунчер для macOS · выберите Apple Silicon или Intel.' };
     case 'mobile':
-      return { href: '#download', label: 'ВЫБРАТЬ ВЕРСИЮ ДЛЯ ПК', note: 'Лаунчер работает на ПК с Windows или Linux. Выберите файл для компьютера.' };
+      return { href: '#download', label: 'ВЫБРАТЬ ВЕРСИЮ ДЛЯ ПК', note: 'Лаунчер работает на компьютерах с Windows, Linux и macOS. Выберите файл для компьютера.' };
     default:
-      return { href: '#download', label: 'ВЫБРАТЬ ВЕРСИЮ', note: 'Выберите Windows или Linux. Лаунчера для macOS пока нет.' };
+      return { href: '#download', label: 'ВЫБРАТЬ ВЕРСИЮ', note: 'Выберите Windows, Linux или macOS.' };
   }
 }

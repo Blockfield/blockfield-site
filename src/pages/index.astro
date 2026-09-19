@@ -13,7 +13,7 @@ import SiteFooter from '../components/SiteFooter.astro';
 const launcher = await latestLauncher();
 const platform = detectPlatform(Astro.request.headers.get('user-agent') || '', Astro.request.headers.get('sec-ch-ua-platform') || '');
 const download = launcherDownload(platform, launcher);
-const supported = platform === 'windows' || platform === 'linux';
+const supported = platform === 'windows' || platform === 'linux' || platform === 'macos';
 
 const navLinks = [
   { href: '#rooms', label: 'Матчи', class: 'rooms-nav-link', hidden: true },
@@ -105,12 +105,12 @@ const features = [
         inLanguage: 'ru',
         gamePlatform: 'PC',
         applicationCategory: 'Game',
-        operatingSystem: 'Windows, Linux',
+        operatingSystem: 'Windows, Linux, macOS',
         description:
           'Командный шутер в Minecraft 1.21.1 на Fabric: захват точек, классы, выбор снаряжения.',
         image: 'https://blockfield.pro/og.jpg',
         publisher: { '@type': 'Organization', name: 'Blockfield', url: 'https://github.com/netherg-io' },
-        downloadUrl: [launcher.windows, launcher.linux],
+        downloadUrl: [launcher.windows, launcher.linux, launcher.macosArm, launcher.macosIntel],
         softwareVersion: launcher.version || undefined,
       })}
     />
@@ -144,6 +144,7 @@ const features = [
             <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.linux} />
             Linux · AppImage
           </a>
+          <a href="#macos-download">macOS · .dmg</a>
           {launcher.version && <span class="platforms__version">версия {launcher.version}</span>}
         </p>
       </div>
@@ -162,7 +163,7 @@ const features = [
           <span>{supported ? download.label : 'РУЧНАЯ УСТАНОВКА'}</span>
         </a>
         <p class="download-note">{download.note}</p>
-        <p class="platforms" aria-label="Версии лаунчера">
+        <p class="platforms" id="macos-download" aria-label="Версии лаунчера">
           <a href={launcher.windows}>
             <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.windows} />
             Windows · .exe
@@ -172,7 +173,13 @@ const features = [
             <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.linux} />
             Linux · AppImage
           </a>
+          <a href={launcher.macosArm}>macOS · Apple Silicon</a>
+          <a href={launcher.macosIntel}>macOS · Intel</a>
         </p>
+        <details class="download-note">
+          <summary>Первый запуск на macOS</summary>
+          <p>Перенесите приложение из DMG в «Программы» и разрешите запуск в настройках конфиденциальности и безопасности macOS. Для игры установите Java 21 под свой процессор и укажите путь к bin/java в настройках лаунчера.</p>
+        </details>
       </div>
 
       <div class="path__manual" id="manual-install" data-reveal>

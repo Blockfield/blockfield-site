@@ -1,9 +1,9 @@
 const RELEASES = 'https://github.com/netherg-io/blockfield-launcher-releases/releases';
 const API = 'https://api.github.com/repos/netherg-io/blockfield-launcher-releases/releases/latest';
 
-export type Launcher = { version: string; windows: string; linux: string };
+export type Launcher = { version: string; windows: string; linux: string; macosArm: string; macosIntel: string };
 
-const fallback: Launcher = { version: '', windows: `${RELEASES}/latest`, linux: `${RELEASES}/latest` };
+const fallback: Launcher = { version: '', windows: `${RELEASES}/latest`, linux: `${RELEASES}/latest`, macosArm: `${RELEASES}/latest`, macosIntel: `${RELEASES}/latest` };
 
 // У анонима к GitHub API 60 запросов в час на IP, но ответ 304 на условный запрос
 // в лимит не идёт — а релиз меняется редко, так что почти каждая проверка бесплатна.
@@ -22,6 +22,8 @@ function parse(release: any): Launcher {
     version: String(release.tag_name || '').replace('launcher-', ''),
     windows: asset('-setup.exe') || fallback.windows,
     linux: asset('.AppImage') || fallback.linux,
+    macosArm: asset('_aarch64.dmg') || fallback.macosArm,
+    macosIntel: asset('_x64.dmg') || fallback.macosIntel,
   };
 }
 
