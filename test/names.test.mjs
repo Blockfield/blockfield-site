@@ -103,7 +103,7 @@ test('settings form: a field prefilled with (and left at) its default is the sam
 });
 
 test('class cost form retains zero and unchanged prices on every save', () => {
-  assert.deepEqual(CLASS_COSTS, { tech: 300, sniper: 450, drone: 600 });
+  assert.deepEqual(CLASS_COSTS, { tech: 300, sniper: 300, drone: 300 });
   const form = { pvpEnabled: '', lobby: {}, rooms: {}, deathmatch: {}, lockedClasses: [], hadLocks: false, balance: {}, classCosts: { tech: '0', sniper: '90', drone: '120' } };
   assert.deepEqual(settingsBody(8, form).classCosts, { tech: 0, sniper: 90, drone: 120 });
 });

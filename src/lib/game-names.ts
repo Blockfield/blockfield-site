@@ -4,7 +4,7 @@
  * ponytail: a hand-kept copy; unknown ids fall back to a neutral label, add rows when the modpack adds content.
  */
 export const CLASS_NAMES: Record<string, string> = { assault: 'Штурмовик', mark: 'Марксман', sniper: 'Снайпер', tech: 'Инженер', drone: 'Оператор FPV' };
-export const CLASS_COSTS: Record<string, number> = { tech: 300, sniper: 450, drone: 600 };
+export const CLASS_COSTS: Record<string, number> = { tech: 300, sniper: 300, drone: 300 };
 export const MAP_NAMES: Record<string, string> = {
   baxmut: 'Бахмут', berdichev: 'Бердичев', dm_arena: 'Арена', fields: 'Степи Донбасса', firing_range: 'Полигон',
   konstaxa: 'Константиновка', kozyatyn: 'Казатин', zaliznichne: 'Железнодорожное',
