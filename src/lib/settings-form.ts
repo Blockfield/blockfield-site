@@ -1,5 +1,6 @@
 export type SettingsForm = {
   pvpEnabled: string; lobby: Record<string, string>; rooms: Record<string, string>; deathmatch: Record<string, string>;
+  classCosts?: Record<string, string>;
   lockedClasses: string[]; hadLocks: boolean; balance: Record<string, Record<string, number | boolean>>;
 };
 /**
@@ -14,6 +15,7 @@ export function settingsBody(expectedRevision: number, form: SettingsForm, defau
   const balance = Object.fromEntries(Object.entries(form.balance).filter(([, v]) => Object.keys(v).length));
   return {
     expectedRevision,
+    ...(form.classCosts ? { classCosts: Object.fromEntries(Object.entries(form.classCosts).map(([id, value]) => [id, Number(value)])) } : {}),
     ...(Object.keys(lobby).length ? { lobby } : {}),
     ...(Object.keys(rooms).length ? { rooms } : {}),
     ...(Object.keys(deathmatch).length ? { deathmatch } : {}),

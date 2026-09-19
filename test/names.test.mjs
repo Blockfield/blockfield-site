@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { StatsStore, displayName, filters, handleStatsRequest, resolveNames, uuidLike } from '../src/lib/stats.ts';
 import { BALANCE, siteBans } from '../src/lib/admin.ts';
-import { BALANCE_GROUPS, BALANCE_DEFAULTS } from '../src/lib/game-names.ts';
+import { BALANCE_GROUPS, BALANCE_DEFAULTS, CLASS_COSTS } from '../src/lib/game-names.ts';
 import { settingsBody } from '../src/lib/settings-form.ts';
 
 const uid = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -100,4 +100,10 @@ test('settings form: a field prefilled with (and left at) its default is the sam
   const withPvp = { maxRooms: '2', minPlayers: '2', pvpEnabled: 'true' };
   assert.deepEqual(settingsBody(3, { ...form, pvpEnabled: 'true' }, withPvp), { expectedRevision: 3 }, 'PvP prefilled at its default is also omitted');
   assert.deepEqual(settingsBody(3, { ...form, pvpEnabled: 'false' }, withPvp), { expectedRevision: 3, lobby: { pvpEnabled: false } });
+});
+
+test('class cost form retains zero and unchanged prices on every save', () => {
+  assert.deepEqual(CLASS_COSTS, { tech: 300, sniper: 450, drone: 600 });
+  const form = { pvpEnabled: '', lobby: {}, rooms: {}, deathmatch: {}, lockedClasses: [], hadLocks: false, balance: {}, classCosts: { tech: '0', sniper: '90', drone: '120' } };
+  assert.deepEqual(settingsBody(8, form).classCosts, { tech: 0, sniper: 90, drone: 120 });
 });

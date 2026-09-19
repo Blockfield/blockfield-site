@@ -157,11 +157,15 @@ function section(value: unknown, rules: Record<string, (v: unknown) => boolean>,
 }
 /** Settings sections are optional and replace the stored ones as a whole; an absent key means the server default. */
 export function validateSettings(body: any) {
-  if (!plain(body) || Object.keys(body).some(k => !['expectedRevision', 'lobby', 'rooms', 'deathmatch', 'classLocks', 'campaignBalance'].includes(k))) throw bad('Некорректные настройки.');
+  if (!plain(body) || Object.keys(body).some(k => !['expectedRevision', 'lobby', 'rooms', 'deathmatch', 'classLocks', 'classCosts', 'campaignBalance'].includes(k))) throw bad('Некорректные настройки.');
   const out: Record<string, unknown> = {};
   if (body.lobby !== undefined) out.lobby = section(body.lobby, LOBBY, 'лобби');
   if (body.rooms !== undefined) out.rooms = section(body.rooms, ROOMS, 'комнаты');
   if (body.deathmatch !== undefined) out.deathmatch = section(body.deathmatch, DEATHMATCH, 'каждый сам за себя');
+  if (body.classCosts !== undefined) {
+    out.classCosts = section(body.classCosts, Object.fromEntries(['tech', 'sniper', 'drone'].map(id =>
+      [id, (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= 10_000])), 'стоимость классов');
+  }
   if (body.classLocks !== undefined) {
     const list = body.classLocks;
     if (!Array.isArray(list) || list.length > 64 || new Set(list).size !== list.length || !list.every((c: unknown) => typeof c === 'string' && /^[a-z0-9_]{1,32}$/.test(c))) throw bad('Настройки: неверный список закрытых классов.');

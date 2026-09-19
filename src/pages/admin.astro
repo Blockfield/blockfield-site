@@ -148,7 +148,13 @@ Astro.response.headers.set('Cache-Control', 'no-store');
             <div id="deathmatch-fields" class="fields"></div>
           </fieldset>
           <fieldset class="card">
-            <legend>Классы</legend>
+            <legend>Стоимость высадки</legend>
+            <small class="muted">Боевые кредиты (БК) зарабатываются в бою и сбрасываются в конце матча. Цена списывается за каждую высадку. Изменения действуют со следующей высадки, включая текущие матчи. 0 — бесплатно.</small>
+            <div id="class-costs" class="fields"></div>
+            <small class="muted">Штурмовик и марксман всегда бесплатны. Численность команды не закрывает сильные классы.</small>
+          </fieldset>
+          <fieldset class="card">
+            <legend>Аварийное отключение классов</legend>
             <small class="muted">Кто уже играет этим классом, доиграет ещё три минуты.</small>
             <div id="class-list" class="checks"></div>
           </fieldset>
@@ -358,7 +364,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
     </style>
 
     <script>
-      import { BALANCE_DEFAULTS, BALANCE_GROUPS, BALANCE_LABELS, BALANCE_SCOPES, CLASS_NAMES, MAP_NAMES, MODE_NAMES, TEAM_NAMES } from '../lib/game-names';
+      import { BALANCE_DEFAULTS, BALANCE_GROUPS, BALANCE_LABELS, BALANCE_SCOPES, CLASS_COSTS, CLASS_NAMES, MAP_NAMES, MODE_NAMES, TEAM_NAMES } from '../lib/game-names';
       import { settingsBody } from '../lib/settings-form';
       import { customSelect, customCombo } from '../lib/custom-select';
       import { switchView } from '../lib/switch-status';
@@ -647,7 +653,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         { key: 'abandonCloseSeconds', label: 'Завершать матч без игроков через', unit: 'сек', min: 5, max: 600, def: 30 },
       ];
       const DEATHMATCH = [{ key: 'minPlayers', label: 'Игроков для старта', unit: 'чел', min: 1, max: 24, def: 2 }];
-      const SETTING_LABELS: Record<string, string> = { pvpEnabled: 'PvP в лобби', classLocks: 'Закрытые классы', ...Object.fromEntries([...LOBBY, ...ROOMS, ...DEATHMATCH].map(f => [f.key, f.label])), ...BALANCE_LABELS };
+      const SETTING_LABELS: Record<string, string> = { pvpEnabled: 'PvP в лобби', classLocks: 'Закрытые классы', classCosts: 'Стоимость высадки', ...Object.fromEntries([...LOBBY, ...ROOMS, ...DEATHMATCH].map(f => [f.key, f.label])), ...BALANCE_LABELS };
       function numberField(label: string, name: string, min: number, max: number, step: string, value: number, unit?: string, about?: string) {
         const input = el('input', { type: 'number', name, min, max, step, inputMode: step === '1' ? 'numeric' : 'decimal', value });
         const wrap = unit ? el('div', { className: 'unit' }, input, el('span', { className: 'unit__suffix', textContent: unit, ariaHidden: 'true' })) : undefined;
@@ -713,6 +719,11 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         $('#lobby-fields').replaceChildren(...LOBBY.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.lobby?.[f.key] ?? f.def, f.unit)));
         $('#room-fields').replaceChildren(...ROOMS.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.rooms?.[f.key] ?? f.def, f.unit)));
         $('#deathmatch-fields').replaceChildren(...DEATHMATCH.map(f => numberField(f.label, f.key, f.min, f.max, '1', settings.deathmatch?.[f.key] ?? f.def, f.unit)));
+        $('#class-costs').replaceChildren(...Object.entries(CLASS_COSTS).map(([id, price]) => {
+          const item = numberField(CLASS_NAMES[id], `cost_${id}`, 0, 10000, '1', settings.classCosts?.[id] ?? price, 'БК');
+          item.querySelector('input')!.required = true;
+          return item;
+        }));
         const locks: string[] = settings.classLocks ?? [];
         extraLocks = locks.filter(id => !Object.hasOwn(CLASS_NAMES, id));
         $('#class-list').replaceChildren(...Object.entries(CLASS_NAMES).map(([id, name]) => el('label', { className: 'check' }, el('input', { type: 'checkbox', name: 'class', value: id, checked: !locks.includes(id) }), name)));
@@ -744,6 +755,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         const value = (name: string) => (form.elements.namedItem(name) as HTMLInputElement).value;
         const body = settingsBody(settingsRevision, {
           pvpEnabled: value('pvpEnabled'),
+          classCosts: Object.fromEntries(Object.keys(CLASS_COSTS).map(id => [id, value(`cost_${id}`)])),
           lobby: Object.fromEntries(LOBBY.map(f => [f.key, value(f.key)])), rooms: Object.fromEntries(ROOMS.map(f => [f.key, value(f.key)])),
           deathmatch: Object.fromEntries(DEATHMATCH.map(f => [f.key, value(f.key)])),
           lockedClasses: [...[...form.querySelectorAll<HTMLInputElement>('input[name=class]')].filter(c => !c.checked).map(c => c.value), ...extraLocks],

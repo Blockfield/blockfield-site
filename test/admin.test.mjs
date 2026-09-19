@@ -292,3 +292,14 @@ test('review: stop-room without RCON configured fails fast, before querying room
   const response = await handleAdmin({ request, url, cookies: { get: () => undefined } }, 'rcon', s).then(r => r, e => e);
   assert.equal(response.status, 503); assert.ok(Date.now() - started < 1000);
 });
+
+test('class prices round-trip through settings with strict numeric limits', t => {
+  const dir = temp(t);
+  const prices = { tech: 0, sniper: 150, drone: 10000 };
+  const saved = saveSettings(dir, { expectedRevision: 0, classCosts: prices }, 'Adm');
+  assert.deepEqual(saved.classCosts, prices);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'settings.json'))).classCosts, prices);
+  for (const classCosts of [{ sniper: -1 }, { sniper: 0.5 }, { sniper: 10001 }, { sniper: '90' }, { sniper: null }, { sniper: Infinity }, { assault: 10 }, [], null]) {
+    assert.throws(() => validateSettings({ classCosts }), e => status(e) === 400);
+  }
+});
