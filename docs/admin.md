@@ -44,6 +44,7 @@ BLOCKFIELD_SETTINGS_DIR=/blockfield-admin            # default
 BLOCKFIELD_RCON_HOST=blockfield-server-lfcxy0
 BLOCKFIELD_RCON_PORT=25575
 BLOCKFIELD_RCON_PASSWORD=...                         # secret; never sent to the browser
+BLOCKFIELD_DEPLOY_ANNOUNCE_TOKEN=...                 # secret; modpack Deploy workflow (DEPLOY_ANNOUNCE_TOKEN) → POST /api/deploy-announce, fixed restart notice
 ```
 
 Mounts for the site container (host → container):
