@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { detectPlatform, launcherDownload } from '../src/lib/platform.ts';
 
-const links = { windows: 'https://example.test/setup.exe', linux: 'https://example.test/game.AppImage' };
+const links = { windows: 'https://example.test/setup.exe', linux: 'https://example.test/game.AppImage', macosArm: 'https://example.test/arm.dmg' };
 
 for (const [name, ua, hint, expected] of [
   ['Windows Firefox', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/142.0', '', 'windows'],
@@ -21,11 +21,11 @@ for (const [name, ua, hint, expected] of [
     const action = launcherDownload(platform, links);
     if (platform === 'windows') assert.equal(action.href, links.windows);
     else if (platform === 'linux') assert.equal(action.href, links.linux);
-    else if (platform === 'macos') assert.equal(action.href, '#macos-download');
+    else if (platform === 'macos') assert.equal(action.href, links.macosArm);
     else assert.equal(action.href, '#download', 'unsupported/unknown platforms must not download an exe');
   });
 }
 
-test('Mac offers an explicit choice of architecture', () => {
-  assert.match(launcherDownload('macos', links).note, /Apple Silicon или Intel/);
+test('Mac downloads the Apple Silicon build and says so', () => {
+  assert.match(launcherDownload('macos', links).note, /Apple Silicon/);
 });

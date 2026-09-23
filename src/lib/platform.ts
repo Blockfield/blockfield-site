@@ -13,14 +13,14 @@ export function detectPlatform(userAgent = '', clientPlatform = ''): Platform {
   return 'unknown';
 }
 
-export function launcherDownload(platform: Platform, links: { windows: string; linux: string }) {
+export function launcherDownload(platform: Platform, links: { windows: string; linux: string; macosArm: string }) {
   switch (platform) {
     case 'windows':
       return { href: links.windows, label: 'СКАЧАТЬ ДЛЯ WINDOWS', note: 'Лаунчер для Windows x64 · установщик .exe' };
     case 'linux':
       return { href: links.linux, label: 'СКАЧАТЬ ДЛЯ LINUX', note: 'Лаунчер для Linux x86_64 · AppImage' };
     case 'macos':
-      return { href: '#macos-download', label: 'ВЫБРАТЬ ВЕРСИЮ ДЛЯ MAC', note: 'Лаунчер для macOS · выберите Apple Silicon или Intel.' };
+      return { href: links.macosArm, label: 'СКАЧАТЬ ДЛЯ MAC', note: 'Лаунчер для Mac на Apple Silicon (M1 и новее) · .dmg' };
     case 'mobile':
       return { href: '#download', label: 'ВЫБРАТЬ ВЕРСИЮ ДЛЯ ПК', note: 'Лаунчер работает на компьютерах с Windows, Linux и macOS. Выберите файл для компьютера.' };
     default:
