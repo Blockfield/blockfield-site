@@ -91,6 +91,11 @@ export function writeAtomic(directory: string, name: string, value: unknown) {
 }
 
 export const MAP_IDS = new Set(Object.keys(MAP_NAMES));
+/** One builder's list after granting (`allowed`) or taking away one map; null stays null when granting, and a new map is never silently implied. */
+export function withMapAccess(maps: string[] | null, mapId: string, allowed: boolean): string[] | null {
+  if (allowed) return maps === null || maps.includes(mapId) ? maps : [...maps, mapId];
+  return (maps ?? [...MAP_IDS]).filter(id => id !== mapId);
+}
 export type WorkshopMember = { draslId: string; name: string; role: 'admin' | 'lead' | 'builder'; maps?: string[] };
 const WORKSHOP_ROLE: Record<Role, WorkshopMember['role']> = { owner: 'admin', admin: 'admin', moderator: 'lead', builder: 'builder' };
 /** `lead`/`admin` always have every map; only a `builder` row's `maps` (null = every map) is carried over. */
@@ -372,6 +377,23 @@ const routes: Record<string, Route> = {
     const sync = await syncWorkshop(store, actor).then(({ id }) => ({ id }), (error: unknown) => ({ error: error instanceof Response ? 'Не удалось отправить список в мастерскую.' : String((error as Error).message) }));
     return { uuid, name: row.name, maps, sync };
   }, audit: (body, result) => ({ action: 'workshop-maps', target: result?.uuid ?? body?.uuid ?? null, detail: { name: result?.name, maps: body?.maps, sync: result?.sync } }) },
+  // Map-centric view of the same `maps` lists: who of the builders may edit one map; one workshop sync for the whole change.
+  'POST staff/map-access': { permission: 'roles', handler: async ({ actor, store, body }) => {
+    const mapId = body?.mapId, uuids = body?.uuids;
+    if (typeof mapId !== 'string' || !MAP_IDS.has(mapId)) throw bad('Неизвестная карта.');
+    const builders = (await store.staff()).filter(s => s.role === 'builder');
+    const ids = Array.isArray(uuids) ? uuids.map(playerId) : null;
+    if (!ids || ids.some(id => !id || !builders.some(b => b.uuid === id)) || new Set(ids).size !== ids.length) throw bad('Некорректный список строителей.');
+    const changed = [];
+    for (const b of builders) {
+      const maps = withMapAccess(b.maps ?? null, mapId, ids.includes(b.uuid));
+      if (JSON.stringify(maps) === JSON.stringify(b.maps ?? null)) continue;
+      await store.setStaffMaps(b.uuid, maps);
+      changed.push(b.name);
+    }
+    const sync = changed.length ? await syncWorkshop(store, actor).then(({ id }) => ({ id }), (error: unknown) => ({ error: error instanceof Response ? 'Не удалось отправить список в мастерскую.' : String((error as Error).message) })) : null;
+    return { mapId, changed, sync };
+  }, audit: (body, result) => ({ action: 'workshop-map-access', target: body?.mapId ?? null, detail: { changed: result?.changed, sync: result?.sync } }) },
   'GET results': { permission: 'stats', handler: async ({ context, store }) => {
     const load = async () => await store.results(context.url.searchParams.get('mode') || null, page(context.url)), data = await load();
     const unknown = data.results.flatMap(r => r.players.filter(p => p.name === UNKNOWN_PLAYER).map(p => p.uuid));
