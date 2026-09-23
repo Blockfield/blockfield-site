@@ -45,7 +45,7 @@ BLOCKFIELD_RCON_HOST=blockfield-server-lfcxy0
 BLOCKFIELD_RCON_PORT=25575
 BLOCKFIELD_RCON_PASSWORD=...                         # secret; never sent to the browser
 BLOCKFIELD_DEPLOY_ANNOUNCE_TOKEN=...                 # secret; modpack Deploy workflow (DEPLOY_ANNOUNCE_TOKEN) → POST /api/deploy-announce, fixed restart notice
-BLOCKFIELD_WORKSHOP_KEY=...                          # secret, same value in the blockfield-workshop app: tablet grant/revoke → POST /api/workshop/access
+BLOCKFIELD_WORKSHOP_KEY=...                          # optional; default: the file workshop.key in BLOCKFIELD_ADMIN_DIR (host /srv/minecraft/workshop/admin, root:1000 0640), shared with the workshop server
 ```
 
 Mounts for the site container (host → container):

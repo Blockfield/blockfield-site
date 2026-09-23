@@ -326,6 +326,8 @@ test('POST /api/workshop/access: key, then the in-game actor\'s own site role; h
   const call = (body, key = KEY, e = env) => handleWorkshopAccess(new Request('http://site/api/workshop/access', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify(body) }), e, s).then(r => r, e => e);
   const grant = { actor: OWNER, target: OTHER, mapId: 'hub', allowed: true };
   assert.equal((await call(grant, KEY, {})).status, 503, 'no key configured');
+  writeFileSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'workshop.key'), `${KEY}\n`);
+  assert.equal((await call({ ...grant, actor: MOD }, KEY, {})).status, 403, 'the key file in the admin export works like the env');
   assert.equal((await call(grant, 'wrong'.repeat(8))).status, 401);
   assert.equal((await call({ ...grant, actor: MOD })).status, 403, 'a moderator cannot change rights');
   assert.equal((await call({ ...grant, target: MOD })).status, 400, 'only builders carry map lists');

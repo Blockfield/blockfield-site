@@ -1,6 +1,6 @@
 import type { APIContext } from 'astro';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
-import { openSync, readSync, closeSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
+import { openSync, readSync, readFileSync, closeSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AstroCookies } from 'astro';
 import { account, drasl, fail, nickname, readJson, session, token } from './account.ts';
@@ -75,6 +75,9 @@ export async function siteIdentity(cookies: Pick<AstroCookies, 'get'>): Promise<
   } catch { return null; }
 }
 
+function readText(path: string, max = 1024): string | null {
+  try { const text = readFileSync(path, 'utf8'); return text.length > max ? null : text; } catch { return null; }
+}
 function readFile(path: string, max = 65_536): any {
   let fd: number;
   try { fd = openSync(path, 'r'); } catch { return null; }
@@ -424,8 +427,9 @@ const routes: Record<string, Route> = {
  */
 export async function handleWorkshopAccess(request: Request, env: Record<string, string | undefined> = process.env, storage?: StatsStore): Promise<Response> {
   if (request.method !== 'POST') return fail(405, 'POST only.');
-  const key = env.BLOCKFIELD_WORKSHOP_KEY;
-  if (!key) return fail(503, 'Запись из мастерской не настроена.');
+  // Shared with the workshop server as a file in the controller's admin export (both mount it read-only).
+  const key = env.BLOCKFIELD_WORKSHOP_KEY || readText(join(adminDir(), 'workshop.key'))?.trim();
+  if (!key || key.length < 32) return fail(503, 'Запись из мастерской не настроена.');
   const digest = (value: string) => createHash('sha256').update(value).digest();
   if (!timingSafeEqual(digest(request.headers.get('authorization') ?? ''), digest(`Bearer ${key}`))) return fail(401, 'Неверный ключ.');
   const body = await readJson(request, 4096);
@@ -433,7 +437,9 @@ export async function handleWorkshopAccess(request: Request, env: Record<string,
   if (!actorId || !targetId || typeof mapId !== 'string' || !MAP_IDS.has(mapId) || typeof body?.allowed !== 'boolean') return fail(400, 'Некорректный запрос.');
   const store = storage ?? (await statsStore());
   const staff = await store.staff(), role = await roleOf(actorId, store);
-  const actor: Actor = { uuid: actorId, name: staff.find(s => s.uuid === actorId)?.name ?? (await knownName(store, actorId)) ?? 'Владелец', role };
+  // The workshop server knows the in-game nickname; the site's own record wins when it has one.
+  const claimed = typeof body?.actorName === 'string' && nickname.test(body.actorName) ? body.actorName : null;
+  const actor: Actor = { uuid: actorId, name: staff.find(s => s.uuid === actorId)?.name ?? (await knownName(store, actorId)) ?? claimed ?? 'Владелец', role };
   const target = staff.find(s => s.uuid === targetId);
   let error: string | null = null, result: any = null;
   try {
