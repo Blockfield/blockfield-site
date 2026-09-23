@@ -193,6 +193,15 @@ Astro.response.headers.set('Cache-Control', 'no-store');
               <p class="form-status" role="status"></p>
             </form>
           </article>
+        </div>
+      </section>
+
+      <section id="workshop" data-perm="workshop" data-tab="Мастерская" hidden aria-labelledby="workshop-title">
+        <h2 id="workshop-title" tabindex="-1">Мастерская</h2>
+        <p class="muted">Кто какие карты правит. Модераторы и администраторы правят все карты, строителям доступ выдаётся по картам. В игре строители переходят между картами планшетом (M).</p>
+        <p class="form-status" id="map-access-status" role="status"></p>
+        <ul id="map-access" class="rows"></ul>
+        <div class="cards">
           <article class="card" data-perm="workshop" aria-labelledby="ws-title">
             <h3 id="ws-title">Доступ в мастерскую</h3>
             <p id="workshop-state" class="muted">Проверяем список…</p>
@@ -298,6 +307,8 @@ Astro.response.headers.set('Cache-Control', 'no-store');
       .row-main { display: grid; gap: 4px; min-width: 0; flex: 1 1 240px; }
       .row-main strong { overflow-wrap: anywhere; }
       .row.voided { opacity: 0.75; border-style: dashed; }
+      /* Eighteen short map rows pack into columns instead of one long full-width list. */
+      #map-access { grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); }
       .empty { color: var(--muted); padding: 8px 0; }
       .team-RED { color: var(--danger); } .team-BLUE { color: var(--info); }
 
@@ -804,6 +815,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         const key = (list: any[]) => JSON.stringify((list ?? []).map(m => [m.draslId, m.role]).sort());
         const inSync = Array.isArray(data.workshop) && key(data.workshop) === key(data.expected);
         const last = data.lastSync ? ` Последнее обновление ${ago(data.lastSync.at)}${data.lastSync.result && !data.lastSync.result.ok ? ' — не удалось' : ''}.` : '';
+        renderMapAccess(data.staff);
         say($('#workshop-state'), inSync ? `Мастерская пускает ровно тех, кто в команде.${last}` : `Список доступа в мастерскую отличается от команды — нажмите «Обновить доступ».${last}`, inSync ? 'ok' : 'pending');
       }
       async function changeRole(body: Record<string, unknown>, done: string, line: HTMLElement) {
@@ -814,7 +826,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         });
       }
       /** `null`/absent = every map, including ones added later; `[]` = the builder enters the workshop hub but can edit nothing. */
-      const mapsLabel = (maps: string[] | null) => maps === null ? 'все' : maps.length ? maps.map(id => MAP_NAMES[id] ?? id).join(', ') : 'нет';
+      const mapsLabel = (maps: string[] | null) => maps === null ? 'все' : !maps.length ? 'нет' : maps.length > 3 ? `${maps.length} из ${Object.keys(MAP_NAMES).length}` : maps.map(id => MAP_NAMES[id] ?? id).join(', ');
       async function editMaps(s: { uuid: string; name: string; maps: string[] | null }, line: HTMLElement) {
         const known = Object.keys(MAP_NAMES), current = new Set(s.maps ?? known);
         const list = el('div', { className: 'checks' }, ...known.map(id => el('label', { className: 'check' }, el('input', { type: 'checkbox', name: 'map', value: id, checked: current.has(id) }), MAP_NAMES[id])));
@@ -826,6 +838,28 @@ Astro.response.headers.set('Cache-Control', 'no-store');
           await loadTeam();
           return `Карты для ${s.name} обновлены.`;
         });
+      }
+      /** The same `maps` lists as «Карты: …» in the team tab, seen from each map. */
+      function renderMapAccess(staff: { uuid: string; name: string; role: string; maps: string[] | null }[]) {
+        const builders = staff.filter(s => s.role === 'builder'), line = $('#map-access-status');
+        const editors = (id: string) => builders.filter(b => b.maps === null || b.maps.includes(id));
+        $('#map-access').replaceChildren(...Object.entries(MAP_NAMES).map(([id, name]) => {
+          const who = editors(id).map(b => b.name);
+          const main = el('div', { className: 'row-main' }, el('strong', { textContent: name }),
+            el('small', { textContent: builders.length ? `Строители: ${who.length ? who.join(', ') : 'никто'}` : 'Строителей в команде нет' }));
+          return el('li', { className: 'row' }, main, builders.length ? button('Кто правит', () => editMapAccess(id, name, builders, new Set(editors(id).map(b => b.uuid)), line), 'small', `Кто правит карту ${name}`) : null);
+        }));
+      }
+      async function editMapAccess(mapId: string, name: string, builders: { uuid: string; name: string }[], current: Set<string>, line: HTMLElement) {
+        const list = el('div', { className: 'checks' }, ...builders.map(b => el('label', { className: 'check' }, el('input', { type: 'checkbox', name: 'builder', value: b.uuid, checked: current.has(b.uuid) }), b.name)));
+        const answer = await ask({ title: `Кто правит карту «${name}»`, text: 'Отметьте строителей, которые могут строить на этой карте. Остальные зайдут на неё только посмотреть.', ok: 'Сохранить', fields: [list] });
+        if (!answer) return;
+        await run(line, async () => {
+          const { changed, sync } = await api('staff/map-access', 'POST', { mapId, uuids: answer.getAll('builder').map(String) });
+          await loadTeam();
+          if (!changed.length) return 'Ничего не изменилось.';
+          return sync?.error ? `Доступ к карте «${name}» сохранён, но мастерская его ещё не получила — нажмите «Обновить доступ».` : `Доступ к карте «${name}» обновлён.`;
+        }, $('#map-access'));
       }
       $<HTMLFormElement>('#grant-form').addEventListener('submit', async e => {
         e.preventDefault();
@@ -930,6 +964,8 @@ Astro.response.headers.set('Cache-Control', 'no-store');
           case 'role-grant': return ['назначил', 'назначить', ` ${d.name ?? 'игрока'} на роль «${ROLES[d.role]?.name ?? 'участник'}»`];
           case 'role-revoke': return ['убрал', 'убрать', ` ${d.name ?? 'игрока'} из команды`];
           case 'workshop-sync': return ['обновил', 'обновить', ' доступ в мастерскую'];
+          case 'workshop-maps': return ['изменил', 'изменить', ` карты для ${d.name ?? 'строителя'} в мастерской`];
+          case 'workshop-map-access': return ['изменил', 'изменить', ` список строителей карты «${MAP_NAMES[a.target] ?? 'другая карта'}»`];
           case 'result-void': return ['исключил', 'исключить', ` из статистики матч${result}`];
           case 'result-restore': return ['вернул', 'вернуть', ` в статистику матч${result}`];
           case 'ingest-key-create': return ['создал', 'создать', ` ключ приёма результатов «${d.label ?? ''}»`];

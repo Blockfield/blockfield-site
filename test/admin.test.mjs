@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rejectedByServer, can, checkRoleChange, devUser, handleAdmin, owners, playerId, rconCommand, roleOf, saveSettings, siteIdentity, validateSettings, workshopMembers, writeRequest } from '../src/lib/admin.ts';
+import { rejectedByServer, can, checkRoleChange, devUser, handleAdmin, owners, playerId, rconCommand, roleOf, saveSettings, siteIdentity, validateSettings, workshopMembers, writeRequest, withMapAccess } from '../src/lib/admin.ts';
 import { StatsStore } from '../src/lib/stats.ts';
 
 const OWNER = 'e10438e4797b49718cfecec6a8fa171b', ADMIN = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', MOD = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', OTHER = 'cccccccccccccccccccccccccccccccc';
@@ -280,6 +280,36 @@ test('POST staff/maps: only a builder row accepts a map list, ids must be known 
   const cleared = await call('staff/maps', { uuid: OTHER, maps: null });
   assert.equal(cleared.status, 200);
   assert.equal((await s.staff()).find(row => row.uuid === OTHER).maps, null);
+});
+
+test('withMapAccess: grant keeps "every map", revoke from "every map" lists the rest, a grant never implies future maps', () => {
+  assert.equal(withMapAccess(null, 'fields', true), null);
+  assert.deepEqual(withMapAccess(['konstaxa'], 'fields', true), ['konstaxa', 'fields']);
+  assert.deepEqual(withMapAccess(['fields'], 'fields', true), ['fields']);
+  assert.deepEqual(withMapAccess(['konstaxa', 'fields'], 'fields', false), ['konstaxa']);
+  const rest = withMapAccess(null, 'fields', false);
+  assert.ok(!rest.includes('fields') && rest.includes('konstaxa'));
+});
+
+test('POST staff/map-access: sets one map for every builder in one request, only known maps and builders', async t => {
+  const dirs = { BLOCKFIELD_ADMIN_DIR: temp(t), BLOCKFIELD_INBOX_DIR: temp(t), BLOCKFIELD_SETTINGS_DIR: temp(t) };
+  const saved = { ...process.env };
+  t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test', BLOCKFIELD_ADMIN_DEV_USER: `${OWNER}:Nether` });
+  const s = await store(t);
+  await s.setStaff(OTHER, 'Bob', 'builder', 'seed'); await s.setStaff(MOD, 'Moddy', 'builder', 'seed');
+  await s.setStaffMaps(MOD, ['konstaxa']);
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  globalThis.fetch = async () => new Response('', { status: 404 });
+  const call = body => { const url = new URL('http://site/api/admin/staff/map-access'); return handleAdmin({ request: new Request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), url, cookies: { get: () => undefined } }, 'staff/map-access', s).then(r => r, e => e); };
+  assert.equal((await call({ mapId: 'not_a_map', uuids: [] })).status, 400);
+  assert.equal((await call({ mapId: 'fields', uuids: [OWNER] })).status, 400, 'only builders carry map lists');
+  const ok = await call({ mapId: 'fields', uuids: [MOD] });
+  assert.equal(ok.status, 200);
+  const maps = uuid => s.staff().then(rows => rows.find(row => row.uuid === uuid).maps);
+  assert.deepEqual(await maps(MOD), ['konstaxa', 'fields']);
+  assert.ok(!(await maps(OTHER)).includes('fields') && (await maps(OTHER)).includes('konstaxa'), 'Bob had every map, now every map but fields');
+  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).filter(f => f.endsWith('.json')).length, 1, 'one members request for the whole change');
 });
 
 test('review: stop-room without RCON configured fails fast, before querying rooms', async t => {
