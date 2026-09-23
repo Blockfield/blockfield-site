@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rejectedByServer, can, checkRoleChange, devUser, handleAdmin, owners, playerId, rconCommand, roleOf, saveSettings, siteIdentity, validateSettings, workshopMembers, writeRequest, withMapAccess, handleWorkshopAccess } from '../src/lib/admin.ts';
+import { rejectedByServer, can, checkRoleChange, devUser, handleAdmin, owners, playerId, rconCommand, roleOf, saveSettings, siteIdentity, validateSettings, workshopMembers, writeRequest, withMapAccess, handleWorkshopAccess, handleWorkshopSubmit } from '../src/lib/admin.ts';
 import { StatsStore } from '../src/lib/stats.ts';
 
 const OWNER = 'e10438e4797b49718cfecec6a8fa171b', ADMIN = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', MOD = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', OTHER = 'cccccccccccccccccccccccccccccccc';
@@ -340,6 +340,35 @@ test('POST /api/workshop/access: key, then the in-game actor\'s own site role; h
   const log = await s.auditLog(20);
   assert.ok(log.some(e => e.action === 'workshop-map-access' && e.ok && e.target === 'hub'), 'granted from the game is in the journal');
   assert.ok(log.some(e => e.action === 'workshop-map-access' && !e.ok), 'refusals are journaled too');
+});
+
+test('POST /api/workshop/submit: a builder only for maps they build on; writes a candidate request; journaled', async t => {
+  const dirs = { BLOCKFIELD_ADMIN_DIR: temp(t), BLOCKFIELD_INBOX_DIR: temp(t), BLOCKFIELD_SETTINGS_DIR: temp(t) };
+  const saved = { ...process.env };
+  t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' });
+  const s = await store(t);
+  await s.setStaff(OTHER, 'Bob', 'builder', 'seed'); await s.setStaffMaps(OTHER, ['fields']);
+  const KEY = 'k'.repeat(40);
+  writeFileSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'workshop.key'), KEY);
+  const call = body => handleWorkshopSubmit(new Request('http://site/api/workshop/submit', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` }, body: JSON.stringify(body) }), {}, s).then(r => r, e => e);
+  assert.equal((await call({ actor: OTHER, mapId: 'konstaxa' })).status, 403, 'not his map');
+  assert.equal((await call({ actor: OTHER, mapId: 'hub' })).status, 400, 'the hub is not a map');
+  const ok = await call({ actor: OTHER, actorName: 'Bob', mapId: 'fields' });
+  assert.equal(ok.status, 200);
+  const files = readdirSync(dirs.BLOCKFIELD_INBOX_DIR).filter(f => f.endsWith('.json'));
+  assert.equal(files.length, 1);
+  const request = JSON.parse(readFileSync(join(dirs.BLOCKFIELD_INBOX_DIR, files[0]), 'utf8'));
+  assert.deepEqual([request.kind, request.mapId, request.actor.name], ['candidate', 'fields', 'Bob']);
+  assert.ok((await s.auditLog(5)).some(e => e.action === 'workshop-candidate' && e.ok && e.target === 'fields'));
+});
+
+test('writeRequest: candidate/rollback take a real map, publish/reject a candidate id', t => {
+  const dir = temp(t), actor = { uuid: OWNER, name: 'Nether', role: 'owner' };
+  assert.ok(writeRequest(dir, actor, { kind: 'candidate', mapId: 'konstaxa' }));
+  assert.ok(writeRequest(dir, actor, { kind: 'publish', candidateId: 'a'.repeat(32) }));
+  assert.throws(() => writeRequest(dir, actor, { kind: 'rollback', mapId: 'hub' }));
+  assert.throws(() => writeRequest(dir, actor, { kind: 'reject', candidateId: '../x' }));
 });
 
 test('review: stop-room without RCON configured fails fast, before querying rooms', async t => {
