@@ -1,5 +1,5 @@
 import type { APIContext } from 'astro';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { openSync, readSync, closeSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AstroCookies } from 'astro';
@@ -7,7 +7,7 @@ import { account, drasl, fail, nickname, readJson, session, token } from './acco
 import { rcon } from './rcon.ts';
 import { currentRooms, roomId } from './rooms.ts';
 import { resolveNames, seasons, statsStore, StatsError, UNKNOWN_PLAYER, type StatsStore } from './stats.ts';
-import { BALANCE_LABELS, BALANCE_SCOPES, MAP_NAMES } from './game-names.ts';
+import { BALANCE_LABELS, BALANCE_SCOPES, MAP_NAMES, WORKSHOP_PLACES } from './game-names.ts';
 
 export const ROLES = ['builder', 'moderator', 'admin', 'owner'] as const;
 export type Role = typeof ROLES[number];
@@ -90,7 +90,8 @@ export function writeAtomic(directory: string, name: string, value: unknown) {
   catch (error) { try { unlinkSync(temp); } catch {} throw error; }
 }
 
-export const MAP_IDS = new Set(Object.keys(MAP_NAMES));
+// Workshop access scopes, not only maps: `hub` gates building in the workshop hub.
+export const MAP_IDS = new Set(Object.keys(WORKSHOP_PLACES));
 /** One builder's list after granting (`allowed`) or taking away one map; null stays null when granting, and a new map is never silently implied. */
 export function withMapAccess(maps: string[] | null, mapId: string, allowed: boolean): string[] | null {
   if (allowed) return maps === null || maps.includes(mapId) ? maps : [...maps, mapId];
@@ -416,6 +417,41 @@ const routes: Record<string, Route> = {
   'GET seasons': { permission: 'stats', handler: () => ({ seasons: seasons() }) },
   'GET audit': { permission: 'audit', handler: async ({ store }) => ({ entries: await store.auditLog(200) }) },
 };
+
+/**
+ * `POST /api/workshop/access` from the workshop server (tablet «Разрешить/Запретить строить»): the same change as
+ * «Кто правит» for one builder, authorised by BLOCKFIELD_WORKSHOP_KEY and then by the in-game actor's own site role.
+ */
+export async function handleWorkshopAccess(request: Request, env: Record<string, string | undefined> = process.env, storage?: StatsStore): Promise<Response> {
+  if (request.method !== 'POST') return fail(405, 'POST only.');
+  const key = env.BLOCKFIELD_WORKSHOP_KEY;
+  if (!key) return fail(503, 'Запись из мастерской не настроена.');
+  const digest = (value: string) => createHash('sha256').update(value).digest();
+  if (!timingSafeEqual(digest(request.headers.get('authorization') ?? ''), digest(`Bearer ${key}`))) return fail(401, 'Неверный ключ.');
+  const body = await readJson(request, 4096);
+  const actorId = playerId(body?.actor), targetId = playerId(body?.target), mapId = body?.mapId;
+  if (!actorId || !targetId || typeof mapId !== 'string' || !MAP_IDS.has(mapId) || typeof body?.allowed !== 'boolean') return fail(400, 'Некорректный запрос.');
+  const store = storage ?? (await statsStore());
+  const staff = await store.staff(), role = await roleOf(actorId, store);
+  const actor: Actor = { uuid: actorId, name: staff.find(s => s.uuid === actorId)?.name ?? (await knownName(store, actorId)) ?? 'Владелец', role };
+  const target = staff.find(s => s.uuid === targetId);
+  let error: string | null = null, result: any = null;
+  try {
+    if (!role || !can(role, 'roles')) throw fail(403, 'Менять права может только администратор.');
+    if (target?.role !== 'builder') throw fail(400, 'Права по картам задаются только строителям.');
+    const maps = withMapAccess(target.maps ?? null, mapId, body.allowed);
+    await store.setStaffMaps(targetId, maps);
+    const sync = await syncWorkshop(store, actor).then(({ id }) => ({ id }), (e: unknown) => ({ error: e instanceof Response ? 'Не удалось отправить список в мастерскую.' : String((e as Error).message) }));
+    result = { mapId, name: target.name, maps, sync };
+    return Response.json(result, { headers: noStore });
+  } catch (thrown) {
+    error = thrown instanceof Response ? await thrown.clone().json().then(d => d.error, () => 'error') : 'internal error';
+    throw thrown;
+  } finally {
+    await store.audit({ actorUuid: actor.uuid, actorName: actor.name, role: role ?? 'none', action: 'workshop-map-access', target: mapId,
+      detail: { changed: result ? [result.name] : [], allowed: body.allowed, target: target?.name ?? targetId, from: 'game', sync: result?.sync }, ok: error === null, error });
+  }
+}
 
 /** Every /api/admin/* call: session → role → permission; every non-GET is audited, including refusals and failures. */
 export async function handleAdmin(context: APIContext, path: string, storage?: StatsStore): Promise<Response> {

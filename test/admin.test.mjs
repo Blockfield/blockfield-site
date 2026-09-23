@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rejectedByServer, can, checkRoleChange, devUser, handleAdmin, owners, playerId, rconCommand, roleOf, saveSettings, siteIdentity, validateSettings, workshopMembers, writeRequest, withMapAccess } from '../src/lib/admin.ts';
+import { rejectedByServer, can, checkRoleChange, devUser, handleAdmin, owners, playerId, rconCommand, roleOf, saveSettings, siteIdentity, validateSettings, workshopMembers, writeRequest, withMapAccess, handleWorkshopAccess } from '../src/lib/admin.ts';
 import { StatsStore } from '../src/lib/stats.ts';
 
 const OWNER = 'e10438e4797b49718cfecec6a8fa171b', ADMIN = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', MOD = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', OTHER = 'cccccccccccccccccccccccccccccccc';
@@ -310,6 +310,34 @@ test('POST staff/map-access: sets one map for every builder in one request, only
   assert.deepEqual(await maps(MOD), ['konstaxa', 'fields']);
   assert.ok(!(await maps(OTHER)).includes('fields') && (await maps(OTHER)).includes('konstaxa'), 'Bob had every map, now every map but fields');
   assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).filter(f => f.endsWith('.json')).length, 1, 'one members request for the whole change');
+});
+
+test('POST /api/workshop/access: key, then the in-game actor\'s own site role; hub is a scope; audited', async t => {
+  const dirs = { BLOCKFIELD_ADMIN_DIR: temp(t), BLOCKFIELD_INBOX_DIR: temp(t), BLOCKFIELD_SETTINGS_DIR: temp(t) };
+  const saved = { ...process.env };
+  t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' });
+  const s = await store(t);
+  await s.setStaff(OTHER, 'Bob', 'builder', 'seed'); await s.setStaff(MOD, 'Moddy', 'moderator', 'seed');
+  await s.setStaffMaps(OTHER, ['fields']);
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  globalThis.fetch = async () => new Response('', { status: 404 });
+  const KEY = 'k'.repeat(40), env = { BLOCKFIELD_WORKSHOP_KEY: KEY };
+  const call = (body, key = KEY, e = env) => handleWorkshopAccess(new Request('http://site/api/workshop/access', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify(body) }), e, s).then(r => r, e => e);
+  const grant = { actor: OWNER, target: OTHER, mapId: 'hub', allowed: true };
+  assert.equal((await call(grant, KEY, {})).status, 503, 'no key configured');
+  assert.equal((await call(grant, 'wrong'.repeat(8))).status, 401);
+  assert.equal((await call({ ...grant, actor: MOD })).status, 403, 'a moderator cannot change rights');
+  assert.equal((await call({ ...grant, target: MOD })).status, 400, 'only builders carry map lists');
+  assert.equal((await call({ ...grant, mapId: 'nowhere' })).status, 400);
+  const ok = await call(grant);
+  assert.equal(ok.status, 200);
+  assert.deepEqual((await s.staff()).find(row => row.uuid === OTHER).maps, ['fields', 'hub']);
+  assert.equal((await call({ ...grant, mapId: 'fields', allowed: false })).status, 200);
+  assert.deepEqual((await s.staff()).find(row => row.uuid === OTHER).maps, ['hub']);
+  const log = await s.auditLog(20);
+  assert.ok(log.some(e => e.action === 'workshop-map-access' && e.ok && e.target === 'hub'), 'granted from the game is in the journal');
+  assert.ok(log.some(e => e.action === 'workshop-map-access' && !e.ok), 'refusals are journaled too');
 });
 
 test('review: stop-room without RCON configured fails fast, before querying rooms', async t => {
