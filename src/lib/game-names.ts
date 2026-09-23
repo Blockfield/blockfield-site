@@ -7,7 +7,9 @@ export const CLASS_NAMES: Record<string, string> = { assault: 'Штурмови�
 export const CLASS_COSTS: Record<string, number> = { tech: 600, sniper: 800, drone: 1200 };
 export const MAP_NAMES: Record<string, string> = {
   baxmut: 'Бахмут', berdichev: 'Бердичев', dm_arena: 'Арена', fields: 'Степи Донбасса', firing_range: 'Полигон',
-  konstaxa: 'Константиновка', kozyatyn: 'Казатин', zaliznichne: 'Железнодорожное',
+  konstaxa: 'Константиновка', kozyatyn: 'Казатин', zaliznichne: 'Железнодорожное', snipers_towers: 'Вышки',
+  dust2: 'Dust II', train: 'Train', mirage: 'Mirage', inferno: 'Inferno', overpass: 'Overpass', ancient: 'Ancient',
+  anubis: 'Anubis', nuke: 'Nuke', vertigo: 'Vertigo',
 };
 export const MODE_NAMES: Record<string, string> = { campaign: 'Ranked-кампания', room: 'Обычный бой', deathmatch: 'Каждый сам за себя' };
 export const TEAM_NAMES: Record<string, string> = { RED: 'красных', BLUE: 'синих' };
