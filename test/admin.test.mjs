@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rejectedByServer, can, checkRoleChange, devUser, handleAdmin, owners, playerId, rconCommand, roleOf, saveSettings, siteIdentity, validateSettings, workshopMembers, writeRequest, withMapAccess } from '../src/lib/admin.ts';
+import { rejectedByServer, can, checkRoleChange, devUser, handleAdmin, owners, playerId, rconCommand, roleOf, saveSettings, siteIdentity, validateSettings, workshopMembers, writeRequest, withMapAccess, handleWorkshopAccess, handleWorkshopSubmit } from '../src/lib/admin.ts';
 import { StatsStore } from '../src/lib/stats.ts';
 
 const OWNER = 'e10438e4797b49718cfecec6a8fa171b', ADMIN = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', MOD = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', OTHER = 'cccccccccccccccccccccccccccccccc';
@@ -310,6 +310,65 @@ test('POST staff/map-access: sets one map for every builder in one request, only
   assert.deepEqual(await maps(MOD), ['konstaxa', 'fields']);
   assert.ok(!(await maps(OTHER)).includes('fields') && (await maps(OTHER)).includes('konstaxa'), 'Bob had every map, now every map but fields');
   assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).filter(f => f.endsWith('.json')).length, 1, 'one members request for the whole change');
+});
+
+test('POST /api/workshop/access: key, then the in-game actor\'s own site role; hub is a scope; audited', async t => {
+  const dirs = { BLOCKFIELD_ADMIN_DIR: temp(t), BLOCKFIELD_INBOX_DIR: temp(t), BLOCKFIELD_SETTINGS_DIR: temp(t) };
+  const saved = { ...process.env };
+  t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' });
+  const s = await store(t);
+  await s.setStaff(OTHER, 'Bob', 'builder', 'seed'); await s.setStaff(MOD, 'Moddy', 'moderator', 'seed');
+  await s.setStaffMaps(OTHER, ['fields']);
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  globalThis.fetch = async () => new Response('', { status: 404 });
+  const KEY = 'k'.repeat(40), env = { BLOCKFIELD_WORKSHOP_KEY: KEY };
+  const call = (body, key = KEY, e = env) => handleWorkshopAccess(new Request('http://site/api/workshop/access', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify(body) }), e, s).then(r => r, e => e);
+  const grant = { actor: OWNER, target: OTHER, mapId: 'hub', allowed: true };
+  assert.equal((await call(grant, KEY, {})).status, 503, 'no key configured');
+  writeFileSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'workshop.key'), `${KEY}\n`);
+  assert.equal((await call({ ...grant, actor: MOD }, KEY, {})).status, 403, 'the key file in the admin export works like the env');
+  assert.equal((await call(grant, 'wrong'.repeat(8))).status, 401);
+  assert.equal((await call({ ...grant, actor: MOD })).status, 403, 'a moderator cannot change rights');
+  assert.equal((await call({ ...grant, target: MOD })).status, 400, 'only builders carry map lists');
+  assert.equal((await call({ ...grant, mapId: 'nowhere' })).status, 400);
+  const ok = await call(grant);
+  assert.equal(ok.status, 200);
+  assert.deepEqual((await s.staff()).find(row => row.uuid === OTHER).maps, ['fields', 'hub']);
+  assert.equal((await call({ ...grant, mapId: 'fields', allowed: false })).status, 200);
+  assert.deepEqual((await s.staff()).find(row => row.uuid === OTHER).maps, ['hub']);
+  const log = await s.auditLog(20);
+  assert.ok(log.some(e => e.action === 'workshop-map-access' && e.ok && e.target === 'hub'), 'granted from the game is in the journal');
+  assert.ok(log.some(e => e.action === 'workshop-map-access' && !e.ok), 'refusals are journaled too');
+});
+
+test('POST /api/workshop/submit: a builder only for maps they build on; writes a candidate request; journaled', async t => {
+  const dirs = { BLOCKFIELD_ADMIN_DIR: temp(t), BLOCKFIELD_INBOX_DIR: temp(t), BLOCKFIELD_SETTINGS_DIR: temp(t) };
+  const saved = { ...process.env };
+  t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' });
+  const s = await store(t);
+  await s.setStaff(OTHER, 'Bob', 'builder', 'seed'); await s.setStaffMaps(OTHER, ['fields']);
+  const KEY = 'k'.repeat(40);
+  writeFileSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'workshop.key'), KEY);
+  const call = body => handleWorkshopSubmit(new Request('http://site/api/workshop/submit', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` }, body: JSON.stringify(body) }), {}, s).then(r => r, e => e);
+  assert.equal((await call({ actor: OTHER, mapId: 'konstaxa' })).status, 403, 'not his map');
+  assert.equal((await call({ actor: OTHER, mapId: 'hub' })).status, 400, 'the hub is not a map');
+  const ok = await call({ actor: OTHER, actorName: 'Bob', mapId: 'fields' });
+  assert.equal(ok.status, 200);
+  const files = readdirSync(dirs.BLOCKFIELD_INBOX_DIR).filter(f => f.endsWith('.json'));
+  assert.equal(files.length, 1);
+  const request = JSON.parse(readFileSync(join(dirs.BLOCKFIELD_INBOX_DIR, files[0]), 'utf8'));
+  assert.deepEqual([request.kind, request.mapId, request.actor.name], ['candidate', 'fields', 'Bob']);
+  assert.ok((await s.auditLog(5)).some(e => e.action === 'workshop-candidate' && e.ok && e.target === 'fields'));
+});
+
+test('writeRequest: candidate/rollback take a real map, publish/reject a candidate id', t => {
+  const dir = temp(t), actor = { uuid: OWNER, name: 'Nether', role: 'owner' };
+  assert.ok(writeRequest(dir, actor, { kind: 'candidate', mapId: 'konstaxa' }));
+  assert.ok(writeRequest(dir, actor, { kind: 'publish', candidateId: 'a'.repeat(32) }));
+  assert.throws(() => writeRequest(dir, actor, { kind: 'rollback', mapId: 'hub' }));
+  assert.throws(() => writeRequest(dir, actor, { kind: 'reject', candidateId: '../x' }));
 });
 
 test('review: stop-room without RCON configured fails fast, before querying rooms', async t => {

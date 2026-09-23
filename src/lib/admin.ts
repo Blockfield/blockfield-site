@@ -1,13 +1,13 @@
 import type { APIContext } from 'astro';
-import { randomUUID } from 'node:crypto';
-import { openSync, readSync, closeSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { openSync, readSync, readFileSync, closeSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AstroCookies } from 'astro';
 import { account, drasl, fail, nickname, readJson, session, token } from './account.ts';
 import { rcon } from './rcon.ts';
 import { currentRooms, roomId } from './rooms.ts';
 import { resolveNames, seasons, statsStore, StatsError, UNKNOWN_PLAYER, type StatsStore } from './stats.ts';
-import { BALANCE_LABELS, BALANCE_SCOPES, MAP_NAMES } from './game-names.ts';
+import { BALANCE_LABELS, BALANCE_SCOPES, MAP_NAMES, WORKSHOP_PLACES } from './game-names.ts';
 
 export const ROLES = ['builder', 'moderator', 'admin', 'owner'] as const;
 export type Role = typeof ROLES[number];
@@ -75,6 +75,9 @@ export async function siteIdentity(cookies: Pick<AstroCookies, 'get'>): Promise<
   } catch { return null; }
 }
 
+function readText(path: string, max = 1024): string | null {
+  try { const text = readFileSync(path, 'utf8'); return text.length > max ? null : text; } catch { return null; }
+}
 function readFile(path: string, max = 65_536): any {
   let fd: number;
   try { fd = openSync(path, 'r'); } catch { return null; }
@@ -90,7 +93,8 @@ export function writeAtomic(directory: string, name: string, value: unknown) {
   catch (error) { try { unlinkSync(temp); } catch {} throw error; }
 }
 
-export const MAP_IDS = new Set(Object.keys(MAP_NAMES));
+// Workshop access scopes, not only maps: `hub` gates building in the workshop hub.
+export const MAP_IDS = new Set(Object.keys(WORKSHOP_PLACES));
 /** One builder's list after granting (`allowed`) or taking away one map; null stays null when granting, and a new map is never silently implied. */
 export function withMapAccess(maps: string[] | null, mapId: string, allowed: boolean): string[] | null {
   if (allowed) return maps === null || maps.includes(mapId) ? maps : [...maps, mapId];
@@ -133,6 +137,13 @@ export function writeRequest(directory: string, actor: Actor, body: any): string
     const valid = Array.isArray(body.members) && body.members.every((m: any) => playerId(m?.draslId) === m.draslId && nickname.test(m.name) && ['admin', 'lead', 'builder'].includes(m.role) && validMaps(m));
     if (!valid) throw bad('Некорректный список участников.');
     request = { ...base, members: body.members.map(({ draslId, name, role, maps }: WorkshopMember) => ({ draslId, name, role, ...(maps ? { maps } : {}) })) };
+  } else if (body?.kind === 'candidate' || body?.kind === 'rollback') {
+    // Only real maps: the hub is an access scope, not something that is published.
+    if (typeof body.mapId !== 'string' || !(body.mapId in MAP_NAMES)) throw bad('Неизвестная карта.');
+    request = { ...base, mapId: body.mapId };
+  } else if (body?.kind === 'publish' || body?.kind === 'reject') {
+    if (typeof body.candidateId !== 'string' || !/^[0-9a-f]{32}$/.test(body.candidateId)) throw bad('Неизвестная версия карты.');
+    request = { ...base, candidateId: body.candidateId };
   } else throw bad('Неизвестный тип запроса.');
   writeAtomic(directory, `${base.id}.json`, request);
   return base.id;
@@ -344,6 +355,16 @@ const routes: Record<string, Route> = {
   'GET settings': { permission: 'settings', handler: () => ({ ...readSettings(settingsDir()), balance: BALANCE }) },
   'PUT settings': { permission: 'settings', handler: ({ actor, body }) => ({ settings: saveSettings(settingsDir(), body, actor.name) }),
     audit: (body, result) => ({ action: 'settings', target: result?.settings ? `revision ${result.settings.revision}` : null, detail: body }) },
+  // Map candidates (controller candidates.py): the list is for everyone in the panel, decisions for admins.
+  'GET candidates': { permission: 'view', handler: () => readFile(join(adminDir(), 'candidates.json')) ?? { schema: 1, candidates: [], backups: {} } },
+  'POST candidates/create': { permission: 'workshop', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'candidate', mapId: body?.mapId }) }),
+    audit: body => ({ action: 'workshop-candidate', target: body?.mapId ?? null }) },
+  'POST candidates/publish': { permission: 'workshop', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'publish', candidateId: body?.candidateId }) }),
+    audit: body => ({ action: 'workshop-publish', target: body?.mapId ?? null, detail: { candidateId: body?.candidateId } }) },
+  'POST candidates/reject': { permission: 'workshop', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'reject', candidateId: body?.candidateId }) }),
+    audit: body => ({ action: 'workshop-reject', target: body?.mapId ?? null, detail: { candidateId: body?.candidateId } }) },
+  'POST maps/rollback': { permission: 'workshop', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'rollback', mapId: body?.mapId }) }),
+    audit: body => ({ action: 'workshop-rollback', target: body?.mapId ?? null }) },
   'GET staff': { permission: 'roles', handler: async ({ actor, store }) => {
     const ids = owners();
     await Promise.all([...ids].map(async uuid => ownerName(uuid).catch(() => null)));
@@ -416,6 +437,79 @@ const routes: Record<string, Route> = {
   'GET seasons': { permission: 'stats', handler: () => ({ seasons: seasons() }) },
   'GET audit': { permission: 'audit', handler: async ({ store }) => ({ entries: await store.auditLog(200) }) },
 };
+
+/**
+ * `POST /api/workshop/access` from the workshop server (tablet «Разрешить/Запретить строить»): the same change as
+ * «Кто правит» for one builder, authorised by BLOCKFIELD_WORKSHOP_KEY and then by the in-game actor's own site role.
+ */
+/** The workshop server's own requests: shared key (a file in the controller's admin export, both mount it read-only). */
+function workshopKeyError(request: Request, env: Record<string, string | undefined>): Response | null {
+  if (request.method !== 'POST') return fail(405, 'POST only.');
+  const key = env.BLOCKFIELD_WORKSHOP_KEY || readText(join(adminDir(), 'workshop.key'))?.trim();
+  if (!key || key.length < 32) return fail(503, 'Запись из мастерской не настроена.');
+  const digest = (value: string) => createHash('sha256').update(value).digest();
+  if (!timingSafeEqual(digest(request.headers.get('authorization') ?? ''), digest(`Bearer ${key}`))) return fail(401, 'Неверный ключ.');
+  return null;
+}
+
+/**
+ * `POST /api/workshop/submit {actor, actorName, mapId}`: «Отправить на проверку» from the tablet. The actor must be
+ * able to build on that map by the site's own records; the controller then snapshots it (inbox kind `candidate`).
+ */
+export async function handleWorkshopSubmit(request: Request, env: Record<string, string | undefined> = process.env, storage?: StatsStore): Promise<Response> {
+  const refused = workshopKeyError(request, env);
+  if (refused) return refused;
+  const body = await readJson(request, 4096);
+  const actorId = playerId(body?.actor), mapId = body?.mapId;
+  if (!actorId || typeof mapId !== 'string' || !(mapId in MAP_NAMES)) return fail(400, 'Некорректный запрос.');
+  const store = storage ?? (await statsStore());
+  const staff = await store.staff(), role = await roleOf(actorId, store), row = staff.find(s => s.uuid === actorId);
+  const claimed = typeof body?.actorName === 'string' && nickname.test(body.actorName) ? body.actorName : null;
+  const actor: Actor = { uuid: actorId, name: row?.name ?? (await knownName(store, actorId)) ?? claimed ?? 'Владелец', role };
+  let error: string | null = null, id: string | null = null;
+  try {
+    const builds = role !== null && (role !== 'builder' || row?.maps == null || row.maps.includes(mapId));
+    if (!builds) throw fail(403, 'Нет права строить на этой карте.');
+    id = writeRequest(inboxDir(), actor, { kind: 'candidate', mapId });
+    return Response.json({ id }, { headers: noStore });
+  } catch (thrown) {
+    error = thrown instanceof Response ? await thrown.clone().json().then(d => d.error, () => 'error') : 'internal error';
+    throw thrown;
+  } finally {
+    await store.audit({ actorUuid: actor.uuid, actorName: actor.name, role: role ?? 'none', action: 'workshop-candidate', target: mapId,
+      detail: { from: 'game', request: id }, ok: error === null, error });
+  }
+}
+
+export async function handleWorkshopAccess(request: Request, env: Record<string, string | undefined> = process.env, storage?: StatsStore): Promise<Response> {
+  const refused = workshopKeyError(request, env);
+  if (refused) return refused;
+  const body = await readJson(request, 4096);
+  const actorId = playerId(body?.actor), targetId = playerId(body?.target), mapId = body?.mapId;
+  if (!actorId || !targetId || typeof mapId !== 'string' || !MAP_IDS.has(mapId) || typeof body?.allowed !== 'boolean') return fail(400, 'Некорректный запрос.');
+  const store = storage ?? (await statsStore());
+  const staff = await store.staff(), role = await roleOf(actorId, store);
+  // The workshop server knows the in-game nickname; the site's own record wins when it has one.
+  const claimed = typeof body?.actorName === 'string' && nickname.test(body.actorName) ? body.actorName : null;
+  const actor: Actor = { uuid: actorId, name: staff.find(s => s.uuid === actorId)?.name ?? (await knownName(store, actorId)) ?? claimed ?? 'Владелец', role };
+  const target = staff.find(s => s.uuid === targetId);
+  let error: string | null = null, result: any = null;
+  try {
+    if (!role || !can(role, 'roles')) throw fail(403, 'Менять права может только администратор.');
+    if (target?.role !== 'builder') throw fail(400, 'Права по картам задаются только строителям.');
+    const maps = withMapAccess(target.maps ?? null, mapId, body.allowed);
+    await store.setStaffMaps(targetId, maps);
+    const sync = await syncWorkshop(store, actor).then(({ id }) => ({ id }), (e: unknown) => ({ error: e instanceof Response ? 'Не удалось отправить список в мастерскую.' : String((e as Error).message) }));
+    result = { mapId, name: target.name, maps, sync };
+    return Response.json(result, { headers: noStore });
+  } catch (thrown) {
+    error = thrown instanceof Response ? await thrown.clone().json().then(d => d.error, () => 'error') : 'internal error';
+    throw thrown;
+  } finally {
+    await store.audit({ actorUuid: actor.uuid, actorName: actor.name, role: role ?? 'none', action: 'workshop-map-access', target: mapId,
+      detail: { changed: result ? [result.name] : [], allowed: body.allowed, target: target?.name ?? targetId, from: 'game', sync: result?.sync }, ok: error === null, error });
+  }
+}
 
 /** Every /api/admin/* call: session → role → permission; every non-GET is audited, including refusals and failures. */
 export async function handleAdmin(context: APIContext, path: string, storage?: StatsStore): Promise<Response> {

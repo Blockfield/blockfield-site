@@ -5,6 +5,8 @@
  */
 export const CLASS_NAMES: Record<string, string> = { assault: 'Штурмовик', mark: 'Марксман', sniper: 'Снайпер', tech: 'Инженер', drone: 'Оператор FPV' };
 export const CLASS_COSTS: Record<string, number> = { tech: 600, sniper: 800, drone: 1200 };
+/** Where workshop access applies: the hub plus every map (the mod's scope ids, the controller's MAP_IDS). */
+export const WORKSHOP_HUB = 'hub';
 export const MAP_NAMES: Record<string, string> = {
   baxmut: 'Бахмут', berdichev: 'Бердичев', dm_arena: 'Арена', fields: 'Степи Донбасса', firing_range: 'Полигон',
   konstaxa: 'Константиновка', kozyatyn: 'Казатин', zaliznichne: 'Железнодорожное', snipers_towers: 'Вышки',
@@ -73,3 +75,5 @@ export const BALANCE_GROUPS: { title: string; fields: Field[] }[] = [
   ] },
 ];
 export const BALANCE_LABELS: Record<string, string> = Object.fromEntries(BALANCE_GROUPS.flatMap(g => g.fields.map(f => [f.key, f.label])));
+
+export const WORKSHOP_PLACES: Record<string, string> = { [WORKSHOP_HUB]: 'Хаб мастерской', ...MAP_NAMES };
