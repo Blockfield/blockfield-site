@@ -67,15 +67,16 @@ test('workshop members: a builder\'s map list rides along, lead/admin never carr
 
 test('inbox request is validated and written atomically as <id>.json', t => {
   const dir = temp(t), lead = { uuid: MOD, name: 'Mod', role: 'moderator' }, admin = { uuid: ADMIN, name: 'Adm', role: 'admin' };
-  const id = writeRequest(dir, lead, { kind: 'mode', profile: 'workshop', expectedRevision: 3 });
+  const id = writeRequest(dir, lead, { kind: 'mode', profile: 'workshop', expectedRevision: 3, session: 'new', maps: null });
   assert.deepEqual(readdirSync(dir), [`${id}.json`], 'no temp file is left behind');
   const request = JSON.parse(readFileSync(join(dir, `${id}.json`)));
-  assert.deepEqual({ ...request, createdAt: 0 }, { schema: 1, id, kind: 'mode', actor: { draslId: MOD, name: 'Mod' }, createdAt: 0, profile: 'workshop', expectedRevision: 3 });
+  assert.deepEqual({ ...request, createdAt: 0 }, { schema: 1, id, kind: 'mode', actor: { draslId: MOD, name: 'Mod' }, createdAt: 0, profile: 'workshop', expectedRevision: 3, session: 'new', maps: null });
   for (const [actor, body, code] of [
     [lead, { kind: 'mode', profile: 'game', expectedRevision: 3, recover: true }, 403],
     [admin, { kind: 'mode', profile: 'workshop', expectedRevision: 3, recover: true }, 400],
     [admin, { kind: 'mode', profile: 'maintenance', expectedRevision: 3 }, 400],
     [admin, { kind: 'mode', profile: 'game' }, 400],
+    [admin, { kind: 'mode', profile: 'workshop', expectedRevision: 3 }, 400, 'no session'],
     [admin, { kind: 'message', message: 'x'.repeat(201) }, 400],
     [admin, { kind: 'members', members: [{ draslId: 'bad', name: 'Bob', role: 'admin' }] }, 400],
     [admin, { kind: 'shell' }, 400],
@@ -85,6 +86,42 @@ test('inbox request is validated and written atomically as <id>.json', t => {
   // maps: [] is a valid, distinct value (no maps, not "every map"), and must survive the request as written.
   const mapsId = writeRequest(dir, admin, { kind: 'members', members: [{ draslId: OTHER, name: 'Bob', role: 'builder', maps: [] }] });
   assert.deepEqual(JSON.parse(readFileSync(join(dir, `${mapsId}.json`))).members, [{ draslId: OTHER, name: 'Bob', role: 'builder', maps: [] }]);
+});
+
+test('mode request: workshop needs a session; "new" validates maps against MAP_IDS (hub included), "resume" never carries maps', t => {
+  const dir = temp(t), admin = { uuid: ADMIN, name: 'Adm', role: 'admin' };
+  const allId = writeRequest(dir, admin, { kind: 'mode', profile: 'workshop', expectedRevision: 1, session: 'new', maps: null });
+  assert.equal(JSON.parse(readFileSync(join(dir, `${allId}.json`))).maps, null);
+  const someId = writeRequest(dir, admin, { kind: 'mode', profile: 'workshop', expectedRevision: 1, session: 'new', maps: ['fields', 'hub'] });
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, `${someId}.json`))).maps, ['fields', 'hub']);
+  const resumeId = writeRequest(dir, admin, { kind: 'mode', profile: 'workshop', expectedRevision: 1, session: 'resume', maps: ['fields'] });
+  assert.equal('maps' in JSON.parse(readFileSync(join(dir, `${resumeId}.json`))), false, 'resume never carries maps, even if the caller sent some');
+  for (const body of [
+    { kind: 'mode', profile: 'workshop', expectedRevision: 1, session: 'later' },
+    { kind: 'mode', profile: 'workshop', expectedRevision: 1, session: 'new', maps: [] },
+    { kind: 'mode', profile: 'workshop', expectedRevision: 1, session: 'new', maps: ['not_a_map'] },
+    { kind: 'mode', profile: 'workshop', expectedRevision: 1, session: 'new', maps: ['fields', 'fields'] },
+  ]) assert.throws(() => writeRequest(dir, admin, body), e => status(e) === 400, JSON.stringify(body));
+});
+
+test('mode request: test profile needs a known candidate id', t => {
+  const dir = temp(t), admin = { uuid: ADMIN, name: 'Adm', role: 'admin' };
+  const id = writeRequest(dir, admin, { kind: 'mode', profile: 'test', expectedRevision: 2, candidateId: 'a'.repeat(32) });
+  assert.equal(JSON.parse(readFileSync(join(dir, `${id}.json`))).candidateId, 'a'.repeat(32));
+  for (const body of [
+    { kind: 'mode', profile: 'test', expectedRevision: 2 }, { kind: 'mode', profile: 'test', expectedRevision: 2, candidateId: 'nope' },
+  ]) assert.throws(() => writeRequest(dir, admin, body), e => status(e) === 400, JSON.stringify(body));
+});
+
+test('publish request: optional force must be boolean, only written when true', t => {
+  const dir = temp(t), admin = { uuid: ADMIN, name: 'Adm', role: 'admin' };
+  const plain = writeRequest(dir, admin, { kind: 'publish', candidateId: 'a'.repeat(32) });
+  assert.equal('force' in JSON.parse(readFileSync(join(dir, `${plain}.json`))), false);
+  const forced = writeRequest(dir, admin, { kind: 'publish', candidateId: 'a'.repeat(32), force: true });
+  assert.equal(JSON.parse(readFileSync(join(dir, `${forced}.json`))).force, true);
+  const declined = writeRequest(dir, admin, { kind: 'publish', candidateId: 'a'.repeat(32), force: false });
+  assert.equal('force' in JSON.parse(readFileSync(join(dir, `${declined}.json`))), false);
+  assert.throws(() => writeRequest(dir, admin, { kind: 'publish', candidateId: 'a'.repeat(32), force: 'yes' }), e => status(e) === 400);
 });
 
 test('cancel request: same shape as mode/message, no extra fields, no extra validation to bypass', t => {

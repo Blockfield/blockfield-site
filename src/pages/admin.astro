@@ -482,15 +482,19 @@ Astro.response.headers.set('Cache-Control', 'no-store');
       }
       const reasonField = (label = 'Причина (игрок её увидит)', required = false) => field(label, el('input', { name: 'reason', maxLength: 120, required, autocomplete: 'off' }), required ? undefined : 'Необязательно.');
 
-      /** Controller requests are applied by the host within ~15 s; poll its result file for up to a minute. */
-      async function follow(line: HTMLElement, id: string, done: string) {
+      /**
+       * Controller requests are applied by the host within ~15 s; poll its result file for up to a minute.
+       * `onError`, when given, sees the raw error text first and may handle it itself (return true) instead of the generic message.
+       */
+      async function follow(line: HTMLElement, id: string, done: string, onError?: (error: string) => Promise<boolean> | boolean) {
         say(line, 'Запрос отправлен. Сервер применит его в течение 15 секунд…', 'pending');
         for (let i = 0; i < 30; i++) {
           await new Promise(r => setTimeout(r, 2000));
           const { result } = await api(`request?id=${id}`).catch(() => ({ result: null }));
           if (result) {
             if (result.ok) say(line, done);
-            else say(line, /revision/i.test(String(result.error)) ? 'Состояние сервера успело измениться. Обновите страницу и попробуйте снова.' : 'Сервер не смог выполнить запрос. Попробуйте ещё раз или сообщите владельцу.', 'error');
+            else if (!(await onError?.(String(result.error))))
+              say(line, /revision/i.test(String(result.error)) ? 'Состояние сервера успело измениться. Обновите страницу и попробуйте снова.' : 'Сервер не смог выполнить запрос. Попробуйте ещё раз или сообщите владельцу.', 'error');
             loadOverview(); return;
           }
         }
@@ -499,19 +503,30 @@ Astro.response.headers.set('Cache-Control', 'no-store');
 
       // ---------- Overview and matches ----------
       let controller: any = null;
+      let session: any = null;
       /** since/deadline are ms timestamps; ago() naturally reads a future one as "через …" and a past one as "… назад". */
       function timing(view: ReturnType<typeof switchView>): string {
         return [typeof view.since === 'number' ? `началось ${ago(view.since)}` : null,
           typeof view.deadline === 'number' ? `автоматический откат ${ago(view.deadline)}` : null].filter(Boolean).join(' · ');
       }
-      function describe(state: any, rooms: any): { tone: string; title: string; detail: string } {
+      /** «Мастерская»/«Тестовый матч» status: who started the session, when, and which maps it covers. */
+      function sessionLine(current: any): string | null {
+        if (!current) return null;
+        const maps = current.maps ? current.maps.map((id: string) => MAP_NAMES[id] ?? id).join(', ') : 'все карты';
+        return `Сеанс: ${maps} · начал ${current.startedBy?.name ?? '?'} ${ago(current.startedAt)}.`;
+      }
+      function describe(state: any, rooms: any, current: any, testCandidate: any): { tone: string; title: string; detail: string } {
         const matches = rooms.rooms?.length ?? 0;
         const counts = [typeof rooms.online === 'number' ? `Игроков онлайн: ${rooms.online}` : null, rooms.available ? `Идёт матчей: ${matches}` : null].filter(Boolean).join(' · ');
         const target = state?.desired?.profile === 'workshop' ? 'мастерскую' : state?.desired?.profile === 'test' ? 'тестовый режим' : 'игровой режим';
         const view = switchView(state), when = timing(view);
         switch (state?.phase) {
-          case 'workshop': return { tone: 'warn', title: 'Открыта мастерская', detail: 'Заходить могут только участники команды. Обычные игроки видят сообщение о техработах.' };
-          case 'test': return { tone: 'warn', title: 'Тестовый режим', detail: 'Заходить могут только тестеры.' };
+          case 'workshop': return { tone: 'warn', title: 'Открыта мастерская', detail: [sessionLine(current), 'Заходить могут только участники команды. Обычные игроки видят сообщение о техработах.'].filter(Boolean).join(' ') };
+          case 'test': {
+            const name = testCandidate ? (WORKSHOP_PLACES[testCandidate.mapId] ?? testCandidate.mapId) : 'карта';
+            const who = testCandidate?.author?.name ? ` (кандидат от ${testCandidate.author.name}, ${ago(testCandidate.createdAt)})` : '';
+            return { tone: 'warn', title: `Тестовый матч: ${name}${who}`, detail: [sessionLine(current), 'Заходить могут только тестеры.'].filter(Boolean).join(' ') };
+          }
           case 'DRAINING': return { tone: 'warn', title: 'Готовимся к мастерской', detail: [`${view.step}: новые матчи не начинаются, сервер ждёт, пока закончатся идущие.`, counts, when].filter(Boolean).join(' · ') };
           case 'REQUESTED': case 'SAVING': case 'STARTING': return { tone: 'warn', title: `Сервер переключается в ${target}`, detail: [`${view.step}.`, when].filter(Boolean).join(' · ') || 'Игроки пока не могут зайти.' };
           case 'ERROR': return { tone: 'bad', title: 'Сервер остановлен из-за ошибки', detail: [view.errorMessage ? `Причина: ${view.errorMessage}.` : null, can('recover') ? 'Игроки не могут зайти. Восстановите игровой режим в карточке «Режим сервера».' : 'Игроки не могут зайти. Сообщите администратору.'].filter(Boolean).join(' ') };
@@ -521,9 +536,12 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         return { tone: 'bad', title: 'Игровой сервер не отвечает', detail: rooms.lobby ? 'Лобби работает, но матчи сейчас недоступны.' : 'Игроки сейчас не могут зайти.' };
       }
       async function loadOverview() {
-        const { status: state, rooms } = await api('overview');
-        controller = state;
-        const view = describe(state, rooms);
+        const { status: state, session: sessionData, rooms } = await api('overview');
+        controller = state; session = sessionData;
+        // The candidate behind a running test match: same source the candidates card reads, "view" permission covers it.
+        const testCandidate = state?.phase === 'test' && state?.desired?.candidate
+          ? (await api('candidates').catch(() => ({ candidates: [] }))).candidates?.find((c: any) => c.id === state.desired.candidate) ?? null : null;
+        const view = describe(state, rooms, session, testCandidate);
         $('#server-card').dataset.tone = view.tone;
         $('#server-headline').textContent = view.title;
         $('#server-detail').textContent = [view.detail, `проверено ${ago(rooms.checkedAt || Date.now())}`].filter(Boolean).join(' · ');
@@ -531,6 +549,8 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         if (!message.value && rooms.maintenance?.message && document.activeElement !== message) message.value = rooms.maintenance.message;
         renderModes();
         renderRooms(rooms);
+        // The candidates card's «Тест» button depends on the phase just learned above; keep it in sync (cheap local read).
+        if (can('workshop')) loadCandidates().catch(() => {});
       }
 
       const MODES = [
@@ -554,6 +574,16 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         }
         const view = switchView(controller);
         renderProgress(view);
+        // "test" is not a switchable target from here (only from a candidate's «Тест»), so it gets its own box instead of a MODES entry.
+        if (controller.phase === 'test' && !view.busy) {
+          box.replaceChildren(el('div', { className: 'option', dataCurrent: '' },
+            el('div', { className: 'option-head' }, 'Тестовый матч', el('span', { className: 'badge ok', textContent: 'Включено сейчас' })),
+            el('p', { textContent: 'Закрытый тест версии карты. Обычные игроки зайти не смогут.' }),
+            can('mode') ? button('Вернуться в мастерскую', resumeWorkshop, 'small') : null,
+            can('mode') ? button('Вернуть игровой режим', () => switchMode('game', false), 'small danger') : null,
+          ));
+          return;
+        }
         const busy = view.busy, broken = controller.phase === 'ERROR';
         const target = controller.desired?.profile;
         box.replaceChildren(...MODES.map(mode => {
@@ -561,7 +591,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
           const head = el('div', { className: 'option-head' }, mode.title,
             current ? el('span', { className: 'badge ok', textContent: 'Включено сейчас' }) : pending ? el('span', { className: 'badge warn', textContent: 'Переключается…' }) : null);
           const option = el('div', { className: 'option', ...(current ? { dataCurrent: '' } : {}) }, head, el('p', { textContent: mode.about }));
-          if (!current && !pending && !broken) option.append(button(mode.id === 'game' ? 'Вернуть игровой режим' : 'Включить мастерскую', () => switchMode(mode.id, false), 'small', undefined));
+          if (!current && !pending && !broken) option.append(button(mode.id === 'game' ? 'Вернуть игровой режим' : 'Включить мастерскую', () => (mode.id === 'workshop' ? startWorkshop() : switchMode('game', false)), 'small', undefined));
           if (busy && !pending) option.lastElementChild instanceof HTMLButtonElement && ((option.lastElementChild as HTMLButtonElement).disabled = true);
           if (pending && view.canCancel && can('mode')) option.append(button('Отменить переключение', cancelSwitch, 'small danger'));
           if (broken && mode.id === 'game' && can('recover')) option.append(button('Восстановить игровой режим', () => switchMode('game', true), 'small primary'));
@@ -577,17 +607,55 @@ Astro.response.headers.set('Cache-Control', 'no-store');
           return 'Запрос отправлен. Сервер применит его в течение 15 секунд…';
         }, $('#mode-options'));
       }
-      async function switchMode(profile: string, recover: boolean) {
+      async function switchMode(profile: 'game', recover: boolean) {
         const texts = recover
           ? { title: 'Восстановить игровой режим?', text: 'Сервер остановит всё, что сейчас запущено, и заново запустит игру. Используйте это, если сервер застрял в ошибке.', ok: 'Восстановить' }
-          : profile === 'workshop'
-            ? { title: 'Включить мастерскую?', text: 'Новые матчи перестанут начинаться. Когда закончатся идущие (это может занять целую кампанию), сервер сохранит мир и перезапустится в мастерскую. Пока она открыта, обычные игроки не смогут зайти.', ok: 'Включить мастерскую' }
-            : { title: 'Вернуть игровой режим?', text: 'Мастерская закроется, строители будут отключены. Сервер перезапустится для всех игроков, обычно это занимает несколько минут.', ok: 'Вернуть игровой режим' };
+          : { title: 'Вернуть игровой режим?', text: 'Мастерская закроется, строители будут отключены. Сервер перезапустится для всех игроков, обычно это занимает несколько минут.', ok: 'Вернуть игровой режим' };
         if (!(await ask({ ...texts, danger: true }))) return;
         const line = $('#mode-status');
         run(line, async () => {
           const { id } = await api('mode', 'POST', { profile, expectedRevision: controller.revision, ...(recover ? { recover } : {}) });
-          follow(line, id, profile === 'workshop' ? 'Сервер принял запрос: переключение в мастерскую началось.' : 'Сервер принял запрос: запускаем игровой режим.');
+          follow(line, id, 'Сервер принял запрос: запускаем игровой режим.');
+          return 'Запрос отправлен. Сервер применит его в течение 15 секунд…';
+        }, $('#mode-options'));
+      }
+      /** «Включить мастерскую»: which maps for a fresh session, or resume the previous one as-is. */
+      async function startWorkshop() {
+        const known = Object.keys(MAP_NAMES);
+        const checks = el('div', { className: 'checks' }, ...known.map(id => el('label', { className: 'check' }, el('input', { type: 'checkbox', name: 'map', value: id, checked: true }), MAP_NAMES[id])));
+        const all = el('input', { type: 'checkbox', checked: true }) as HTMLInputElement;
+        all.addEventListener('change', () => checks.querySelectorAll('input').forEach(i => ((i as HTMLInputElement).checked = all.checked)));
+        const mapsBlock = el('div', {}, el('label', { className: 'check' }, all, 'Все карты'), checks);
+        const fields: Node[] = [];
+        if (session) {
+          const label = session.maps ? session.maps.map((id: string) => MAP_NAMES[id] ?? id).join(', ') : 'все карты';
+          const resume = el('input', { type: 'radio', name: 'session', value: 'resume', checked: true }) as HTMLInputElement;
+          const fresh = el('input', { type: 'radio', name: 'session', value: 'new' }) as HTMLInputElement;
+          const toggle = () => mapsBlock.querySelectorAll('input').forEach(i => ((i as HTMLInputElement).disabled = !fresh.checked));
+          resume.addEventListener('change', toggle); fresh.addEventListener('change', toggle); toggle();
+          fields.push(el('fieldset', { className: 'plain' }, el('legend', { textContent: 'Сеанс' }),
+            el('label', { className: 'radio' }, resume, el('span', {}, `Продолжить прошлый сеанс (${date(session.startedAt)}, ${label})`)),
+            el('label', { className: 'radio' }, fresh, 'Новый сеанс')));
+        }
+        fields.push(mapsBlock);
+        const answer = await ask({ title: 'Включить мастерскую?', text: 'Новые матчи перестанут начинаться. Когда закончатся идущие (это может занять целую кампанию), сервер сохранит мир и перезапустится в мастерскую. Пока она открыта, обычные игроки не смогут зайти.', ok: 'Включить мастерскую', danger: true, fields });
+        if (!answer) return;
+        const resuming = !!session && answer.get('session') !== 'new';
+        const ids = answer.getAll('map').map(String);
+        const body: Record<string, unknown> = { profile: 'workshop', expectedRevision: controller.revision, session: resuming ? 'resume' : 'new', ...(resuming ? {} : { maps: ids.length === known.length ? null : ids }) };
+        const line = $('#mode-status');
+        run(line, async () => {
+          const { id } = await api('mode', 'POST', body);
+          follow(line, id, 'Сервер принял запрос: переключение в мастерскую началось.');
+          return 'Запрос отправлен. Сервер применит его в течение 15 секунд…';
+        }, $('#mode-options'));
+      }
+      async function resumeWorkshop() {
+        if (!(await ask({ title: 'Вернуться в мастерскую?', text: 'Тестовый матч остановится, сервер вернётся в мастерскую с тем же сеансом.', ok: 'Вернуться в мастерскую' }))) return;
+        const line = $('#mode-status');
+        run(line, async () => {
+          const { id } = await api('mode', 'POST', { profile: 'workshop', expectedRevision: controller.revision, session: 'resume' });
+          follow(line, id, 'Сервер принял запрос: возвращаемся в мастерскую.');
           return 'Запрос отправлен. Сервер применит его в течение 15 секунд…';
         }, $('#mode-options'));
       }
@@ -821,7 +889,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         const key = (list: any[]) => JSON.stringify((list ?? []).map(m => [m.draslId, m.role]).sort());
         const inSync = Array.isArray(data.workshop) && key(data.workshop) === key(data.expected);
         const last = data.lastSync ? ` Последнее обновление ${ago(data.lastSync.at)}${data.lastSync.result && !data.lastSync.result.ok ? ' — не удалось' : ''}.` : '';
-        renderMapAccess(data.staff);
+        await renderMapAccess(data.staff);
         say($('#workshop-state'), inSync ? `Мастерская пускает ровно тех, кто в команде.${last}` : `Список доступа в мастерскую отличается от команды — нажмите «Обновить доступ».${last}`, inSync ? 'ok' : 'pending');
       }
       async function changeRole(body: Record<string, unknown>, done: string, line: HTMLElement) {
@@ -846,13 +914,16 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         });
       }
       /** The same `maps` lists as «Карты: …» in the team tab, seen from each map. */
-      function renderMapAccess(staff: { uuid: string; name: string; role: string; maps: string[] | null }[]) {
+      async function renderMapAccess(staff: { uuid: string; name: string; role: string; maps: string[] | null }[]) {
         const builders = staff.filter(s => s.role === 'builder'), line = $('#map-access-status');
         const editors = (id: string) => builders.filter(b => b.maps === null || b.maps.includes(id));
+        // Overlays: maps currently published through the workshop whose in-game markup drifted from what's committed to the repo.
+        const { overlays } = await api('candidates').catch(() => ({ overlays: {} }));
         $('#map-access').replaceChildren(...Object.entries(WORKSHOP_PLACES).map(([id, name]) => {
           const who = editors(id).map(b => b.name);
           const main = el('div', { className: 'row-main' }, el('strong', { textContent: name }),
-            el('small', { textContent: builders.length ? `Строители: ${who.length ? who.join(', ') : 'никто'}` : 'Строителей в команде нет' }));
+            el('small', { textContent: builders.length ? `Строители: ${who.length ? who.join(', ') : 'никто'}` : 'Строителей в команде нет' }),
+            overlays?.[id]?.differsFromRepo ? el('small', { textContent: `Опубликованная разметка «${name}» отличается от репозитория — перенесите её в git: tools/workshop/fetch-map.py ${id}` }) : null);
           const actions = el('div', { className: 'actions' },
             builders.length ? button('Кто строит', () => editMapAccess(id, name, builders, new Set(editors(id).map(b => b.uuid)), line), 'small', `Кто строит: ${name}`) : null,
             id in MAP_NAMES ? button('На проверку', () => submitMap(id, name), 'small', `Отправить карту ${name} на проверку`) : null);
@@ -869,18 +940,42 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         const rows = (candidates ?? []).slice(0, 15).map((c: any) => {
           const name = WORKSHOP_PLACES[c.mapId] ?? c.mapId, [label, tone] = CANDIDATE_STATUS[c.status] ?? [c.status, ''];
           const decided = c.decidedBy ? ` · решил ${c.decidedBy.name} ${ago(c.decidedAt)}` : '';
-          const main = el('div', { className: 'row-main' }, el('strong', {}, `${name} `, el('span', { className: `badge ${tone}`, textContent: label })),
+          // baseMatches: false — the map's reference changed since editing started; null — unknown base (older drafts). Either needs a forced publish.
+          const baseWarn = c.baseMatches === false ? 'эталон карты изменился после начала правки' : c.baseMatches === null ? 'база неизвестна' : null;
+          const main = el('div', { className: 'row-main' }, el('strong', {}, `${name} `, el('span', { className: `badge ${tone}`, textContent: label }),
+            baseWarn ? el('span', { className: 'badge warn', textContent: baseWarn }) : null),
             el('small', { textContent: `Отправил ${c.author?.name ?? '?'} ${ago(c.createdAt)} · ${(c.size / 1048576).toFixed(1)} МБ, регионов ${c.regions}${decided}` }));
           const actions = el('div', { className: 'actions' });
+          const confirmForce = (reason: string) => ask({ title: `Выложить «${name}» без проверки базы?`, text: `${reason} Публикация всё равно заменит карту в игре текущей разметкой.`, ok: 'Выложить всё равно', danger: true });
+          const publish = (force: boolean) => run(line, async () => {
+            const { id } = await api('candidates/publish', 'POST', { candidateId: c.id, mapId: c.mapId, ...(force ? { force: true } : {}) });
+            follow(line, id, `Карта «${name}» выложена в игру.`, async error => {
+              if (!/^base (changed|unknown)/.test(error)) return false;
+              if (await confirmForce('Эталон карты, возможно, изменился с начала правки.')) publish(true); else say(line, 'Публикация отменена.', 'error');
+              return true;
+            }).then(loadCandidates);
+            return 'Запрос отправлен. Сервер применит его в течение 15 секунд…';
+          });
           if (can('workshop') && c.status === 'pending') {
             actions.append(button('Принять и выложить', async () => {
               if (!(await ask({ title: `Выложить «${name}»?`, text: `Эта версия заменит карту в игре. Идущие матчи доиграют на старой, новые возьмут новую. Текущая версия сохранится — её можно вернуть кнопкой «Откатить».`, ok: 'Выложить' }))) return;
-              run(line, async () => { const { id } = await api('candidates/publish', 'POST', { candidateId: c.id, mapId: c.mapId }); follow(line, id, `Карта «${name}» выложена в игру.`).then(loadCandidates); return 'Запрос отправлен. Сервер применит его в течение 15 секунд…'; });
+              if (baseWarn && !(await confirmForce(`Эта версия правилась поверх карты, у которой ${baseWarn}.`))) return;
+              publish(!!baseWarn);
             }, 'small primary', `Принять и выложить ${name}`),
             button('Отклонить', async () => {
               if (!(await ask({ title: `Отклонить эту версию «${name}»?`, text: 'Версия останется в списке как отклонённая, в игру она не попадёт.', ok: 'Отклонить', danger: true }))) return;
               run(line, async () => { const { id } = await api('candidates/reject', 'POST', { candidateId: c.id, mapId: c.mapId }); follow(line, id, 'Версия отклонена.').then(loadCandidates); return 'Запрос отправлен…'; });
             }, 'small danger', `Отклонить ${name}`));
+          }
+          if (can('mode') && c.status === 'pending' && controller?.phase === 'workshop') {
+            actions.append(button('Тест', async () => {
+              if (!(await ask({ title: `Тестовый матч «${name}»?`, text: 'Мастерская перезапустится в закрытый тестовый матч на копии этой версии карты — это займёт около 2–3 минут. Строителей переведёт с собой сервер. Результат теста не идёт в статистику.', ok: 'Начать тест', danger: true }))) return;
+              run(line, async () => {
+                const { id } = await api('mode', 'POST', { profile: 'test', expectedRevision: controller.revision, candidateId: c.id });
+                follow(line, id, `Тестовый матч «${name}» начат.`).then(loadOverview);
+                return 'Запрос отправлен. Сервер применит его в течение 15 секунд…';
+              });
+            }, 'small', `Тестовый матч ${name}`));
           }
           if (can('workshop') && c.status === 'published') {
             actions.append(button('Откатить', async () => {
