@@ -118,12 +118,25 @@ export function writeRequest(directory: string, actor: Actor, body: any): string
   const base = { schema: 1, id: randomUUID(), kind: body?.kind, actor: { draslId: actor.uuid, name: actor.name }, createdAt: Date.now() };
   let request: Record<string, unknown>;
   if (body?.kind === 'mode') {
-    if (!['game', 'workshop'].includes(body.profile)) throw bad('Режим: game или workshop.');
+    if (!['game', 'workshop', 'test'].includes(body.profile)) throw bad('Режим: game, workshop или test.');
     if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 0) throw bad('Нет ревизии состояния: обновите страницу.');
     if (body.recover !== undefined && typeof body.recover !== 'boolean') throw bad('Некорректный запрос.');
     if (body.recover && body.profile !== 'game') throw bad('Восстановление возможно только в игровой режим.');
     if (body.recover && !can(actor.role, 'recover')) throw fail(403, 'Восстановление доступно администратору.');
-    request = { ...base, profile: body.profile, expectedRevision: body.expectedRevision, ...(body.recover ? { recover: true } : {}) };
+    let extra: Record<string, unknown> = {};
+    if (body.profile === 'workshop') {
+      if (body.session !== 'new' && body.session !== 'resume') throw bad('Сеанс мастерской: new или resume.');
+      if (body.session === 'new') {
+        const maps = body.maps;
+        if (maps !== null && (!Array.isArray(maps) || !maps.length || new Set(maps).size !== maps.length || !maps.every((id: unknown) => typeof id === 'string' && MAP_IDS.has(id))))
+          throw bad('Некорректный список карт.');
+        extra = { session: 'new', maps };
+      } else extra = { session: 'resume' }; // resume always keeps the previous session's maps; a client-sent list here is dropped, never forwarded.
+    } else if (body.profile === 'test') {
+      if (typeof body.candidateId !== 'string' || !/^[0-9a-f]{32}$/.test(body.candidateId)) throw bad('Неизвестная версия карты.');
+      extra = { candidateId: body.candidateId };
+    }
+    request = { ...base, profile: body.profile, expectedRevision: body.expectedRevision, ...(body.recover ? { recover: true } : {}), ...extra };
   } else if (body?.kind === 'message') {
     // Same rule as the controller: strip control characters (Unicode Cc) and §, keep format characters such as ZWJ.
     const message = typeof body.message === 'string' ? body.message.replace(/[\p{Cc}§]/gu, '').trim() : null;
@@ -143,7 +156,8 @@ export function writeRequest(directory: string, actor: Actor, body: any): string
     request = { ...base, mapId: body.mapId };
   } else if (body?.kind === 'publish' || body?.kind === 'reject') {
     if (typeof body.candidateId !== 'string' || !/^[0-9a-f]{32}$/.test(body.candidateId)) throw bad('Неизвестная версия карты.');
-    request = { ...base, candidateId: body.candidateId };
+    if (body.kind === 'publish' && body.force !== undefined && typeof body.force !== 'boolean') throw bad('Некорректный запрос.');
+    request = { ...base, candidateId: body.candidateId, ...(body.kind === 'publish' && body.force ? { force: true } : {}) };
   } else throw bad('Неизвестный тип запроса.');
   writeAtomic(directory, `${base.id}.json`, request);
   return base.id;
@@ -318,14 +332,14 @@ type Route = { permission: string; handler: Handler; audit?: (body: any, result:
 const page = (url: URL) => { const n = Number(url.searchParams.get('page') || '1'); if (!Number.isSafeInteger(n) || n < 1 || n > 1000) throw bad('Некорректная страница.'); return n; };
 
 const routes: Record<string, Route> = {
-  'GET overview': { permission: 'view', handler: async () => ({ status: readFile(join(adminDir(), 'status.json')), rooms: await currentRooms() }) },
+  'GET overview': { permission: 'view', handler: async () => ({ status: readFile(join(adminDir(), 'status.json')), session: readFile(join(adminDir(), 'session.json')), rooms: await currentRooms() }) },
   'GET request': { permission: 'view', handler: ({ context }) => {
     const id = context.url.searchParams.get('id') ?? '';
     if (!UUID.test(id)) throw bad('Некорректный запрос.');
     return { result: readFile(join(adminDir(), 'results', `${id}.json`)) };
   } },
   'POST mode': { permission: 'mode', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { ...body, kind: 'mode' }) }),
-    audit: body => ({ action: 'mode', target: String(body?.profile), detail: { expectedRevision: body?.expectedRevision, recover: body?.recover === true } }) },
+    audit: body => ({ action: 'mode', target: String(body?.profile), detail: { expectedRevision: body?.expectedRevision, recover: body?.recover === true, session: body?.session, maps: body?.maps, candidateId: body?.candidateId } }) },
   'POST message': { permission: 'message', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'message', message: body?.message }) }),
     audit: body => ({ action: 'message', detail: { message: body?.message } }) },
   // Same gate as switching: an unprivileged rollback of a switch that is still DRAINING/STARTING, no --recover/root needed.
@@ -359,8 +373,8 @@ const routes: Record<string, Route> = {
   'GET candidates': { permission: 'view', handler: () => readFile(join(adminDir(), 'candidates.json')) ?? { schema: 1, candidates: [], backups: {} } },
   'POST candidates/create': { permission: 'workshop', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'candidate', mapId: body?.mapId }) }),
     audit: body => ({ action: 'workshop-candidate', target: body?.mapId ?? null }) },
-  'POST candidates/publish': { permission: 'workshop', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'publish', candidateId: body?.candidateId }) }),
-    audit: body => ({ action: 'workshop-publish', target: body?.mapId ?? null, detail: { candidateId: body?.candidateId } }) },
+  'POST candidates/publish': { permission: 'workshop', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'publish', candidateId: body?.candidateId, force: body?.force }) }),
+    audit: body => ({ action: 'workshop-publish', target: body?.mapId ?? null, detail: { candidateId: body?.candidateId, force: body?.force === true } }) },
   'POST candidates/reject': { permission: 'workshop', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'reject', candidateId: body?.candidateId }) }),
     audit: body => ({ action: 'workshop-reject', target: body?.mapId ?? null, detail: { candidateId: body?.candidateId } }) },
   'POST maps/rollback': { permission: 'workshop', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'rollback', mapId: body?.mapId }) }),
