@@ -110,7 +110,7 @@ Late results: a campaign that ended in an earlier season but arrives later updat
 
 Local review: submit the test fixture with a configured producer key, replay it, verify exactly one battle; submit a campaign summary, verify counters are unchanged; stop Minecraft, refresh leaderboard/account, and verify history still loads. Invalid/missing DB must show unavailable, not zero stats. Check layout at 360px and desktop, keyboard navigation, long display names and logout during a slow request.
 
-Not implemented by this site PR: a legacy CamelCase-log importer (historical mode/time/class IDs require an explicit mapping), recomputing later seasons after late results, class-filtered leaderboard, and large-dataset load testing. Existing log files are never silently reinterpreted or rewritten.
+Legacy CamelCase import is provided below. Recomputing later seasons after late results, class-filtered leaderboard and large-dataset load testing remain separate work. Existing log files are never silently reinterpreted or rewritten.
 
 ## PostgreSQL and SQLite compatibility (schema 6)
 
@@ -138,3 +138,35 @@ Keep the pre-cutover SQLite backup for recovery. SQLite is an alternative backen
 Back up PostgreSQL with `pg_dump` and retain the SQLite snapshot independently.
 
 Tests: `npm test` covers SQLite. Set `BLOCKFIELD_TEST_DATABASE_URL` to a PostgreSQL database where the test user may create schemas, then run `npm run test:postgres`. Tests create isolated random schemas and remove only those schemas; migration/reopen fixtures still exercise legacy SQLite files. CI runs both engines.
+
+
+## Legacy match import
+
+Run locally as the trusted stats administrator, with a database backup. No HTTP producer key is needed: this is an explicit maintenance operation. Dry-run is the default and does not open the database. Source files are read-only. The report path must not already exist.
+
+```sh
+node --experimental-strip-types scripts/import-legacy-stats.mjs manifest.json /data/stats/blockfield.sqlite dry-run.json
+node --experimental-strip-types scripts/import-legacy-stats.mjs manifest.json /data/stats/blockfield.sqlite applied.json --apply
+```
+
+Example manifest (replace the reviewed source checksum and IDs):
+
+```json
+{
+  "serverId": "00000000-0000-4000-8000-000000000001",
+  "classMap": { "Штурмовик (AK-47)": { "classId": "assault", "variantId": "0" } },
+  "files": [{
+    "path": "Stats_Campaign_123.json",
+    "sha256": "SHA256_OF_REVIEWED_FILE",
+    "sessionPurpose": "gameplay",
+    "modeId": "room",
+    "mapId": "fields"
+  }]
+}
+```
+
+A trusted operator must establish each file's origin before marking it gameplay. An explicit non-gameplay `SessionPurpose` in the source cannot be overridden. A missing field in an old file is accepted only with the manifest's explicit gameplay attestation. Modern stable class IDs are retained; older display names require `classMap`. Ranked rounds need an explicitly verified `campaignSessionId`. Campaign summaries are rejected: this importer never grants historical MMR.
+
+Unknown modes, teams, statuses, invalid/missing UUIDs, dates without numeric timezone, checksum mismatches, unknown classes and repeated UUID segments are reported as rejected rather than guessed. Overlapping/team-change legacy records must be reconciled from authoritative records before import; the importer does not sum potentially cumulative snapshots. Correct a copy, preserve the original and review a new checksum. An existing EventId is retained; older files derive an ID from server, mode, campaign, round number, map and start time. Replay uses the normal transactional ingestion deduplication. A changed result under the same identity is rejected as a conflict. Never import a JSON log already delivered through the outbox under a different interpretation.
+
+Each file commits independently. Review the report after partial failures; rerun safely after correcting rejected entries. This command does not disable the normal protected ingestion endpoint or change season/rating rules.
