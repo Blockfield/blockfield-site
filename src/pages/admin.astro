@@ -201,7 +201,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         <p class="muted">Кто какие карты правит. Модераторы и администраторы правят все карты, строителям доступ выдаётся по картам. В игре строители переходят между картами планшетом (M).</p>
         <article class="card" aria-labelledby="candidates-title">
           <h3 id="candidates-title">Карты на проверке</h3>
-          <p class="muted">Строитель отправляет карту из планшета («Разметка» → «На проверку») или администратор кнопкой у карты ниже. Принятая версия заменяет карту в игре: идущие матчи доигрывают на старой, новые берут новую. Предыдущая версия сохраняется, её можно вернуть.</p>
+          <p class="muted">Строитель отправляет карту из планшета («Разметка» → «На проверку») или администратор кнопкой у карты ниже. Принятие сохраняет проверенный пакет. Карта попадёт в игру после выпуска новой версии; до этого игра работает на прежних картах.</p>
           <p class="form-status" id="candidates-status" role="status"></p>
           <ul id="candidate-list" class="rows"></ul>
         </article>
@@ -932,7 +932,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
       }
       // ---------- Map candidates ----------
       const CANDIDATE_STATUS: Record<string, [string, string]> = {
-        pending: ['Ждёт проверки', 'warn'], published: ['В игре', 'ok'], rejected: ['Отклонена', ''], superseded: ['Заменена новой', ''], rolled_back: ['Откачена', ''],
+        pending: ['Ждёт проверки', 'warn'], accepted: ['Принята · ждёт релиза', 'ok'], published: ['В игре', 'ok'], rejected: ['Отклонена', ''], superseded: ['Заменена новой', ''], rolled_back: ['Откачена', ''],
       };
       async function loadCandidates() {
         const { candidates } = await api('candidates');
@@ -946,10 +946,10 @@ Astro.response.headers.set('Cache-Control', 'no-store');
             baseWarn ? el('span', { className: 'badge warn', textContent: baseWarn }) : null),
             el('small', { textContent: `Отправил ${c.author?.name ?? '?'} ${ago(c.createdAt)} · ${(c.size / 1048576).toFixed(1)} МБ, регионов ${c.regions}${decided}` }));
           const actions = el('div', { className: 'actions' });
-          const confirmForce = (reason: string) => ask({ title: `Выложить «${name}» без проверки базы?`, text: `${reason} Публикация всё равно заменит карту в игре текущей разметкой.`, ok: 'Выложить всё равно', danger: true });
+          const confirmForce = (reason: string) => ask({ title: `Принять «${name}» с другой базой?`, text: `${reason} Пакет сохранится с отметкой об изменившейся базе. Выпуск требует отдельной проверки.`, ok: 'Принять с отметкой', danger: true });
           const publish = (force: boolean) => run(line, async () => {
             const { id } = await api('candidates/publish', 'POST', { candidateId: c.id, mapId: c.mapId, ...(force ? { force: true } : {}) });
-            follow(line, id, `Карта «${name}» выложена в игру.`, async error => {
+            follow(line, id, `Карта «${name}» принята. Выпуск — отдельный шаг.`, async error => {
               if (!/^base (changed|unknown)/.test(error)) return false;
               if (await confirmForce('Эталон карты, возможно, изменился с начала правки.')) publish(true); else say(line, 'Публикация отменена.', 'error');
               return true;
@@ -957,11 +957,11 @@ Astro.response.headers.set('Cache-Control', 'no-store');
             return 'Запрос отправлен. Сервер применит его в течение 15 секунд…';
           });
           if (can('workshop') && c.status === 'pending') {
-            actions.append(button('Принять и выложить', async () => {
-              if (!(await ask({ title: `Выложить «${name}»?`, text: `Эта версия заменит карту в игре. Идущие матчи доиграют на старой, новые возьмут новую. Текущая версия сохранится — её можно вернуть кнопкой «Откатить».`, ok: 'Выложить' }))) return;
+            actions.append(button('Принять', async () => {
+              if (!(await ask({ title: `Принять «${name}»?`, text: `Будет принят именно этот пакет. Игровая карта изменится только после проверки и выпуска новой версии сборки.`, ok: 'Принять' }))) return;
               if (baseWarn && !(await confirmForce(`Эта версия правилась поверх карты, у которой ${baseWarn}.`))) return;
               publish(!!baseWarn);
-            }, 'small primary', `Принять и выложить ${name}`),
+            }, 'small primary', `Принять ${name}`),
             button('Отклонить', async () => {
               if (!(await ask({ title: `Отклонить эту версию «${name}»?`, text: 'Версия останется в списке как отклонённая, в игру она не попадёт.', ok: 'Отклонить', danger: true }))) return;
               run(line, async () => { const { id } = await api('candidates/reject', 'POST', { candidateId: c.id, mapId: c.mapId }); follow(line, id, 'Версия отклонена.').then(loadCandidates); return 'Запрос отправлен…'; });
@@ -977,18 +977,16 @@ Astro.response.headers.set('Cache-Control', 'no-store');
               });
             }, 'small', `Тестовый матч ${name}`));
           }
-          if (can('workshop') && c.status === 'published') {
-            actions.append(button('Откатить', async () => {
-              if (!(await ask({ title: `Откатить «${name}»?`, text: 'В игре вернётся предыдущая версия карты. Текущая сохранится и её можно будет вернуть так же.', ok: 'Откатить', danger: true }))) return;
-              run(line, async () => { const { id } = await api('maps/rollback', 'POST', { mapId: c.mapId }); follow(line, id, `Карта «${name}» откачена.`).then(loadCandidates); return 'Запрос отправлен…'; });
-            }, 'small danger', `Откатить ${name}`));
+          if (can('workshop') && c.status === 'accepted') {
+            const link = el('a', { className: 'small', textContent: 'Скачать пакет', href: `/api/admin/candidates/download?id=${encodeURIComponent(c.id)}` });
+            actions.append(link);
           }
           return el('li', { className: 'row' }, main, actions);
         });
         $('#candidate-list').replaceChildren(...(rows.length ? rows : [el('li', { className: 'empty', textContent: 'Пока ничего не отправляли.' })]));
       }
       async function submitMap(mapId: string, name: string) {
-        if (!(await ask({ title: `Отправить «${name}» на проверку?`, text: 'Сервер снимет копию мира и разметки карты из мастерской. В игру она попадёт только после «Принять и выложить».', ok: 'Отправить' }))) return;
+        if (!(await ask({ title: `Отправить «${name}» на проверку?`, text: 'Сервер снимет копию мира и разметки карты из мастерской. В игру она попадёт после принятия и выпуска новой версии сборки.', ok: 'Отправить' }))) return;
         const line = $('#candidates-status');
         run(line, async () => { const { id } = await api('candidates/create', 'POST', { mapId }); follow(line, id, `Копия «${name}» готова к проверке.`).then(loadCandidates); return 'Запрос отправлен. Сервер снимет копию в течение 15 секунд…'; });
       }

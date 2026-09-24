@@ -1,7 +1,8 @@
 import type { APIContext } from 'astro';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
-import { openSync, readSync, readFileSync, closeSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
+import { openSync, readSync, readFileSync, closeSync, renameSync, writeFileSync, unlinkSync, createReadStream, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import type { AstroCookies } from 'astro';
 import { account, drasl, fail, nickname, readJson, session, token } from './account.ts';
 import { rcon } from './rcon.ts';
@@ -371,6 +372,20 @@ const routes: Record<string, Route> = {
     audit: (body, result) => ({ action: 'settings', target: result?.settings ? `revision ${result.settings.revision}` : null, detail: body }) },
   // Map candidates (controller candidates.py): the list is for everyone in the panel, decisions for admins.
   'GET candidates': { permission: 'view', handler: () => readFile(join(adminDir(), 'candidates.json')) ?? { schema: 1, candidates: [], backups: {} } },
+  'GET candidates/download': { permission: 'workshop', handler: ({ context }) => {
+    const id = new URL(context.request.url).searchParams.get('id');
+    if (!id || !/^[0-9a-f]{32}$/.test(id)) throw bad('Неверный ID кандидата.');
+    const candidate = readFile(join(adminDir(), 'candidates.json'))?.candidates?.find((c: any) => c.id === id && c.status === 'accepted');
+    if (!candidate || !/^[0-9a-f]{64}$/.test(candidate.sha256)) throw fail(404, 'Принятый пакет не найден.');
+    const path = join(adminDir(), 'packages', candidate.sha256 + '.zip');
+    let size: number;
+    try { const stat = statSync(path); if (!stat.isFile() || stat.size > 512 * 1024 * 1024) throw new Error(); size = stat.size; }
+    catch { throw fail(503, 'Пакет ещё не готов к скачиванию.'); }
+    return new Response(Readable.toWeb(createReadStream(path)) as ReadableStream, { headers: {
+      ...noStore, 'Content-Type': 'application/zip', 'Content-Length': String(size),
+      'Content-Disposition': `attachment; filename="${id}.zip"`, 'X-Checksum-Sha256': candidate.sha256,
+    } });
+  } },
   'POST candidates/create': { permission: 'workshop', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'candidate', mapId: body?.mapId }) }),
     audit: body => ({ action: 'workshop-candidate', target: body?.mapId ?? null }) },
   'POST candidates/publish': { permission: 'workshop', handler: ({ actor, body }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'publish', candidateId: body?.candidateId, force: body?.force }) }),
@@ -515,7 +530,7 @@ export async function handleWorkshopAccess(request: Request, env: Record<string,
     await store.setStaffMaps(targetId, maps);
     const sync = await syncWorkshop(store, actor).then(({ id }) => ({ id }), (e: unknown) => ({ error: e instanceof Response ? 'Не удалось отправить список в мастерскую.' : String((e as Error).message) }));
     result = { mapId, name: target.name, maps, sync };
-    return Response.json(result, { headers: noStore });
+    return result instanceof Response ? result : Response.json(result, { headers: noStore });
   } catch (thrown) {
     error = thrown instanceof Response ? await thrown.clone().json().then(d => d.error, () => 'error') : 'internal error';
     throw thrown;
@@ -543,7 +558,7 @@ export async function handleAdmin(context: APIContext, path: string, storage?: S
     if (method !== 'GET') body = await readJson(context.request, 65_536);
     result = await route.handler({ context, actor, store, body });
     if (method !== 'GET') await record(store, actor, route, body, result, null);
-    return Response.json(result, { headers: noStore });
+    return result instanceof Response ? result : Response.json(result, { headers: noStore });
   } catch (thrown) {
     const error = thrown instanceof StatsError ? fail(thrown.status, thrown.message) : thrown;
     const message = error instanceof Response ? await error.clone().json().then(d => d.error, () => 'error') : 'internal error';

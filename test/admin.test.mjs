@@ -319,6 +319,27 @@ test('POST staff/maps: only a builder row accepts a map list, ids must be known 
   assert.equal((await s.staff()).find(row => row.uuid === OTHER).maps, null);
 });
 
+test('GET candidates/download: only an accepted candidate\'s exported package, with its checksum', async t => {
+  const dirs = { BLOCKFIELD_ADMIN_DIR: temp(t), BLOCKFIELD_INBOX_DIR: temp(t), BLOCKFIELD_SETTINGS_DIR: temp(t) };
+  const saved = { ...process.env };
+  t.after(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test', BLOCKFIELD_ADMIN_DEV_USER: `${OWNER}:Nether` });
+  const s = await store(t);
+  const accepted = { id: 'a'.repeat(32), status: 'accepted', sha256: '1'.repeat(64) }, pending = { id: 'b'.repeat(32), status: 'pending', sha256: '2'.repeat(64) };
+  writeFileSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'candidates.json'), JSON.stringify({ schema: 1, candidates: [accepted, pending] }));
+  const call = id => { const url = new URL(`http://site/api/admin/candidates/download?id=${id}`); return handleAdmin({ request: new Request(url), url, cookies: { get: () => undefined } }, 'candidates/download', s).then(r => r, e => e); };
+  assert.equal((await call(accepted.id)).status, 503, 'accepted but not exported yet');
+  mkdirSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'packages'));
+  writeFileSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'packages', `${accepted.sha256}.zip`), 'zip-bytes');
+  writeFileSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'packages', `${pending.sha256}.zip`), 'zip-bytes');
+  const ok = await call(accepted.id);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers.get('x-checksum-sha256'), accepted.sha256);
+  assert.equal(await ok.text(), 'zip-bytes');
+  assert.equal((await call(pending.id)).status, 404, 'a pending candidate is not downloadable');
+  assert.equal((await call('../etc')).status, 400);
+});
+
 test('withMapAccess: grant keeps "every map", revoke from "every map" lists the rest, a grant never implies future maps', () => {
   assert.equal(withMapAccess(null, 'fields', true), null);
   assert.deepEqual(withMapAccess(['konstaxa'], 'fields', true), ['konstaxa', 'fields']);
