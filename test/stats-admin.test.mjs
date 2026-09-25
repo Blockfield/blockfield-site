@@ -39,10 +39,10 @@ test('voiding a rated campaign rebuilds that season and later ones; restore equa
 
   const reference = await database(t);
   for (const result of list.filter(r => r.eventId !== uid(41))) await reference.ingest(result);
-  assert.equal((await db.setVoided(server, uid(41), 'Adm')).rebuilt, 's1');
-  assert.deepEqual(await ratings(db), await ratings(reference), 'void = as if the campaign never arrived, including the s2 carry-over');
+  assert.equal((await db.setVoided(server, uid(41), 'Adm')).rebuilt, 's2');
+  assert.deepEqual(await ratings(db), await ratings(reference), 'void = as if the campaign never arrived, including the s3 carry-over');
   assert.deepEqual(await changes(db), await changes(reference));
-  assert.equal((await db.player(red, query('season=s1'))).mmr.ratedCampaigns, 2);
+  assert.equal((await db.player(red, query('season=s2'))).mmr.ratedCampaigns, 2);
 
   await db.setVoided(server, uid(41), null);
   assert.deepEqual(await ratings(db), originalRatings); assert.deepEqual(await changes(db), originalChanges);
@@ -98,10 +98,10 @@ test('review: voiding a campaign that ends minutes ahead, in the next season, re
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-12-31T23:58:00Z') });
   const db = await database(t);
   await db.ingest(campaign(60, '2027-01-01T00:01:00.000Z', 'RED'));
-  assert.equal((await db.player(red, query())).mmrSeason, 's1');
-  assert.equal((await db.setVoided(server, uid(60), 'Adm')).rebuilt, 's2');
-  assert.equal((await db.setVoided(server, uid(60), null)).rebuilt, 's2');
-  assert.equal((await db.db.prepare("SELECT COUNT(*) n FROM ratings WHERE season_id='s2'").get()).n, 2);
+  assert.equal((await db.player(red, query())).mmrSeason, 's2');
+  assert.equal((await db.setVoided(server, uid(60), 'Adm')).rebuilt, 's3');
+  assert.equal((await db.setVoided(server, uid(60), null)).rebuilt, 's3');
+  assert.equal((await db.db.prepare("SELECT COUNT(*) n FROM ratings WHERE season_id='s3'").get()).n, 2);
 });
 
 test('review: audit detail is capped at 2 KB and the table keeps the newest 10 000 rows', async t => {

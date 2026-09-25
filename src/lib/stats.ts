@@ -103,16 +103,17 @@ function canonical(value: any): string {
   if (value !== null && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
   return JSON.stringify(value);
 }
-/** Season 1 starts with the production stats export; later seasons are UTC calendar quarters. */
+/** The alpha season (s1) starts with the production stats export; season 1 (s2) opens on 2026-09-26; later seasons are UTC calendar quarters. */
 export const SEASON_ONE_STARTS_AT = Date.UTC(2026, 8, 14);
+const ALPHA_ENDS_AT = Date.UTC(2026, 8, 26);
 export type Season = { id: string; name: string; startsAt: string; endsAt: string };
 /** Started seasons, oldest first. endsAt is inclusive (1 ms before the next season starts). */
 export function seasons(now = Date.now()): Season[] {
   const list: Season[] = [];
   for (let start = SEASON_ONE_STARTS_AT, n = 1; start <= now; n++) {
-    // Season 1 absorbs the rest of 2026 Q3; every later season starts on a quarter boundary.
-    const date = new Date(start), next = n === 1 ? Date.UTC(2027, 0, 1) : Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 3, 1);
-    list.push({ id: `s${n}`, name: `Сезон ${n}`, startsAt: new Date(start).toISOString(), endsAt: new Date(next - 1).toISOString() });
+    // IDs stay numeric (ratings are ordered by them); names are shifted by one because s1 is the alpha. Season 1 (s2) runs to the end of 2026.
+    const date = new Date(start), next = n === 1 ? ALPHA_ENDS_AT : n === 2 ? Date.UTC(2027, 0, 1) : Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 3, 1);
+    list.push({ id: `s${n}`, name: n === 1 ? 'Альфа Сезон' : `Сезон ${n - 1}`, startsAt: new Date(start).toISOString(), endsAt: new Date(next - 1).toISOString() });
     start = next;
   }
   return list;

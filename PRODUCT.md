@@ -81,7 +81,7 @@ holds.
 - **MMR is seasonal Glicko-2**, changed once per completed Ranked campaign, never per round.
   Casual, Deathmatch, stopped and abandoned campaigns do not move it. Under 5 rated campaigns in a
   season (or RD > 150) is provisional. A new season soft-resets halfway toward 1500.
-- **Seasons** are UTC calendar quarters; season 1 absorbs the rest of 2026 Q3.
+- **Seasons** are UTC calendar quarters; the alpha season ran 2026-09-14…25, season 1 absorbs the rest of 2026.
 - **Identity is the UUID.** Nicknames change and are resolved through Drasl; the record belongs to
   the UUID. The site must never present a nickname as the identity, and must degrade to
   «Неизвестный игрок» rather than showing a raw UUID to a player.
