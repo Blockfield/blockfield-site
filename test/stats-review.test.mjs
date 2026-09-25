@@ -112,13 +112,13 @@ test('schema 1 database with results opens under schema 4 without losing data', 
 });
 
 test('schema 2 lifetime ratings migrate in place to schema 4 season 1 rows', async t => {
-  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-02T00:00:00Z') });
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-09-21T00:00:00Z') });
   const { DatabaseSync } = await import('node:sqlite');
   const directory = mkdtempSync(join(tmpdir(), 'bf-migrate-v3-'));
   try {
     const path = join(directory, 'stats.sqlite'), [red, blue] = fixture().participants;
     const result = { ...fixture(), kind: 'campaign', modeId: 'campaign', ranked: true, eventId: foreign, campaignSessionId: foreign, matchId: null, mapId: null,
-      rounds: [match], startedAt: '2026-10-01T00:00:00Z', endedAt: '2026-10-01T00:00:00Z', winner: 'RED',
+      rounds: [match], startedAt: '2026-09-20T00:00:00Z', endedAt: '2026-09-20T00:00:00Z', winner: 'RED',
       participants: [{ ...red, team: 'RED' }, { ...blue, team: 'BLUE' }] };
     const first = await StatsStore.open(path); await first.ingest(result);
     const columns = 'uuid,rating,rd,volatility,rated_campaigns,last_rated_at';

@@ -217,17 +217,18 @@ test('kd and rating ties break by UUID; players without MMR sort last on rating'
   assert.equal((await db.player(uid(13), query('sort=rating'))).totals.rank, 4);
 });
 test('season boundaries: start inclusive, 1 ms before excluded, next season start belongs to the next season', async t => {
-  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2027-02-01T00:00:00Z') });
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-01T00:00:00Z') });
   const deps = await dependencies(t);
-  for (const [n, at] of [[30, '2026-09-13T23:59:59.999Z'], [31, '2026-09-14T00:00:00.000Z'], [32, '2026-12-31T23:59:59.999Z'], [33, '2027-01-01T00:00:00.000Z']]) {
+  for (const [n, at] of [[30, '2026-09-13T23:59:59.999Z'], [31, '2026-09-14T00:00:00.000Z'], [32, '2026-09-25T23:59:59.999Z'], [33, '2026-09-26T00:00:00.000Z']]) {
     await deps.store.ingest({ ...fixture(), eventId: uid(n), matchId: uid(n), startedAt: at, endedAt: at });
   }
   assert.deepEqual(seasons(), [
-    { id: 's1', name: 'Сезон 1', startsAt: '2026-09-14T00:00:00.000Z', endsAt: '2026-12-31T23:59:59.999Z' },
-    { id: 's2', name: 'Сезон 2', startsAt: '2027-01-01T00:00:00.000Z', endsAt: '2027-03-31T23:59:59.999Z' },
+    { id: 's1', name: 'Альфа Сезон', startsAt: '2026-09-14T00:00:00.000Z', endsAt: '2026-09-25T23:59:59.999Z' },
+    { id: 's2', name: 'Сезон 1', startsAt: '2026-09-26T00:00:00.000Z', endsAt: '2026-12-31T23:59:59.999Z' },
   ]);
   assert.deepEqual(seasons(Date.parse('2026-09-13T23:59:59.999Z')), []);
-  assert.deepEqual(seasons(Date.parse('2027-04-01T00:00:00Z')).at(-1), { id: 's3', name: 'Сезон 3', startsAt: '2027-04-01T00:00:00.000Z', endsAt: '2027-06-30T23:59:59.999Z' });
+  assert.deepEqual(seasons(Date.parse('2027-01-01T00:00:00Z')).at(-1), { id: 's3', name: 'Сезон 2', startsAt: '2027-01-01T00:00:00.000Z', endsAt: '2027-03-31T23:59:59.999Z' });
+  assert.deepEqual(seasons(Date.parse('2027-04-01T00:00:00Z')).at(-1), { id: 's4', name: 'Сезон 3', startsAt: '2027-04-01T00:00:00.000Z', endsAt: '2027-06-30T23:59:59.999Z' });
   const board = await (await get(deps, '/leaderboard?season=s1')).json();
   assert.equal(board.season, 's1'); assert.equal(board.players[0].matches, 2);
   assert.equal((await deps.store.leaderboard(query('season=s2'))).players[0].matches, 1);
@@ -237,7 +238,7 @@ test('season boundaries: start inclusive, 1 ms before excluded, next season star
 });
 test('season with period, unknown or not-yet-started season, and out-of-range pagination are 400', async t => {
   const deps = await dependencies(t);
-  for (const q of ['season=s1&period=all', 'season=s1&period=week', 'season=s99', 'season=s2', 'season=S1', 'limit=0', 'limit=101', 'page=0', 'page=1001']) {
+  for (const q of ['season=s1&period=all', 'season=s1&period=week', 'season=s99', 'season=s9', 'season=S1', 'limit=0', 'limit=101', 'page=0', 'page=1001']) {
     assert.equal((await get(deps, `/leaderboard?${q}`)).status, 400, q);
     assert.equal((await get(deps, `/players/${player}?${q}`)).status, 400, q);
   }
@@ -296,15 +297,15 @@ async function inSeasonTwo(t) { t.mock.timers.enable({ apis: ['Date'], now: Date
 
 test('first campaign of a season soft-resets the previous season (1700/RD 60 -> 1600/RD 200); newcomers start at initial', async t => {
   const db = await inSeasonTwo(t), seed = db.db.prepare('INSERT INTO ratings VALUES (?,?,?,?,?,?,?)');
-  await seed.run('s1', player, 1700, 60, 0.05, 30, Date.parse('2026-12-20T00:00:00Z'));
+  await seed.run('s2', player, 1700, 60, 0.05, 30, Date.parse('2026-12-20T00:00:00Z'));
   await db.ingest(rankedAt(40, '2027-01-03T00:00:00Z'));
   const carried = await change(db, 40, player), newcomer = await change(db, 40, uid(11));
-  assert.deepEqual([carried.season_id, carried.before_rating, carried.before_rd, carried.before_volatility], ['s2', 1600, 200, 0.05]);
+  assert.deepEqual([carried.season_id, carried.before_rating, carried.before_rd, carried.before_volatility], ['s3', 1600, 200, 0.05]);
   assert.deepEqual([newcomer.before_rating, newcomer.before_rd, newcomer.before_volatility], [1500, 350, 0.06]);
   assert.equal((await db.player(player, query())).mmr.ratedCampaigns, 1); // provisional count restarts within the season
-  assert.deepEqual([(await seasonRatings(db, 's1'))[0].rating, (await seasonRatings(db, 's1'))[0].rd], [1700, 60]);
+  assert.deepEqual([(await seasonRatings(db, 's2'))[0].rating, (await seasonRatings(db, 's2'))[0].rd], [1700, 60]);
   // Idle weeks inflate the carried-over RD from the season start, not from the last season 1 rating.
-  await seed.run('s1', uid(12), 1700, 60, 0.05, 30, Date.parse('2026-12-20T00:00:00Z'));
+  await seed.run('s2', uid(12), 1700, 60, 0.05, 30, Date.parse('2026-12-20T00:00:00Z'));
   await db.ingest(rankedAt(41, '2027-01-15T00:00:00Z', 'RED', uid(12), uid(13)));
   assert.equal((await change(db, 41, uid(12))).before_rd, inflate({ rating: 1600, rd: 200, volatility: 0.05 }, 2).rd);
 });
@@ -312,31 +313,31 @@ test('a campaign ending exactly at a season start rates in the new season; 1 ms 
   const db = await inSeasonTwo(t);
   await db.ingest(rankedAt(42, '2026-12-31T23:59:59.999Z')); await db.ingest(rankedAt(43, '2027-01-01T00:00:00.000Z'));
   const old = await change(db, 42, player), next = await change(db, 43, player);
-  assert.deepEqual([old.season_id, next.season_id], ['s1', 's2']);
+  assert.deepEqual([old.season_id, next.season_id], ['s2', 's3']);
   assert.equal(next.before_rating, 1500 + 0.5 * (old.after_rating - 1500)); assert.equal(next.before_rd, Math.max(old.after_rd, 200));
-  assert.deepEqual((await db.db.prepare('SELECT season_id,rated_campaigns FROM ratings WHERE uuid=? ORDER BY season_id').all(player)).map(r => [r.season_id, r.rated_campaigns]), [['s1', 1], ['s2', 1]]);
+  assert.deepEqual((await db.db.prepare('SELECT season_id,rated_campaigns FROM ratings WHERE uuid=? ORDER BY season_id').all(player)).map(r => [r.season_id, r.rated_campaigns]), [['s2', 1], ['s3', 1]]);
 });
 test('a late result for an old season rates only that season; replays stay idempotent', async t => {
   const db = await inSeasonTwo(t);
   await db.ingest(rankedAt(44, '2026-12-01T00:00:00Z')); await db.ingest(rankedAt(45, '2027-01-10T00:00:00Z'));
-  const current = await seasonRatings(db, 's2'), old = await seasonRatings(db, 's1'), mmr = (await db.player(player, query())).mmr;
+  const current = await seasonRatings(db, 's3'), old = await seasonRatings(db, 's2'), mmr = (await db.player(player, query())).mmr;
   const late = rankedAt(46, '2026-12-15T00:00:00Z', 'BLUE');
   await db.ingest(late); await db.ingest(structuredClone(late)); await db.ingest(rankedAt(45, '2027-01-10T00:00:00Z'));
-  assert.deepEqual(await seasonRatings(db, 's2'), current); assert.deepEqual((await db.player(player, query())).mmr, mmr);
-  assert.notDeepEqual(await seasonRatings(db, 's1'), old); assert.equal((await seasonRatings(db, 's1'))[0].rated_campaigns, 2);
-  assert.equal((await change(db, 46, player)).season_id, 's1'); assert.equal((await db.db.prepare('SELECT COUNT(*) n FROM rating_changes').get()).n, 6);
+  assert.deepEqual(await seasonRatings(db, 's3'), current); assert.deepEqual((await db.player(player, query())).mmr, mmr);
+  assert.notDeepEqual(await seasonRatings(db, 's2'), old); assert.equal((await seasonRatings(db, 's2'))[0].rated_campaigns, 2);
+  assert.equal((await change(db, 46, player)).season_id, 's2'); assert.equal((await db.db.prepare('SELECT COUNT(*) n FROM rating_changes').get()).n, 6);
 });
 test('API mmr, ratingHistory and sort=rating follow the selected season, defaulting to the current one', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2027-02-01T00:00:00Z') });
   const deps = await dependencies(t);
   for (const [n, time, winner] of [[47, '2026-11-01T00:00:00Z', 'RED'], [48, '2027-01-10T00:00:00Z', 'BLUE']]) { await deps.store.ingest(roundAt(n + 100, time)); await deps.store.ingest(rankedAt(n, time, winner)); }
-  const s1 = await (await get(deps, `/players/${player}?season=s1`)).json(), current = await (await get(deps, `/players/${player}`)).json();
-  assert.deepEqual([s1.mmrSeason, current.mmrSeason, current.season], ['s1', 's2', null]);
-  assert.deepEqual(s1.ratingHistory.map(h => h.campaignSessionId), [uid(47)]); assert.deepEqual(current.ratingHistory.map(h => h.campaignSessionId), [uid(48)]);
-  assert.ok(s1.mmr.rating > 1500 && current.mmr.rating < s1.mmr.rating, `${s1.mmr.rating} / ${current.mmr.rating}`); assert.equal(current.mmr.ratedCampaigns, 1);
+  const s2 = await (await get(deps, `/players/${player}?season=s2`)).json(), current = await (await get(deps, `/players/${player}`)).json();
+  assert.deepEqual([s2.mmrSeason, current.mmrSeason, current.season], ['s2', 's3', null]);
+  assert.deepEqual(s2.ratingHistory.map(h => h.campaignSessionId), [uid(47)]); assert.deepEqual(current.ratingHistory.map(h => h.campaignSessionId), [uid(48)]);
+  assert.ok(s2.mmr.rating > 1500 && current.mmr.rating < s2.mmr.rating, `${s2.mmr.rating} / ${current.mmr.rating}`); assert.equal(current.mmr.ratedCampaigns, 1);
   const board = async q => (await get(deps, `/leaderboard?sort=rating${q}`)).json();
-  const b1 = await board('&season=s1'), b2 = await board('');
-  assert.deepEqual([b1.mmrSeason, b2.mmrSeason], ['s1', 's2']);
+  const b1 = await board('&season=s2'), b2 = await board('');
+  assert.deepEqual([b1.mmrSeason, b2.mmrSeason], ['s2', 's3']);
   assert.deepEqual(b1.players.map(p => p.uuid), [player, uid(11)]); assert.deepEqual(b2.players.map(p => p.uuid), [uid(11), player]);
-  assert.deepEqual(b1.players[0].mmr, s1.mmr); assert.deepEqual(b2.players[1].mmr, current.mmr);
+  assert.deepEqual(b1.players[0].mmr, s2.mmr); assert.deepEqual(b2.players[1].mmr, current.mmr);
 });
