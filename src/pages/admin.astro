@@ -529,7 +529,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
           }
           case 'DRAINING': return { tone: 'warn', title: 'Готовимся к мастерской', detail: [`${view.step}: новые матчи не начинаются, сервер ждёт, пока закончатся идущие.`, counts, when].filter(Boolean).join(' · ') };
           case 'REQUESTED': case 'SAVING': case 'STARTING': return { tone: 'warn', title: `Сервер переключается в ${target}`, detail: [`${view.step}.`, when].filter(Boolean).join(' · ') || 'Игроки пока не могут зайти.' };
-          case 'ERROR': return { tone: 'bad', title: 'Сервер остановлен из-за ошибки', detail: [view.errorMessage ? `Причина: ${view.errorMessage}.` : null, can('recover') ? 'Игроки не могут зайти. Восстановите игровой режим в карточке «Режим сервера».' : 'Игроки не могут зайти. Сообщите администратору.'].filter(Boolean).join(' ') };
+          case 'ERROR': return { tone: 'bad', title: 'Вход закрыт из-за ошибки', detail: [view.errorMessage ? `Причина: ${view.errorMessage}.` : null, can('recover') ? 'Игроки не могут зайти. Восстановите игровой режим в карточке «Режим сервера».' : 'Игроки не могут зайти. Сообщите администратору.'].filter(Boolean).join(' ') };
         }
         if (rooms.maintenance) return { tone: 'warn', title: 'Вход на сервер закрыт', detail: rooms.maintenance.message };
         if (rooms.available) return { tone: 'ok', title: 'Сервер работает', detail: counts };
@@ -941,6 +941,8 @@ Astro.response.headers.set('Cache-Control', 'no-store');
           const name = WORKSHOP_PLACES[c.mapId] ?? c.mapId, [label, tone] = CANDIDATE_STATUS[c.status] ?? [c.status, ''];
           const decided = c.decidedBy ? ` · решил ${c.decidedBy.name} ${ago(c.decidedAt)}` : '';
           // baseMatches: false — the map's reference changed since editing started; null — unknown base (older drafts). Either needs a forced publish.
+          // Two versions of one map need distinct accessible names on their buttons.
+          const version = c.id.slice(0, 6);
           const baseWarn = c.baseMatches === false ? 'эталон карты изменился после начала правки' : c.baseMatches === null ? 'база неизвестна' : null;
           const main = el('div', { className: 'row-main' }, el('strong', {}, `${name} `, el('span', { className: `badge ${tone}`, textContent: label }),
             baseWarn ? el('span', { className: 'badge warn', textContent: baseWarn }) : null),
@@ -963,11 +965,11 @@ Astro.response.headers.set('Cache-Control', 'no-store');
               if (!(await ask({ title: `Принять «${name}»?`, text: `Будет принят именно этот пакет. Игровая карта изменится только после проверки и выпуска новой версии сборки.`, ok: 'Принять' }))) return;
               if (baseWarn && !(await confirmForce(`Эта версия правилась поверх карты, у которой ${baseWarn}.`))) return;
               publish(!!baseWarn);
-            }, 'small primary', `Принять ${name}`),
+            }, 'small primary', `Принять ${name}, версия ${version}`),
             button('Отклонить', async () => {
               if (!(await ask({ title: `Отклонить эту версию «${name}»?`, text: 'Версия останется в списке как отклонённая, в игру она не попадёт.', ok: 'Отклонить', danger: true }))) return;
               run(line, async () => { const { id } = await api('candidates/reject', 'POST', { candidateId: c.id, mapId: c.mapId }); follow(line, id, 'Версия отклонена.').then(loadCandidates); return 'Запрос отправлен…'; });
-            }, 'small danger', `Отклонить ${name}`));
+            }, 'small danger', `Отклонить ${name}, версия ${version}`));
           }
           if (can('mode') && c.status === 'pending' && controller?.phase === 'workshop') {
             actions.append(button('Тест', async () => {
@@ -977,7 +979,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
                 follow(line, id, `Тестовый матч «${name}» начат.`).then(loadOverview);
                 return 'Запрос отправлен. Сервер применит его в течение 15 секунд…';
               });
-            }, 'small', `Тестовый матч ${name}`));
+            }, 'small', `Тестовый матч ${name}, версия ${version}`));
           }
           if (can('workshop') && c.status === 'accepted') {
             const link = el('a', { className: 'small', textContent: 'Скачать пакет', href: `/api/admin/candidates/download?id=${encodeURIComponent(c.id)}` });
