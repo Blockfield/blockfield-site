@@ -15,6 +15,9 @@ COPY --from=build /app/dist ./dist
 # A new named volume copies this ownership; without it the stats DB is root-owned and reads return 503.
 RUN mkdir -p /data/stats && chown node:node /data/stats
 USER node
+# Last layer: a new commit must not invalidate the npm ci cache above.
+ARG BUILD_COMMIT
+ENV BUILD_COMMIT=$BUILD_COMMIT
 EXPOSE 4321
 HEALTHCHECK --interval=15s --timeout=5s --retries=3 CMD wget -q -O /dev/null http://127.0.0.1:4321/ || exit 1
 CMD ["node", "./dist/server/entry.mjs"]

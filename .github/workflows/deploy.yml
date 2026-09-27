@@ -11,7 +11,7 @@ permissions:
 jobs:
   deploy:
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:18
@@ -48,6 +48,7 @@ jobs:
           # Web builds only on main, so the gha cache scope is readable by every run.
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: BUILD_COMMIT=${{ github.sha }}
           tags: |
             ghcr.io/blockfield/blockfield-site:${{ github.sha }}
             ghcr.io/blockfield/blockfield-site:latest
@@ -55,3 +56,17 @@ jobs:
         env:
           WEBHOOK: ${{ secrets.DOKPLOY_SITE_WEBHOOK }}
         run: curl -fsS --retry 3 --retry-delay 5 -X POST "$WEBHOOK"
+      # The webhook only queues a Dokploy deploy; fail the job if the site never switches to this build.
+      - name: Wait until blockfield.pro serves this commit
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          deadline=$((SECONDS + 600))
+          until [ "$(curl -fsS --max-time 10 https://blockfield.pro/api/version | jq -r .commit)" = "$SHA" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::blockfield.pro did not serve $SHA within 10 minutes"
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "blockfield.pro serves $SHA after ${SECONDS}s"
