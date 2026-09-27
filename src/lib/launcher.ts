@@ -1,5 +1,5 @@
-const RELEASES = 'https://github.com/netherg-io/blockfield-launcher-releases/releases';
-const API = 'https://api.github.com/repos/netherg-io/blockfield-launcher-releases/releases/latest';
+const RELEASES = 'https://github.com/Blockfield/Blockfield-Launcher/releases';
+const API = 'https://api.github.com/repos/Blockfield/Blockfield-Launcher/releases/latest';
 
 export type Launcher = { version: string; windows: string; linux: string; macosArm: string };
 
