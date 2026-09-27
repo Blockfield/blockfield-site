@@ -1,6 +1,7 @@
-# blockfield-web
+# blockfield-site
 
-Лендинг Blockfield. Astro в режиме SSR (`@astrojs/node`, standalone), образ `ghcr.io/netherg-io/blockfield-site`.
+Лендинг Blockfield. Astro в режиме SSR (`@astrojs/node`, standalone), образ `ghcr.io/blockfield/blockfield-site`.
+Репозиторий `Blockfield/blockfield-site` (до 2026-09-27 — `netherg-io/blockfield-web`; старый адрес GitHub перенаправляет).
 
 ```bash
 npm install
@@ -48,13 +49,17 @@ GitHub, а релиз меняется редко — так что почти �
 
 ## Раздача
 
-Пак, архивы клиента и `build.json` живут в другом образе (`blockfield-web` из репозитория
-`blockfield-modpack`, nginx). Этот сервис отдаёт только `/` и свои ассеты, поэтому на
+Пак, архивы клиента и `build.json` живут в другом образе — `ghcr.io/blockfield/blockfield-distribution`
+из репозитория `Blockfield/blockfield-client` (nginx; до 2.54.1 он назывался `blockfield-web`). Этот сервис отдаёт только `/` и свои ассеты, поэтому на
 `blockfield.pro` они должны стоять за одним роутером: корень — сюда, файлы пака — в nginx.
 
-## Секреты CI
+## CI
 
-- `DOKPLOY_SITE_WEBHOOK` — вебхук деплоя приложения лендинга в Dokploy.
+Push в `main`: тесты (в том числе на PostgreSQL) на Blacksmith, образ `ghcr.io/blockfield/blockfield-site:<sha>` и `:latest`,
+затем вебхук Dokploy. Приложение Dokploy `blockfield-site` разворачивает `:latest`; откат — указать в нём тег `<sha>`
+предыдущего коммита. Старые образы `ghcr.io/netherg-io/blockfield-site` сохранены для отката на переходный период.
+
+- `DOKPLOY_SITE_WEBHOOK` — вебхук деплоя приложения сайта в Dokploy.
 
 ## Аккаунт
 

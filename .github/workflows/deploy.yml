@@ -3,14 +3,14 @@ on:
   push:
     branches: [main]
 concurrency:
-  group: blockfield-web
+  group: blockfield-site
   cancel-in-progress: true
 permissions:
   contents: read
   packages: write
 jobs:
   deploy:
-    runs-on: tenki-standard-small-2c-4g
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     services:
       postgres:
@@ -49,8 +49,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: |
-            ghcr.io/netherg-io/blockfield-site:${{ github.sha }}
-            ghcr.io/netherg-io/blockfield-site:latest
+            ghcr.io/blockfield/blockfield-site:${{ github.sha }}
+            ghcr.io/blockfield/blockfield-site:latest
       - name: Deploy through the Dokploy webhook
         env:
           WEBHOOK: ${{ secrets.DOKPLOY_SITE_WEBHOOK }}
