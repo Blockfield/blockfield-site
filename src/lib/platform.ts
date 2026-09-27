@@ -20,7 +20,7 @@ export function launcherDownload(platform: Platform, links: { windows: string; l
     case 'linux':
       return { href: links.linux, label: 'СКАЧАТЬ ДЛЯ LINUX', note: 'Лаунчер для Linux x86_64 · AppImage' };
     case 'macos':
-      return { href: links.macosArm, label: 'СКАЧАТЬ ДЛЯ MAC', note: 'Лаунчер для Mac на Apple Silicon (M1 и новее) · .dmg' };
+      return { href: '#download', label: 'ВЫБРАТЬ ВЕРСИЮ ДЛЯ MAC', note: 'Выберите macOS · Intel или Apple Silicon (M1 и новее) · .dmg' };
     case 'mobile':
       return { href: '#download', label: 'ВЫБРАТЬ ВЕРСИЮ ДЛЯ ПК', note: 'Лаунчер работает на компьютерах с Windows, Linux и macOS. Выберите файл для компьютера.' };
     default:

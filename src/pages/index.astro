@@ -110,7 +110,7 @@ const features = [
           'Командный шутер в Minecraft 1.21.1 на Fabric: захват точек, классы, выбор снаряжения.',
         image: 'https://blockfield.pro/og.jpg',
         publisher: { '@type': 'Organization', name: 'Blockfield', url: 'https://github.com/netherg-io' },
-        downloadUrl: [launcher.windows, launcher.linux, launcher.macosArm],
+        downloadUrl: [launcher.windows, launcher.linux, launcher.macosArm, launcher.macosIntel],
         softwareVersion: launcher.version || undefined,
       })}
     />
@@ -144,9 +144,13 @@ const features = [
             <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.linux} />
             Linux · AppImage
           </a>
+          <a href={launcher.macosIntel}>
+            <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.apple} />
+            macOS · Intel
+          </a>
           <a href={launcher.macosArm}>
             <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.apple} />
-            macOS · .dmg
+            macOS · Apple Silicon
           </a>
           {launcher.version && <span class="platforms__version">версия {launcher.version}</span>}
         </p>
@@ -175,6 +179,10 @@ const features = [
           <a href={launcher.linux}>
             <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.linux} />
             Linux · AppImage
+          </a>
+          <a href={launcher.macosIntel}>
+            <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.apple} />
+            macOS · Intel
           </a>
           <a href={launcher.macosArm}>
             <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.apple} />

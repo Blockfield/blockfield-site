@@ -21,11 +21,13 @@ for (const [name, ua, hint, expected] of [
     const action = launcherDownload(platform, links);
     if (platform === 'windows') assert.equal(action.href, links.windows);
     else if (platform === 'linux') assert.equal(action.href, links.linux);
-    else if (platform === 'macos') assert.equal(action.href, links.macosArm);
+    else if (platform === 'macos') assert.equal(action.href, '#download');
     else assert.equal(action.href, '#download', 'unsupported/unknown platforms must not download an exe');
   });
 }
 
-test('Mac downloads the Apple Silicon build and says so', () => {
-  assert.match(launcherDownload('macos', links).note, /Apple Silicon/);
+test('Mac offers an architecture choice instead of guessing from the user agent', () => {
+  const action = launcherDownload('macos', links);
+  assert.equal(action.href, '#download');
+  assert.match(action.note, /Intel.*Apple Silicon/);
 });
