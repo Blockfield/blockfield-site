@@ -6,7 +6,7 @@ COPY . .
 RUN npm run build
 
 FROM node:22-alpine
-LABEL org.opencontainers.image.source="https://github.com/netherg-io/blockfield-web"
+LABEL org.opencontainers.image.source="https://github.com/Blockfield/blockfield-site"
 WORKDIR /app
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=4321
 COPY package.json package-lock.json ./
