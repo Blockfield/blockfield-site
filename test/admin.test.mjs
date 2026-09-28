@@ -142,10 +142,25 @@ test('settings validation and optimistic revision conflict', t => {
     { classLocks: ['Sniper'] }, { classLocks: ['a', 'a'] }, { campaignBalance: { '*': { rm_rf: 1 } } }, { campaignBalance: { '*': { enable_spawn_shield: 1 } } },
     { campaignBalance: { 'bad id!': { max_tickets: 1 } } }, { campaignBalance: { '*': { max_tickets: Infinity } } }, { extra: 1 },
     { deathmatch: { minPlayers: 0 } }, { deathmatch: { minPlayers: 25 } }, { deathmatch: { minPlayers: 2.5 } }, { deathmatch: { minPlayer: 3 } },
+    { parcool: { allowedActions: ['Fastrun'] } }, { parcool: { allowedActions: ['FastRun', 'FastRun'] } }, { parcool: { allowedActions: 'FastRun' } },
+    { parcool: { allowedActions: ['FastRun'], extra: 1 } }, { parcool: [] }, { parcool: 'FastRun' },
   ]) assert.throws(() => validateSettings(body), e => status(e) === 400, JSON.stringify(body));
   assert.deepEqual(validateSettings({ deathmatch: { minPlayers: 3 } }), { deathmatch: { minPlayers: 3 } });
   // Owner wants to be able to start deathmatch alone.
   assert.deepEqual(validateSettings({ deathmatch: { minPlayers: 1 } }), { deathmatch: { minPlayers: 1 } });
+  // Present with an empty list forbids every parkour action; absent leaves the mod's base file in charge.
+  assert.deepEqual(validateSettings({ parcool: { allowedActions: [] } }), { parcool: { allowedActions: [] } });
+  assert.deepEqual(validateSettings({ parcool: { allowedActions: ['FastRun', 'ClimbUp'] } }), { parcool: { allowedActions: ['FastRun', 'ClimbUp'] } });
+});
+
+test('parcool settings round-trip through saveSettings like the other sections', t => {
+  const dir = temp(t);
+  const saved = saveSettings(dir, { expectedRevision: 0, parcool: { allowedActions: ['FastRun', 'ClingToCliff'] } }, 'Adm');
+  assert.deepEqual(saved.parcool, { allowedActions: ['FastRun', 'ClingToCliff'] });
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'settings.json'))).parcool, { allowedActions: ['FastRun', 'ClingToCliff'] });
+  // A later save that omits `parcool` drops the section entirely (every save replaces the whole file), returning control to the base file.
+  const cleared = saveSettings(dir, { expectedRevision: 1, rooms: { maxRooms: 3 } }, 'Adm');
+  assert.equal(cleared.parcool, undefined);
 });
 
 test('RCON allowlist builds exact commands and rejects injection', () => {

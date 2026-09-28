@@ -159,6 +159,12 @@ Astro.response.headers.set('Cache-Control', 'no-store');
             <div id="class-list" class="checks"></div>
           </fieldset>
           <fieldset class="card">
+            <legend>Ограничения паркура</legend>
+            <small class="muted">Какие действия паркура разрешены игрокам. Выключено — сервер сам решает по своему базовому файлу.</small>
+            <label class="switch"><input type="checkbox" id="parcool-on" />Задать список действий на сайте</label>
+            <div id="parcool-list" class="checks"></div>
+          </fieldset>
+          <fieldset class="card">
             <legend>Баланс матчей</legend>
             <small class="muted">Новые значения подхватит следующий матч.</small>
             <div class="scope">
@@ -340,7 +346,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
       .check, .radio { border: 1px solid var(--line); padding: 12px; }
       .radios { display: grid; gap: 8px; }
       .radio:has(input:checked) { border-color: var(--amber); }
-      .radio span { display: grid; gap: 2px; } .radio small { font-weight: 400; }
+      .radio span, .check span { display: grid; gap: 2px; } .radio small, .check small { font-weight: 400; }
       .scope { display: grid; gap: 6px; max-width: 420px; }
       /* Липкая полоса, чтобы «сохранить» не уезжало вверх на длинной форме. */
       .savebar { position: sticky; bottom: 0; z-index: 3; background: rgb(7 6 4 / 0.95); backdrop-filter: blur(4px); border-top: 1px solid var(--line); padding: 16px 0; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
@@ -381,7 +387,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
     </style>
 
     <script>
-      import { BALANCE_DEFAULTS, BALANCE_GROUPS, BALANCE_LABELS, BALANCE_SCOPES, CLASS_COSTS, CLASS_NAMES, MAP_NAMES, MODE_NAMES, WORKSHOP_PLACES, TEAM_NAMES } from '../lib/game-names';
+      import { BALANCE_DEFAULTS, BALANCE_GROUPS, BALANCE_LABELS, BALANCE_SCOPES, CLASS_COSTS, CLASS_NAMES, MAP_NAMES, MODE_NAMES, PARCOOL_ACTIONS, PARCOOL_FILE_DEFAULT, WORKSHOP_PLACES, TEAM_NAMES } from '../lib/game-names';
       import { settingsBody } from '../lib/settings-form';
       import { customSelect, customCombo } from '../lib/custom-select';
       import { switchView } from '../lib/switch-status';
@@ -738,7 +744,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         { key: 'abandonCloseSeconds', label: 'Завершать матч без игроков через', unit: 'сек', min: 5, max: 600, def: 30 },
       ];
       const DEATHMATCH = [{ key: 'minPlayers', label: 'Игроков для старта', unit: 'чел', min: 1, max: 24, def: 2 }];
-      const SETTING_LABELS: Record<string, string> = { pvpEnabled: 'PvP в лобби', classLocks: 'Закрытые классы', classCosts: 'Стоимость высадки', ...Object.fromEntries([...LOBBY, ...ROOMS, ...DEATHMATCH].map(f => [f.key, f.label])), ...BALANCE_LABELS };
+      const SETTING_LABELS: Record<string, string> = { pvpEnabled: 'PvP в лобби', classLocks: 'Закрытые классы', classCosts: 'Стоимость высадки', parcool: 'Ограничения паркура', ...Object.fromEntries([...LOBBY, ...ROOMS, ...DEATHMATCH].map(f => [f.key, f.label])), ...BALANCE_LABELS };
       function numberField(label: string, name: string, min: number, max: number, step: string, value: number, unit?: string, about?: string) {
         const input = el('input', { type: 'number', name, min, max, step, inputMode: step === '1' ? 'numeric' : 'decimal', value });
         const wrap = unit ? el('div', { className: 'unit' }, input, el('span', { className: 'unit__suffix', textContent: unit, ariaHidden: 'true' })) : undefined;
@@ -781,6 +787,10 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         customSelect($<HTMLSelectElement>('#scope'));
       }
       $('#scope').addEventListener('change', e => { collectBalance(); scope = (e.target as HTMLSelectElement).value; renderScopes(); renderBalance(); });
+      $('#parcool-on').addEventListener('change', e => {
+        const on = (e.target as HTMLInputElement).checked;
+        $('#parcool-list').querySelectorAll('input').forEach(i => ((i as HTMLInputElement).disabled = !on));
+      });
 
       function appliedErrors(errors: string[]) {
         return errors.map(error => {
@@ -812,6 +822,13 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         const locks: string[] = settings.classLocks ?? [];
         extraLocks = locks.filter(id => !Object.hasOwn(CLASS_NAMES, id));
         $('#class-list').replaceChildren(...Object.entries(CLASS_NAMES).map(([id, name]) => el('label', { className: 'check' }, el('input', { type: 'checkbox', name: 'class', value: id, checked: !locks.includes(id) }), name)));
+        const parcoolOn = $<HTMLInputElement>('#parcool-on');
+        parcoolOn.checked = settings.parcool !== undefined;
+        // Effective value while off: the server's base file, shown but disabled — this is not what will be saved.
+        const parcoolChecked = new Set(settings.parcool?.allowedActions ?? PARCOOL_FILE_DEFAULT);
+        $('#parcool-list').replaceChildren(...PARCOOL_ACTIONS.map(({ id, label, hint }) => el('label', { className: 'check', ...(hint ? { title: hint } : {}) },
+          el('input', { type: 'checkbox', name: 'parcool', value: id, checked: parcoolChecked.has(id), disabled: !parcoolOn.checked }),
+          el('span', {}, label, el('small', { textContent: id })))));
         balance = structuredClone(settings.campaignBalance ?? {});
         renderScopes(); renderBalance();
         }
@@ -845,6 +862,7 @@ Astro.response.headers.set('Cache-Control', 'no-store');
           deathmatch: Object.fromEntries(DEATHMATCH.map(f => [f.key, value(f.key)])),
           lockedClasses: [...[...form.querySelectorAll<HTMLInputElement>('input[name=class]')].filter(c => !c.checked).map(c => c.value), ...extraLocks],
           hadLocks, balance,
+          parcool: { active: $<HTMLInputElement>('#parcool-on').checked, actions: [...form.querySelectorAll<HTMLInputElement>('input[name=parcool]:checked')].map(c => c.value) },
         }, defaults);
         save.disabled = true;
         settingsStatus('Сохраняем…', 'pending', 'Сохраняем…');

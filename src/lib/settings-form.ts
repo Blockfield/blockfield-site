@@ -2,6 +2,8 @@ export type SettingsForm = {
   pvpEnabled: string; lobby: Record<string, string>; rooms: Record<string, string>; deathmatch: Record<string, string>;
   classCosts?: Record<string, string>;
   lockedClasses: string[]; hadLocks: boolean; balance: Record<string, Record<string, number | boolean>>;
+  /** `active: false` (the site default: "use the server's base file") omits the section entirely, even if it was set before. */
+  parcool?: { active: boolean; actions: string[] };
 };
 /**
  * PUT /api/admin/settings body from form values. Fields are prefilled with the server default, so a value equal to
@@ -21,5 +23,6 @@ export function settingsBody(expectedRevision: number, form: SettingsForm, defau
     ...(Object.keys(deathmatch).length ? { deathmatch } : {}),
     ...(form.lockedClasses.length || form.hadLocks ? { classLocks: form.lockedClasses } : {}),
     ...(Object.keys(balance).length ? { campaignBalance: balance } : {}),
+    ...(form.parcool?.active ? { parcool: { allowedActions: form.parcool.actions } } : {}),
   };
 }
