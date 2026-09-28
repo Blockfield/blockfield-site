@@ -8,7 +8,7 @@ import { account, drasl, fail, nickname, readJson, session, token } from './acco
 import { rcon } from './rcon.ts';
 import { currentRooms, roomId } from './rooms.ts';
 import { resolveNames, seasons, statsStore, StatsError, UNKNOWN_PLAYER, type StatsStore } from './stats.ts';
-import { BALANCE_LABELS, BALANCE_SCOPES, MAP_NAMES, WORKSHOP_PLACES } from './game-names.ts';
+import { BALANCE_LABELS, BALANCE_SCOPES, MAP_NAMES, PARCOOL_IDS, WORKSHOP_PLACES } from './game-names.ts';
 
 export const ROLES = ['builder', 'moderator', 'admin', 'owner'] as const;
 export type Role = typeof ROLES[number];
@@ -188,7 +188,7 @@ function section(value: unknown, rules: Record<string, (v: unknown) => boolean>,
 }
 /** Settings sections are optional and replace the stored ones as a whole; an absent key means the server default. */
 export function validateSettings(body: any) {
-  if (!plain(body) || Object.keys(body).some(k => !['expectedRevision', 'lobby', 'rooms', 'deathmatch', 'classLocks', 'classCosts', 'campaignBalance'].includes(k))) throw bad('Некорректные настройки.');
+  if (!plain(body) || Object.keys(body).some(k => !['expectedRevision', 'lobby', 'rooms', 'deathmatch', 'classLocks', 'classCosts', 'campaignBalance', 'parcool'].includes(k))) throw bad('Некорректные настройки.');
   const out: Record<string, unknown> = {};
   if (body.lobby !== undefined) out.lobby = section(body.lobby, LOBBY, 'лобби');
   if (body.rooms !== undefined) out.rooms = section(body.rooms, ROOMS, 'комнаты');
@@ -215,6 +215,12 @@ export function validateSettings(body: any) {
       if (merged.base_kill_radius > merged.base_warn_radius) throw bad(`${scope}: «${BALANCE_LABELS.base_kill_radius}» больше, чем «${BALANCE_LABELS.base_warn_radius}».`);
     }
     out.campaignBalance = balance;
+  }
+  if (body.parcool !== undefined) {
+    const value = body.parcool, list = plain(value) ? value.allowedActions : undefined;
+    if (!plain(value) || Object.keys(value).some(k => k !== 'allowedActions') || !Array.isArray(list) || new Set(list).size !== list.length
+      || !list.every((a: unknown) => typeof a === 'string' && PARCOOL_IDS.has(a))) throw bad('Настройки: неверный список действий паркура.');
+    out.parcool = { allowedActions: list };
   }
   return out;
 }

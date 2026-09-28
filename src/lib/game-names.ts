@@ -77,3 +77,40 @@ export const BALANCE_GROUPS: { title: string; fields: Field[] }[] = [
 export const BALANCE_LABELS: Record<string, string> = Object.fromEntries(BALANCE_GROUPS.flatMap(g => g.fields.map(f => [f.key, f.label])));
 
 export const WORKSHOP_PLACES: Record<string, string> = { [WORKSHOP_HUB]: 'Хаб мастерской', ...MAP_NAMES };
+
+/**
+ * ParCool action ids, in the mod's own order (`settings.json` `parcool.allowedActions`, a subset, any order).
+ * ponytail: a hand-kept copy of ParCool's action enum; add a row if ParCool adds an action.
+ */
+export const PARCOOL_ACTIONS: { id: string; label: string; hint?: string }[] = [
+  { id: 'BreakfallReady', label: 'Страховка при падении (подготовка)' },
+  { id: 'CatLeap', label: 'Кошачий прыжок с бега' },
+  { id: 'ChargeJump', label: 'Заряженный прыжок' },
+  { id: 'ClimbPoles', label: 'Лазание по столбам' },
+  { id: 'ClimbUp', label: 'Подтягивание из зацепа', hint: 'Без него зацеп только держит игрока на месте, залезть наверх нельзя.' },
+  { id: 'ClingToCliff', label: 'Зацеп за уступ' },
+  { id: 'HideInBlock', label: 'Прятаться в блоке' },
+  { id: 'Crawl', label: 'Ползком' },
+  { id: 'Dive', label: 'Прыжок в воду с высоты' },
+  { id: 'Dodge', label: 'Уклонение рывком' },
+  { id: 'FastRun', label: 'Быстрый бег' },
+  { id: 'FastSwim', label: 'Быстрое плавание' },
+  { id: 'Flipping', label: 'Сальто' },
+  { id: 'HangDown', label: 'Вис на перекладине' },
+  { id: 'HorizontalWallRun', label: 'Забег по стене горизонтально' },
+  { id: 'JumpFromBar', label: 'Прыжок с перекладины' },
+  { id: 'QuickTurn', label: 'Быстрый разворот' },
+  { id: 'RideZipline', label: 'Катание по тросу' },
+  { id: 'Roll', label: 'Перекат при приземлении' },
+  { id: 'SkyDive', label: 'Затяжное падение' },
+  { id: 'Slide', label: 'Подкат' },
+  { id: 'Tap', label: 'Страховка касанием при приземлении' },
+  { id: 'Vault', label: 'Перепрыгивание через препятствие' },
+  { id: 'VerticalWallRun', label: 'Забег по стене вверх' },
+  { id: 'WallJump', label: 'Прыжок от стены' },
+  { id: 'WallSlide', label: 'Скольжение по стене' },
+  { id: 'StartSwimByCrawl', label: 'Начать плавание ползком' },
+];
+export const PARCOOL_IDS = new Set(PARCOOL_ACTIONS.map(a => a.id));
+/** What the server allows when `settings.json` has no `parcool` section: the mod image's own base file. */
+export const PARCOOL_FILE_DEFAULT = ['FastRun', 'ClingToCliff', 'Crawl'];

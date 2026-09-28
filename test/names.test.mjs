@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { StatsStore, displayName, filters, handleStatsRequest, resolveNames, uuidLike } from '../src/lib/stats.ts';
 import { BALANCE, siteBans } from '../src/lib/admin.ts';
-import { BALANCE_GROUPS, BALANCE_DEFAULTS, CLASS_COSTS } from '../src/lib/game-names.ts';
+import { BALANCE_GROUPS, BALANCE_DEFAULTS, CLASS_COSTS, PARCOOL_ACTIONS, PARCOOL_IDS, PARCOOL_FILE_DEFAULT } from '../src/lib/game-names.ts';
 import { settingsBody } from '../src/lib/settings-form.ts';
 
 const uid = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -106,4 +106,21 @@ test('class cost form retains zero and unchanged prices on every save', () => {
   assert.deepEqual(CLASS_COSTS, { tech: 600, sniper: 800, drone: 1200 });
   const form = { pvpEnabled: '', lobby: {}, rooms: {}, deathmatch: {}, lockedClasses: [], hadLocks: false, balance: {}, classCosts: { tech: '0', sniper: '90', drone: '120' } };
   assert.deepEqual(settingsBody(8, form).classCosts, { tech: 0, sniper: 90, drone: 120 });
+});
+
+test('ParCool action list matches the mod\'s enum order; every id is unique; the file default is a known subset', () => {
+  const expected = ['BreakfallReady', 'CatLeap', 'ChargeJump', 'ClimbPoles', 'ClimbUp', 'ClingToCliff', 'HideInBlock', 'Crawl', 'Dive', 'Dodge',
+    'FastRun', 'FastSwim', 'Flipping', 'HangDown', 'HorizontalWallRun', 'JumpFromBar', 'QuickTurn', 'RideZipline', 'Roll', 'SkyDive', 'Slide',
+    'Tap', 'Vault', 'VerticalWallRun', 'WallJump', 'WallSlide', 'StartSwimByCrawl'];
+  assert.deepEqual(PARCOOL_ACTIONS.map(a => a.id), expected);
+  assert.equal(PARCOOL_IDS.size, expected.length);
+  for (const id of PARCOOL_FILE_DEFAULT) assert.ok(PARCOOL_IDS.has(id), id);
+});
+
+test('parcool form: written only while the toggle is on, even if a list was set before', () => {
+  const base = { pvpEnabled: '', lobby: {}, rooms: {}, deathmatch: {}, lockedClasses: [], hadLocks: false, balance: {} };
+  assert.deepEqual(settingsBody(5, base), { expectedRevision: 5 }, 'no parcool field at all: same as off');
+  assert.deepEqual(settingsBody(5, { ...base, parcool: { active: false, actions: ['FastRun'] } }), { expectedRevision: 5 }, 'off omits the section, whatever the checkboxes hold');
+  assert.deepEqual(settingsBody(5, { ...base, parcool: { active: true, actions: [] } }), { expectedRevision: 5, parcool: { allowedActions: [] } }, 'on with nothing checked forbids everything, explicitly');
+  assert.deepEqual(settingsBody(5, { ...base, parcool: { active: true, actions: ['FastRun', 'Crawl'] } }), { expectedRevision: 5, parcool: { allowedActions: ['FastRun', 'Crawl'] } });
 });
