@@ -112,7 +112,9 @@ const number = (n: unknown) => Number(n).toLocaleString('ru-RU', { maximumFracti
       <button type="submit" class="primary">
         Показать
       </button>
-      <a href="/leaderboard">Сбросить</a>
+      <a class="button ghost" href="/leaderboard">
+        Сбросить
+      </a>
     </div>
   </form>
   {current && (
@@ -190,17 +192,25 @@ const number = (n: unknown) => Number(n).toLocaleString('ru-RU', { maximumFracti
           </table>
         </div>
         <nav class="pagination" aria-label="Страницы результатов">
-          {board.page > 1 ? <a href={pageLink(board.page - 1)}>← Назад</a> : <span></span>}
+          {board.page > 1 ? (
+            <a class="button" href={pageLink(board.page - 1)}>
+              ← Назад
+            </a>
+          ) : (
+            <span></span>
+          )}
           <span>
             Страница {board.page} · игроков: {board.total}
           </span>
           {board.page * board.limit < board.total ? (
-            <a href={pageLink(board.page + 1)}>Далее →</a>
+            <a class="button" href={pageLink(board.page + 1)}>
+              Далее →
+            </a>
           ) : (
             <span></span>
           )}
         </nav>
-        <details class="how">
+        <details class="disclosure">
           <summary>Что такое MMR и как он меняется</summary>
           <p>
             MMR — ваша сила в Ranked. Он меняется один раз за целую кампанию: победа поднимает,
@@ -247,25 +257,6 @@ const number = (n: unknown) => Number(n).toLocaleString('ru-RU', { maximumFracti
     }
     .season-line strong {
       color: var(--cream);
-    }
-    details.how {
-      border: 1px solid var(--line);
-      background: var(--panel);
-      padding: 0 18px;
-    }
-    details.how summary {
-      padding: 16px 0;
-      color: var(--cream);
-      font-weight: 600;
-      cursor: pointer;
-    }
-    details.how summary::marker {
-      color: var(--amber);
-    }
-    details.how p {
-      padding-bottom: 16px;
-      max-width: 34em;
-      color: var(--sand);
     }
   </style>
   <script>

@@ -2,19 +2,20 @@
 import { siteIdentity } from '../lib/admin'
 import { ui } from '../lib/icons'
 
-export type NavLink = { href: string; label: string; class?: string; hidden?: boolean }
+type NavLink = { href: string; label: string; class?: string; hidden?: boolean }
 
 interface Props {
-  links?: NavLink[]
   cta?: { href: string; label: string; title: string } | null
 }
+const { cta = null } = Astro.props
 
-const defaults: NavLink[] = [
+const links: NavLink[] = [
   { href: '/leaderboard', label: 'Лидерборд' },
-  { href: '/account', label: 'Аккаунт' },
+  { href: '/#rooms', label: 'Матчи', class: 'rooms-nav-link', hidden: true },
+  { href: '/#game', label: 'Игра' },
   { href: '/#download', label: 'Скачать' },
+  { href: 'https://github.com/Blockfield/blockfield-releases', label: 'GitHub' },
 ]
-const { links = defaults, cta = null } = Astro.props
 // Рендерится на сервере, чтобы никнейм был в исходном HTML, а не подставлялся после загрузки.
 const identity = await siteIdentity(Astro.cookies).catch(() => null)
 const account = {
@@ -45,7 +46,12 @@ const account = {
     </a>
   )}
   {cta && (
-    <a class="site-header__cta" href={cta.href} aria-label={cta.title} data-platform-download>
+    <a
+      class="button primary site-header__cta"
+      href={cta.href}
+      aria-label={cta.title}
+      data-platform-download
+    >
       <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
       {cta.label}
     </a>
@@ -83,7 +89,7 @@ const account = {
   </div>
   {cta && (
     <a
-      class="button button--amber mobile-menu__cta"
+      class="button primary mobile-menu__cta"
       href={cta.href}
       aria-label={cta.title}
       data-platform-download
@@ -101,9 +107,13 @@ const account = {
     const setOpen = (open: boolean) => {
       burger.setAttribute('aria-expanded', String(open))
       menu.hidden = !open
+      document.querySelectorAll<HTMLElement>('main, .site-footer').forEach((node) => {
+        node.inert = open
+      })
       // Оверлей во весь экран — скролл фона под ним только мешает.
       document.body.style.overflow = open ? 'hidden' : ''
     }
+    window.matchMedia('(max-width: 760px)').addEventListener('change', () => setOpen(false))
     burger.addEventListener('click', () => setOpen(menu.hidden))
     menu.addEventListener('click', (event) => {
       if ((event.target as HTMLElement).closest('a')) setOpen(false)

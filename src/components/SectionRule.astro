@@ -1,0 +1,16 @@
+---
+interface Props {
+  label: string
+  code: string
+}
+const { label, code } = Astro.props
+---
+
+<p class="rule">
+  <span class="rule__square" aria-hidden="true"></span>
+  <span class="rule__label">{label}</span>
+  <span class="rule__line" aria-hidden="true"></span>
+  <span class="rule__code" aria-hidden="true">
+    {code}
+  </span>
+</p>

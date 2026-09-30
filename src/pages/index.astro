@@ -1,14 +1,9 @@
 ---
-import '@fontsource-variable/inter'
-import '@fontsource/ibm-plex-mono/400.css'
-import '@fontsource/ibm-plex-mono/500.css'
-import '@fontsource/ibm-plex-mono/600.css'
-import '../styles/system.css'
+import Site from '../layouts/Site.astro'
+import SectionRule from '../components/SectionRule.astro'
 import { latestLauncher } from '../lib/launcher'
 import { detectPlatform, launcherDownload } from '../lib/platform'
 import { brand, ui } from '../lib/icons'
-import SiteHeader from '../components/SiteHeader.astro'
-import SiteFooter from '../components/SiteFooter.astro'
 
 const launcher = await latestLauncher()
 const platform = detectPlatform(
@@ -17,14 +12,6 @@ const platform = detectPlatform(
 )
 const download = launcherDownload(platform, launcher)
 const supported = platform === 'windows' || platform === 'linux' || platform === 'macos'
-
-const navLinks = [
-  { href: '#rooms', label: 'Матчи', class: 'rooms-nav-link', hidden: true },
-  { href: '/leaderboard', label: 'Лидерборд' },
-  { href: '#game', label: 'Игра' },
-  { href: '#download', label: 'Скачать' },
-  { href: 'https://github.com/Blockfield/blockfield-releases', label: 'GitHub' },
-]
 
 // HTML содержит ссылку для ОС посетителя; общий кэш не должен отдавать её другой платформе.
 Astro.response.headers.set('Cache-Control', 'private, no-store')
@@ -80,18 +67,13 @@ const features = [
 ]
 ---
 
-<!doctype html>
-<html lang="ru">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>BLOCKFIELD — командный шутер в Minecraft 1.21.1 (Fabric)</title>
-    <meta
-      name="description"
-      content="Blockfield — командные бои в Minecraft 1.21.1 на Fabric: захват точек, классы, выбор снаряжения. Лаунчер установит модпак и подключит к серверу."
-    />
-    <link rel="canonical" href="https://blockfield.pro/" />
-    <meta name="theme-color" content="#070604" />
+<Site
+  title="BLOCKFIELD — командный шутер в Minecraft 1.21.1 (Fabric)"
+  description="Blockfield — командные бои в Minecraft 1.21.1 на Fabric: захват точек, классы, выбор снаряжения. Лаунчер установит модпак и подключит к серверу."
+  canonical="https://blockfield.pro/"
+  cta={{ href: download.href, label: 'Скачать', title: download.label }}
+>
+  <Fragment slot="head">
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Blockfield" />
     <meta property="og:locale" content="ru_RU" />
@@ -115,7 +97,6 @@ const features = [
       content="Захват точек, классы и снаряжение в Minecraft 1.21.1 на Fabric. Лаунчер ставит модпак сам."
     />
     <meta name="twitter:image" content="https://blockfield.pro/og.jpg" />
-    <link rel="icon" href="/logo.svg" type="image/svg+xml" />
     <script
       type="application/ld+json"
       set:html={JSON.stringify({
@@ -142,13 +123,8 @@ const features = [
     <script is:inline>
       document.documentElement.classList.add('js')
     </script>
-  </head>
-  <body>
-    <SiteHeader
-      links={navLinks}
-      cta={{ href: download.href, label: 'Скачать', title: download.label }}
-    />
-
+  </Fragment>
+  <main id="content" class="landing-main">
     <section class="hero">
       <div class="hero__art">
         <img
@@ -172,8 +148,13 @@ const features = [
           <br />
           Идущие матчи на сервере Blockfield.
         </p>
-        <a class="button button--amber hero__cta" href={download.href} data-platform-download>
-          <span>{download.label}</span>
+        <a
+          class="button primary button--large hero__cta"
+          href={download.href}
+          data-platform-download
+          aria-label={`Начать играть: ${download.label.toLowerCase()}`}
+        >
+          <span>Начать играть</span>
           <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
         </a>
         <p class="download-note">{download.note}</p>
@@ -207,19 +188,14 @@ const features = [
 
     <section class="path" id="download">
       <div class="path__launcher" data-reveal>
-        <p class="rule">
-          <span class="rule__square"></span>
-          <span class="rule__label">Установка</span>
-          <span class="rule__line"></span>
-          <span class="rule__code">INSTALL</span>
-        </p>
+        <SectionRule label="Установка" code="INSTALL" />
         <h2>Blockfield Launcher</h2>
         <p class="path__text">
           Лаунчер установит модпак, Minecraft и Fabric. После установки нажмите «Играть» для входа
           на сервер или выберите матч на этой странице.
         </p>
         <a
-          class="button button--amber"
+          class="button primary button--large"
           href={supported ? download.href : '#manual-install'}
           data-platform-download
         >
@@ -254,12 +230,7 @@ const features = [
       </div>
 
       <div class="path__manual" id="manual-install" data-reveal>
-        <p class="rule">
-          <span class="rule__square"></span>
-          <span class="rule__label">Ручная установка</span>
-          <span class="rule__line"></span>
-          <span class="rule__code">MANUAL</span>
-        </p>
+        <SectionRule label="Ручная установка" code="MANUAL" />
         <ul class="rows">
           {manual.map((item) => (
             <li data-reveal>
@@ -290,12 +261,7 @@ const features = [
     </section>
 
     <section class="game voxel" id="game">
-      <p class="rule">
-        <span class="rule__square"></span>
-        <span class="rule__label">Игра</span>
-        <span class="rule__line"></span>
-        <span class="rule__code">BRIEFING</span>
-      </p>
+      <SectionRule label="Игра" code="BRIEFING" />
       <h2>Правила боя</h2>
       <ul class="game__grid">
         {features.map((item) => (
@@ -314,7 +280,7 @@ const features = [
     <section hidden class="rooms" id="rooms" aria-labelledby="rooms-title">
       <div class="rooms-heading">
         <h2 id="rooms-title">Идущие матчи</h2>
-        <a class="room-join" id="lobby-join" href="blockfield://join/lobby">
+        <a class="button small room-join" id="lobby-join" href="blockfield://join/lobby">
           Войти в лобби
         </a>
       </div>
@@ -330,12 +296,7 @@ const features = [
 
     <section class="server voxel" data-reveal>
       <div class="server__info">
-        <p class="rule">
-          <span class="rule__square"></span>
-          <span class="rule__label">Сервер</span>
-          <span class="rule__line"></span>
-          <span class="rule__code">АДРЕС</span>
-        </p>
+        <SectionRule label="Сервер" code="АДРЕС" />
         <button class="server__address" type="button" data-copy="play.blockfield.pro">
           play.blockfield.pro
           <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.copy} />
@@ -347,1061 +308,993 @@ const features = [
           Minecraft 1.21.1 · Fabric · порт 25565. Лаунчер подключит к серверу после запуска игры.
         </p>
       </div>
-      <a class="button button--amber" href={download.href} data-platform-download>
+      <a class="button primary button--large" href={download.href} data-platform-download>
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
-        <span>{download.label}</span>
+        <span>Получить лаунчер</span>
       </a>
     </section>
+  </main>
 
-    <SiteFooter full />
-
-    <style is:global>
-      [hidden] {
-        display: none !important;
-      }
-      .room-info {
-        flex: 1;
-        min-width: 0;
-      }
-      .battle-score {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 24px;
-        margin-top: 16px;
-        font-size: 18px;
-        font-variant-numeric: tabular-nums;
-      }
-      .battle-red {
-        color: #ff9d99;
-      }
-      .battle-blue {
-        color: #91c8ff;
-      }
-      .capture-points {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 16px 24px;
-        margin-top: 16px;
-      }
-      .capture-point {
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-        flex: 0 1 220px;
-        min-width: 160px;
-        color: #c7ae86;
-        font-size: 13px;
-      }
-      .capture-point progress {
-        display: block;
-        width: 100%;
-        height: 6px;
-        margin-top: 8px;
-        appearance: none;
-        border: 0;
-        background: #2a2116;
-      }
-      .capture-point progress::-webkit-progress-bar {
-        background: #2a2116;
-      }
-      .capture-point progress::-webkit-progress-value {
-        background: var(--point-color, #c7ae86);
-      }
-      .capture-point progress::-moz-progress-bar {
-        background: var(--point-color, #c7ae86);
-      }
-      .rooms {
-        padding: 56px clamp(20px, 4.5vw, 96px);
-        background: #0b0906;
-        border-top: 1px solid #2a2116;
-        scroll-margin-top: 80px;
-      }
-      .rooms-heading {
-        display: flex;
-        align-items: baseline;
-        justify-content: space-between;
-        flex-wrap: wrap;
-        gap: 16px;
-        margin-bottom: 16px;
-      }
-      .rooms h2 {
-        font-size: clamp(24px, 4vw, 36px);
-        margin-bottom: 16px;
-      }
-      .rooms p {
-        color: #c7ae86;
-        line-height: 1.6;
-      }
+  <style is:global>
+    .room-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .battle-score {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 24px;
+      margin-top: 16px;
+      font-size: 18px;
+      font-variant-numeric: tabular-nums;
+    }
+    .battle-red {
+      color: var(--danger);
+    }
+    .battle-blue {
+      color: var(--info);
+    }
+    .capture-points {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px 24px;
+      margin-top: 16px;
+    }
+    .capture-point {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      flex: 0 1 220px;
+      min-width: 160px;
+      color: var(--sand);
+      font-size: 13px;
+    }
+    .capture-point progress {
+      display: block;
+      width: 100%;
+      height: 6px;
+      margin-top: 8px;
+      appearance: none;
+      border: 0;
+      background: var(--line);
+    }
+    .capture-point progress::-webkit-progress-bar {
+      background: var(--line);
+    }
+    .capture-point progress::-webkit-progress-value {
+      background: var(--point-color, var(--sand));
+    }
+    .capture-point progress::-moz-progress-bar {
+      background: var(--point-color, var(--sand));
+    }
+    .rooms {
+      padding: 56px clamp(20px, 4.5vw, 96px);
+      background: var(--bg-2);
+      border-top: 1px solid var(--line);
+      scroll-margin-top: 80px;
+    }
+    .rooms-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .rooms h2 {
+      margin-bottom: 16px;
+    }
+    .rooms p {
+      color: var(--sand);
+      line-height: 1.6;
+    }
+    .rooms .room-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 24px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .rooms .room-row h3 {
+      margin-bottom: 6px;
+    }
+    .rooms-help {
+      margin-top: 24px;
+    }
+    .rooms-help a {
+      text-decoration: underline;
+      text-underline-offset: 4px;
+    }
+    @media (max-width: 1024px) {
       .rooms .room-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 24px;
-        padding: 24px 0;
-        border-bottom: 1px solid #2a2116;
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 16px;
       }
-      .rooms .room-row h3 {
-        font-size: 18px;
-        margin-bottom: 6px;
-      }
-      .rooms .room-join {
-        padding: 12px 18px;
-        border: 1px solid #f5a524;
-        color: #f3e7d0;
-        white-space: nowrap;
-      }
-      .rooms .room-join:hover {
-        background: #2a2116;
-      }
-      .rooms .room-join[aria-disabled='true'] {
-        opacity: 0.5;
-        pointer-events: none;
-      }
-      .rooms a:focus-visible {
-        outline: 2px solid #f5a524;
-        outline-offset: 4px;
-      }
-      .rooms-help {
-        margin-top: 24px;
-      }
-      .rooms-help a {
-        text-decoration: underline;
-        text-underline-offset: 4px;
-      }
-      @media (max-width: 600px) {
-        .rooms .room-row {
-          align-items: flex-start;
-          flex-direction: column;
-          gap: 16px;
-        }
+    }
+
+    /* ——— первый экран ——— */
+    .hero {
+      position: relative;
+      display: grid;
+      align-items: center;
+      min-height: clamp(520px, 43vw, 660px);
+      background: var(--bg);
+      overflow: hidden;
+      isolation: isolate;
+    }
+
+    .hero__art {
+      position: absolute;
+      inset: 0 0 0 38%;
+    }
+
+    .hero__art img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: 50% 44%;
+      display: block;
+      filter: saturate(0.95) brightness(0.92);
+    }
+
+    .hero__art::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, var(--bg) 0%, rgb(7 6 4 / 0.35) 26%, rgb(7 6 4 / 0) 70%),
+        linear-gradient(0deg, rgb(7 6 4 / 0.7), rgb(7 6 4 / 0) 42%);
+    }
+
+    /* Плашка сдвинута на 2px внутрь, из-под неё видна янтарная кромка диагонали. */
+    .hero__edge {
+      position: absolute;
+      inset: 0;
+      background: var(--amber);
+      opacity: 0.32;
+      clip-path: polygon(0 0, 57% 0, 45% 100%, 0 100%);
+    }
+
+    .hero__plate {
+      position: absolute;
+      inset: 0;
+      background: var(--bg-2);
+      clip-path: polygon(0 0, calc(57% - 2px) 0, calc(45% - 2px) 100%, 0 100%);
+    }
+
+    .hero__plate::before {
+      z-index: 0;
+    }
+
+    .hero__copy {
+      position: relative;
+      z-index: 2;
+      width: min(62vw, 950px);
+      padding: clamp(32px, 3.6vw, 56px) clamp(20px, 4.5vw, 70px);
+    }
+
+    .tag {
+      font-family: var(--mono);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.7em;
+      margin: 0 0 clamp(14px, 1.6vw, 24px);
+      font-size: clamp(10px, 0.8vw, 12px);
+      letter-spacing: 0.24em;
+      color: var(--muted);
+    }
+
+    .tag__dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--ok);
+      box-shadow: 0 0 6px rgb(130 214 107 / 0.7);
+    }
+
+    .hero h1 span {
+      display: block;
+      white-space: nowrap;
+    }
+
+    .hero h1 {
+      font-size: clamp(40px, 6.3vw, 96px);
+      color: var(--cream);
+    }
+
+    .hero__sub {
+      margin: clamp(12px, 1.4vw, 21px) 0 0;
+      font-size: clamp(15px, 1.36vw, 21px);
+      line-height: 1.45;
+      max-width: 30em;
+      color: var(--sand);
+    }
+
+    .hero__cta {
+      margin-top: clamp(16px, 1.9vw, 30px);
+    }
+
+    .download-note {
+      max-width: 34em;
+      margin: 12px 0 0;
+      color: var(--sand);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .platforms {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: clamp(10px, 1.1vw, 17px);
+      margin: clamp(12px, 1.3vw, 20px) 0 0;
+      font-size: clamp(13px, 1.05vw, 16px);
+      color: var(--sand);
+    }
+
+    .platforms a {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55em;
+      transition: color 0.15s ease;
+    }
+
+    .platforms a:hover {
+      color: var(--amber);
+    }
+
+    .platforms__sep {
+      width: 1px;
+      height: 1.1em;
+      background: var(--line-2);
+    }
+
+    .platforms__version {
+      font-family: var(--mono);
+      font-size: clamp(10px, 0.8vw, 12px);
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--dim);
+    }
+
+    /* ——— путь в игру ——— */
+    .path {
+      display: grid;
+      grid-template-columns: 1fr 0.88fr;
+      gap: clamp(28px, 4vw, 62px);
+      padding: clamp(48px, 5vw, 82px) clamp(20px, 4.5vw, 70px);
+      align-items: start;
+      background: var(--bg-2);
+      border-top: 1px solid var(--line);
+    }
+
+    .path h2 {
+      margin-top: clamp(14px, 1.6vw, 24px);
+      color: var(--amber);
+    }
+
+    .path__text {
+      margin: clamp(12px, 1.3vw, 20px) 0 0;
+      font-size: clamp(15px, 1.17vw, 17px);
+      line-height: 1.6;
+      max-width: 34em;
+      color: var(--sand);
+    }
+
+    .path__launcher .button {
+      margin-top: clamp(18px, 2.1vw, 32px);
+    }
+
+    .rows {
+      list-style: none;
+      margin: clamp(16px, 1.8vw, 28px) 0 0;
+      padding: 0;
+      display: grid;
+      gap: clamp(10px, 0.85vw, 13px);
+    }
+
+    .rows a {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: clamp(12px, 1.2vw, 19px);
+      border: 1px solid var(--line);
+      background: linear-gradient(160deg, var(--panel), var(--bg-2));
+      padding: clamp(10px, 0.85vw, 13px) clamp(12px, 1.15vw, 18px);
+      text-decoration: none;
+      transition:
+        border-color 0.15s ease,
+        transform 0.15s ease;
+    }
+
+    .rows a:hover {
+      border-color: var(--amber);
+      transform: translateX(3px);
+    }
+
+    .rows__kind {
+      display: grid;
+      place-items: center;
+      flex: none;
+      width: clamp(34px, 2.9vw, 44px);
+      height: clamp(34px, 2.9vw, 44px);
+      border: 1px solid var(--line-2);
+      background: var(--panel-2);
+      color: var(--amber);
+      font-size: clamp(17px, 1.4vw, 21px);
+    }
+
+    .rows__text {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .rows__text strong {
+      font-family: var(--display);
+      font-weight: 700;
+      text-transform: uppercase;
+      font-size: clamp(14px, 1.05vw, 16px);
+      letter-spacing: 0.06em;
+      color: var(--cream);
+    }
+
+    .rows__text small {
+      font-size: clamp(12px, 0.92vw, 14px);
+      color: var(--muted);
+    }
+
+    .rows__out {
+      width: clamp(16px, 1.2vw, 19px);
+      height: clamp(16px, 1.2vw, 19px);
+      color: var(--dim);
+    }
+
+    /* ——— что тебя ждёт ——— */
+    .game {
+      background: var(--bg);
+      border-top: 1px solid var(--line);
+      padding: clamp(48px, 5.5vw, 86px) clamp(20px, 4.5vw, 70px);
+    }
+
+    .game h2 {
+      margin-top: clamp(16px, 1.8vw, 28px);
+      color: var(--cream);
+    }
+
+    .game__grid {
+      list-style: none;
+      margin: clamp(28px, 3vw, 46px) 0 0;
+      padding: 0;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: clamp(20px, 2.4vw, 38px);
+    }
+
+    .game__grid li {
+      border-top: 2px solid var(--amber);
+      background: linear-gradient(180deg, rgb(245 165 36 / 0.05), transparent 60%);
+      padding: clamp(14px, 1.4vw, 22px) clamp(12px, 1.1vw, 18px) clamp(18px, 1.8vw, 28px);
+    }
+
+    .game__code {
+      display: flex;
+      align-items: center;
+      gap: 0.6em;
+      margin: 0;
+      font-family: var(--mono);
+      font-weight: 600;
+      color: var(--amber);
+      font-size: clamp(12px, 0.95vw, 14px);
+      letter-spacing: 0.2em;
+    }
+
+    .game__grid h3 {
+      margin-top: 0.5em;
+      color: var(--cream);
+    }
+
+    .game__grid p:last-child {
+      margin: 0.8em 0 0;
+      font-size: clamp(14px, 1.1vw, 17px);
+      line-height: 1.6;
+      color: var(--sand);
+    }
+
+    /* ——— сервер ——— */
+    .server {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: clamp(20px, 2.5vw, 38px);
+      background: var(--panel);
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      padding: clamp(36px, 4vw, 62px) clamp(20px, 4.5vw, 70px);
+    }
+
+    .server__info {
+      min-width: 0;
+    }
+
+    .server__address {
+      background: none;
+      border: 0;
+      padding: 0;
+      color: var(--cream);
+      cursor: pointer;
+      font-family: var(--mono);
+      font-weight: 500;
+      position: relative;
+      font-size: clamp(18px, 1.5vw, 22px);
+      letter-spacing: -0.01em;
+      margin: clamp(12px, 1.3vw, 20px) 0 0;
+      letter-spacing: 0.01em;
+      text-align: left;
+    }
+
+    .server__address .i {
+      color: var(--amber);
+      opacity: 0.75;
+    }
+
+    .server__address:hover .i {
+      opacity: 1;
+    }
+
+    .server__copied {
+      position: absolute;
+      left: 100%;
+      top: 50%;
+      transform: translateY(-50%);
+      margin-left: 0.4em;
+      white-space: nowrap;
+      font-family: var(--text);
+      font-size: 0.3em;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ok);
+    }
+
+    .server__note {
+      margin: 0.6em 0 0;
+      font-size: clamp(14px, 1.1vw, 17px);
+      color: var(--muted);
+    }
+
+    /* Ниже 900px диагональ первого экрана душит заголовок, а две колонки «пути» —
+       карточки. Дальше планшет и телефон расходятся: у них разные первые экраны. */
+    @media (max-width: 900px) {
+      .hero h1 span {
+        white-space: normal;
       }
 
-      /* ——— первый экран ——— */
+      .path {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* ——— планшет ——— */
+    @media (min-width: 601px) and (max-width: 900px) {
+      /* Картинка остаётся фоном: полоса под текстом выглядела бы случайной вставкой. */
       .hero {
-        position: relative;
-        display: grid;
-        align-items: center;
-        min-height: clamp(520px, 43vw, 660px);
-        background: var(--bg);
-        overflow: hidden;
-        isolation: isolate;
+        min-height: clamp(470px, 62vw, 600px);
       }
 
       .hero__art {
-        position: absolute;
-        inset: 0 0 0 38%;
+        inset: 0;
       }
 
       .hero__art img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        object-position: 50% 44%;
-        display: block;
-        filter: saturate(0.95) brightness(0.92);
+        object-position: 78% 52%;
       }
 
       .hero__art::after {
-        content: '';
-        position: absolute;
-        inset: 0;
         background:
-          linear-gradient(90deg, var(--bg) 0%, rgb(7 6 4 / 0.35) 26%, rgb(7 6 4 / 0) 70%),
-          linear-gradient(0deg, rgb(7 6 4 / 0.7), rgb(7 6 4 / 0) 42%);
+          linear-gradient(90deg, var(--bg) 0%, rgb(7 6 4 / 0.78) 40%, rgb(7 6 4 / 0.12) 82%),
+          linear-gradient(0deg, rgb(7 6 4 / 0.85), rgb(7 6 4 / 0) 58%);
       }
 
-      /* Плашка сдвинута на 2px внутрь, из-под неё видна янтарная кромка диагонали. */
+      .hero__plate,
       .hero__edge {
-        position: absolute;
-        inset: 0;
-        background: var(--amber);
-        opacity: 0.32;
-        clip-path: polygon(0 0, 57% 0, 45% 100%, 0 100%);
+        display: none;
+      }
+
+      .hero__copy {
+        width: min(74%, 540px);
+        padding: clamp(30px, 4vw, 44px) clamp(24px, 3.4vw, 36px);
+      }
+
+      .hero h1 {
+        font-size: clamp(40px, 6.6vw, 58px);
+      }
+
+      /* Во всю ширину карточки становятся строчками текста с пустотой справа. */
+      .rows,
+      .game__grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    /* ——— телефон ——— */
+    @media (max-width: 600px) {
+      .hero {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .hero__art {
+        position: relative;
+        inset: auto;
+        height: 46vw;
+        min-height: 220px;
+        order: 2;
+      }
+
+      .hero__art img {
+        object-position: 68% 52%;
+      }
+
+      .hero__art::after {
+        background: linear-gradient(0deg, rgb(7 6 4 / 0.9), rgb(7 6 4 / 0) 55%);
+      }
+
+      .hero__edge {
+        position: relative;
+        inset: auto;
+        order: 1;
+        height: 2px;
+        clip-path: none;
       }
 
       .hero__plate {
         position: absolute;
-        inset: 0;
-        background: var(--bg-2);
-        clip-path: polygon(0 0, calc(57% - 2px) 0, calc(45% - 2px) 100%, 0 100%);
-      }
-
-      .hero__plate::before {
-        z-index: 0;
+        inset: 0 0 auto 0;
+        height: 100%;
+        clip-path: none;
       }
 
       .hero__copy {
         position: relative;
-        z-index: 2;
-        width: min(62vw, 950px);
-        padding: clamp(32px, 3.6vw, 56px) clamp(20px, 4.5vw, 70px);
-      }
-
-      .tag {
-        font-family: var(--mono);
-        display: inline-flex;
-        align-items: center;
-        gap: 0.7em;
-        margin: 0 0 clamp(14px, 1.6vw, 24px);
-        font-size: clamp(10px, 0.8vw, 12px);
-        letter-spacing: 0.24em;
-        color: var(--muted);
-      }
-
-      .tag__dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: var(--ok);
-        box-shadow: 0 0 6px rgb(130 214 107 / 0.7);
-      }
-
-      .hero h1 span {
-        display: block;
-        white-space: nowrap;
+        width: auto;
+        order: 1;
+        padding: clamp(26px, 7vw, 46px) 14px clamp(30px, 8vw, 50px);
       }
 
       .hero h1 {
-        font-size: clamp(40px, 6.3vw, 96px);
-        color: var(--cream);
-      }
-
-      .hero__sub {
-        margin: clamp(12px, 1.4vw, 21px) 0 0;
-        font-size: clamp(15px, 1.36vw, 21px);
-        line-height: 1.45;
-        max-width: 30em;
-        color: var(--sand);
-      }
-
-      .hero__cta {
-        margin-top: clamp(16px, 1.9vw, 30px);
-        width: clamp(260px, 30.3vw, 466px);
-        max-width: 100%;
-      }
-
-      .download-note {
-        max-width: 34em;
-        margin: 12px 0 0;
-        color: var(--sand);
-        font-size: 14px;
-        line-height: 1.5;
-      }
-
-      .platforms {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: clamp(10px, 1.1vw, 17px);
-        margin: clamp(12px, 1.3vw, 20px) 0 0;
-        font-size: clamp(13px, 1.05vw, 16px);
-        color: var(--sand);
-      }
-
-      .platforms a {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.55em;
-        transition: color 0.15s ease;
-      }
-
-      .platforms a:hover {
-        color: var(--amber);
-      }
-
-      .platforms__sep {
-        width: 1px;
-        height: 1.1em;
-        background: var(--line-2);
-      }
-
-      .platforms__version {
-        font-family: var(--mono);
-        font-size: clamp(10px, 0.8vw, 12px);
-        letter-spacing: 0.18em;
-        text-transform: uppercase;
-        color: var(--dim);
-      }
-
-      .hero__cta {
-        justify-content: space-between;
-      }
-
-      /* ——— путь в игру ——— */
-      .path {
-        display: grid;
-        grid-template-columns: 1fr 0.88fr;
-        gap: clamp(28px, 4vw, 62px);
-        padding: clamp(48px, 5vw, 82px) clamp(20px, 4.5vw, 70px);
-        align-items: start;
-        background: var(--bg-2);
-        border-top: 1px solid var(--line);
-      }
-
-      .path h2 {
-        margin-top: clamp(14px, 1.6vw, 24px);
-        font-size: clamp(24px, 2.4vw, 36px);
-        color: var(--amber);
-      }
-
-      .path__text {
-        margin: clamp(12px, 1.3vw, 20px) 0 0;
-        font-size: clamp(15px, 1.17vw, 18px);
-        line-height: 1.6;
-        max-width: 34em;
-        color: var(--sand);
-      }
-
-      .path__launcher .button {
-        margin-top: clamp(18px, 2.1vw, 32px);
-      }
-
-      .rows {
-        list-style: none;
-        margin: clamp(16px, 1.8vw, 28px) 0 0;
-        padding: 0;
-        display: grid;
-        gap: clamp(10px, 0.85vw, 13px);
-      }
-
-      .rows a {
-        display: grid;
-        grid-template-columns: auto minmax(0, 1fr) auto;
-        align-items: center;
-        gap: clamp(12px, 1.2vw, 19px);
-        border: 1px solid var(--line);
-        background: linear-gradient(160deg, var(--panel), var(--bg-2));
-        padding: clamp(10px, 0.85vw, 13px) clamp(12px, 1.15vw, 18px);
-        text-decoration: none;
-        transition:
-          border-color 0.15s ease,
-          transform 0.15s ease;
-      }
-
-      .rows a:hover {
-        border-color: var(--amber);
-        transform: translateX(3px);
-      }
-
-      .rows__kind {
-        display: grid;
-        place-items: center;
-        flex: none;
-        width: clamp(34px, 2.9vw, 44px);
-        height: clamp(34px, 2.9vw, 44px);
-        border: 1px solid var(--line-2);
-        background: var(--panel-2);
-        color: var(--amber);
-        font-size: clamp(17px, 1.4vw, 21px);
-      }
-
-      .rows__text {
-        display: grid;
-        gap: 2px;
-        min-width: 0;
-      }
-
-      .rows__text strong {
-        font-family: var(--display);
-        font-weight: 700;
-        text-transform: uppercase;
-        font-size: clamp(14px, 1.05vw, 16px);
-        letter-spacing: 0.06em;
-        color: var(--cream);
-      }
-
-      .rows__text small {
-        font-size: clamp(12px, 0.92vw, 14px);
-        color: var(--muted);
-      }
-
-      .rows__out {
-        width: clamp(16px, 1.2vw, 19px);
-        height: clamp(16px, 1.2vw, 19px);
-        color: var(--dim);
-      }
-
-      /* ——— что тебя ждёт ——— */
-      .game {
-        background: var(--bg);
-        border-top: 1px solid var(--line);
-        padding: clamp(48px, 5.5vw, 86px) clamp(20px, 4.5vw, 70px);
-      }
-
-      .game h2 {
-        margin-top: clamp(16px, 1.8vw, 28px);
-        font-size: clamp(28px, 3.2vw, 48px);
-        color: var(--cream);
+        font-size: clamp(28px, 8.8vw, 44px);
       }
 
       .game__grid {
-        list-style: none;
-        margin: clamp(28px, 3vw, 46px) 0 0;
-        padding: 0;
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: clamp(20px, 2.4vw, 38px);
+        grid-template-columns: 1fr;
       }
 
-      .game__grid li {
-        border-top: 2px solid var(--amber);
-        background: linear-gradient(180deg, rgb(245 165 36 / 0.05), transparent 60%);
-        padding: clamp(14px, 1.4vw, 22px) clamp(12px, 1.1vw, 18px) clamp(18px, 1.8vw, 28px);
-      }
-
-      .game__code {
-        display: flex;
-        align-items: center;
-        gap: 0.6em;
-        margin: 0;
-        font-family: var(--mono);
-        font-weight: 600;
-        color: var(--amber);
-        font-size: clamp(12px, 0.95vw, 14px);
-        letter-spacing: 0.2em;
-      }
-
-      .game__grid h3 {
-        margin-top: 0.5em;
-        font-size: clamp(19px, 1.6vw, 24px);
-        color: var(--cream);
-      }
-
-      .game__grid p:last-child {
-        margin: 0.8em 0 0;
-        font-size: clamp(14px, 1.1vw, 17px);
-        line-height: 1.6;
-        color: var(--sand);
-      }
-
-      /* ——— сервер ——— */
       .server {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: space-between;
-        gap: clamp(20px, 2.5vw, 38px);
-        background: var(--panel);
-        border-top: 1px solid var(--line);
-        border-bottom: 1px solid var(--line);
-        padding: clamp(36px, 4vw, 62px) clamp(20px, 4.5vw, 70px);
+        flex-direction: column;
+        align-items: flex-start;
       }
 
-      .server__info {
-        min-width: 0;
+      .hero__sub {
+        font-size: 15px;
+      }
+
+      .path,
+      .game,
+      .server {
+        padding-left: 14px;
+        padding-right: 14px;
+      }
+
+      .rows a {
+        gap: 10px;
+        padding: 10px 12px;
+      }
+
+      .rows__text strong {
+        font-size: 14px;
       }
 
       .server__address {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.4em;
-        background: none;
-        border: 0;
-        padding: 0;
-        color: var(--cream);
-        cursor: pointer;
-        font-family: var(--mono);
-        font-weight: 500;
-        position: relative;
-        font-size: clamp(18px, 1.9vw, 29px);
-        letter-spacing: -0.01em;
-        margin: clamp(12px, 1.3vw, 20px) 0 0;
-        letter-spacing: 0.01em;
-        text-align: left;
+        font-size: clamp(15px, 4.6vw, 21px);
+        overflow-wrap: anywhere;
       }
 
-      .server__address .i {
-        width: 0.55em;
-        height: 0.55em;
-        color: var(--amber);
-        opacity: 0.75;
-      }
-
-      .server__address:hover .i {
-        opacity: 1;
-      }
-
+      /* Справа от адреса бейдж упирается в край экрана, поэтому уходит под него;
+         запас у подписи держится всегда, иначе её дёргало бы при копировании. */
       .server__copied {
-        position: absolute;
-        left: 100%;
-        top: 50%;
-        transform: translateY(-50%);
-        margin-left: 0.4em;
-        white-space: nowrap;
-        font-family: var(--text);
-        font-size: 0.3em;
-        font-weight: 600;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-        color: var(--ok);
+        left: 0;
+        top: 100%;
+        transform: none;
+        margin: 2px 0 0;
       }
 
       .server__note {
-        margin: 0.6em 0 0;
-        font-size: clamp(14px, 1.1vw, 17px);
-        color: var(--muted);
+        margin-top: 1.9em;
+      }
+    }
+
+    /* ——— движение: сдержанно, всё под prefers-reduced-motion ——— */
+    @media (prefers-reduced-motion: no-preference) {
+      html {
+        scroll-behavior: smooth;
       }
 
-      /* Ниже 900px диагональ первого экрана душит заголовок, а две колонки «пути» —
-         карточки. Дальше планшет и телефон расходятся: у них разные первые экраны. */
-      @media (max-width: 900px) {
-        .hero h1 span {
-          white-space: normal;
-        }
-
-        .path {
-          grid-template-columns: 1fr;
-        }
+      .hero__copy > * {
+        animation: rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
       }
 
-      /* ——— планшет ——— */
-      @media (min-width: 601px) and (max-width: 900px) {
-        /* Картинка остаётся фоном: полоса под текстом выглядела бы случайной вставкой. */
-        .hero {
-          min-height: clamp(470px, 62vw, 600px);
-        }
-
-        .hero__art {
-          inset: 0;
-        }
-
-        .hero__art img {
-          object-position: 78% 52%;
-        }
-
-        .hero__art::after {
-          background:
-            linear-gradient(90deg, var(--bg) 0%, rgb(7 6 4 / 0.78) 40%, rgb(7 6 4 / 0.12) 82%),
-            linear-gradient(0deg, rgb(7 6 4 / 0.85), rgb(7 6 4 / 0) 58%);
-        }
-
-        .hero__plate,
-        .hero__edge {
-          display: none;
-        }
-
-        .hero__copy {
-          width: min(74%, 540px);
-          padding: clamp(30px, 4vw, 44px) clamp(24px, 3.4vw, 36px);
-        }
-
-        .hero h1 {
-          font-size: clamp(40px, 6.6vw, 58px);
-        }
-
-        .hero__cta {
-          width: auto;
-        }
-
-        /* Во всю ширину карточки становятся строчками текста с пустотой справа. */
-        .rows,
-        .game__grid {
-          grid-template-columns: repeat(2, 1fr);
-        }
+      .hero__copy > :nth-child(2) {
+        animation-delay: 80ms;
       }
 
-      /* ——— телефон ——— */
-      @media (max-width: 600px) {
-        .hero {
-          min-height: 0;
-          display: grid;
-          grid-template-columns: minmax(0, 1fr);
-        }
-
-        .hero__art {
-          position: relative;
-          inset: auto;
-          height: 46vw;
-          min-height: 220px;
-          order: 2;
-        }
-
-        .hero__art img {
-          object-position: 68% 52%;
-        }
-
-        .hero__art::after {
-          background: linear-gradient(0deg, rgb(7 6 4 / 0.9), rgb(7 6 4 / 0) 55%);
-        }
-
-        .hero__edge {
-          position: relative;
-          inset: auto;
-          order: 1;
-          height: 2px;
-          clip-path: none;
-        }
-
-        .hero__plate {
-          position: absolute;
-          inset: 0 0 auto 0;
-          height: 100%;
-          clip-path: none;
-        }
-
-        .hero__copy {
-          position: relative;
-          width: auto;
-          order: 1;
-          padding: clamp(26px, 7vw, 46px) 14px clamp(30px, 8vw, 50px);
-        }
-
-        .hero h1 {
-          font-size: clamp(28px, 8.8vw, 44px);
-        }
-
-        .game__grid {
-          grid-template-columns: 1fr;
-        }
-
-        .server {
-          flex-direction: column;
-          align-items: flex-start;
-        }
-
-        .footer small {
-          margin-left: 0;
-        }
-
-        .hero__sub {
-          font-size: 15px;
-        }
-
-        .button {
-          width: 100%;
-          justify-content: center;
-          font-size: 13px;
-          padding: 0 14px;
-        }
-
-        .path,
-        .game,
-        .server,
-        .footer {
-          padding-left: 14px;
-          padding-right: 14px;
-        }
-
-        .rows a {
-          gap: 10px;
-          padding: 10px 12px;
-        }
-
-        .rows__text strong {
-          font-size: 14px;
-        }
-
-        .server__address {
-          font-size: clamp(15px, 4.6vw, 21px);
-          overflow-wrap: anywhere;
-        }
-
-        /* Справа от адреса бейдж упирается в край экрана, поэтому уходит под него;
-           запас у подписи держится всегда, иначе её дёргало бы при копировании. */
-        .server__copied {
-          left: 0;
-          top: 100%;
-          transform: none;
-          margin: 2px 0 0;
-        }
-
-        .server__note {
-          margin-top: 1.9em;
-        }
+      .hero__copy > :nth-child(3) {
+        animation-delay: 160ms;
       }
 
-      /* ——— движение: сдержанно, всё под prefers-reduced-motion ——— */
-      @media (prefers-reduced-motion: no-preference) {
-        html {
-          scroll-behavior: smooth;
-        }
-
-        .hero__copy > * {
-          animation: rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
-        }
-
-        .hero__copy > :nth-child(2) {
-          animation-delay: 80ms;
-        }
-
-        .hero__copy > :nth-child(3) {
-          animation-delay: 160ms;
-        }
-
-        .hero__copy > :nth-child(4) {
-          animation-delay: 240ms;
-        }
-
-        .hero__copy > :nth-child(5) {
-          animation-delay: 320ms;
-        }
-
-        .tag__dot {
-          position: relative;
-        }
-
-        .tag__dot::after {
-          content: '';
-          position: absolute;
-          inset: 0;
-          border-radius: 50%;
-          background: var(--ok);
-          animation: ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
-        }
-
-        .js [data-reveal] {
-          opacity: 0;
-          transform: translateY(14px);
-          transition:
-            opacity 0.55s ease,
-            transform 0.55s cubic-bezier(0.2, 0.7, 0.2, 1);
-        }
-
-        .js [data-reveal].is-in {
-          opacity: 1;
-          transform: none;
-        }
-
-        .game__grid li:nth-child(2),
-        .rows li:nth-child(2) {
-          transition-delay: 80ms;
-        }
-
-        .game__grid li:nth-child(3),
-        .rows li:nth-child(3) {
-          transition-delay: 160ms;
-        }
-
-        .rows li:nth-child(4) {
-          transition-delay: 240ms;
-        }
-
-        /* Реакции на наведение поверх обычных transition. */
-        .site-header__links a {
-          position: relative;
-        }
-
-        .site-header__links a::after {
-          content: '';
-          position: absolute;
-          left: 0;
-          right: 0;
-          bottom: -6px;
-          height: 2px;
-          background: var(--amber);
-          transform: scaleX(0);
-          transform-origin: left;
-          transition: transform 0.2s cubic-bezier(0.2, 0.7, 0.2, 1);
-        }
-
-        .site-header__links a:hover::after {
-          transform: scaleX(1);
-        }
-
-        .hero__cta .i,
-        .rows__out {
-          transition:
-            transform 0.2s ease,
-            color 0.15s ease;
-        }
-
-        .hero__cta:hover .i {
-          transform: translateY(2px);
-        }
-
-        .rows a:hover .rows__out {
-          color: var(--amber);
-          transform: translate(2px, -2px);
-        }
-
-        .game__grid li {
-          transition:
-            transform 0.25s cubic-bezier(0.2, 0.7, 0.2, 1),
-            border-color 0.25s ease,
-            background 0.25s ease;
-        }
-
-        .game__grid li.is-in:hover {
-          transform: translateY(-3px);
-          border-color: var(--amber-hi);
-          background: linear-gradient(180deg, rgb(245 165 36 / 0.1), transparent 60%);
-        }
+      .hero__copy > :nth-child(4) {
+        animation-delay: 240ms;
       }
 
-      /* Параллакс арта: сдвиг считает скрипт, здесь только гейт по motion и ширине. На телефоне арт стоит отдельно. */
-      @media (prefers-reduced-motion: no-preference) and (min-width: 601px) {
-        .hero__art img {
-          transform: scale(1.22) translateY(var(--parallax, -9%));
-          will-change: transform;
-        }
+      .hero__copy > :nth-child(5) {
+        animation-delay: 320ms;
       }
 
-      /* Шторка: диагональ уезжает влево и открывает арт. Ниже 900px плашки нет, там и шторки нет. */
-      @media (prefers-reduced-motion: no-preference) and (min-width: 901px) {
-        .hero__edge {
-          animation: wipe-edge 1.1s cubic-bezier(0.7, 0, 0.2, 1) both;
-        }
-
-        .hero__plate {
-          animation: wipe-plate 1.1s cubic-bezier(0.7, 0, 0.2, 1) both;
-        }
+      .tag__dot {
+        position: relative;
       }
 
-      @keyframes wipe-edge {
-        from {
-          clip-path: polygon(0 0, 112% 0, 100% 100%, 0 100%);
-        }
+      .tag__dot::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        background: var(--ok);
+        animation: ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
       }
 
-      @keyframes wipe-plate {
-        from {
-          clip-path: polygon(0 0, calc(112% - 2px) 0, calc(100% - 2px) 100%, 0 100%);
-        }
+      .js [data-reveal] {
+        opacity: 0;
+        transform: translateY(14px);
+        transition:
+          opacity 0.55s ease,
+          transform 0.55s cubic-bezier(0.2, 0.7, 0.2, 1);
       }
 
-      @keyframes rise {
-        from {
-          opacity: 0;
-          transform: translateY(14px);
-        }
+      .js [data-reveal].is-in {
+        opacity: 1;
+        transform: none;
       }
 
-      @keyframes ping {
-        to {
-          transform: scale(3.2);
-          opacity: 0;
-        }
+      .game__grid li:nth-child(2),
+      .rows li:nth-child(2) {
+        transition-delay: 80ms;
       }
-    </style>
 
-    <script>
-      const phaseLabels: Record<string, string> = {
-        IDLE: 'Ожидание игроков',
-        VOTING: 'Голосование',
-        PREPARING: 'Подготовка',
-        GAME: 'Бой',
-        MATCH_END: 'Матч завершён',
+      .game__grid li:nth-child(3),
+      .rows li:nth-child(3) {
+        transition-delay: 160ms;
       }
-      const formatLabels: Record<string, string> = { casual: 'Casual', ranked: 'Ranked' }
-      // Unknown/absent admission falls back to "Войти" — matches pre-#28 payloads.
-      const joinLabels: Record<string, string> = {
-        open: 'Войти',
-        waiting: 'Встать в очередь',
-        closed: 'Мест нет',
+
+      .rows li:nth-child(4) {
+        transition-delay: 240ms;
       }
-      const roomSection = document.querySelector<HTMLElement>('#rooms')!
-      const roomNavLinks = document.querySelectorAll<HTMLElement>('.rooms-nav-link')
-      const setRoomNavHidden = (hidden: boolean) =>
-        roomNavLinks.forEach((link) => (link.hidden = hidden))
-      const roomList = document.querySelector('#rooms-list')!
-      const roomStatus = document.querySelector('#rooms-status')!
-      const invitedRoom = new URL(window.location.href).searchParams.get('room')
-      const lobbyJoin = document.querySelector<HTMLElement>('#lobby-join')!
-      lobbyJoin.addEventListener('click', () => {
-        const note = document.querySelector('#room-launch-status') as HTMLElement
-        note.hidden = false
-        note.textContent =
-          'Подтвердите открытие лаунчера в браузере. Если он не открылся, установите или обновите лаунчер и нажмите кнопку ещё раз.'
-      })
-      roomSection.hidden = !invitedRoom
-      let lastRooms = ''
-      async function refreshRooms() {
-        try {
-          const response = await fetch('/api/rooms', { signal: AbortSignal.timeout(6000) })
-          if (!response.ok) throw new Error()
-          const status = await response.json()
-          lobbyJoin.hidden = Boolean(status.maintenance)
-          if (status.maintenance) {
-            lastRooms = ''
-            roomList.replaceChildren()
-            roomSection.hidden = false
-            setRoomNavHidden(false)
-            roomStatus.textContent = status.maintenance.message
-            return
-          }
-          if (!status.available && status.lobby) {
-            lastRooms = ''
-            roomList.replaceChildren()
-            roomSection.hidden = !invitedRoom
-            setRoomNavHidden(true)
-            roomStatus.textContent =
-              invitedRoom && invitedRoom !== 'lobby'
-                ? 'Игровой сервер обновляется. Зайдите в лобби — после запуска сервера вас перенесут автоматически.'
-                : 'Игровой сервер обновляется, лобби открыто. Нажмите «Войти в лобби» — после запуска сервера вас перенесут автоматически.'
-            return
-          }
-          if (!status.available) throw new Error()
-          roomSection.hidden = status.rooms.length === 0 && !invitedRoom
-          setRoomNavHidden(status.rooms.length === 0)
-          roomStatus.textContent = status.rooms.length
-            ? 'Состояние обновляется каждые 10 секунд.'
-            : 'Сейчас матчей нет. Зайдите в игру и выберите режим в хабе: Casual или Рейтинг.'
-          if (invitedRoom === 'lobby') {
-            roomStatus.textContent =
-              'Вас пригласили в лобби Blockfield. Нажмите «Войти в лобби» для запуска лаунчера.'
-          } else if (invitedRoom) {
-            const invited = status.rooms.find((room: any) => room.id === invitedRoom)
-            roomStatus.textContent = invited
-              ? `Приглашение: ${invited.name}. Нажмите «Войти» для запуска лаунчера.`
-              : 'Матч из приглашения уже завершён. Выберите другой матч или зайдите в хаб в игре.'
-            status.rooms.sort(
-              (a: any, b: any) => Number(b.id === invitedRoom) - Number(a.id === invitedRoom),
-            )
-          }
-          const signature = JSON.stringify(status.rooms)
-          if (signature === lastRooms) return
-          lastRooms = signature
-          const focusedRoom = document.activeElement?.getAttribute('data-room-id')
-          roomList.replaceChildren(
-            ...status.rooms.map((room: any) => {
-              const row = document.createElement('article')
-              row.className = 'room-row'
-              const info = document.createElement('div')
-              info.className = 'room-info'
-              const title = document.createElement('h3')
-              title.textContent = room.name
-              const ready =
-                room.ready &&
-                Number.isInteger(room.ready.ready) &&
-                Number.isInteger(room.ready.required)
-                  ? room.ready
-                  : null
-              const details = document.createElement('p')
-              details.textContent = [
-                formatLabels[room.format],
-                room.mode,
-                room.map,
-                phaseLabels[room.phase],
-                `Игроков: ${room.players}`,
-                ready && `Готовы: ${ready.ready}/${ready.required}`,
-              ]
-                .filter(Boolean)
-                .join(' · ')
-              info.append(title, details)
-              if (room.battle) {
-                const score = document.createElement('div')
-                score.className = 'battle-score'
-                score.setAttribute('aria-label', 'Очки команд')
-                for (const [team, label] of [
-                  ['red', 'Красные'],
-                  ['blue', 'Синие'],
-                ]) {
-                  const value = document.createElement('strong')
-                  value.className = `battle-${team}`
-                  value.textContent = `${label}: ${room.battle[team]}`
-                  score.append(value)
-                }
-                const points = document.createElement('div')
-                points.className = 'capture-points'
-                for (const point of room.battle.points) {
-                  const flag = document.createElement('div')
-                  flag.className = 'capture-point'
-                  const team = point.owner === 'NEUTRAL' ? point.claiming : point.owner
-                  const owner =
-                    team === 'RED' ? 'Красные' : team === 'BLUE' ? 'Синие' : 'Нейтральная'
-                  const capturing =
-                    point.capturing !== 'NONE' && point.capturing !== team
-                      ? ` · ${point.capturing === 'RED' ? 'Красные' : 'Синие'} нейтрализуют`
-                      : ''
-                  const label = `${point.name} · ${owner} · ${point.progress}%${capturing}`
-                  flag.textContent = label
-                  flag.style.setProperty(
-                    '--point-color',
-                    team === 'RED' ? '#FF9D99' : team === 'BLUE' ? '#91C8FF' : '#C7AE86',
-                  )
-                  const bar = document.createElement('progress')
-                  bar.max = 100
-                  bar.value = point.progress
-                  bar.setAttribute('aria-label', label)
-                  flag.append(bar)
-                  points.append(flag)
-                }
-                info.append(score, points)
-              }
-              const admission = joinLabels[room.admission] ? room.admission : undefined
-              const closed = admission === 'closed' || !room.joinable
-              const label = admission ? joinLabels[admission] : 'Войти'
-              if (room.joinable || admission) {
-                const join = document.createElement('a')
-                join.className = 'room-join'
-                join.textContent = label
-                join.setAttribute('aria-label', `${label}: ${room.name}`)
-                join.dataset.roomId = room.id
-                if (closed) {
-                  join.setAttribute('aria-disabled', 'true')
-                } else {
-                  join.href = `blockfield://join/${room.id}`
-                  join.addEventListener('click', () => {
-                    const note = document.querySelector('#room-launch-status') as HTMLElement
-                    note.hidden = false
-                    note.textContent =
-                      'Подтвердите открытие лаунчера в браузере. Если он не открылся, установите или обновите лаунчер и нажмите кнопку ещё раз.'
-                  })
-                }
-                row.append(info, join)
-              } else {
-                row.append(info)
-              }
-              return row
-            }),
-          )
-          if (focusedRoom) {
-            const link = Array.from(
-              roomList.querySelectorAll<HTMLAnchorElement>('[data-room-id]'),
-            ).find((link) => link.dataset.roomId === focusedRoom)
-            link?.focus({ preventScroll: true })
-          }
-        } catch {
+
+      /* Реакции на наведение поверх обычных transition. */
+      .hero__cta .i,
+      .rows__out {
+        transition:
+          transform 0.2s ease,
+          color 0.15s ease;
+      }
+
+      .hero__cta:hover .i {
+        transform: translateY(2px);
+      }
+
+      .rows a:hover .rows__out {
+        color: var(--amber);
+        transform: translate(2px, -2px);
+      }
+
+      .game__grid li {
+        transition:
+          transform 0.25s cubic-bezier(0.2, 0.7, 0.2, 1),
+          border-color 0.25s ease,
+          background 0.25s ease;
+      }
+
+      .game__grid li.is-in:hover {
+        transform: translateY(-3px);
+        border-color: var(--amber-hi);
+        background: linear-gradient(180deg, rgb(245 165 36 / 0.1), transparent 60%);
+      }
+    }
+
+    /* Параллакс арта: сдвиг считает скрипт, здесь только гейт по motion и ширине. На телефоне арт стоит отдельно. */
+    @media (prefers-reduced-motion: no-preference) and (min-width: 601px) {
+      .hero__art img {
+        transform: scale(1.22) translateY(var(--parallax, -9%));
+        will-change: transform;
+      }
+    }
+
+    /* Шторка: диагональ уезжает влево и открывает арт. Ниже 900px плашки нет, там и шторки нет. */
+    @media (prefers-reduced-motion: no-preference) and (min-width: 901px) {
+      .hero__edge {
+        animation: wipe-edge 1.1s cubic-bezier(0.7, 0, 0.2, 1) both;
+      }
+
+      .hero__plate {
+        animation: wipe-plate 1.1s cubic-bezier(0.7, 0, 0.2, 1) both;
+      }
+    }
+
+    @keyframes wipe-edge {
+      from {
+        clip-path: polygon(0 0, 112% 0, 100% 100%, 0 100%);
+      }
+    }
+
+    @keyframes wipe-plate {
+      from {
+        clip-path: polygon(0 0, calc(112% - 2px) 0, calc(100% - 2px) 100%, 0 100%);
+      }
+    }
+
+    @keyframes rise {
+      from {
+        opacity: 0;
+        transform: translateY(14px);
+      }
+    }
+
+    @keyframes ping {
+      to {
+        transform: scale(3.2);
+        opacity: 0;
+      }
+    }
+    @media (max-width: 1024px) {
+      .server__info {
+        width: 100%;
+      }
+    }
+  </style>
+
+  <script>
+    const phaseLabels: Record<string, string> = {
+      IDLE: 'Ожидание игроков',
+      VOTING: 'Голосование',
+      PREPARING: 'Подготовка',
+      GAME: 'Бой',
+      MATCH_END: 'Матч завершён',
+    }
+    const formatLabels: Record<string, string> = { casual: 'Casual', ranked: 'Ranked' }
+    // Unknown/absent admission falls back to "Войти" — matches pre-#28 payloads.
+    const joinLabels: Record<string, string> = {
+      open: 'Войти',
+      waiting: 'Встать в очередь',
+      closed: 'Мест нет',
+    }
+    const roomSection = document.querySelector<HTMLElement>('#rooms')!
+    const roomNavLinks = document.querySelectorAll<HTMLElement>('.rooms-nav-link')
+    const setRoomNavHidden = (hidden: boolean) =>
+      roomNavLinks.forEach((link) => (link.hidden = hidden))
+    const roomList = document.querySelector('#rooms-list')!
+    const roomStatus = document.querySelector('#rooms-status')!
+    const invitedRoom = new URL(window.location.href).searchParams.get('room')
+    const lobbyJoin = document.querySelector<HTMLElement>('#lobby-join')!
+    lobbyJoin.addEventListener('click', () => {
+      const note = document.querySelector('#room-launch-status') as HTMLElement
+      note.hidden = false
+      note.textContent =
+        'Подтвердите открытие лаунчера в браузере. Если он не открылся, установите или обновите лаунчер и нажмите кнопку ещё раз.'
+    })
+    roomSection.hidden = !invitedRoom
+    let lastRooms = ''
+    async function refreshRooms() {
+      try {
+        const response = await fetch('/api/rooms', { signal: AbortSignal.timeout(6000) })
+        if (!response.ok) throw new Error()
+        const status = await response.json()
+        lobbyJoin.hidden = Boolean(status.maintenance)
+        if (status.maintenance) {
+          lastRooms = ''
+          roomList.replaceChildren()
+          roomSection.hidden = false
+          setRoomNavHidden(false)
+          roomStatus.textContent = status.maintenance.message
+          return
+        }
+        if (!status.available && status.lobby) {
           lastRooms = ''
           roomList.replaceChildren()
           roomSection.hidden = !invitedRoom
           setRoomNavHidden(true)
           roomStatus.textContent =
-            'Не удалось получить список матчей. Повторим запрос автоматически.'
+            invitedRoom && invitedRoom !== 'lobby'
+              ? 'Игровой сервер обновляется. Зайдите в лобби — после запуска сервера вас перенесут автоматически.'
+              : 'Игровой сервер обновляется, лобби открыто. Нажмите «Войти в лобби» — после запуска сервера вас перенесут автоматически.'
+          return
         }
+        if (!status.available) throw new Error()
+        roomSection.hidden = status.rooms.length === 0 && !invitedRoom
+        setRoomNavHidden(status.rooms.length === 0)
+        roomStatus.textContent = status.rooms.length
+          ? 'Состояние обновляется каждые 10 секунд.'
+          : 'Сейчас матчей нет. Зайдите в игру и выберите режим в хабе: Casual или Рейтинг.'
+        if (invitedRoom === 'lobby') {
+          roomStatus.textContent =
+            'Вас пригласили в лобби Blockfield. Нажмите «Войти в лобби» для запуска лаунчера.'
+        } else if (invitedRoom) {
+          const invited = status.rooms.find((room: any) => room.id === invitedRoom)
+          roomStatus.textContent = invited
+            ? `Приглашение: ${invited.name}. Нажмите «Войти» для запуска лаунчера.`
+            : 'Матч из приглашения уже завершён. Выберите другой матч или зайдите в хаб в игре.'
+          status.rooms.sort(
+            (a: any, b: any) => Number(b.id === invitedRoom) - Number(a.id === invitedRoom),
+          )
+        }
+        const signature = JSON.stringify(status.rooms)
+        if (signature === lastRooms) return
+        lastRooms = signature
+        const focusedRoom = document.activeElement?.getAttribute('data-room-id')
+        roomList.replaceChildren(
+          ...status.rooms.map((room: any) => {
+            const row = document.createElement('article')
+            row.className = 'room-row'
+            const info = document.createElement('div')
+            info.className = 'room-info'
+            const title = document.createElement('h3')
+            title.textContent = room.name
+            const ready =
+              room.ready &&
+              Number.isInteger(room.ready.ready) &&
+              Number.isInteger(room.ready.required)
+                ? room.ready
+                : null
+            const details = document.createElement('p')
+            details.textContent = [
+              formatLabels[room.format],
+              room.mode,
+              room.map,
+              phaseLabels[room.phase],
+              `Игроков: ${room.players}`,
+              ready && `Готовы: ${ready.ready}/${ready.required}`,
+            ]
+              .filter(Boolean)
+              .join(' · ')
+            info.append(title, details)
+            if (room.battle) {
+              const score = document.createElement('div')
+              score.className = 'battle-score'
+              score.setAttribute('aria-label', 'Очки команд')
+              for (const [team, label] of [
+                ['red', 'Красные'],
+                ['blue', 'Синие'],
+              ]) {
+                const value = document.createElement('strong')
+                value.className = `battle-${team}`
+                value.textContent = `${label}: ${room.battle[team]}`
+                score.append(value)
+              }
+              const points = document.createElement('div')
+              points.className = 'capture-points'
+              for (const point of room.battle.points) {
+                const flag = document.createElement('div')
+                flag.className = 'capture-point'
+                const team = point.owner === 'NEUTRAL' ? point.claiming : point.owner
+                const owner = team === 'RED' ? 'Красные' : team === 'BLUE' ? 'Синие' : 'Нейтральная'
+                const capturing =
+                  point.capturing !== 'NONE' && point.capturing !== team
+                    ? ` · ${point.capturing === 'RED' ? 'Красные' : 'Синие'} нейтрализуют`
+                    : ''
+                const label = `${point.name} · ${owner} · ${point.progress}%${capturing}`
+                flag.textContent = label
+                flag.style.setProperty(
+                  '--point-color',
+                  team === 'RED'
+                    ? 'var(--danger)'
+                    : team === 'BLUE'
+                      ? 'var(--info)'
+                      : 'var(--sand)',
+                )
+                const bar = document.createElement('progress')
+                bar.max = 100
+                bar.value = point.progress
+                bar.setAttribute('aria-label', label)
+                flag.append(bar)
+                points.append(flag)
+              }
+              info.append(score, points)
+            }
+            const admission = joinLabels[room.admission] ? room.admission : undefined
+            const closed = admission === 'closed' || !room.joinable
+            const label = admission ? joinLabels[admission] : 'Войти'
+            if (room.joinable || admission) {
+              const join = document.createElement('a')
+              join.className = 'button small room-join'
+              join.textContent = label
+              join.setAttribute('aria-label', `${label}: ${room.name}`)
+              join.dataset.roomId = room.id
+              if (closed) {
+                join.setAttribute('aria-disabled', 'true')
+              } else {
+                join.href = `blockfield://join/${room.id}`
+                join.addEventListener('click', () => {
+                  const note = document.querySelector('#room-launch-status') as HTMLElement
+                  note.hidden = false
+                  note.textContent =
+                    'Подтвердите открытие лаунчера в браузере. Если он не открылся, установите или обновите лаунчер и нажмите кнопку ещё раз.'
+                })
+              }
+              row.append(info, join)
+            } else {
+              row.append(info)
+            }
+            return row
+          }),
+        )
+        if (focusedRoom) {
+          const link = Array.from(
+            roomList.querySelectorAll<HTMLAnchorElement>('[data-room-id]'),
+          ).find((link) => link.dataset.roomId === focusedRoom)
+          link?.focus({ preventScroll: true })
+        }
+      } catch {
+        lastRooms = ''
+        roomList.replaceChildren()
+        roomSection.hidden = !invitedRoom
+        setRoomNavHidden(true)
+        roomStatus.textContent = 'Не удалось получить список матчей. Повторим запрос автоматически.'
       }
-      void refreshRooms()
-      window.setInterval(() => {
-        if (!document.hidden) void refreshRooms()
-      }, 10000)
-      const reveal = new IntersectionObserver(
-        (entries) => {
-          for (const entry of entries) {
-            // Прыжок по якорю или перезагрузка посреди страницы: то, что уже выше экрана, показываем сразу.
-            if (!entry.isIntersecting && entry.boundingClientRect.top > 0) continue
-            entry.target.classList.add('is-in')
-            reveal.unobserve(entry.target)
-          }
-        },
-        { rootMargin: '0px 0px -12% 0px' },
-      )
-      document.querySelectorAll('[data-reveal]').forEach((el) => reveal.observe(el))
+    }
+    void refreshRooms()
+    window.setInterval(() => {
+      if (!document.hidden) void refreshRooms()
+    }, 10000)
+    const reveal = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          // Прыжок по якорю или перезагрузка посреди страницы: то, что уже выше экрана, показываем сразу.
+          if (!entry.isIntersecting && entry.boundingClientRect.top > 0) continue
+          entry.target.classList.add('is-in')
+          reveal.unobserve(entry.target)
+        }
+      },
+      { rootMargin: '0px 0px -12% 0px' },
+    )
+    document.querySelectorAll('[data-reveal]').forEach((el) => reveal.observe(el))
 
-      const hero = document.querySelector('.hero') as HTMLElement
-      const art = document.querySelector('.hero__art img') as HTMLElement
-      let ticking = false
-      const parallax = () => {
-        ticking = false
-        const t = Math.min(scrollY / hero.offsetHeight, 1)
-        art.style.setProperty('--parallax', `${-9 + 18 * t}%`)
-      }
-      addEventListener(
-        'scroll',
-        () => {
-          if (!ticking) requestAnimationFrame(parallax)
-          ticking = true
-        },
-        { passive: true },
-      )
-      parallax()
+    const hero = document.querySelector('.hero') as HTMLElement
+    const art = document.querySelector('.hero__art img') as HTMLElement
+    let ticking = false
+    const parallax = () => {
+      ticking = false
+      const t = Math.min(scrollY / hero.offsetHeight, 1)
+      art.style.setProperty('--parallax', `${-9 + 18 * t}%`)
+    }
+    addEventListener(
+      'scroll',
+      () => {
+        if (!ticking) requestAnimationFrame(parallax)
+        ticking = true
+      },
+      { passive: true },
+    )
+    parallax()
 
-      document.querySelector('[data-copy]')?.addEventListener('click', async (event) => {
-        const button = event.currentTarget as HTMLButtonElement
-        await navigator.clipboard.writeText(button.dataset.copy!)
-        const badge = button.querySelector('.server__copied') as HTMLElement
-        badge.hidden = false
-        setTimeout(() => (badge.hidden = true), 1600)
-      })
-    </script>
-  </body>
-</html>
+    document.querySelector('[data-copy]')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget as HTMLButtonElement
+      await navigator.clipboard.writeText(button.dataset.copy!)
+      const badge = button.querySelector('.server__copied') as HTMLElement
+      badge.hidden = false
+      setTimeout(() => (badge.hidden = true), 1600)
+    })
+  </script>
+</Site>

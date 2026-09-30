@@ -162,9 +162,10 @@ export function customSelect(select: HTMLSelectElement) {
     box = listbox(select, button, listId, (index) => {
       select.selectedIndex = index
       select.dispatchEvent(new Event('change', { bubbles: true }))
-      customSelect(select)
     })
     boxes.set(select, box)
+    select.addEventListener('change', () => customSelect(select))
+    select.form?.addEventListener('reset', () => queueMicrotask(() => customSelect(select)))
     button.addEventListener('click', () =>
       box!.list.hidden ? (box!.show(), box!.list.focus()) : box!.hide(true),
     )
@@ -177,6 +178,8 @@ export function customSelect(select: HTMLSelectElement) {
     })
   }
   const button = box.wrap.querySelector<HTMLButtonElement>('.cselect-btn')!
+  button.disabled = select.disabled
+  if (select.disabled) box.hide(false)
   button.textContent = select.options[select.selectedIndex]?.textContent ?? ''
   // setItems (not a manual rebuild) keeps the listbox's own item count and click/hide wiring in sync — a
   // parallel rebuild here previously left that count at 0 forever, so the popup could never open (#admin role select bug).

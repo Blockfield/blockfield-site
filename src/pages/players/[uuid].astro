@@ -1,4 +1,5 @@
 ---
+import SectionRule from '../../components/SectionRule.astro'
 import Community from '../../layouts/Community.astro'
 import {
   statsStore,
@@ -115,15 +116,10 @@ const stats = data?.totals
                 aria-hidden="true"
               ></span>
             </div>
-            <p class="hero__hint">Потяните фигуру, чтобы повернуть</p>
+            <p class="stage-hint">Потяните фигуру, чтобы повернуть</p>
           </div>
           <div class="hero__copy">
-            <p class="rule">
-              <span class="rule__square"></span>
-              <span class="rule__label">Игрок</span>
-              <span class="rule__line"></span>
-              <span class="rule__code">PROFILE</span>
-            </p>
+            <SectionRule label="Игрок" code="PROFILE" />
             <h1 id="player-name">{name}</h1>
             {data.totals ? (
               <p class="hero__sub">
@@ -263,10 +259,18 @@ const stats = data?.totals
             </table>
           </div>
           <nav class="pagination" aria-label="Страницы истории">
-            {data.page > 1 ? <a href={next(data.page - 1)}>← Назад</a> : <span></span>}
+            {data.page > 1 ? (
+              <a class="button" href={next(data.page - 1)}>
+                ← Назад
+              </a>
+            ) : (
+              <span></span>
+            )}
             <span>Страница {data.page}</span>
             {data.history.length === data.limit ? (
-              <a href={next(data.page + 1)}>Далее →</a>
+              <a class="button" href={next(data.page + 1)}>
+                Далее →
+              </a>
             ) : (
               <span></span>
             )}
@@ -294,14 +298,6 @@ const stats = data?.totals
       grid-template-columns: minmax(0, 1fr);
       gap: 10px;
     }
-    .hero__hint {
-      font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--dim);
-      text-align: center;
-    }
     .hero__copy {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
@@ -309,12 +305,9 @@ const stats = data?.totals
       align-content: start;
       min-width: 0;
     }
-    .hero__copy h1 {
-      font-size: clamp(34px, 5.4vw, 60px);
-    }
     .hero__sub {
       color: var(--sand);
-      font-size: clamp(15px, 1.2vw, 18px);
+      font-size: clamp(15px, 1.17vw, 17px);
     }
     /* 2D-запасной вариант поверх сцены: скрипт убирает его, когда собрана 3D-фигура. */
     .head--big {

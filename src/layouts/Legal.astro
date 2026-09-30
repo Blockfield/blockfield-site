@@ -1,9 +1,6 @@
 ---
-import '@fontsource-variable/inter'
-import '@fontsource/ibm-plex-mono/500.css'
-import '../styles/system.css'
-import SiteHeader from '../components/SiteHeader.astro'
-import SiteFooter from '../components/SiteFooter.astro'
+import Site from './Site.astro'
+import SectionRule from '../components/SectionRule.astro'
 
 interface Props {
   title: string
@@ -14,147 +11,109 @@ const { title, description, sections } = Astro.props
 const canonical = new URL(Astro.url.pathname, 'https://blockfield.pro')
 ---
 
-<!doctype html>
-<html lang="ru">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{title} — Blockfield</title>
-    <meta name="description" content={description} />
-    <meta name="theme-color" content="#070604" />
-    <link rel="canonical" href={canonical} />
-    <link rel="icon" href="/logo.svg" type="image/svg+xml" />
-  </head>
-  <body>
-    <a class="skip" href="#document">
-      Перейти к документу
-    </a>
-    <SiteHeader />
-    <main id="document">
-      <p class="rule">
-        <span class="rule__square"></span>
-        <span class="rule__label">Документ</span>
-        <span class="rule__line"></span>
-        <span class="rule__code">LEGAL</span>
-      </p>
-      <h1>{title}</h1>
-      <p class="revision">
-        Редакция от <time datetime="2026-09-12">12 сентября 2026 года</time>
-      </p>
-      <p class="intro">{description}</p>
-      <nav aria-label="Содержание документа">
-        <ul>
-          {sections.map((section) => (
-            <li>
-              <a href={`#${section.id}`}>{section.title}</a>
-            </li>
-          ))}
-        </ul>
-      </nav>
-      <article>
-        <slot />
-      </article>
-    </main>
-    <SiteFooter />
-    <style is:global>
-      main {
-        max-width: 78ch;
-        margin: 0 auto;
-        padding: clamp(36px, 5vw, 64px) clamp(14px, 5vw, 24px) 80px;
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        gap: 20px;
-        align-content: start;
+<Site title={`${title} — Blockfield`} description={description} canonical={canonical}>
+  <main id="content" class="page-main legal-main">
+    <SectionRule label="Документ" code="LEGAL" />
+    <h1>{title}</h1>
+    <p class="revision">
+      Редакция от <time datetime="2026-09-12">12 сентября 2026 года</time>
+    </p>
+    <p class="intro">{description}</p>
+    <nav aria-label="Содержание документа">
+      <ul>
+        {sections.map((section) => (
+          <li>
+            <a href={`#${section.id}`}>{section.title}</a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+    <article>
+      <slot />
+    </article>
+  </main>
+  <style is:global>
+    .legal-main {
+      max-width: 78ch;
+    }
+    .legal-main .revision {
+      font-family: var(--mono);
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .legal-main article p,
+    .legal-main li {
+      font-size: 17px;
+      line-height: 1.75;
+      color: var(--sand);
+    }
+    .legal-main article {
+      display: grid;
+      gap: 0;
+    }
+    .legal-main article p {
+      margin: 16px 0;
+    }
+    .legal-main strong {
+      color: var(--cream);
+      font-weight: 650;
+    }
+    .legal-main nav[aria-label='Содержание документа'] {
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    .legal-main nav[aria-label='Содержание документа'] ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 6px;
+    }
+    .legal-main article h2 {
+      margin: 44px 0 12px;
+      font-size: clamp(20px, 2.4vw, 26px);
+      scroll-margin-top: 24px;
+    }
+    .legal-main article ul {
+      padding-left: 22px;
+    }
+    .legal-main article li + li {
+      margin-top: 10px;
+    }
+    .legal-main article li::marker {
+      color: var(--amber-dim);
+    }
+    @media print {
+      :root,
+      body {
+        color-scheme: light;
+        background: white;
+        color: black;
       }
-      h1 {
-        line-height: 1.05;
+      .legal-main p,
+      .legal-main li,
+      .legal-main strong,
+      .legal-main a,
+      .legal-main h1,
+      .legal-main h2 {
+        color: black;
       }
-      .revision,
-      .intro {
-        margin: 0;
+      .site-header,
+      .site-footer,
+      nav,
+      .skip,
+      .rule {
+        display: none;
       }
-      .revision {
-        font-family: var(--mono);
-        font-size: 13px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--muted);
-      }
-      .intro {
-        color: var(--sand);
-        font-size: 17px;
-      }
-      p,
-      li {
-        font-size: 17px;
-        line-height: 1.75;
-        color: var(--sand);
-      }
-      article {
-        display: grid;
-        gap: 0;
-      }
-      article p {
-        margin: 16px 0;
-      }
-      strong {
-        color: var(--cream);
-        font-weight: 650;
-      }
-      nav[aria-label='Содержание документа'] {
-        padding-bottom: 8px;
-        border-bottom: 1px solid var(--line);
-      }
-      nav[aria-label='Содержание документа'] ul {
-        list-style: none;
+      .legal-main {
         padding: 0;
-        margin: 0;
-        display: grid;
-        gap: 6px;
+        max-width: none;
       }
-      article h2 {
-        margin: 44px 0 12px;
-        font-size: clamp(20px, 2.4vw, 26px);
-        scroll-margin-top: 24px;
+      h2 {
+        break-after: avoid;
       }
-      article ul {
-        padding-left: 22px;
-      }
-      article li + li {
-        margin-top: 10px;
-      }
-      article li::marker {
-        color: var(--amber-dim);
-      }
-      @media print {
-        :root {
-          color-scheme: light;
-          background: white;
-          color: black;
-        }
-        p,
-        li,
-        strong,
-        a,
-        h1,
-        h2 {
-          color: black;
-        }
-        .site-header,
-        .site-footer,
-        nav,
-        .skip,
-        .rule {
-          display: none;
-        }
-        main {
-          padding: 0;
-          max-width: none;
-        }
-        h2 {
-          break-after: avoid;
-        }
-      }
-    </style>
-  </body>
-</html>
+    }
+  </style>
+</Site>

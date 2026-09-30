@@ -56,3 +56,42 @@ test('customSelect: the popup still opens after a redraw (value or options chang
   assert.equal(list.hidden, false, 'listbox still opens after a redraw')
   assert.equal(list.children.length, 3, 'redraw keeps all options')
 })
+
+test('customSelect: native change, reset and disabled state stay in sync', async () => {
+  const form = document.createElement('form')
+  const el = select([
+    ['a', 'A'],
+    ['b', 'B'],
+  ])
+  form.append(el)
+  document.body.append(form)
+  customSelect(el)
+  const button = el.nextElementSibling.querySelector('.cselect-btn')
+  const list = el.nextElementSibling.querySelector('.cselect-list')
+
+  el.value = 'b'
+  el.dispatchEvent(new Event('change', { bubbles: true }))
+  assert.equal(button.textContent, 'B')
+  form.reset()
+  await Promise.resolve()
+  assert.equal(el.value, 'a')
+  assert.equal(button.textContent, 'A')
+
+  button.click()
+  assert.equal(list.hidden, false)
+  el.disabled = true
+  customSelect(el)
+  assert.equal(button.disabled, true)
+  assert.equal(list.hidden, true)
+  button.click()
+  assert.equal(list.hidden, true)
+
+  el.disabled = false
+  customSelect(el)
+  button.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+  list.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+  list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  assert.equal(el.value, 'b')
+  assert.equal(button.textContent, 'B')
+  assert.equal(list.hidden, true)
+})

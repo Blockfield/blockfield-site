@@ -1,9 +1,5 @@
 ---
 import { RELEASES } from '../lib/launcher'
-interface Props {
-  full?: boolean
-}
-const { full = false } = Astro.props
 ---
 
 <footer class="site-footer">
@@ -12,9 +8,9 @@ const { full = false } = Astro.props
     BLOCKFIELD
   </span>
   <nav aria-label="Ссылки в подвале">
-    {full && <a href="https://github.com/Blockfield/blockfield-releases">Сборки клиента</a>}
-    {full && <a href={RELEASES}>Сборки лаунчера</a>}
-    {full && <a href="https://blockfield.pro/pack.toml">packwiz-пак</a>}
+    <a href="https://github.com/Blockfield/blockfield-releases">Сборки клиента</a>
+    <a href={RELEASES}>Сборки лаунчера</a>
+    <a href="https://blockfield.pro/pack.toml">packwiz-пак</a>
     <a href="/leaderboard">Лидерборд</a>
     <a href="/terms">Условия использования</a>
     <a href="/privacy">Конфиденциальность</a>

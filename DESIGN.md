@@ -28,15 +28,21 @@ typography:
     fontWeight: 800
     lineHeight: 1
     letterSpacing: '-0.02em'
+  page-title:
+    fontFamily: "'Inter Variable', system-ui, sans-serif"
+    fontSize: 'clamp(32px, 5vw, 48px)'
+    fontWeight: 800
+    lineHeight: 1
+    letterSpacing: '-0.02em'
   headline:
     fontFamily: "'Inter Variable', system-ui, sans-serif"
-    fontSize: 'clamp(28px, 3.2vw, 48px)'
+    fontSize: 'clamp(24px, 3.2vw, 34px)'
     fontWeight: 800
     lineHeight: 1
     letterSpacing: '-0.02em'
   title:
     fontFamily: "'Inter Variable', system-ui, sans-serif"
-    fontSize: 'clamp(19px, 1.6vw, 24px)'
+    fontSize: 'clamp(17px, 1.4vw, 20px)'
     fontWeight: 800
     lineHeight: 1.1
     letterSpacing: '-0.01em'
@@ -70,6 +76,42 @@ typography:
     fontWeight: 500
     lineHeight: 1.2
     letterSpacing: '0.28em'
+  compact-headline:
+    fontFamily: "'Inter Variable', system-ui, sans-serif"
+    fontSize: 'clamp(20px, 2.4vw, 26px)'
+    fontWeight: 800
+    lineHeight: 1.1
+  lead:
+    fontFamily: "'Inter Variable', system-ui, sans-serif"
+    fontSize: 'clamp(15px, 1.36vw, 21px)'
+    lineHeight: 1.45
+  brand-mark:
+    fontFamily: "'Inter Variable', system-ui, sans-serif"
+    fontSize: 'clamp(20px, 1.75vw, 27px)'
+    fontWeight: 800
+  metadata:
+    fontFamily: "'IBM Plex Mono', ui-monospace, monospace"
+    fontSize: '13px'
+    lineHeight: 1.45
+  dialog-title:
+    fontFamily: "'Inter Variable', system-ui, sans-serif"
+    fontSize: '22px'
+    fontWeight: 800
+  status-title:
+    fontFamily: "'Inter Variable', system-ui, sans-serif"
+    fontSize: 'clamp(19px, 3vw, 23px)'
+    fontWeight: 700
+  server-address:
+    fontFamily: "'IBM Plex Mono', ui-monospace, monospace"
+    fontSize: 'clamp(18px, 1.9vw, 29px)'
+  display-tablet:
+    fontFamily: "'Inter Variable', system-ui, sans-serif"
+    fontSize: 'clamp(40px, 6.6vw, 58px)'
+    fontWeight: 800
+  display-mobile:
+    fontFamily: "'Inter Variable', system-ui, sans-serif"
+    fontSize: 'clamp(28px, 8.8vw, 44px)'
+    fontWeight: 800
 rounded:
   none: '0'
   dot: '50%'
@@ -87,8 +129,14 @@ components:
     backgroundColor: '{colors.amber}'
     textColor: '{colors.bg}'
     rounded: '{rounded.none}'
+    padding: '0 18px'
+    height: '44px'
+  button-large:
+    backgroundColor: '{colors.amber}'
+    textColor: '{colors.bg}'
+    rounded: '{rounded.none}'
     padding: '0 clamp(18px, 1.7vw, 26px)'
-    height: 'clamp(44px, 3.9vw, 58px)'
+    height: '56px'
   button-primary-hover:
     backgroundColor: '{colors.amber-hi}'
     textColor: '{colors.bg}'
@@ -230,11 +278,11 @@ entire typographic idea; there is no third voice.
 
 ### Hierarchy
 
-- **Display** (800, `clamp(40px, 6.3vw, 96px)`, line-height 1, -0.02em, uppercase): one per page,
-  the landing hero and page H1 only.
-- **Headline** (800, `clamp(28px, 3.2vw, 48px)`, line-height 1, -0.02em, uppercase): section
+- **Display** (800, `clamp(40px, 6.3vw, 96px)`, line-height 1, -0.02em, uppercase): the landing hero only. Every other page H1 uses Page title
+  (800, `clamp(32px, 5vw, 48px)`, line-height 1, -0.02em, uppercase).
+- **Headline** (800, `clamp(24px, 3.2vw, 34px)`, line-height 1, -0.02em, uppercase): section
   openers (`h2`).
-- **Title** (800, `clamp(19px, 1.6vw, 24px)`, line-height 1.1, uppercase): card and panel headings
+- **Title** (800, `clamp(17px, 1.4vw, 20px)`, line-height 1.1, uppercase): card and panel headings
   (`h3`). Under 18px, drop the uppercase — stamped type stops being legible.
 - **Body** (400, `clamp(15px, 1.17vw, 17px)`, line-height 1.6, sentence case): all prose. Measure
   capped at 34em (≈68ch); a paragraph wider than that is a layout bug.
@@ -353,16 +401,21 @@ carries meaning; the label always repeats in the heading below in plain words.
 
 ### Buttons
 
-- **Shape:** square (`border-radius: 0`), height `clamp(44px, 3.9vw, 58px)` on the landing and 44px
-  in the console, `padding: 0 clamp(18px, 1.7vw, 26px)`, uppercase, weight 700, +0.1em tracking.
-- **Primary:** amber fill, Chassis Black text, Energised shadow. One per view.
+- **Shape:** square (`border-radius: 0`), height 44px on every page, `padding: 0 18px`, 14px
+  text, uppercase, weight 700, +0.06em tracking. Buttons, button links, tabs, pagination and
+  single-line fields share `--control-height`.
+- **Large:** explicit `.button--large`, 56px at every viewport (`--control-height-large`),
+  reserved for landing download actions. Colour variants never change height, padding or type.
+- **Primary:** amber fill, Chassis Black text. Energised shadow belongs to the large landing
+  variant only. `.primary` is the same colour variant for buttons and button links.
 - **Hover:** background → Amber Bright, `translateY(-2px)` on the landing CTA only; console buttons
   do not move.
 - **Secondary:** transparent fill, 1px amber border, Cream text; hover fills with Seam.
 - **Ghost:** no border, Sand text, hover → amber. Used for tertiary actions inside a row.
 - **Danger:** transparent fill, 1px Alert Rose border, Alert Rose text. Danger-primary (rose fill,
   black text) exists only inside a confirmation dialog.
-- **Small:** 38px tall, 15px text — row-level actions only.
+- **Small:** 44px tall, 14px text, 12px horizontal padding — compact row actions retain the
+  same height and touch target as regular buttons.
 - **Disabled:** `opacity: 0.55`, `cursor: not-allowed`; a button that is disabled while working says
   so in the adjacent status line.
 - **Focus:** 2px amber outline, 3px offset, on every variant.
@@ -439,7 +492,7 @@ twice: the account page and the player profile hero.
 
 Header is a 1px-Seam-bottomed bar, `clamp(64px, 6.64vw, 102px)` tall: mark on the left, mono
 uppercase +0.14em Sand links, then the player's nickname, then the console entrance, then the amber
-CTA. Links hover to amber and grow a 2px amber underline from the left. The console entrance
+link to the installation section. Links hover to amber and grow a 2px amber underline from the left. The console entrance
 («ПАНЕЛЬ») is a square amber-bordered chip in mono, not a pill. Below 760px every link collapses
 into a burger that opens a full-height Plate overlay; the overlay's links are stacked rows separated
 by Seam hairlines, and Escape closes it.
@@ -509,3 +562,35 @@ line always states the expected wait in seconds when the wait is known.
 - **Don't** show a raw UUID, a schema version, a revision number, an English error string or any
   other internal identifier to a player. The console may show identifiers to staff who need them.
 - **Don't** replace a native control with a `div` that re-implements its semantics.
+
+## Shared implementation
+
+`src/layouts/Site.astro` owns fonts, base CSS, page metadata, skip link, header and footer.
+Every route composes this shell. `Community.astro` adds the shared `.page-main` and heading;
+account and admin use the same page container directly. Admin retains its 1320px workspace,
+and legal documents retain the 78ch reading measure. These are layout variants, not control variants.
+
+Native file-selector buttons use the same 44px button style; upload controls do not introduce an OS button variant.
+
+`SectionRule.astro` owns the recurring section marker and hides its decorative code from assistive
+technology. `.form-grid`, `.disclosure`, `.oops` and `.stage-hint` live in `system.css`.
+Legal prose selectors stay under `.legal-main`, so typography does not affect the shared chrome.
+
+Native selects remain the source of truth. Their painted button follows value changes, form reset
+and disabled state. The mobile menu makes the underlying page inert, restores it on close, and
+closes when the viewport crosses the desktop breakpoint.
+
+### Responsive action width
+
+Action buttons and button links share `--action-width: 320px` above 1024px, capped by their
+container. At 1024px and below, all actions fill their container, including `.small` buttons,
+pagination and dialog actions. Colour and height do not change across these breakpoints.
+Navigation tabs and the menu icon retain their own sizes. A file selector keeps its internal
+button compact so the selected filename remains visible; the upload field itself fills the form.
+The header download button uses the same desktop width; the mobile menu action fills its panel.
+Button icons are 20px with a shared `--button-icon-gap: 12px`; text and icon are centred together.
+Button variants do not override this spacing.
+
+Landing actions keep their download destinations and use contextual labels: «Начать играть»
+in the hero, the platform-specific download label in installation, and «Получить лаунчер»
+next to the server address. The header uses «Скачать».

@@ -1,0 +1,41 @@
+---
+import '@fontsource-variable/inter'
+import '@fontsource/ibm-plex-mono/400.css'
+import '@fontsource/ibm-plex-mono/500.css'
+import '@fontsource/ibm-plex-mono/600.css'
+import '../styles/system.css'
+import SiteHeader from '../components/SiteHeader.astro'
+import SiteFooter from '../components/SiteFooter.astro'
+
+interface Props {
+  title: string
+  description?: string
+  noindex?: boolean
+  canonical?: URL | string
+  cta?: { href: string; label: string; title: string }
+}
+const { title, description, noindex = false, canonical, cta } = Astro.props
+---
+
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    {description && <meta name="description" content={description} />}
+    {noindex && <meta name="robots" content="noindex" />}
+    {canonical && <link rel="canonical" href={canonical} />}
+    <meta name="theme-color" content="#070604" />
+    <link rel="icon" href="/logo.svg" type="image/svg+xml" />
+    <slot name="head" />
+  </head>
+  <body>
+    <a class="skip" href="#content">
+      Перейти к содержимому
+    </a>
+    <SiteHeader cta={cta} />
+    <slot />
+    <SiteFooter />
+  </body>
+</html>
