@@ -3,6 +3,8 @@
 Лендинг Blockfield. Astro в режиме SSR (`@astrojs/node`, standalone), образ `ghcr.io/blockfield/blockfield-site`.
 Репозиторий `Blockfield/blockfield-site` (до 2026-09-27 — `netherg-io/blockfield-web`; старый адрес GitHub перенаправляет).
 
+Общие 404/500 и другие страницы ошибок — в [blockfield-errors](https://github.com/Blockfield/blockfield-errors).
+
 ```bash
 pnpm install --frozen-lockfile
 pnpm dev           # http://localhost:4321
