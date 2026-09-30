@@ -1,4 +1,22 @@
-# blockfield-site
+<div align="center">
+
+<img src="assets/icon.png" alt="Blockfield" width="88" height="88" />
+
+# BLOCKFIELD SITE
+
+**Официальный веб-сайт и панель игрока.**<br />
+Лендинг, скачивание лаунчера, мониторинг игровых комнат и статистика на Astro SSR.
+
+[![Astro](https://img.shields.io/badge/framework-Astro-E9A426?style=flat-square)](https://astro.build/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-292524?style=flat-square)](https://typescriptlang.org/)
+[![Docker](https://img.shields.io/badge/Docker-GHCR-292524?style=flat-square)](https://github.com/Blockfield/blockfield-site/pkgs/container/blockfield-site)
+[![License](https://img.shields.io/badge/license-Custom-E9A426?style=flat-square)](LICENSE)
+
+**[Открыть сайт](https://blockfield.pro)** · [Страницы ошибок](https://github.com/Blockfield/blockfield-errors) · [Статистика](docs/statistics.md)
+
+</div>
+
+---
 
 Лендинг Blockfield. Astro в режиме SSR (`@astrojs/node`, standalone), образ `ghcr.io/blockfield/blockfield-site`.
 Репозиторий `Blockfield/blockfield-site` (до 2026-09-27 — `netherg-io/blockfield-web`; старый адрес GitHub перенаправляет).
@@ -106,3 +124,11 @@ Persistent gameplay history, leaderboard and account statistics: see `docs/stati
 landing page` после явного подтверждения владельца. Этот workflow повторяет
 проверки, запускает тесты, публикует образ и ожидает появления выбранного SHA
 на сайте. Push в main сам по себе прод не обновляет.
+
+---
+
+<div align="center">
+
+[**BLOCKFIELD**](https://blockfield.pro) · Командные бои в Minecraft 1.21.1 · Fabric
+
+</div>
