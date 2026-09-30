@@ -1,24 +1,6 @@
-<div align="center">
+# Сайт Blockfield
 
-<img src="assets/icon.png" alt="Blockfield" width="88" height="88" />
-
-# BLOCKFIELD SITE
-
-**Официальный веб-сайт и панель игрока.**<br />
-Лендинг, скачивание лаунчера, мониторинг игровых комнат и статистика на Astro SSR.
-
-[![Astro](https://img.shields.io/badge/framework-Astro-E9A426?style=flat-square)](https://astro.build/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-292524?style=flat-square)](https://typescriptlang.org/)
-[![Docker](https://img.shields.io/badge/Docker-GHCR-292524?style=flat-square)](https://github.com/Blockfield/blockfield-site/pkgs/container/blockfield-site)
-[![License](https://img.shields.io/badge/license-Custom-E9A426?style=flat-square)](LICENSE)
-
-**[Открыть сайт](https://blockfield.pro)** · [Страницы ошибок](https://github.com/Blockfield/blockfield-errors) · [Статистика](docs/statistics.md)
-
-</div>
-
----
-
-Лендинг Blockfield. Astro в режиме SSR (`@astrojs/node`, standalone), образ `ghcr.io/blockfield/blockfield-site`.
+Сайт [blockfield.pro](https://blockfield.pro): загрузка лаунчера, аккаунты, игровые комнаты и статистика. Astro в режиме SSR (`@astrojs/node`, standalone), образ `ghcr.io/blockfield/blockfield-site`.
 Репозиторий `Blockfield/blockfield-site` (до 2026-09-27 — `netherg-io/blockfield-web`; старый адрес GitHub перенаправляет).
 
 Общие 404/500 и другие страницы ошибок — в [blockfield-errors](https://github.com/Blockfield/blockfield-errors).
@@ -32,8 +14,8 @@ pnpm start
 
 ## Почему SSR
 
-Версия лаунчера и прямые ссылки на инсталляторы раньше резолвились на сборке — лендинг врал до
-следующего деплоя пака. Теперь их отдаёт `src/lib/launcher.ts` на запрос.
+Версия лаунчера и прямые ссылки на инсталляторы раньше резолвились на сборке — страница показывала устаревшую версию до
+следующего деплоя сайта. Теперь их отдаёт `src/lib/launcher.ts` на запрос.
 
 Проверка идёт раз в минуту, но условным запросом (`If-None-Match`): ответ 304 не расходует лимит
 GitHub, а релиз меняется редко — так что почти все проверки бесплатны, хотя аноним и ограничен
@@ -108,13 +90,16 @@ GitHub, а релиз меняется редко — так что почти �
 лаунчера и обоих модов. URL `/?room=<UUID>#rooms` используется для приглашений Discord;
 закрытое приглашение показывает пояснение и остальные доступные комнаты.
 
-## Statistics
+## Статистика
 
-Persistent gameplay history, leaderboard and account statistics: see `docs/statistics.md`. The site uses PostgreSQL (`BLOCKFIELD_DATABASE_URL`) or a persistent SQLite volume (`BLOCKFIELD_STATS_DB`) and remains independent of the Minecraft backend. Both backends preserve statistics, seasonal ratings and admin roles; see the migration instructions before switching.
+История матчей, таблица лидеров и статистика аккаунта: [docs/statistics.md](docs/statistics.md).
+Сайт хранит данные в PostgreSQL (`BLOCKFIELD_DATABASE_URL`) или SQLite на постоянном
+томе (`BLOCKFIELD_STATS_DB`), отдельно от игрового сервера. Оба варианта хранят статистику,
+сезонные рейтинги и роли администраторов. Перед сменой базы следуйте инструкции миграции.
 
 ## Проверки и развёртывание
 
-Установите Node.js 22 и pnpm 11.18.0; затем `pnpm install --frozen-lockfile`. Команды `just lint` и
+Установите Node.js 22 и pnpm 11.18.0; затем `pnpm install --frozen-lockfile`. Команды `pnpm lint` и
 `pnpm format:check` проверяют весь TypeScript/JavaScript/Astro и формат;
 `pnpm format` применяет форматирование, `pnpm check` запускает оба
 контроля. Коммиты main и PR выполняют проверки без публикации образа и без
@@ -125,10 +110,4 @@ landing page` после явного подтверждения владель�
 проверки, запускает тесты, публикует образ и ожидает появления выбранного SHA
 на сайте. Push в main сам по себе прод не обновляет.
 
----
-
-<div align="center">
-
-[**BLOCKFIELD**](https://blockfield.pro) · Командные бои в Minecraft 1.21.1 · Fabric
-
-</div>
+Условия использования: [LICENSE](LICENSE).
