@@ -268,6 +268,42 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           <p class="form-status" role="status"></p>
         </div>
       </form>
+      <article class="card" aria-labelledby="gun-balance-title">
+        <h3 id="gun-balance-title">Баланс оружия</h3>
+        <p class="muted">
+          Изменения применяются к игрокам онлайн без перезагрузки сервера. Анимации, модели, звуки и
+          код скриптов остаются из клиентского пака.
+        </p>
+        <p id="gun-balance-status" class="form-status" role="status">
+          Получаем каталог оружия…
+        </p>
+        <form id="gun-balance-form" hidden>
+          <div class="scope">
+            <label for="gun-search">Найти оружие</label>
+            <input id="gun-search" type="search" placeholder="Название, ID или тип оружия" />
+            <label for="gun-select">Оружие</label>
+            <select id="gun-select"></select>
+          </div>
+          <p id="gun-about" class="muted"></p>
+          <p id="gun-warnings" class="form-status"></p>
+          <p class="muted">
+            Отметьте поле, чтобы изменить его. Снятая отметка возвращает значение ганпака. Составные
+            поля редактируются как JSON; доступные вложенные поля указаны под ними.
+          </p>
+          <div id="gun-fields"></div>
+          <div class="actions">
+            <button class="primary" type="submit">
+              Применить баланс оружия
+            </button>
+            <button id="gun-reset" type="button">
+              Сбросить это оружие
+            </button>
+            <button id="gun-refresh" type="button">
+              Обновить каталог
+            </button>
+          </div>
+        </form>
+      </article>
     </section>
 
     <section id="team" data-perm="roles" data-tab="Команда" hidden aria-labelledby="team-title">
@@ -327,11 +363,26 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         <h3 id="candidates-title">Карты на проверке</h3>
         <p class="muted">
           Строитель отправляет карту из планшета («Разметка» → «На проверку») или администратор
-          кнопкой у карты ниже. Принятие сохраняет проверенный пакет. Карта попадёт в игру после
-          выпуска новой версии; до этого игра работает на прежних картах.
+          кнопкой у карты ниже. Принятие выбирает точную версию карты. Уже начатые матчи сохраняют
+          свою копию; следующие используют выбранную версию. Лобби применяются отдельно при
+          безопасной смене серверного мира.
         </p>
         <p class="form-status" id="candidates-status" role="status"></p>
         <ul id="candidate-list" class="rows"></ul>
+      </article>
+      <article class="card" aria-labelledby="map-history-title">
+        <h3 id="map-history-title">Архив карт</h3>
+        <p class="muted">
+          У каждой карты своя история и рабочая копия сеанса. Можно выбрать любую сохранённую
+          версию, включая игровое лобби и лобби прокси. Архив сохраняется при откате.
+        </p>
+        <button id="maps-refresh" class="small" type="button">
+          Обновить историю
+        </button>
+        <p id="map-history-status" class="form-status" role="status">
+          Получаем историю…
+        </p>
+        <div id="map-history"></div>
       </article>
       <p class="form-status" id="map-access-status" role="status"></p>
       <ul id="map-access" class="rows"></ul>
@@ -575,6 +626,21 @@ Astro.response.headers.set('Cache-Control', 'no-store')
 
     textarea {
       min-height: 88px;
+    }
+    #gun-fields .disclosure {
+      margin-bottom: 12px;
+    }
+    #gun-fields input:not([type='checkbox']),
+    #gun-fields select,
+    #gun-fields textarea {
+      width: 100%;
+      margin-block: 8px;
+    }
+    #gun-fields pre,
+    #gun-fields small,
+    #map-history small {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
     .row .actions select {
       width: auto;
@@ -892,6 +958,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       BALANCE_SCOPES,
       CLASS_COSTS,
       CLASS_NAMES,
+      KIT_GUNS,
       MAP_NAMES,
       MODE_NAMES,
       PARCOOL_ACTIONS,
@@ -899,9 +966,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       WORKSHOP_PLACES,
       TEAM_NAMES,
     } from '../lib/game-names'
-    import { settingsBody } from '../lib/settings-form'
+    import { settingsBody, settingsReceipt } from '../lib/settings-form'
     import { customSelect, customCombo } from '../lib/custom-select'
     import { switchView } from '../lib/switch-status'
+    import type {
+      GunBalanceCatalog,
+      GunDefinition,
+      GunField,
+      GunOverrides,
+    } from '../lib/gun-balance'
+    import type { MapCatalogEntry, MapSession } from '../lib/admin'
 
     type Me = { name: string; role: string | null; permissions: string[] }
     const $ = <T extends HTMLElement = HTMLElement>(selector: string) =>
@@ -1281,7 +1355,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       const testCandidate =
         state?.phase === 'test' && state?.desired?.candidate
           ? ((await api('candidates').catch(() => ({ candidates: [] }))).candidates?.find(
-              (c: any) => c.id === state.desired.candidate,
+              (c: any) => c.sha256 === state.desired.candidate,
             ) ?? null)
           : null
       const view = describe(state, rooms, session, testCandidate)
@@ -1452,7 +1526,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     }
     /** «Включить мастерскую»: which maps for a fresh session, or resume the previous one as-is. */
     async function startWorkshop() {
-      const known = Object.keys(MAP_NAMES)
+      const known = mapScopes()
       const checks = el(
         'div',
         { className: 'checks' },
@@ -1461,7 +1535,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             'label',
             { className: 'check' },
             el('input', { type: 'checkbox', name: 'map', value: id, checked: true }),
-            MAP_NAMES[id],
+            mapName(id),
           ),
         ),
       )
@@ -1804,6 +1878,280 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     }
 
     // ---------- Settings ----------
+    const GUN_LABELS: Record<string, string> = {
+      ammo: 'Боеприпас',
+      ammo_amount: 'Вместимость магазина',
+      extended_mag_ammo_amount: 'Расширенные магазины',
+      can_crawl: 'Стрельба ползком',
+      can_slide: 'Стрельба в подкате',
+      bolt: 'Затвор',
+      rpm: 'Выстрелов в минуту',
+      bullet: 'Пуля и урон',
+      draw_time: 'Доставание, секунды',
+      put_away_time: 'Убирание, секунды',
+      sprint_time: 'Выход из спринта, секунды',
+      aim_time: 'Прицеливание, секунды',
+      bolt_action_time: 'Работа затвора, секунды',
+      bolt_feed_time: 'Подача патрона, секунды',
+      fire_sound: 'Дальность звука выстрела',
+      reload: 'Перезарядка',
+      fire_mode: 'Режимы огня',
+      fire_mode_adjust: 'Настройки режимов огня',
+      burst_data: 'Очередь',
+      crawl_recoil_multiplier: 'Множитель отдачи ползком',
+      recoil: 'Отдача',
+      hurt_bob_tweak_multiplier: 'Множитель качания при уроне',
+      inaccuracy: 'Разброс',
+      movement_speed: 'Скорость движения',
+      melee: 'Ближний бой',
+      heat: 'Нагрев',
+      allow_attachment_types: 'Типы обвесов',
+      exclusive_attachments: 'Разрешённые обвесы',
+      weight: 'Вес',
+      builtin_attachments: 'Встроенные обвесы',
+      script: 'ID скрипта',
+      script_param: 'Параметры скрипта',
+      charging: 'Зарядка',
+    }
+    let gunCatalog: GunBalanceCatalog | undefined,
+      gunOverrides: GunOverrides = {},
+      gunRevision = 0
+    let selectedGun: GunDefinition | undefined
+    const gunReaders = new Map<string, () => unknown>()
+    const gunText = (value: unknown) => JSON.stringify(value, null, 2) ?? 'null'
+    function gunValues(base: any, overrides: any): any {
+      if (
+        !base ||
+        !overrides ||
+        typeof base !== 'object' ||
+        typeof overrides !== 'object' ||
+        Array.isArray(base) ||
+        Array.isArray(overrides)
+      )
+        return overrides
+      return Object.fromEntries([
+        ...Object.entries(base),
+        ...Object.entries(overrides).map(([key, value]) => [key, gunValues(base[key], value)]),
+      ])
+    }
+    const gunLabel = (gun: GunDefinition) =>
+      gun.name.endsWith('.name') ? gun.id : `${gun.name} · ${gun.id}`
+    function gunShape(field: GunField): string {
+      if (field.type === 'object')
+        return Object.entries(field.fields ?? {})
+          .map(([key, child]) => `${key}: ${gunShape(child)}`)
+          .join('; ')
+      if (field.type === 'array') return `массив (${gunShape(field.items!)})`
+      if (field.type === 'map')
+        return `ключ: ${field.keys?.values?.join(' / ') ?? field.keys?.type}; значение: ${gunShape(field.items!)}`
+      return field.values?.join(' / ') ?? field.type
+    }
+    function collectGun() {
+      if (!selectedGun) return
+      const values = Object.fromEntries(
+        [...gunReaders]
+          .map(([key, read]) => [key, read()])
+          .filter(([, value]) => value !== undefined),
+      )
+      if (Object.keys(values).length) gunOverrides[selectedGun.id] = values as GunOverrides[string]
+      else delete gunOverrides[selectedGun.id]
+    }
+    function renderGun() {
+      const gun = selectedGun
+      gunReaders.clear()
+      if (!gun || !gunCatalog) {
+        $('#gun-fields').replaceChildren()
+        return
+      }
+      $('#gun-about').textContent =
+        `${gun.id} · данные ${gun.data} · ${gun.type}. Оружие с тем же ID данных получает тот же баланс.`
+      $('#gun-warnings').textContent = gun.warnings.join(' ')
+      $('#gun-fields').replaceChildren(
+        ...Object.entries(gunCatalog.fields.fields!).map(([key, field]) => {
+          const hasOverride = Object.hasOwn(gunOverrides[gun.id] ?? {}, key)
+          const value = hasOverride
+            ? gunValues(gun.defaults[key], gunOverrides[gun.id][key])
+            : gun.defaults[key]
+          const id = `gun-field-${key}`
+          const edit = el('input', {
+            type: 'checkbox',
+            checked: hasOverride,
+            ariaLabel: `Изменить ${GUN_LABELS[key] ?? key}`,
+          })
+          const nullable = field.nullable
+            ? el('input', { type: 'checkbox', checked: value === null, ariaLabel: `${key}: null` })
+            : null
+          const complex =
+            ['object', 'array', 'map', 'json'].includes(field.type) || field.acceptsInfinite
+          const input = complex
+            ? el('textarea', { id, rows: 5, value: gunText(value), spellcheck: false })
+            : field.type === 'boolean' || field.values
+              ? el(
+                  'select',
+                  { id },
+                  ...(field.values ?? ['true', 'false']).map((v) =>
+                    el('option', { value: v, textContent: v }),
+                  ),
+                )
+              : el('input', {
+                  id,
+                  type: ['integer', 'number'].includes(field.type) ? 'number' : 'text',
+                  value: value === null ? '' : String(value ?? ''),
+                  step: field.type === 'integer' ? '1' : 'any',
+                  ...(field.min === undefined ? {} : { min: field.min, max: field.max }),
+                  maxLength: 256,
+                })
+          if (input instanceof HTMLSelectElement) input.value = String(value)
+          const sync = () => {
+            input.disabled = !edit.checked || !!nullable?.checked
+            if (nullable) nullable.disabled = !edit.checked
+          }
+          edit.onchange = sync
+          if (nullable) nullable.onchange = sync
+          sync()
+          gunReaders.set(key, () => {
+            if (!edit.checked) return undefined
+            if (nullable?.checked) return null
+            if (complex) {
+              try {
+                return JSON.parse(input.value)
+              } catch {
+                throw new Error(`${key}: исправьте JSON.`)
+              }
+            }
+            if (field.type === 'boolean') return input.value === 'true'
+            if (['integer', 'number'].includes(field.type)) {
+              if (!input.value.trim() || !Number.isFinite(Number(input.value)))
+                throw new Error(`${key}: введите число.`)
+              return Number(input.value)
+            }
+            return input.value
+          })
+          return el(
+            'details',
+            { className: 'disclosure', open: hasOverride },
+            el('summary', {
+              textContent: `${GUN_LABELS[key] ?? key} · ${key}${hasOverride ? ' · изменено' : ''}`,
+            }),
+            el('label', { className: 'check' }, edit, 'Изменить'),
+            nullable ? el('label', { className: 'check' }, nullable, 'Значение null') : null,
+            el('label', { htmlFor: id, textContent: GUN_LABELS[key] ?? key }),
+            input,
+            el('small', {
+              className: 'muted',
+              textContent: `${gunShape(field)}${field.min === undefined ? '' : ` · от ${field.min} до ${field.max}`}`,
+            }),
+            el(
+              'details',
+              {},
+              el('summary', { textContent: 'Значение ганпака' }),
+              el('pre', { textContent: gunText(gun.defaults[key]) }),
+            ),
+          )
+        }),
+      )
+    }
+    function filterGuns() {
+      if (!gunCatalog) return
+      const query = $<HTMLInputElement>('#gun-search').value.toLowerCase().trim()
+      const guns = gunCatalog.guns
+        .filter((gun) => `${gun.name} ${gun.id} ${gun.type}`.toLowerCase().includes(query))
+        .sort(
+          (a, b) =>
+            Number(KIT_GUNS.has(b.id)) - Number(KIT_GUNS.has(a.id)) ||
+            Number(!!gunOverrides[b.id]) - Number(!!gunOverrides[a.id]) ||
+            a.id.localeCompare(b.id),
+        )
+      const select = $<HTMLSelectElement>('#gun-select')
+      select.replaceChildren(
+        ...guns.map((gun) =>
+          el('option', {
+            value: gun.id,
+            textContent: `${gunLabel(gun)}${gunOverrides[gun.id] ? ' · изменено' : ''}`,
+          }),
+        ),
+      )
+      select.value =
+        selectedGun && guns.some((gun) => gun.id === selectedGun!.id)
+          ? selectedGun.id
+          : (guns[0]?.id ?? '')
+      selectedGun = gunCatalog.guns.find((gun) => gun.id === select.value)
+      renderGun()
+      if (!guns.length) $('#gun-about').textContent = 'Оружие не найдено. Измените запрос.'
+    }
+    async function loadGunBalance() {
+      const [availability, { settings }] = await Promise.all([api('gun-balance'), api('settings')])
+      const form = $<HTMLFormElement>('#gun-balance-form')
+      form.hidden = !availability.available
+      if (!availability.available) {
+        say($('#gun-balance-status'), availability.error, 'error')
+        return
+      }
+      gunCatalog = availability.catalog
+      gunOverrides = structuredClone(settings.gunBalance ?? {})
+      gunRevision = settings.revision ?? 0
+      filterGuns()
+      say(
+        $('#gun-balance-status'),
+        `${gunCatalog!.guns.length} оружий. Изменения хранятся поверх ганпака.`,
+      )
+    }
+    $<HTMLInputElement>('#gun-search').oninput = () => {
+      try {
+        collectGun()
+        filterGuns()
+      } catch (error) {
+        say($('#gun-balance-status'), (error as Error).message, 'error')
+      }
+    }
+    $<HTMLSelectElement>('#gun-select').onchange = (event) => {
+      try {
+        collectGun()
+        selectedGun = gunCatalog?.guns.find(
+          (gun) => gun.id === (event.target as HTMLSelectElement).value,
+        )
+        renderGun()
+      } catch (error) {
+        say($('#gun-balance-status'), (error as Error).message, 'error')
+        if (selectedGun) $<HTMLSelectElement>('#gun-select').value = selectedGun.id
+      }
+    }
+    $('#gun-reset').onclick = () => {
+      if (selectedGun) {
+        delete gunOverrides[selectedGun.id]
+        renderGun()
+      }
+    }
+    $('#gun-refresh').onclick = async () => {
+      if (
+        await ask({
+          title: 'Обновить каталог?',
+          text: 'Несохранённые изменения баланса оружия будут заменены текущими настройками сервера.',
+          ok: 'Обновить',
+        })
+      )
+        run($('#gun-balance-status'), loadGunBalance, $('#gun-balance-form'))
+    }
+    $<HTMLFormElement>('#gun-balance-form').onsubmit = async (event) => {
+      event.preventDefault()
+      await run(
+        $('#gun-balance-status'),
+        async () => {
+          collectGun()
+          const { settings } = await api('gun-balance', 'PUT', {
+            expectedRevision: gunRevision,
+            gunBalance: gunOverrides,
+          })
+          if (settingsRevision === gunRevision) settingsRevision = settings.revision
+          gunRevision = settings.revision
+          gunOverrides = structuredClone(settings.gunBalance ?? {})
+          renderGun()
+          await loadSettings(Date.now(), true)
+          return 'Сохранено. Подтверждение применения — в состоянии настроек выше.'
+        },
+        $('#gun-balance-form'),
+      )
+    }
     type Rule = { type: 'int' | 'double' | 'bool'; min?: number; max?: number }
     let rules: Record<string, Rule> = {},
       settingsRevision = 0,
@@ -1995,7 +2343,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     function appliedErrors(errors: string[]) {
       return errors.map((error) => {
         const key = Object.keys(SETTING_LABELS).find((k) => error.includes(k))
-        if (!key) return 'сервер не смог прочитать часть настроек'
+        if (!key)
+          return error.startsWith('gunBalance')
+            ? `баланс оружия: ${error}`
+            : 'сервер не смог прочитать часть настроек'
         return /clamp/i.test(error)
           ? `«${SETTING_LABELS[key]}» — значение вне допустимых границ, сервер его ограничил`
           : `«${SETTING_LABELS[key]}» — сервер оставил прежнее значение`
@@ -2005,8 +2356,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     async function loadSettings(waitStarted = 0, statusOnly = false) {
       const { settings, applied, balance: balanceRules } = await api('settings')
       rules = balanceRules
-      settingsRevision = settings.revision ?? 0
       if (!statusOnly) {
+        settingsRevision = settings.revision ?? 0
         const form = $<HTMLFormElement>('#settings-form')
         defaults = Object.fromEntries(
           [...LOBBY, ...ROOMS, ...DEATHMATCH].map((f) => [f.key, String(f.def)]),
@@ -2113,22 +2464,31 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       }
 
       clearTimeout(settingsPoll)
+      if (statusOnly && (settings.revision ?? 0) !== settingsRevision) {
+        settingsStatus(
+          'Настройки изменены в другой сессии. Обновите страницу перед сохранением.',
+          'error',
+          'Настройки изменились — обновите страницу.',
+        )
+        return
+      }
       const who = settings.updatedBy
         ? ` Последнее изменение: ${settings.updatedBy}, ${ago(settings.updatedAt)}.`
         : ''
+      const receipt = settingsReceipt(settings.revision ?? 0, applied)
       if (!settings.revision)
         settingsStatus(
           'Настройки ещё не меняли — сервер работает на своих значениях по умолчанию.',
           'ok',
           '',
         )
-      else if (applied?.revision >= settings.revision && applied.errors?.length)
+      else if (receipt === 'rejected' || receipt === 'partial')
         settingsStatus(
-          `Сохранено, но сервер применил не всё: ${appliedErrors(applied.errors).join('; ')}.${who}`,
+          `${receipt === 'rejected' ? 'Сервер отклонил изменения; действуют прежние настройки' : 'Сохранено, но сервер применил не всё'}: ${appliedErrors(applied.errors).join('; ')}.${who}`,
           'error',
           'Применено не всё — подробности вверху.',
         )
-      else if (applied?.revision >= settings.revision)
+      else if (receipt === 'applied')
         settingsStatus(`Применено на сервере.${who}`, 'ok', 'Применено на сервере.')
       else if (waitStarted && Date.now() - waitStarted > 60_000)
         settingsStatus(
@@ -2191,7 +2551,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       save.disabled = true
       settingsStatus('Сохраняем…', 'pending', 'Сохраняем…')
       try {
-        await api('settings', 'PUT', body)
+        const { settings } = await api('settings', 'PUT', body)
+        if (gunRevision === settingsRevision) gunRevision = settings.revision
         await loadSettings()
       } catch (error) {
         settingsStatus((error as Error).message, 'error', (error as Error).message)
@@ -2352,7 +2713,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       s: { uuid: string; name: string; maps: string[] | null },
       line: HTMLElement,
     ) {
-      const known = Object.keys(WORKSHOP_PLACES),
+      const known = ['hub', ...mapScopes()],
         current = new Set(s.maps ?? known)
       const list = el(
         'div',
@@ -2388,10 +2749,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       const builders = staff.filter((s) => s.role === 'builder'),
         line = $('#map-access-status')
       const editors = (id: string) => builders.filter((b) => b.maps === null || b.maps.includes(id))
-      // Overlays: maps currently published through the workshop whose in-game markup drifted from what's committed to the repo.
-      const { overlays } = await api('candidates').catch(() => ({ overlays: {} }))
       $('#map-access').replaceChildren(
-        ...Object.entries(WORKSHOP_PLACES).map(([id, name]) => {
+        ...['hub', ...mapScopes()].map((id) => {
+          const name = mapName(id)
           const who = editors(id).map((b) => b.name)
           const main = el(
             'div',
@@ -2402,11 +2762,6 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 ? `Строители: ${who.length ? who.join(', ') : 'никто'}`
                 : 'Строителей в команде нет',
             }),
-            overlays?.[id]?.differsFromRepo
-              ? el('small', {
-                  textContent: `Опубликованная разметка «${name}» отличается от репозитория — перенесите её в git: tools/workshop/fetch-map.py ${id}`,
-                })
-              : null,
           )
           const actions = el(
             'div',
@@ -2426,7 +2781,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                   `Кто строит: ${name}`,
                 )
               : null,
-            id in MAP_NAMES
+            id !== 'hub'
               ? button(
                   'На проверку',
                   () => submitMap(id, name),
@@ -2439,10 +2794,132 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         }),
       )
     }
+    let mapCatalog: MapCatalogEntry[] | undefined, mapSession: MapSession | undefined
+    const mapName = (id: string) =>
+      WORKSHOP_PLACES[id] ?? String(mapCatalog?.find((map) => map.mapId === id)?.mapJson.name ?? id)
+    const mapScopes = () =>
+      mapCatalog
+        ? mapCatalog.map((map) => map.mapId)
+        : Object.keys(WORKSHOP_PLACES).filter((id) => id !== 'hub')
+    async function loadMapHistory() {
+      const data = await api('maps')
+      const line = $('#map-history-status')
+      if (!data.available) {
+        say(line, data.error, 'error')
+        $('#map-history').replaceChildren()
+        return
+      }
+      mapCatalog = data.maps
+      mapSession = data.session
+      say(
+        line,
+        mapSession
+          ? `Рабочая копия сеанса: ${mapSession.id}. Архивы карт независимы.`
+          : 'Мастерская сейчас не редактирует активный сеанс. История доступна для выбора версии.',
+      )
+      $('#map-history').replaceChildren(
+        ...mapCatalog!.map((map) => {
+          const name = mapName(map.mapId),
+            head = map.head?.versionDigest ?? null
+          const versions = map.versions.map((version) => {
+            const current = version.versionDigest === head
+            const main = el(
+              'div',
+              { className: 'row-main' },
+              el('strong', {
+                textContent: `${date(version.createdAt)}${current ? ' · выбрана' : ''}`,
+              }),
+              el('small', {
+                textContent: `${String(version.author.name ?? 'Не указан автор')} · изменено файлов ${version.changed.length}, удалено ${version.deleted.length} · всего ${version.fileCount}`,
+              }),
+              version.note ? el('p', { textContent: version.note }) : null,
+              el('small', { textContent: version.versionDigest }),
+            )
+            const choose = button(
+              'Выбрать версию',
+              async () => {
+                if (
+                  !(await ask({
+                    title: `Выбрать эту версию «${name}»?`,
+                    text:
+                      map.kind === 'arena'
+                        ? 'Следующие матчи используют выбранную копию. Уже начатые матчи и весь архив сохранятся.'
+                        : map.kind === 'limbo'
+                          ? 'Сначала подготовьте эту версию для прокси. Выбор доступен только при остановленном прокси; геометрия и точка входа применятся вместе при следующем запуске.'
+                          : 'Будет выбрана эта версия игрового лобби. Она применяется при следующем безопасном запуске сервера.',
+                    ok: 'Выбрать версию',
+                    danger: true,
+                  }))
+                )
+                  return
+                await run(line, async () => {
+                  const { id } = await api('candidates/rollback', 'POST', {
+                    mapId: map.mapId,
+                    versionDigest: version.versionDigest,
+                    expectedHead: head,
+                  })
+                  follow(line, id, `Версия «${name}» выбрана.`).then(loadMapHistory)
+                  return 'Запрос отправлен. Ожидаем подтверждение контроллера…'
+                })
+              },
+              'small',
+              `Выбрать ${name}, версия ${version.versionDigest.slice(0, 8)}`,
+            )
+            choose.disabled = current || !can('workshop')
+            const actions = el('div', { className: 'actions' }, choose)
+            if (map.kind === 'limbo' && can('workshop')) {
+              const prepare = button(
+                'Подготовить для прокси',
+                () =>
+                  run(line, async () => {
+                    const { id } = await api('maps/export-limbo', 'POST', {
+                      versionDigest: version.versionDigest,
+                    })
+                    follow(line, id, 'Версия подготовлена. Прокси не перезапущен.')
+                    return 'Проверяем и подготавливаем выбранную версию…'
+                  }),
+                'small',
+                `Подготовить лобби прокси, версия ${version.versionDigest.slice(0, 8)}`,
+              )
+              prepare.disabled = !mapSession
+              actions.append(prepare)
+            }
+            return el('li', { className: 'row' }, main, actions)
+          })
+          return el(
+            'details',
+            { className: 'disclosure' },
+            el('summary', {
+              textContent: `${name} · версий: ${map.versions.length}`,
+            }),
+            map.kind === 'limbo'
+              ? el('p', {
+                  textContent:
+                    'Подготовка версии доступна в режиме мастерской. Выбор версии требует остановленного прокси и не запускает его автоматически.',
+                })
+              : null,
+            el(
+              'ul',
+              { className: 'rows' },
+              ...(versions.length
+                ? versions
+                : [
+                    el('li', {
+                      className: 'empty',
+                      textContent:
+                        'Эталон ещё не импортирован в архив. Рабочая копия появится после проверенного импорта.',
+                    }),
+                  ]),
+            ),
+          )
+        }),
+      )
+    }
+    $('#maps-refresh').onclick = () => run($('#map-history-status'), loadMapHistory)
     // ---------- Map candidates ----------
     const CANDIDATE_STATUS: Record<string, [string, string]> = {
       pending: ['Ждёт проверки', 'warn'],
-      accepted: ['Принята · ждёт релиза', 'ok'],
+      accepted: ['Принята', 'ok'],
       published: ['В игре', 'ok'],
       rejected: ['Отклонена', ''],
       superseded: ['Заменена новой', ''],
@@ -2475,7 +2952,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             baseWarn ? el('span', { className: 'badge warn', textContent: baseWarn }) : null,
           ),
           el('small', {
-            textContent: `Отправил ${c.author?.name ?? '?'} ${ago(c.createdAt)} · ${(c.size / 1048576).toFixed(1)} МБ, регионов ${c.regions}${decided}`,
+            textContent: `Отправил ${c.author?.name ?? '?'} ${ago(c.createdAt)} · ${c.native ? 'сохранены изменения в архиве' : `${(c.size / 1048576).toFixed(1)} МБ`}, регионов ${c.regions}${decided}`,
           }),
         )
         const actions = el('div', { className: 'actions' })
@@ -2488,12 +2965,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           })
         const publish = (force: boolean) =>
           run(line, async () => {
+            const map = mapCatalog?.find((entry) => entry.mapId === c.mapId)
+            if (!map)
+              throw new Error('Сначала обновите историю карт. Текущая версия не подтверждена.')
             const { id } = await api('candidates/publish', 'POST', {
               candidateId: c.id,
               mapId: c.mapId,
+              expectedHead: map.head?.versionDigest ?? null,
               ...(force ? { force: true } : {}),
             })
-            follow(line, id, `Карта «${name}» принята. Выпуск — отдельный шаг.`, async (error) => {
+            follow(line, id, `Версия «${name}» принята и выбрана.`, async (error) => {
               // The controller never lets an older version replace a newer accepted one: retrying cannot help.
               if (/newer version/.test(error)) {
                 say(
@@ -2508,7 +2989,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 publish(true)
               else say(line, 'Публикация отменена.', 'error')
               return true
-            }).then(loadCandidates)
+            }).then(() => Promise.all([loadCandidates(), loadMapHistory()]))
             return 'Запрос отправлен. Сервер применит его в течение 15 секунд…'
           })
         if (can('workshop') && c.status === 'pending') {
@@ -2519,7 +3000,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 if (
                   !(await ask({
                     title: `Принять «${name}»?`,
-                    text: `Будет принят именно этот пакет. Игровая карта изменится только после проверки и выпуска новой версии сборки.`,
+                    text: 'Будет принята и выбрана именно эта версия. Новые матчи используют её копию; уже начатые матчи сохранят прежнюю. Лобби применяются при безопасной смене игрового мира.',
                     ok: 'Принять',
                   }))
                 )
@@ -2589,13 +3070,31 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             ),
           )
         }
-        if (can('workshop') && c.status === 'accepted') {
+        if (can('workshop') && c.status === 'accepted' && c.sha256) {
           const link = el('a', {
             className: 'small',
             textContent: 'Скачать пакет',
             href: `/api/admin/candidates/download?id=${encodeURIComponent(c.id)}`,
           })
           actions.append(link)
+        }
+        if (can('workshop') && c.status === 'accepted' && c.native && !c.sha256) {
+          actions.append(
+            button(
+              'Экспортировать ZIP',
+              () =>
+                run(line, async () => {
+                  const { id } = await api('candidates/export', 'POST', {
+                    candidateId: c.id,
+                    mapId: c.mapId,
+                  })
+                  follow(line, id, 'Пакет готов к скачиванию.').then(loadCandidates)
+                  return 'Создаём архив выбранной версии…'
+                }),
+              'small',
+              `Экспортировать ${name}, версия ${version}`,
+            ),
+          )
         }
         return el('li', { className: 'row' }, main, actions)
       })
@@ -2609,7 +3108,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       if (
         !(await ask({
           title: `Отправить «${name}» на проверку?`,
-          text: 'Сервер снимет копию мира и разметки карты из мастерской. В игру она попадёт после принятия и выпуска новой версии сборки.',
+          text: 'Сервер сохранит изменения мира и разметки из рабочей копии текущего сеанса. Активная версия не изменится до отдельного принятия.',
           ok: 'Отправить',
         }))
       )
@@ -3222,8 +3721,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           ['moderate', loadOnline, 'Игроки'],
           ['ban', loadBans, 'Забаненные'],
           ['settings', () => loadSettings(), 'Настройки'],
+          ['settings', loadGunBalance, 'Баланс оружия'],
           ['roles', loadTeam, 'Команда'],
           ['workshop', loadCandidates, 'Кандидаты'],
+          ['workshop', loadMapHistory, 'Архив карт'],
           ['stats', loadResults, 'Статистика'],
           ['stats', loadSeasons, 'Сезоны'],
           ['stats', loadKeys, 'Ключи'],

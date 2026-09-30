@@ -16,7 +16,20 @@ import {
   PARCOOL_IDS,
   PARCOOL_FILE_DEFAULT,
 } from '../src/lib/game-names.ts'
-import { settingsBody } from '../src/lib/settings-form.ts'
+import { settingsBody, settingsReceipt } from '../src/lib/settings-form.ts'
+
+test('rejected settings stop waiting while the last applied revision stays unchanged', () => {
+  assert.equal(
+    settingsReceipt(7, { revision: 6, attemptedRevision: 7, errors: ['gunBalance.draw_time'] }),
+    'rejected',
+  )
+  assert.equal(
+    settingsReceipt(7, { revision: 6, attemptedRevision: 5, errors: ['old error'] }),
+    'pending',
+  )
+  assert.equal(settingsReceipt(7, { revision: 7, errors: ['clamped'] }), 'partial')
+  assert.equal(settingsReceipt(7, { revision: 7, errors: [] }), 'applied')
+})
 
 const uid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
 const server = uid(1),

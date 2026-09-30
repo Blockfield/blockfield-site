@@ -4,9 +4,9 @@ Refs: netherg-io/blockfield-releases#3 and #6. This service is part of the exist
 
 ## Runtime and storage
 
-Use Node 22.19+ (the existing Astro dependency graph also requires this). Statistics uses built-in `node:sqlite`; some Node 22 releases report its experimental status. No SQLite native addon or database server is installed.
+Use Node 22.19+ (the existing Astro dependency graph also requires this). `src/lib/database.ts` selects PostgreSQL through `pg` when `BLOCKFIELD_DATABASE_URL` is set, otherwise built-in `node:sqlite` through `BLOCKFIELD_STATS_DB`. Both store statistics and staff roles. See [PostgreSQL and SQLite compatibility](#postgresql-and-sqlite-compatibility-schema-6) for deployment and migration; some Node 22 releases still report `node:sqlite` as experimental.
 
-Required site environment:
+Site environment for SQLite (use `BLOCKFIELD_DATABASE_URL` instead of the SQLite path for PostgreSQL):
 
 ```dotenv
 BLOCKFIELD_STATS_DB=/data/stats/blockfield.sqlite
@@ -17,9 +17,9 @@ BLOCKFIELD_STATS_INGEST_KEYS={"00000000-0000-4000-8000-000000000001":"REPLACE_WI
 
 Mount a **named persistent volume** at `/data/stats` owned by the image's `node` user (UID 1000). Do not commit real tokens, put them in client configs, or print them. Set the matching server ID/token on the game producer. HTTPS is required outside a private trusted network. Ingestion does not authenticate with player accounts: it accepts only server credentials and rejects submissions for another server ID.
 
-Without `BLOCKFIELD_STATS_DB`, reads return 503 rather than an empty leaderboard. Producer keys can also be created and revoked in `/admin` (stored as SHA-256 hashes in `ingest_keys`); env and DB keys are both accepted. Without any ingestion key, writes are unauthorized. Bad key configuration fails closed. Keep one writer deployment per local SQLite volume; do not place the database on NFS or share it between hosts. Use WAL-aware SQLite backup tooling, or stop **the site only** and copy the database plus any WAL/SHM files before upgrades. Do not copy a live `.sqlite` file alone. Restore to an isolated instance and replay the producer outbox to verify a backup. Unknown database schema versions are rejected, not overwritten.
+Without a configured database, reads return 503 rather than an empty leaderboard. An invalid PostgreSQL configuration fails instead of falling back to SQLite. Producer keys can also be created and revoked in `/admin` (stored as SHA-256 hashes in `ingest_keys`); env and DB keys are both accepted. Without any ingestion key, writes are unauthorized. Bad key configuration fails closed. Keep one writer deployment per local SQLite volume; do not place the database on NFS or share it between hosts. Use WAL-aware SQLite backup tooling, or stop **the site only** and copy the database plus any WAL/SHM files before upgrades. Do not copy a live `.sqlite` file alone. Restore to an isolated instance and replay the producer outbox to verify a backup. Unknown database schema versions are rejected, not overwritten.
 
-Schema is `PRAGMA user_version=4`. Versions 0, 1, 2 and 3 upgrade in place on startup inside one transaction (any failure rolls back and the site refuses to open the file). v2 → v3: `ratings` is re-keyed from `uuid` to `(season_id, uuid)` and `rating_changes` gains `season_id`; every existing row is assigned to the season that contains its `last_rated_at` / `rated_at` (before season 1 → `s1`). Nothing is recalculated: on the production data (all rated after 2026-09-14) every rating stays exactly as it was, now as season `s1`. v3 → v4 adds `results.voided_at`/`voided_by` (voided results are excluded from every read) and the tables `admin_audit`, `ingest_keys` and `staff_roles` for the admin panel (`docs/admin.md`); no existing row changes. Back up the volume before deploying; a file opened by a newer build cannot be opened by older builds.
+Current schema is 6. SQLite upgrades earlier supported versions in place on startup inside one transaction (any failure rolls back and the site refuses to open the file). The original migrations through schema 4 were: v2 → v3: `ratings` is re-keyed from `uuid` to `(season_id, uuid)` and `rating_changes` gains `season_id`; every existing row is assigned to the season that contains its `last_rated_at` / `rated_at` (before season 1 → `s1`). Nothing is recalculated: on the production data (all rated after 2026-09-14) every rating stays exactly as it was, now as season `s1`. v3 → v4 adds `results.voided_at`/`voided_by` (voided results are excluded from every read) and the tables `admin_audit`, `ingest_keys` and `staff_roles` for the admin panel (`docs/admin.md`); no existing row changes. Back up the volume before deploying; a file opened by a newer build cannot be opened by older builds.
 
 There are no automatic deletes or destructive migrations. MMR is recalculated only when an administrator voids/restores a rated campaign. Add retention/administration policies explicitly before a large public rollout. Put public read endpoints behind reverse-proxy rate limits appropriate to the deployment.
 
@@ -43,7 +43,7 @@ The result and all participant/class rows are inserted in **one transaction**. `
 
 ## Read API
 
-All reads are `GET`, public, `Cache-Control: no-store`, and served from SQLite only.
+All reads are `GET`, public, `Cache-Control: no-store`, and served from the selected persistent database.
 
 - `/api/stats/leaderboard?mode=campaign&season=s1&sort=score&page=1&limit=25`
 - `/api/stats/players/<UUID>` with the same filters (sort only affects `totals.rank`).
@@ -102,11 +102,11 @@ Late results: a campaign that ended in an earlier season but arrives later updat
 - Site: `/leaderboard` and `/players/<UUID>` call `StatsStore` directly on the server; `/account` fetches `/api/stats/players/<UUID>` in the browser with the Drasl profile UUID.
 - Launcher and in-game UI must read the same public HTTP endpoints and apply the display rules above; do not re-aggregate or recompute rank/MMR locally.
 - The read API never calls Minecraft, RCON or Server List Ping; only the game server's producer writes, via `POST /api/stats/results`.
-- The app uses the DB at `BLOCKFIELD_STATS_DB` (absolute path). For local work point it at a throwaway file and seed it by `StatsStore.ingest()` with the test fixtures; never at production data.
+- The app selects `BLOCKFIELD_DATABASE_URL` before `BLOCKFIELD_STATS_DB` (absolute path). For local work use an isolated test database or a throwaway SQLite file, seeded by `StatsStore.ingest()` with the test fixtures; never production data.
 
 ## Verification and remaining integration
 
-`pnpm install --frozen-lockfile && pnpm test && npm run build`. Tests cover replay/conflict, transactional rollback, restarts on disk, both authorization boundaries, streamed limits, non-gameplay rejection, duplicate participants, stable paging, zero deaths, filters, name changes, round/campaign double counting, season carry-over and boundaries, late results, season-specific API MMR and the v1→v3 / v2→v3 migrations. Run the producer/API end-to-end check from the companion mod PR before merging both.
+`pnpm install --frozen-lockfile && pnpm check && pnpm build`. Tests cover replay/conflict, transactional rollback, restarts on disk, both authorization boundaries, streamed limits, non-gameplay rejection, duplicate participants, stable paging, zero deaths, filters, name changes, round/campaign double counting, season carry-over and boundaries, late results, season-specific API MMR and the v1→v3 / v2→v3 migrations. Run the producer/API end-to-end check from the companion mod PR before merging both.
 
 Local review: submit the test fixture with a configured producer key, replay it, verify exactly one battle; submit a campaign summary, verify counters are unchanged; stop Minecraft, refresh leaderboard/account, and verify history still loads. Invalid/missing DB must show unavailable, not zero stats. Check layout at 360px and desktop, keyboard navigation, long display names and logout during a slow request.
 

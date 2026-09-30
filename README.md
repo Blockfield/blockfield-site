@@ -3,6 +3,8 @@
 Сайт [blockfield.pro](https://blockfield.pro): загрузка лаунчера, аккаунты, игровые комнаты и статистика. Astro в режиме SSR (`@astrojs/node`, standalone), образ `ghcr.io/blockfield/blockfield-site`.
 Репозиторий `Blockfield/blockfield-site` (до 2026-09-27 — `netherg-io/blockfield-web`; старый адрес GitHub перенаправляет).
 
+Карта репозиториев и контрактов: [ARCHITECTURE](https://github.com/Blockfield/blockfield-workspace/blob/main/docs/ARCHITECTURE.md).
+
 Общие 404/500 и другие страницы ошибок — в [blockfield-errors](https://github.com/Blockfield/blockfield-errors).
 
 ```bash
@@ -11,6 +13,11 @@ pnpm dev           # http://localhost:4321
 pnpm build
 pnpm start
 ```
+
+На Linux агент запускает свой экземпляр через `agent-process` после проверки порта
+и владельца существующего процесса. Для Astro 7 передайте `ASTRO_DEV_BACKGROUND=1`
+в окружение команды: это отключает автоматическое отделение agent-сервера от
+зарегистрированной группы процессов. Остановка — по ID в `agent-process`.
 
 ## Почему SSR
 
@@ -73,10 +80,11 @@ GitHub, а релиз меняется редко — так что почти �
 
 ## Игровые комнаты
 
-`GET /api/rooms` получает комнаты через Minecraft Server List Ping. Нужен серверный мод
-с полем `blockfield` в ответе. По умолчанию используется `play.blockfield.pro:25565`;
-для другого окружения задайте серверу Astro `BLOCKFIELD_SERVER_HOST` и `BLOCKFIELD_SERVER_PORT`.
-Порт задаётся только через окружение, посетитель сайта не может изменить цель запроса.
+`GET /api/rooms` получает комнаты через Minecraft Server List Ping внутреннего игрового сервера
+с полем `blockfield` в ответе. За Velocity задайте Astro `BLOCKFIELD_SERVER_HOST` и
+`BLOCKFIELD_SERVER_PORT`: публичный прокси не передаёт этот снимок. Состояние публичного лобби
+и число игроков опрашиваются отдельно через `BLOCKFIELD_LOBBY_HOST` и `BLOCKFIELD_LOBBY_PORT`.
+Обе цели по умолчанию — `play.blockfield.pro:25565`; посетитель сайта не может их изменить.
 Снимки старше 30 секунд отклоняются; запрос ограничен 4 секундами и 1 МиБ ответа.
 При сбое старые кнопки входа убираются, повторная проверка выполняется автоматически.
 

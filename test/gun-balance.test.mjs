@@ -1,0 +1,375 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  mergeGunValues,
+  readGunBalance,
+  validateGunCatalog,
+  validateGunOverrides,
+} from '../src/lib/gun-balance.ts'
+import { handleAdmin, readSettings, saveSettings } from '../src/lib/admin.ts'
+import { database } from './storage.mjs'
+
+const object = (fields, nullable = false) => ({ type: 'object', nullable, fields })
+const number = (min, max) => ({ type: 'number', nullable: false, min, max })
+const enumString = (values) => ({ type: 'string', nullable: false, values })
+const array = (items, nullable = false) => ({ type: 'array', nullable, items })
+const fixture = () => {
+  const defaults = {
+    draw_time: 0.32,
+    rpm: 1220,
+    ammo: 'tacz:9mm',
+    bullet: { damage: 8, ignite: false, extra_damage: null },
+    inaccuracy: { stand: 1, aim: 0.2 },
+    recoil: { pitch: [{ time: 0, value: [0, 1] }] },
+    fire_mode: ['semi'],
+    allow_attachment_types: ['scope', null],
+    script_param: { mode: 'old', AIM: 7 },
+    future_field: 3,
+    legacy_field: { AIM: 3 },
+  }
+  return {
+    schema: 1,
+    revision: 4,
+    fields: object({
+      draw_time: number(0, 60),
+      rpm: { type: 'integer', nullable: false, min: 1, max: 1200 },
+      ammo: { type: 'resource', nullable: false },
+      bullet: object({
+        damage: number(0, 10000),
+        ignite: {
+          ...object({
+            entity: { type: 'boolean', nullable: false },
+            block: { type: 'boolean', nullable: false },
+          }),
+          acceptsBoolean: true,
+        },
+        extra_damage: object(
+          {
+            damage_adjust: array(
+              object({
+                distance: { ...number(0, 10000), acceptsInfinite: true },
+                damage: number(0, 10000),
+              }),
+            ),
+          },
+          true,
+        ),
+      }),
+      inaccuracy: {
+        type: 'map',
+        nullable: true,
+        keys: enumString(['stand', 'aim']),
+        items: number(0, 10000),
+      },
+      recoil: object({
+        pitch: array(object({ time: number(0, 60), value: array(number(-180, 180)) }), true),
+      }),
+      fire_mode: array(enumString(['auto', 'semi', 'burst'])),
+      allow_attachment_types: array(enumString(['scope', 'stock', 'muzzle'])),
+      script_param: { type: 'json', nullable: true },
+      future_field: number(0, 10),
+    }),
+    guns: ['pistol', 'pistol_alias'].map((name) => ({
+      id: `test:${name}`,
+      data: 'test:pistol_data',
+      name: 'gun.test.pistol.name',
+      type: 'pistol',
+      defaults: structuredClone(defaults),
+      effective: { ...structuredClone(defaults), draw_time: 0.8 },
+      warnings: ['Original rpm is outside edit bounds.'],
+    })),
+  }
+}
+const temp = (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'bf-gun-balance-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  return directory
+}
+const rejected = (action, code = 400) =>
+  assert.throws(action, (error) => error instanceof Response && error.status === code)
+const writeCatalog = (directory, catalog = fixture()) =>
+  writeFileSync(join(directory, 'gun-balance.json'), JSON.stringify(catalog))
+
+test('recursive fields come from metadata; legacy defaults reset without being rewritten', () => {
+  const catalog = validateGunCatalog(fixture()),
+    before = structuredClone(catalog)
+  const overrides = validateGunOverrides(
+    {
+      'test:pistol': {
+        draw_time: 0.32,
+        rpm: 1220,
+        bullet: {
+          damage: 9,
+          ignite: { entity: true },
+          extra_damage: { damage_adjust: [{ distance: 'infinite', damage: 4 }] },
+        },
+        inaccuracy: { aim: 0.5 },
+        recoil: { pitch: [{ time: 0, value: [-10, 20] }] },
+        script_param: { AIM: 7, nested: { steps: [1, true, null] } },
+        future_field: 5,
+        legacy_field: { AIM: 3 },
+        allow_attachment_types: ['scope', null],
+      },
+    },
+    catalog,
+  )
+  assert.deepEqual(overrides, {
+    'test:pistol': {
+      bullet: {
+        damage: 9,
+        ignite: { entity: true },
+        extra_damage: { damage_adjust: [{ distance: 'infinite', damage: 4 }] },
+      },
+      inaccuracy: { aim: 0.5 },
+      recoil: { pitch: [{ time: 0, value: [-10, 20] }] },
+      script_param: { nested: { steps: [1, true, null] } },
+      future_field: 5,
+    },
+  })
+  assert.deepEqual(catalog, before)
+  assert.deepEqual(validateGunOverrides({ 'test:pistol': catalog.guns[0].defaults }, catalog), {})
+  assert.deepEqual(validateGunOverrides({}, catalog), {})
+  assert.deepEqual(validateGunOverrides({ 'test:pistol': { inaccuracy: null } }, catalog), {
+    'test:pistol': { inaccuracy: null },
+  })
+  assert.deepEqual(mergeGunValues(catalog.guns[0].defaults, overrides['test:pistol']).inaccuracy, {
+    stand: 1,
+    aim: 0.5,
+  })
+})
+
+test('changed nested data rejects unknown fields, wrong types, nonfinite values and bounds', () => {
+  const catalog = validateGunCatalog(fixture())
+  for (const override of [
+    { draw_time: '0.8' },
+    { rpm: 1221 },
+    { rpm: 3.5 },
+    { draw_time: Infinity },
+    { bullet: { damage: NaN } },
+    { bullet: { ignite: 1 } },
+    { bullet: null },
+    { bullet: { invented: 1 } },
+    { inaccuracy: { unknown: 1 } },
+    { recoil: { pitch: [{ value: [-181, 1] }] } },
+    { fire_mode: ['unknown'] },
+    { ammo: 'bad ID' },
+    { future_field: -1 },
+    { legacy_field: { AIM: 4 } },
+    { allow_attachment_types: ['stock', null] },
+    { script_param: { steps: Array(257).fill(1) } },
+  ])
+    rejected(() => validateGunOverrides({ 'test:pistol': override }, catalog))
+  rejected(() => validateGunOverrides({ 'test:missing': {} }, catalog))
+  rejected(() => validateGunOverrides({ 'test:pistol': null }, catalog))
+  rejected(() => validateGunOverrides(null, catalog))
+})
+
+test('aliases sharing data accept matching effective changes and reject contradictory changes atomically', () => {
+  const catalog = validateGunCatalog(fixture())
+  assert.deepEqual(
+    validateGunOverrides(
+      {
+        'test:pistol': { inaccuracy: { AIM: 0.5 } },
+        'test:pistol_alias': { inaccuracy: { aim: 0.5 } },
+      },
+      catalog,
+    ),
+    {
+      'test:pistol': { inaccuracy: { aim: 0.5 } },
+      'test:pistol_alias': { inaccuracy: { aim: 0.5 } },
+    },
+  )
+  rejected(() =>
+    validateGunOverrides({ 'test:pistol': { inaccuracy: { AIM: 0.5, aim: 0.7 } } }, catalog),
+  )
+  assert.deepEqual(
+    validateGunOverrides(
+      {
+        'test:pistol': { bullet: { damage: 9 } },
+        'test:pistol_alias': { bullet: { damage: 9 }, rpm: 1220 },
+      },
+      catalog,
+    ),
+    {
+      'test:pistol': { bullet: { damage: 9 } },
+      'test:pistol_alias': { bullet: { damage: 9 } },
+    },
+  )
+  rejected(() =>
+    validateGunOverrides({ 'test:pistol': { draw_time: 0.8 }, 'test:pistol_alias': {} }, catalog),
+  )
+  rejected(() =>
+    validateGunOverrides(
+      { 'test:pistol': { bullet: { damage: 9 } }, 'test:pistol_alias': { bullet: { damage: 10 } } },
+      catalog,
+    ),
+  )
+})
+
+test('catalog reader fails closed for absent/malformed schema and retains native defaults only', (t) => {
+  const directory = temp(t)
+  assert.deepEqual(Object.keys(readGunBalance(directory)).sort(), ['available', 'error'])
+  writeFileSync(join(directory, 'gun-balance.json'), '{broken')
+  assert.equal(readGunBalance(directory).available, false)
+  for (const mutate of [
+    (catalog) => {
+      catalog.schema = 2
+    },
+    (catalog) => {
+      catalog.fields.fields.draw_time.min = NaN
+    },
+    (catalog) => {
+      catalog.fields.fields.inaccuracy.keys = number(0, 10)
+    },
+    (catalog) => {
+      catalog.guns[1].id = catalog.guns[0].id
+    },
+    (catalog) => {
+      catalog.guns[0].data = 'invalid'
+    },
+    (catalog) => {
+      delete catalog.guns[0].defaults.draw_time
+    },
+    (catalog) => {
+      catalog.guns[0].effective.draw_time = null
+    },
+  ]) {
+    const catalog = fixture()
+    mutate(catalog)
+    writeCatalog(directory, catalog)
+    assert.equal(readGunBalance(directory).available, false)
+  }
+  writeCatalog(directory)
+  assert.equal(readGunBalance(directory).available, true)
+  writeFileSync(join(directory, 'gun-balance.json'), ' '.repeat(8 * 1024 * 1024 + 1))
+  assert.equal(readGunBalance(directory).available, false)
+})
+
+test('balance saves preserve unrelated sections, refuse stale/invalid writes and reset by omission', (t) => {
+  const directory = temp(t)
+  writeCatalog(directory)
+  const current = {
+    schema: 1,
+    revision: 9,
+    lobby: { pvpEnabled: false, pvpCooldownSeconds: 40 },
+    parcool: { allowedActions: ['FastRun'] },
+    custom: { untouched: true },
+    gunBalance: { 'test:pistol': { draw_time: 0.8 } },
+  }
+  const settingsFile = join(directory, 'settings.json')
+  writeFileSync(settingsFile, JSON.stringify(current))
+  const saved = saveSettings(
+    directory,
+    { expectedRevision: 9, gunBalance: { 'test:pistol': { bullet: { damage: 9 } } } },
+    'Adm',
+    true,
+  )
+  assert.deepEqual(saved.lobby, current.lobby)
+  assert.deepEqual(saved.parcool, current.parcool)
+  assert.deepEqual(saved.custom, current.custom)
+  assert.equal(saved.revision, 10)
+  assert.equal(saved.updatedBy, 'Adm')
+  const before = readFileSync(settingsFile, 'utf8')
+  rejected(() => saveSettings(directory, { expectedRevision: 9, gunBalance: {} }, 'Adm', true), 409)
+  rejected(() =>
+    saveSettings(
+      directory,
+      { expectedRevision: 10, gunBalance: { 'test:pistol': { draw_time: -1 } } },
+      'Adm',
+      true,
+    ),
+  )
+  rejected(() => saveSettings(directory, { expectedRevision: 10, gunBalance: null }, 'Adm', true))
+  rejected(() => saveSettings(directory, null, 'Adm', true))
+  assert.equal(readFileSync(settingsFile, 'utf8'), before)
+  const general = saveSettings(
+    directory,
+    { expectedRevision: 10, lobby: { pvpEnabled: true } },
+    'Adm',
+  )
+  assert.deepEqual(general.gunBalance, saved.gunBalance)
+  const reset = saveSettings(directory, { expectedRevision: 11 }, 'Adm', true)
+  assert.equal(Object.hasOwn(reset, 'gunBalance'), false)
+  assert.deepEqual(reset.lobby, general.lobby)
+  assert.equal(readSettings(directory).settings.revision, 12)
+  assert.deepEqual(readdirSync(directory).sort(), ['gun-balance.json', 'settings.json'])
+  rmSync(join(directory, 'gun-balance.json'))
+  rejected(
+    () => saveSettings(directory, { expectedRevision: 12, gunBalance: {} }, 'Adm', true),
+    503,
+  )
+})
+
+test('balance API requires admin/owner, GET never writes, and applied status remains server authoritative', async (t) => {
+  const directory = temp(t),
+    env = { ...process.env },
+    store = await database(t)
+  t.after(() => {
+    for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key]
+    Object.assign(process.env, env)
+  })
+  const owner = '1'.repeat(32),
+    admin = '2'.repeat(32),
+    moderator = '3'.repeat(32)
+  Object.assign(process.env, {
+    NODE_ENV: 'test',
+    BLOCKFIELD_OWNER_UUIDS: owner,
+    BLOCKFIELD_SETTINGS_DIR: directory,
+  })
+  await store.setStaff(admin, 'Adm', 'admin', 'seed')
+  await store.setStaff(moderator, 'Mod', 'moderator', 'seed')
+  writeCatalog(directory)
+  writeFileSync(
+    join(directory, 'applied.json'),
+    JSON.stringify({ revision: 1, gunBalance: { accepted: false, error: 'server validation' } }),
+  )
+  const call = async (id, method, path, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = `${id}:Tester`
+    const url = new URL(`http://site/api/admin/${path}`)
+    const request = new Request(url, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, store).catch(
+      (error) => error,
+    )
+  }
+  const files = readdirSync(directory)
+  for (const id of [owner, admin]) {
+    const response = await call(id, 'GET', 'gun-balance')
+    assert.equal(response.status, 200)
+    assert.equal((await response.json()).available, true)
+  }
+  assert.equal((await call(moderator, 'GET', 'gun-balance')).status, 403)
+  assert.deepEqual(readdirSync(directory), files)
+  assert.equal((await store.db.prepare('SELECT count(*) AS n FROM admin_audit').get()).n, 0)
+  assert.equal(
+    (await call(moderator, 'PUT', 'gun-balance', { expectedRevision: 0, gunBalance: {} })).status,
+    403,
+  )
+  const response = await call(admin, 'PUT', 'gun-balance', {
+    expectedRevision: 0,
+    gunBalance: { 'test:pistol': { draw_time: 0.8 } },
+  })
+  assert.equal(response.status, 200)
+  assert.equal((await response.json()).settings.revision, 1)
+  const view = await (await call(admin, 'GET', 'settings')).json()
+  assert.equal(view.gunBalance.available, true)
+  assert.equal(view.applied.gunBalance.accepted, false)
+  assert.equal(
+    (await call(admin, 'PUT', 'gun-balance', { expectedRevision: 0, gunBalance: {} })).status,
+    409,
+  )
+  rmSync(join(directory, 'gun-balance.json'))
+  const unavailable = await (await call(admin, 'GET', 'gun-balance')).json()
+  assert.equal(unavailable.available, false)
+  assert.equal(Object.hasOwn(unavailable, 'catalog'), false)
+  assert.equal(
+    (await call(owner, 'PUT', 'gun-balance', { expectedRevision: 1, gunBalance: {} })).status,
+    503,
+  )
+})

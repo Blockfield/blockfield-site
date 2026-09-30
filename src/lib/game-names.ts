@@ -1,6 +1,6 @@
 /**
  * Display names for game ids. The site has no access to the game config at runtime, so this mirrors
- * blockfield-modpack/server/lobby/blockfield/{classes,campaigns,maps,modes}/*.json.
+ * blockfield-server/server/lobby/blockfield/{classes,campaigns,maps,modes}/*.json.
  * ponytail: a hand-kept copy; unknown ids fall back to a neutral label, add rows when the modpack adds content.
  */
 export const CLASS_NAMES: Record<string, string> = {
@@ -11,6 +11,21 @@ export const CLASS_NAMES: Record<string, string> = {
   drone: 'Оператор FPV',
 }
 export const CLASS_COSTS: Record<string, number> = { tech: 600, sniper: 800, drone: 1200 }
+export const KIT_GUNS = new Set([
+  'elitex:ak47',
+  'elitex:akx105',
+  'elitex:benelli_super',
+  'elitex:m4_sopmod',
+  'elitex:ro635v3',
+  'tacz:ai_awp',
+  'tacz:deagle',
+  'tacz:glock_17',
+  'tacz:hk416d',
+  'tacz:m249',
+  'tacz:m700',
+  'tacz:sks_tactical',
+  'tacz:spr15hb',
+])
 /** Where workshop access applies: the hub plus every map (the mod's scope ids, the controller's MAP_IDS). */
 export const WORKSHOP_HUB = 'hub'
 export const MAP_NAMES: Record<string, string> = {
@@ -189,6 +204,8 @@ export const BALANCE_LABELS: Record<string, string> = Object.fromEntries(
 
 export const WORKSHOP_PLACES: Record<string, string> = {
   [WORKSHOP_HUB]: 'Хаб мастерской',
+  lobby: 'Игровое лобби',
+  limbo: 'Лобби прокси',
   ...MAP_NAMES,
 }
 

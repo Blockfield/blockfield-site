@@ -2,6 +2,8 @@ import type { APIContext } from 'astro'
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import {
   openSync,
+  constants,
+  fstatSync,
   readSync,
   readFileSync,
   closeSync,
@@ -17,6 +19,7 @@ import type { AstroCookies } from 'astro'
 import { account, drasl, fail, nickname, readJson, session, token } from './account.ts'
 import { rcon } from './rcon.ts'
 import { currentRooms, roomId } from './rooms.ts'
+import { readGunBalance, validateGunOverrides, type GunBalanceCatalog } from './gun-balance.ts'
 import {
   resolveNames,
   seasons,
@@ -69,7 +72,10 @@ const dir = (name: string, fallback: string) => process.env[name] || fallback
 const adminDir = () => dir('BLOCKFIELD_ADMIN_DIR', '/workshop-admin')
 const inboxDir = () => dir('BLOCKFIELD_INBOX_DIR', '/workshop-inbox')
 const settingsDir = () => dir('BLOCKFIELD_SETTINGS_DIR', '/blockfield-admin')
+const packagesDir = () => dir('BLOCKFIELD_MAP_PACKAGES_DIR', join(adminDir(), 'packages'))
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const COPY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const VERSION_DIGEST = /^[0-9a-f]{64}$/
 const bad = (message: string) => fail(400, message)
 
 /** Player UUID as Drasl/Minecraft shows it, with or without dashes, to the workshop key: 32 lowercase hex digits. */
@@ -160,11 +166,12 @@ function readText(path: string, max = 1024): string | null {
 function readFile(path: string, max = 65_536): any {
   let fd: number
   try {
-    fd = openSync(path, 'r')
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK)
   } catch {
     return null
   }
   try {
+    if (!fstatSync(fd).isFile()) return null
     const buffer = Buffer.alloc(max + 1),
       size = readSync(fd, buffer, 0, buffer.length, 0)
     return size > max ? null : JSON.parse(buffer.subarray(0, size).toString())
@@ -173,6 +180,213 @@ function readFile(path: string, max = 65_536): any {
   } finally {
     closeSync(fd)
   }
+}
+
+export type MapHead = {
+  schema: 1
+  mapId: string
+  kind: 'arena' | 'lobby' | 'limbo'
+  versionDigest: string
+  generation: number
+  bundle: string
+  activatedAt: number
+  activatedBy: Record<string, unknown>
+}
+export type MapVersion = {
+  schema: 1
+  mapId: string
+  kind: MapHead['kind']
+  versionDigest: string
+  parent: string | null
+  createdAt: number
+  author: Record<string, unknown>
+  source: string
+  sourceId?: string | null
+  note: string
+  worldDigest: string
+  changed: string[]
+  deleted: string[]
+  fileCount: number
+}
+export type MapCatalogEntry = {
+  mapId: string
+  kind: MapHead['kind']
+  mapJson: Record<string, unknown>
+  head: MapHead | null
+  versions: MapVersion[]
+}
+export type MapSession = {
+  schema: 1
+  id: string
+  maps: string[] | null
+  startedAt?: number
+  startedBy?: Record<string, unknown>
+}
+export type MapCatalogAvailability =
+  | { available: true; maps: MapCatalogEntry[]; session?: MapSession }
+  | { available: false; error: string }
+const mapKind = (value: unknown) => ['arena', 'lobby', 'limbo'].includes(value as string)
+const digest = (value: unknown): value is string =>
+  typeof value === 'string' && VERSION_DIGEST.test(value)
+const timestamp = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0
+const mapId = (value: unknown): value is string =>
+  typeof value === 'string' && /^[a-z0-9_]{1,32}$/.test(value)
+function mapJsonSafe(value: unknown, depth = 0): boolean {
+  if (depth > 16) return false
+  if (value === null || typeof value === 'boolean') return true
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (typeof value === 'string') return value.length <= 65_536
+  if (!plain(value) && !Array.isArray(value)) return false
+  return (
+    Object.keys(value).length <= 10_000 &&
+    Object.values(value).every((child) => mapJsonSafe(child, depth + 1))
+  )
+}
+
+/** The controller catalog supplies available IDs and immutable history; static labels never invent map versions. */
+export function readMapCatalog(directory: string): MapCatalogAvailability {
+  const value = readFile(join(directory, 'maps.json'), 16 * 1024 * 1024)
+  const unavailable: MapCatalogAvailability = {
+    available: false,
+    error: 'Каталог карт недоступен: контроллер не передал корректные данные.',
+  }
+  if (
+    !plain(value) ||
+    value.schema !== 1 ||
+    !Array.isArray(value.maps) ||
+    value.maps.length > 1024 ||
+    !mapJsonSafe(value)
+  )
+    return unavailable
+  const ids = new Set<string>()
+  for (const entry of value.maps) {
+    if (
+      !plain(entry) ||
+      !mapId(entry.mapId) ||
+      ids.has(entry.mapId) ||
+      !mapKind(entry.kind) ||
+      !plain(entry.mapJson) ||
+      entry.mapJson.id !== entry.mapId ||
+      (entry.mapJson.kind ?? 'arena') !== entry.kind ||
+      !Array.isArray(entry.versions) ||
+      entry.versions.length > 10_000
+    )
+      return unavailable
+    ids.add(entry.mapId)
+    const versions = new Set<string>()
+    for (const version of entry.versions) {
+      if (
+        !plain(version) ||
+        version.schema !== 1 ||
+        version.mapId !== entry.mapId ||
+        !mapKind(version.kind) ||
+        !digest(version.versionDigest) ||
+        versions.has(version.versionDigest) ||
+        (version.parent !== null && !digest(version.parent)) ||
+        !timestamp(version.createdAt) ||
+        !plain(version.author) ||
+        typeof version.source !== 'string' ||
+        !version.source ||
+        version.source.length > 128 ||
+        (version.sourceId !== undefined &&
+          version.sourceId !== null &&
+          (typeof version.sourceId !== 'string' || version.sourceId.length > 256)) ||
+        typeof version.note !== 'string' ||
+        version.note.length > 4096 ||
+        !digest(version.worldDigest) ||
+        !Number.isSafeInteger(version.fileCount) ||
+        (version.fileCount as number) < 1 ||
+        (version.fileCount as number) > 10_000 ||
+        Object.hasOwn(version, 'files') ||
+        !['changed', 'deleted'].every(
+          (key) =>
+            Array.isArray(version[key]) &&
+            (version[key] as unknown[]).every(
+              (name) => typeof name === 'string' && name.length <= 256,
+            ),
+        )
+      )
+        return unavailable
+      versions.add(version.versionDigest)
+    }
+    if (
+      entry.versions.some(
+        (version: any) =>
+          version.parent !== null &&
+          (!versions.has(version.parent) || version.parent === version.versionDigest),
+      )
+    )
+      return unavailable
+    const head = entry.head
+    if (
+      head !== null &&
+      (!plain(head) ||
+        head.schema !== 1 ||
+        head.mapId !== entry.mapId ||
+        head.kind !== entry.kind ||
+        !digest(head.versionDigest) ||
+        !versions.has(head.versionDigest) ||
+        !Number.isSafeInteger(head.generation) ||
+        (head.generation as number) < 1 ||
+        typeof head.bundle !== 'string' ||
+        !head.bundle ||
+        head.bundle.length > 4096 ||
+        !timestamp(head.activatedAt) ||
+        !plain(head.activatedBy))
+    )
+      return unavailable
+  }
+  const session = readFile(join(directory, 'session.json')),
+    status = readFile(join(directory, 'status.json'))
+  const verified =
+    plain(session) &&
+    session.schema === 1 &&
+    typeof session.id === 'string' &&
+    COPY_UUID.test(session.id) &&
+    (session.maps === null ||
+      (Array.isArray(session.maps) &&
+        session.maps.length > 0 &&
+        new Set(session.maps).size === session.maps.length &&
+        session.maps.every((id: unknown) => typeof id === 'string' && ids.has(id)))) &&
+    mapJsonSafe(session) &&
+    (session.startedAt === undefined || timestamp(session.startedAt)) &&
+    (session.startedBy === undefined || plain(session.startedBy)) &&
+    plain(status) &&
+    status.schema === 1 &&
+    status.phase === 'workshop' &&
+    plain(status.desired) &&
+    status.desired.profile === 'workshop' &&
+    status.desired.session === session.id
+  return {
+    available: true,
+    maps: value.maps as MapCatalogEntry[],
+    ...(verified ? { session: session as MapSession } : {}),
+  }
+}
+function requiredMapCatalog() {
+  const catalog = readMapCatalog(adminDir())
+  if (!catalog.available) throw fail(503, catalog.error)
+  return catalog
+}
+function existingCandidate(id: unknown) {
+  if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) throw bad('Неверный ID кандидата.')
+  const candidates = readFile(join(adminDir(), 'candidates.json'), 16 * 1024 * 1024)
+  if (!plain(candidates) || candidates.schema !== 1 || !Array.isArray(candidates.candidates))
+    throw fail(503, 'Каталог кандидатов недоступен.')
+  const candidate = candidates.candidates.find((value: any) => plain(value) && value.id === id)
+  if (!candidate || !mapId(candidate.mapId)) throw fail(404, 'Кандидат не найден.')
+  return candidate
+}
+function expectedMapHead(body: any, entry: MapCatalogEntry) {
+  if (
+    !plain(body) ||
+    !Object.hasOwn(body, 'expectedHead') ||
+    (body.expectedHead !== null && !digest(body.expectedHead))
+  )
+    throw bad('Укажите текущую версию карты или null, если она ещё не опубликована.')
+  if (body.expectedHead !== (entry.head?.versionDigest ?? null))
+    throw fail(409, 'Версия карты уже изменилась. Обновите историю.')
+  return body.expectedHead as string | null
 }
 /** Readers (controller, game server) must never see a half-written file: write a dot-file in the same directory, then rename. */
 export function writeAtomic(directory: string, name: string, value: unknown) {
@@ -234,7 +448,12 @@ export function workshopMembers(
 }
 
 /** Validates a UI request and writes it to the controller inbox. Returns the request id. */
-export function writeRequest(directory: string, actor: Actor, body: any): string {
+export function writeRequest(
+  directory: string,
+  actor: Actor,
+  body: any,
+  knownMaps = new Set(Object.keys(MAP_NAMES)),
+): string {
   const base = {
     schema: 1,
     id: randomUUID(),
@@ -316,20 +535,56 @@ export function writeRequest(directory: string, actor: Actor, body: any): string
         ...(maps ? { maps } : {}),
       })),
     }
+  } else if (body?.kind === 'limbo-export') {
+    if (!digest(body.versionDigest)) throw bad('Неизвестная версия лобби прокси.')
+    request = { ...base, versionDigest: body.versionDigest }
   } else if (body?.kind === 'candidate' || body?.kind === 'rollback') {
-    // Only real maps: the hub is an access scope, not something that is published.
-    if (typeof body.mapId !== 'string' || !(body.mapId in MAP_NAMES))
+    if (typeof body.mapId !== 'string' || !knownMaps.has(body.mapId))
       throw bad('Неизвестная карта.')
-    request = { ...base, mapId: body.mapId }
-  } else if (body?.kind === 'publish' || body?.kind === 'reject') {
+    if (body.kind === 'candidate') {
+      if (
+        body.workingCopyId !== undefined &&
+        (typeof body.workingCopyId !== 'string' || !COPY_UUID.test(body.workingCopyId))
+      )
+        throw bad('Неверная рабочая копия карты.')
+      request = {
+        ...base,
+        mapId: body.mapId,
+        ...(body.workingCopyId === undefined ? {} : { workingCopyId: body.workingCopyId }),
+      }
+    } else {
+      if (
+        !digest(body.versionDigest) ||
+        !Object.hasOwn(body, 'expectedHead') ||
+        (body.expectedHead !== null && !digest(body.expectedHead))
+      )
+        throw bad('Откат требует выбранную версию и текущую вершину истории.')
+      request = {
+        ...base,
+        mapId: body.mapId,
+        versionDigest: body.versionDigest,
+        expectedHead: body.expectedHead,
+      }
+    }
+  } else if (body?.kind === 'publish' || body?.kind === 'reject' || body?.kind === 'export') {
     if (typeof body.candidateId !== 'string' || !/^[0-9a-f]{32}$/.test(body.candidateId))
       throw bad('Неизвестная версия карты.')
     if (body.kind === 'publish' && body.force !== undefined && typeof body.force !== 'boolean')
       throw bad('Некорректный запрос.')
+    if (
+      body.kind === 'publish' &&
+      Object.hasOwn(body, 'expectedHead') &&
+      body.expectedHead !== null &&
+      !digest(body.expectedHead)
+    )
+      throw bad('Неверная текущая версия карты.')
     request = {
       ...base,
       candidateId: body.candidateId,
       ...(body.kind === 'publish' && body.force ? { force: true } : {}),
+      ...(body.kind === 'publish' && Object.hasOwn(body, 'expectedHead')
+        ? { expectedHead: body.expectedHead }
+        : {}),
     }
   } else throw bad('Неизвестный тип запроса.')
   writeAtomic(directory, `${base.id}.json`, request)
@@ -390,8 +645,8 @@ function section(value: unknown, rules: Record<string, (v: unknown) => boolean>,
     throw bad(`Настройки: неверный раздел «${name}».`)
   return value
 }
-/** Settings sections are optional and replace the stored ones as a whole; an absent key means the server default. */
-export function validateSettings(body: any) {
+/** Present sections replace stored ones; saveSettings preserves gunBalance when the general form omits it. */
+export function validateSettings(body: any, catalog?: GunBalanceCatalog) {
   if (
     !plain(body) ||
     Object.keys(body).some(
@@ -405,6 +660,7 @@ export function validateSettings(body: any) {
           'classCosts',
           'campaignBalance',
           'parcool',
+          'gunBalance',
         ].includes(k),
     )
   )
@@ -487,27 +743,57 @@ export function validateSettings(body: any) {
       throw bad('Настройки: неверный список действий паркура.')
     out.parcool = { allowedActions: list }
   }
+  if (Object.hasOwn(body, 'gunBalance')) {
+    if (!catalog) throw fail(503, 'Каталог баланса оружия недоступен.')
+    out.gunBalance = validateGunOverrides(body.gunBalance, catalog)
+  }
   return out
 }
 export function readSettings(directory: string) {
   return {
-    settings: readFile(join(directory, 'settings.json')) ?? { schema: 1, revision: 0 },
+    settings: readFile(join(directory, 'settings.json'), 1_048_576) ?? { schema: 1, revision: 0 },
     applied: readFile(join(directory, 'applied.json')),
   }
 }
-export function saveSettings(directory: string, body: any, actorName: string) {
-  const values = validateSettings(body),
-    current = readSettings(directory).settings
+export function saveSettings(
+  directory: string,
+  body: any,
+  actorName: string,
+  gunBalanceOnly = false,
+) {
+  if (!plain(body)) throw bad('Некорректные настройки.')
+  const current = readSettings(directory).settings
   const revision = Number.isSafeInteger(current?.revision) ? current.revision : 0
   // ponytail: the read-compare-rename is synchronous, so it is atomic within this single site process; a second writer to the directory would need a lock file.
   if (body.expectedRevision !== revision)
     throw fail(409, 'Настройки уже изменил кто-то другой. Обновите страницу.')
+  const editingGuns = gunBalanceOnly || Object.hasOwn(body, 'gunBalance')
+  const availability = editingGuns ? readGunBalance(directory) : null
+  if (editingGuns && !availability?.available) throw fail(503, 'Каталог баланса оружия недоступен.')
+  const catalog = availability?.available ? availability.catalog : undefined
+  let values: Record<string, unknown>
+  if (gunBalanceOnly) {
+    if (Object.keys(body).some((key) => !['expectedRevision', 'gunBalance'].includes(key)))
+      throw bad('Некорректные настройки оружия.')
+    values = {
+      ...current,
+      gunBalance: validateGunOverrides(
+        Object.hasOwn(body, 'gunBalance') ? body.gunBalance : {},
+        catalog!,
+      ),
+    }
+  } else {
+    values = validateSettings(body, catalog)
+    if (!Object.hasOwn(body, 'gunBalance') && Object.hasOwn(current, 'gunBalance'))
+      values.gunBalance = current.gunBalance
+  }
+  if (editingGuns && Object.keys(values.gunBalance as object).length === 0) delete values.gunBalance
   const settings = {
+    ...values,
     schema: 1,
     revision: revision + 1,
     updatedAt: Date.now(),
     updatedBy: actorName,
-    ...values,
   }
   writeAtomic(directory, 'settings.json', settings)
   return settings
@@ -717,6 +1003,7 @@ type Route = {
   permission: string
   handler: Handler
   audit?: (body: any, result: any) => { action: string; target?: string | null; detail?: unknown }
+  maxBody?: number
 }
 const page = (url: URL) => {
   const n = Number(url.searchParams.get('page') || '1')
@@ -836,13 +1123,34 @@ const routes: Record<string, Route> = {
   },
   'GET settings': {
     permission: 'settings',
-    handler: () => ({ ...readSettings(settingsDir()), balance: BALANCE }),
+    handler: () => ({
+      ...readSettings(settingsDir()),
+      balance: BALANCE,
+      gunBalance: readGunBalance(settingsDir()),
+    }),
   },
   'PUT settings': {
     permission: 'settings',
+    maxBody: 1_048_576,
     handler: ({ actor, body }) => ({ settings: saveSettings(settingsDir(), body, actor.name) }),
     audit: (body, result) => ({
       action: 'settings',
+      target: result?.settings ? `revision ${result.settings.revision}` : null,
+      detail: body,
+    }),
+  },
+  'GET gun-balance': {
+    permission: 'settings',
+    handler: () => readGunBalance(settingsDir()),
+  },
+  'PUT gun-balance': {
+    permission: 'settings',
+    maxBody: 1_048_576,
+    handler: ({ actor, body }) => ({
+      settings: saveSettings(settingsDir(), body, actor.name, true),
+    }),
+    audit: (body, result) => ({
+      action: 'gun-balance',
       target: result?.settings ? `revision ${result.settings.revision}` : null,
       detail: body,
     }),
@@ -851,19 +1159,28 @@ const routes: Record<string, Route> = {
   'GET candidates': {
     permission: 'view',
     handler: () =>
-      readFile(join(adminDir(), 'candidates.json')) ?? { schema: 1, candidates: [], backups: {} },
+      readFile(join(adminDir(), 'candidates.json'), 16 * 1024 * 1024) ?? {
+        schema: 1,
+        candidates: [],
+        backups: {},
+      },
+  },
+  'GET maps': {
+    permission: 'view',
+    handler: () => readMapCatalog(adminDir()),
   },
   'GET candidates/download': {
     permission: 'workshop',
     handler: ({ context }) => {
       const id = new URL(context.request.url).searchParams.get('id')
       if (!id || !/^[0-9a-f]{32}$/.test(id)) throw bad('Неверный ID кандидата.')
-      const candidate = readFile(join(adminDir(), 'candidates.json'))?.candidates?.find(
-        (c: any) => c.id === id && c.status === 'accepted',
-      )
+      const candidate = readFile(
+        join(adminDir(), 'candidates.json'),
+        16 * 1024 * 1024,
+      )?.candidates?.find((c: any) => c.id === id && c.status === 'accepted')
       if (!candidate || !/^[0-9a-f]{64}$/.test(candidate.sha256))
         throw fail(404, 'Принятый пакет не найден.')
-      const path = join(adminDir(), 'packages', candidate.sha256 + '.zip')
+      const path = join(packagesDir(), candidate.sha256 + '.zip')
       let size: number
       try {
         const stat = statSync(path)
@@ -885,24 +1202,69 @@ const routes: Record<string, Route> = {
   },
   'POST candidates/create': {
     permission: 'workshop',
-    handler: ({ actor, body }) => ({
-      id: writeRequest(inboxDir(), actor, { kind: 'candidate', mapId: body?.mapId }),
-    }),
+    handler: ({ actor, body }) => {
+      const catalog = requiredMapCatalog()
+      const entry = catalog.maps.find((map) => map.mapId === body?.mapId)
+      if (!entry) throw bad('Неизвестная карта.')
+      if (!catalog.session || !catalog.session.maps?.includes(entry.mapId))
+        throw fail(409, 'Для снимка карты нужна выбранная рабочая копия в действующей мастерской.')
+      return {
+        id: writeRequest(
+          inboxDir(),
+          actor,
+          {
+            kind: 'candidate',
+            mapId: entry.mapId,
+            workingCopyId: catalog.session.id,
+          },
+          new Set(catalog.maps.map((map) => map.mapId)),
+        ),
+      }
+    },
     audit: (body) => ({ action: 'workshop-candidate', target: body?.mapId ?? null }),
   },
   'POST candidates/publish': {
     permission: 'workshop',
-    handler: ({ actor, body }) => ({
-      id: writeRequest(inboxDir(), actor, {
-        kind: 'publish',
-        candidateId: body?.candidateId,
-        force: body?.force,
-      }),
-    }),
+    handler: ({ actor, body }) => {
+      const candidate = existingCandidate(body?.candidateId),
+        catalog = requiredMapCatalog()
+      const entry = catalog.maps.find((map) => map.mapId === candidate?.mapId)
+      if (!candidate || !entry) throw fail(404, 'Кандидат или карта не найдены.')
+      return {
+        id: writeRequest(inboxDir(), actor, {
+          kind: 'publish',
+          candidateId: body.candidateId,
+          force: body.force,
+          expectedHead: expectedMapHead(body, entry),
+        }),
+      }
+    },
     audit: (body) => ({
       action: 'workshop-publish',
       target: body?.mapId ?? null,
-      detail: { candidateId: body?.candidateId, force: body?.force === true },
+      detail: {
+        candidateId: body?.candidateId,
+        force: body?.force === true,
+        expectedHead: body?.expectedHead,
+      },
+    }),
+  },
+  'POST candidates/export': {
+    permission: 'workshop',
+    handler: ({ actor, body }) => {
+      const candidate = existingCandidate(body?.candidateId),
+        catalog = requiredMapCatalog()
+      if (
+        body?.mapId !== candidate.mapId ||
+        !catalog.maps.some((entry) => entry.mapId === candidate.mapId)
+      )
+        throw bad('Кандидат не принадлежит выбранной карте.')
+      return { id: writeRequest(inboxDir(), actor, { kind: 'export', candidateId: candidate.id }) }
+    },
+    audit: (body) => ({
+      action: 'workshop-export',
+      target: body?.mapId ?? null,
+      detail: { candidateId: body?.candidateId },
     }),
   },
   'POST candidates/reject': {
@@ -916,12 +1278,59 @@ const routes: Record<string, Route> = {
       detail: { candidateId: body?.candidateId },
     }),
   },
+  'POST maps/export-limbo': {
+    permission: 'workshop',
+    handler: ({ actor, body }) => {
+      const entry = requiredMapCatalog().maps.find((map) => map.mapId === 'limbo')
+      if (
+        entry?.kind !== 'limbo' ||
+        !digest(body?.versionDigest) ||
+        !entry.versions.some((version) => version.versionDigest === body.versionDigest)
+      )
+        throw bad('Выбранная версия отсутствует в истории лобби прокси.')
+      return {
+        id: writeRequest(inboxDir(), actor, {
+          kind: 'limbo-export',
+          versionDigest: body.versionDigest,
+        }),
+      }
+    },
+    audit: (body) => ({
+      action: 'workshop-limbo-export',
+      target: 'limbo',
+      detail: { versionDigest: body?.versionDigest },
+    }),
+  },
   'POST maps/rollback': {
     permission: 'workshop',
-    handler: ({ actor, body }) => ({
-      id: writeRequest(inboxDir(), actor, { kind: 'rollback', mapId: body?.mapId }),
+    handler: ({ actor, body }) => {
+      const catalog = requiredMapCatalog(),
+        entry = catalog.maps.find((map) => map.mapId === body?.mapId)
+      if (!entry) throw bad('Неизвестная карта.')
+      if (
+        !digest(body?.versionDigest) ||
+        !entry.versions.some((version) => version.versionDigest === body.versionDigest)
+      )
+        throw bad('Выбранная версия отсутствует в истории этой карты.')
+      return {
+        id: writeRequest(
+          inboxDir(),
+          actor,
+          {
+            kind: 'rollback',
+            mapId: entry.mapId,
+            versionDigest: body.versionDigest,
+            expectedHead: expectedMapHead(body, entry),
+          },
+          new Set(catalog.maps.map((map) => map.mapId)),
+        ),
+      }
+    },
+    audit: (body) => ({
+      action: 'workshop-rollback',
+      target: body?.mapId ?? null,
+      detail: { versionDigest: body?.versionDigest, expectedHead: body?.expectedHead },
     }),
-    audit: (body) => ({ action: 'workshop-rollback', target: body?.mapId ?? null }),
   },
   'GET staff': {
     permission: 'roles',
@@ -1148,6 +1557,7 @@ const routes: Record<string, Route> = {
     handler: async ({ store }) => ({ entries: await store.auditLog(200) }),
   },
 }
+routes['POST candidates/rollback'] = routes['POST maps/rollback']
 
 /**
  * `POST /api/workshop/access` from the workshop server (tablet «Разрешить/Запретить строить»): the same change as
@@ -1168,7 +1578,7 @@ function workshopKeyError(
 }
 
 /**
- * `POST /api/workshop/submit {actor, actorName, mapId}`: «Отправить на проверку» from the tablet. The actor must be
+ * `POST /api/workshop/submit {actor, actorName, mapId, workingCopyId}`: «Отправить на проверку» from the tablet. The actor must be
  * able to build on that map by the site's own records; the controller then snapshots it (inbox kind `candidate`).
  */
 export async function handleWorkshopSubmit(
@@ -1181,7 +1591,7 @@ export async function handleWorkshopSubmit(
   const body = await readJson(request, 4096)
   const actorId = playerId(body?.actor),
     mapId = body?.mapId
-  if (!actorId || typeof mapId !== 'string' || !(mapId in MAP_NAMES))
+  if (!actorId || typeof mapId !== 'string' || !/^[a-z0-9_]{1,32}$/.test(mapId))
     return fail(400, 'Некорректный запрос.')
   const store = storage ?? (await statsStore())
   const staff = await store.staff(),
@@ -1197,10 +1607,23 @@ export async function handleWorkshopSubmit(
   let error: string | null = null,
     id: string | null = null
   try {
+    const catalog = requiredMapCatalog()
+    if (!catalog.maps.some((entry) => entry.mapId === mapId)) throw bad('Неизвестная карта.')
     const builds =
       role !== null && (role !== 'builder' || row?.maps == null || row.maps.includes(mapId))
     if (!builds) throw fail(403, 'Нет права строить на этой карте.')
-    id = writeRequest(inboxDir(), actor, { kind: 'candidate', mapId })
+    if (
+      !catalog.session ||
+      !catalog.session.maps?.includes(mapId) ||
+      body.workingCopyId !== catalog.session.id
+    )
+      throw fail(409, 'Рабочая копия карты уже изменилась. Вернитесь в действующую мастерскую.')
+    id = writeRequest(
+      inboxDir(),
+      actor,
+      { kind: 'candidate', mapId, workingCopyId: catalog.session.id },
+      new Set(catalog.maps.map((entry) => entry.mapId)),
+    )
     return Response.json({ id }, { headers: noStore })
   } catch (thrown) {
     error =
@@ -1347,7 +1770,7 @@ export async function handleAdmin(
   let body: any, result: any
   try {
     if (!can(actor.role, route.permission)) throw fail(403, 'Недостаточно прав.')
-    if (method !== 'GET') body = await readJson(context.request, 65_536)
+    if (method !== 'GET') body = await readJson(context.request, route.maxBody ?? 65_536)
     result = await route.handler({ context, actor, store, body })
     if (method !== 'GET') await record(store, actor, route, body, result, null)
     return result instanceof Response ? result : Response.json(result, { headers: noStore })

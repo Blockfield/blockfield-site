@@ -1016,6 +1016,32 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
   await s.setStaffMaps(OTHER, ['fields'])
   const KEY = 'k'.repeat(40)
   writeFileSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'workshop.key'), KEY)
+  const workingCopyId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+  writeFileSync(
+    join(dirs.BLOCKFIELD_ADMIN_DIR, 'maps.json'),
+    JSON.stringify({
+      schema: 1,
+      maps: ['fields', 'konstaxa'].map((mapId) => ({
+        mapId,
+        kind: 'arena',
+        mapJson: { id: mapId },
+        head: null,
+        versions: [],
+      })),
+    }),
+  )
+  writeFileSync(
+    join(dirs.BLOCKFIELD_ADMIN_DIR, 'session.json'),
+    JSON.stringify({ schema: 1, id: workingCopyId, maps: ['fields', 'konstaxa'] }),
+  )
+  writeFileSync(
+    join(dirs.BLOCKFIELD_ADMIN_DIR, 'status.json'),
+    JSON.stringify({
+      schema: 1,
+      phase: 'workshop',
+      desired: { profile: 'workshop', session: workingCopyId },
+    }),
+  )
   const call = (body) =>
     handleWorkshopSubmit(
       new Request('http://site/api/workshop/submit', {
@@ -1031,7 +1057,19 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
     )
   assert.equal((await call({ actor: OTHER, mapId: 'konstaxa' })).status, 403, 'not his map')
   assert.equal((await call({ actor: OTHER, mapId: 'hub' })).status, 400, 'the hub is not a map')
-  const ok = await call({ actor: OTHER, actorName: 'Bob', mapId: 'fields' })
+  assert.equal(
+    (
+      await call({
+        actor: OTHER,
+        actorName: 'Bob',
+        mapId: 'fields',
+        workingCopyId: '00000000-0000-0000-0000-000000000000',
+      })
+    ).status,
+    409,
+    'stale working copy',
+  )
+  const ok = await call({ actor: OTHER, actorName: 'Bob', mapId: 'fields', workingCopyId })
   assert.equal(ok.status, 200)
   const files = readdirSync(dirs.BLOCKFIELD_INBOX_DIR).filter((f) => f.endsWith('.json'))
   assert.equal(files.length, 1)
@@ -1040,6 +1078,7 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
     [request.kind, request.mapId, request.actor.name],
     ['candidate', 'fields', 'Bob'],
   )
+  assert.equal(request.workingCopyId, workingCopyId)
   assert.ok(
     (await s.auditLog(5)).some(
       (e) => e.action === 'workshop-candidate' && e.ok && e.target === 'fields',

@@ -10,6 +10,19 @@ export type SettingsForm = {
   /** `active: false` (the site default: "use the server's base file") omits the section entirely, even if it was set before. */
   parcool?: { active: boolean; actions: string[] }
 }
+export function settingsReceipt(
+  revision: number,
+  applied: { revision?: number; attemptedRevision?: number; errors?: string[] } | null | undefined,
+) {
+  if (
+    applied?.errors?.length &&
+    applied.attemptedRevision === revision &&
+    (applied.revision ?? -1) < revision
+  )
+    return 'rejected'
+  if ((applied?.revision ?? -1) >= revision) return applied?.errors?.length ? 'partial' : 'applied'
+  return 'pending'
+}
 /**
  * PUT /api/admin/settings body from form values. Fields are prefilled with the server default, so a value equal to
  * its default is the same as leaving the field untouched: both mean "server default" and are left out of the body.
