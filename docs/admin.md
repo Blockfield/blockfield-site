@@ -89,11 +89,10 @@ Every non-GET call by a staff member writes `admin_audit` (actor, role, action, 
 
 There is no Drasl login for a local test account, so a dev-only identity exists: when `NODE_ENV !== 'production'` **and** `BLOCKFIELD_ADMIN_DEV_USER=<uuid>:<name>` is set, the site treats every request as that player (role still comes from owners/`staff_roles`). The Docker image sets `NODE_ENV=production`, which disables it.
 
-```sh
-d=$(mktemp -d); mkdir -p $d/admin/results $d/inbox $d/settings
-BLOCKFIELD_STATS_DB=$d/stats.sqlite BLOCKFIELD_ADMIN_DIR=$d/admin BLOCKFIELD_INBOX_DIR=$d/inbox BLOCKFIELD_SETTINGS_DIR=$d/settings \
-just dev  # configure the variables above in your native shell or .env
-```
+For a local test, create temporary admin, inbox and settings directories. Put their absolute paths
+in `.env` as `BLOCKFIELD_STATS_DB`, `BLOCKFIELD_ADMIN_DIR`, `BLOCKFIELD_INBOX_DIR` and
+`BLOCKFIELD_SETTINGS_DIR`, then run `pnpm dev`. Use a local test account via
+`BLOCKFIELD_ADMIN_DEV_USER`; keep this file untracked.
 
 ## Threat notes
 

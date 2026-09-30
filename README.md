@@ -4,10 +4,10 @@
 Репозиторий `Blockfield/blockfield-site` (до 2026-09-27 — `netherg-io/blockfield-web`; старый адрес GitHub перенаправляет).
 
 ```bash
-just setup
-just dev           # http://localhost:4321
-just build
-just start
+pnpm install --frozen-lockfile
+pnpm dev           # http://localhost:4321
+pnpm build
+pnpm start
 ```
 
 ## Почему SSR
@@ -94,9 +94,9 @@ Persistent gameplay history, leaderboard and account statistics: see `docs/stati
 
 ## Проверки и развёртывание
 
-Установите Python 3.12+, Node.js 22 и Just 1.57.0; затем `just setup`. Команды `just lint` и
-`just format-check` проверяют весь TypeScript/JavaScript/Astro и формат;
-`just format` применяет форматирование, `just check` запускает оба
+Установите Node.js 22 и pnpm 11.18.0; затем `pnpm install --frozen-lockfile`. Команды `just lint` и
+`pnpm format:check` проверяют весь TypeScript/JavaScript/Astro и формат;
+`pnpm format` применяет форматирование, `pnpm check` запускает оба
 контроля. Коммиты main и PR выполняют проверки без публикации образа и без
 обращений к продовому webhook.
 

@@ -35,6 +35,7 @@ const temp = (t) => {
   return dir
 }
 import { database as store } from './storage.mjs'
+import { statsStore } from '../src/lib/stats.ts'
 
 test('permission map: roles grow strictly, unknown/no role has nothing', () => {
   assert.equal(can('builder', 'view'), true)
@@ -709,6 +710,7 @@ test('owner row falls back to the last known profile name, the signed-in owner n
 })
 
 test('siteIdentity: dev user short-circuits, missing/invalid cookie is anonymous, role decides admin access', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'bf-site-identity-'))
   const saved = { ...process.env }
   t.after(() => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
@@ -718,7 +720,12 @@ test('siteIdentity: dev user short-circuits, missing/invalid cookie is anonymous
     BLOCKFIELD_OWNER_UUIDS: OWNER,
     NODE_ENV: 'test',
     BLOCKFIELD_ADMIN_DEV_USER: `${OTHER}:Guest`,
-    BLOCKFIELD_STATS_DB: join(temp(t), 'stats.sqlite'),
+    BLOCKFIELD_STATS_DB: join(directory, 'stats.sqlite'),
+  })
+  const database = await statsStore()
+  t.after(async () => {
+    await database.close()
+    rmSync(directory, { recursive: true, force: true })
   })
   assert.deepEqual(
     await siteIdentity({ get: () => undefined }),
