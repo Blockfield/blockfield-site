@@ -6,7 +6,8 @@
 
 ## Dokploy
 
-Compose `Blockfield404` (`nOggl301lUMg3PuAPz4rL`) берёт этот каталог из `main`.
+Compose `Blockfield404` (`nOggl301lUMg3PuAPz4rL`) в проекте **Service pages →
+production** берёт этот каталог из `main`.
 Образ error-pages закреплён по digest; отдельная сборка не нужна.
 Automatic Deploy выключен: каждый ручной Deploy требует согласия владельца.
 
