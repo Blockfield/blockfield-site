@@ -1,117 +1,374 @@
 ---
-import Community from '../../layouts/Community.astro';
-import { statsStore, filters, seasons, StatsError, resolveNames, displayName } from '../../lib/stats';
-import { resolveSkins, DEFAULT_SKIN, type Skin } from '../../lib/skins';
-import { outcomeLabel } from '../../lib/stats-outcome';
-import { CLASS_NAMES } from '../../lib/game-names';
-let data: any = null, error = '', skin: Skin | null = null;
+import Community from '../../layouts/Community.astro'
+import {
+  statsStore,
+  filters,
+  seasons,
+  StatsError,
+  resolveNames,
+  displayName,
+} from '../../lib/stats'
+import { resolveSkins, DEFAULT_SKIN, type Skin } from '../../lib/skins'
+import { outcomeLabel } from '../../lib/stats-outcome'
+import { CLASS_NAMES } from '../../lib/game-names'
+let data: any = null,
+  error = '',
+  skin: Skin | null = null
 try {
-  data = await (await statsStore()).player(Astro.params.uuid || '', filters(Astro.url.searchParams));
-  const resolved = (await resolveNames(await statsStore(), [data.profile.uuid])).get(data.profile.uuid);
-  data.profile.name = displayName(resolved ?? data.profile.name);
-  skin = (await resolveSkins([data.profile.uuid])).get(data.profile.uuid) ?? DEFAULT_SKIN;
+  data = await (await statsStore()).player(Astro.params.uuid || '', filters(Astro.url.searchParams))
+  const resolved = (await resolveNames(await statsStore(), [data.profile.uuid])).get(
+    data.profile.uuid,
+  )
+  data.profile.name = displayName(resolved ?? data.profile.name)
+  skin = (await resolveSkins([data.profile.uuid])).get(data.profile.uuid) ?? DEFAULT_SKIN
+} catch (e) {
+  Astro.response.status = e instanceof StatsError ? e.status : 503
+  error =
+    e instanceof StatsError && e.status === 404
+      ? 'У этого игрока пока нет сыгранных боёв. Как только он сыграет, страница оживёт.'
+      : e instanceof StatsError && e.status === 400
+        ? 'Такой страницы нет — проверьте ссылку или найдите игрока в лидерборде.'
+        : 'Страница сейчас недоступна. История никуда не делась — зайдите чуть позже.'
 }
-catch (e) {
-  Astro.response.status = e instanceof StatsError ? e.status : 503;
-  error = e instanceof StatsError && e.status === 404 ? 'У этого игрока пока нет сыгранных боёв. Как только он сыграет, страница оживёт.'
-    : e instanceof StatsError && e.status === 400 ? 'Такой страницы нет — проверьте ссылку или найдите игрока в лидерборде.'
-    : 'Страница сейчас недоступна. История никуда не делась — зайдите чуть позже.';
+const mmrName = seasons().find((s) => s.id === data?.mmrSeason)?.name ?? 'Сезон 1'
+const time = (epoch: number) =>
+  new Intl.DateTimeFormat('ru-RU', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'UTC',
+  }).format(epoch)
+const modes: Record<string, string> = {
+  room: 'Casual',
+  campaign: 'Ranked',
+  deathmatch: 'Deathmatch',
 }
-const mmrName = seasons().find(s => s.id === data?.mmrSeason)?.name ?? 'Сезон 1';
-const time = (epoch: number) => new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(epoch);
-const modes: Record<string,string> = { room: 'Casual', campaign: 'Ranked', deathmatch: 'Deathmatch' };
-const reasons: Record<string,string> = { completed: 'Завершён', draw: 'Ничья', abandoned: 'Прерван: все вышли', stopped: 'Остановлен', shutdown: 'Сервер выключился', error: 'Ошибка' };
-const next = (page: number) => { const q = new URLSearchParams(Astro.url.searchParams); q.set('page', String(page)); return `?${q}`; };
-const name = data?.profile.name || 'Игрок';
-const minutes = (seconds: number) => Math.floor(seconds / 60);
-const stats = data?.totals ? [
-  { label: 'Место', value: String(data.totals.rank) },
-  { label: 'Очки', value: Number(data.totals.score).toLocaleString('ru-RU', { maximumFractionDigits: 0 }) },
-  { label: 'Бои / победы', value: `${data.totals.matches} / ${data.totals.wins}` },
-  { label: 'K / D', value: `${data.totals.kills} / ${data.totals.deaths}` },
-  { label: 'Захваты', value: String(data.totals.captures) },
-  { label: 'MMR', value: data.mmr ? `${data.mmr.rating}${data.mmr.provisional ? '*' : ''}` : '—' },
-] : [];
+const reasons: Record<string, string> = {
+  completed: 'Завершён',
+  draw: 'Ничья',
+  abandoned: 'Прерван: все вышли',
+  stopped: 'Остановлен',
+  shutdown: 'Сервер выключился',
+  error: 'Ошибка',
+}
+const next = (page: number) => {
+  const q = new URLSearchParams(Astro.url.searchParams)
+  q.set('page', String(page))
+  return `?${q}`
+}
+const name = data?.profile.name || 'Игрок'
+const minutes = (seconds: number) => Math.floor(seconds / 60)
+const stats = data?.totals
+  ? [
+      { label: 'Место', value: String(data.totals.rank) },
+      {
+        label: 'Очки',
+        value: Number(data.totals.score).toLocaleString('ru-RU', { maximumFractionDigits: 0 }),
+      },
+      { label: 'Бои / победы', value: `${data.totals.matches} / ${data.totals.wins}` },
+      { label: 'K / D', value: `${data.totals.kills} / ${data.totals.deaths}` },
+      { label: 'Захваты', value: String(data.totals.captures) },
+      {
+        label: 'MMR',
+        value: data.mmr ? `${data.mmr.rating}${data.mmr.provisional ? '*' : ''}` : '—',
+      },
+    ]
+  : []
 ---
-<Community title={name} description={`Бои, классы и рейтинг игрока ${name} на сервере Blockfield.`} bare>
-  {error ? <>
-    <div class="page-head"><h1>Игрок</h1><p class="intro">{error}</p></div>
-    <p><a href="/leaderboard">← Вернуться в лидерборд</a></p>
-  </> : data && <>
-    <section class="hero" aria-labelledby="player-name">
-      <div class="hero__figure">
-        <div id="stage" class="stage" role="img" aria-label={`Скин игрока ${name} в 3D. Потяните, чтобы повернуть.`} data-skin={skin?.url ?? ''} data-slim={skin?.slim ? '1' : ''} data-cape={skin?.capeUrl ?? ''}>
-          <div class="rig"><div id="figure" class="figure"></div></div>
-          <span class="floor"></span>
-          <span id="figure-fallback" class:list={['head', 'head--big', !skin && 'head--none']} style={skin ? `--skin:url("${skin.url}")` : undefined} aria-hidden="true"></span>
-        </div>
-        <p class="hero__hint">Потяните фигуру, чтобы повернуть</p>
+
+<Community
+  title={name}
+  description={`Бои, классы и рейтинг игрока ${name} на сервере Blockfield.`}
+  bare
+>
+  {error ? (
+    <>
+      <div class="page-head">
+        <h1>Игрок</h1>
+        <p class="intro">{error}</p>
       </div>
-      <div class="hero__copy">
-        <p class="rule"><span class="rule__square"></span><span class="rule__label">Игрок</span><span class="rule__line"></span><span class="rule__code">PROFILE</span></p>
-        <h1 id="player-name">{name}</h1>
-        {data.totals
-          ? <p class="hero__sub">{data.totals.matches === 1 ? 'Один бой' : `Боёв: ${data.totals.matches}`} · побед: {data.totals.wins} · кампаний завершено: {data.campaigns.completed}</p>
-          : <p class="hero__sub">За выбранный период боёв нет.</p>}
-        {data.season && <p class="muted">Показан {seasons().find(s => s.id === data.season)?.name}.</p>}
-        {stats.length > 0 && <dl class="stats">{stats.map(s => <div><dt class="label">{s.label}</dt><dd>{s.value}</dd></div>)}</dl>}
-        {data.totals && !data.mmr && <p class="muted">MMR появится после первой завершённой Ranked-кампании.</p>}
-        {data.mmr?.provisional && <p class="muted">Звёздочка: рейтинг ещё уточняется — осталось несколько кампаний.</p>}
-        <p><a href="/leaderboard">← Лидерборд</a></p>
-      </div>
-    </section>
+      <p>
+        <a href="/leaderboard">← Вернуться в лидерборд</a>
+      </p>
+    </>
+  ) : (
+    data && (
+      <>
+        <section class="hero" aria-labelledby="player-name">
+          <div class="hero__figure">
+            <div
+              id="stage"
+              class="stage"
+              role="img"
+              aria-label={`Скин игрока ${name} в 3D. Потяните, чтобы повернуть.`}
+              data-skin={skin?.url ?? ''}
+              data-slim={skin?.slim ? '1' : ''}
+              data-cape={skin?.capeUrl ?? ''}
+            >
+              <div class="rig">
+                <div id="figure" class="figure"></div>
+              </div>
+              <span class="floor"></span>
+              <span
+                id="figure-fallback"
+                class:list={['head', 'head--big', !skin && 'head--none']}
+                style={skin ? `--skin:url("${skin.url}")` : undefined}
+                aria-hidden="true"
+              ></span>
+            </div>
+            <p class="hero__hint">Потяните фигуру, чтобы повернуть</p>
+          </div>
+          <div class="hero__copy">
+            <p class="rule">
+              <span class="rule__square"></span>
+              <span class="rule__label">Игрок</span>
+              <span class="rule__line"></span>
+              <span class="rule__code">PROFILE</span>
+            </p>
+            <h1 id="player-name">{name}</h1>
+            {data.totals ? (
+              <p class="hero__sub">
+                {data.totals.matches === 1 ? 'Один бой' : `Боёв: ${data.totals.matches}`} · побед:{' '}
+                {data.totals.wins} · кампаний завершено: {data.campaigns.completed}
+              </p>
+            ) : (
+              <p class="hero__sub">За выбранный период боёв нет.</p>
+            )}
+            {data.season && (
+              <p class="muted">Показан {seasons().find((s) => s.id === data.season)?.name}.</p>
+            )}
+            {stats.length > 0 && (
+              <dl class="stats">
+                {stats.map((s) => (
+                  <div>
+                    <dt class="label">{s.label}</dt>
+                    <dd>{s.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+            {data.totals && !data.mmr && (
+              <p class="muted">MMR появится после первой завершённой Ranked-кампании.</p>
+            )}
+            {data.mmr?.provisional && (
+              <p class="muted">Звёздочка: рейтинг ещё уточняется — осталось несколько кампаний.</p>
+            )}
+            <p>
+              <a href="/leaderboard">← Лидерборд</a>
+            </p>
+          </div>
+        </section>
 
-    {data.ratingHistory.length > 0 && <section>
-      <h2>Как менялся MMR · {mmrName}</h2>
-      <div class="table-wrap" tabindex="0" aria-label="История рейтинга"><table>
-        <thead><tr><th scope="col">Когда</th><th scope="col">Кампания</th><th class="num" scope="col">MMR</th></tr></thead>
-        <tbody>{data.ratingHistory.map((h: any) => <tr><td>{time(h.ratedAt)}</td><td>{h.score === 1 ? 'Победа' : h.score === 0 ? 'Поражение' : 'Ничья'}</td><td class="num">{h.before} → {h.after} ({h.after - h.before >= 0 ? '+' : ''}{h.after - h.before})</td></tr>)}</tbody>
-      </table></div>
-    </section>}
+        {data.ratingHistory.length > 0 && (
+          <section>
+            <h2>Как менялся MMR · {mmrName}</h2>
+            <div class="table-wrap" tabindex="0" aria-label="История рейтинга">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Когда</th>
+                    <th scope="col">Кампания</th>
+                    <th class="num" scope="col">
+                      MMR
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.ratingHistory.map((h: any) => (
+                    <tr>
+                      <td>{time(h.ratedAt)}</td>
+                      <td>{h.score === 1 ? 'Победа' : h.score === 0 ? 'Поражение' : 'Ничья'}</td>
+                      <td class="num">
+                        {h.before} → {h.after} ({h.after - h.before >= 0 ? '+' : ''}
+                        {h.after - h.before})
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
 
-    <section>
-      <h2>Чем играет</h2>
-      {data.classes.length === 0 ? <p class="muted">Пока не за что зацепиться — сыгранных боёв нет.</p> : <div class="table-wrap" tabindex="0" aria-label="Статистика классов"><table>
-        <thead><tr><th scope="col">Класс</th><th class="num" scope="col">Минуты</th><th class="num" scope="col">K / D</th><th class="num" scope="col">На точках, сек</th></tr></thead>
-        <tbody>{data.classes.map((c: any) => <tr><td>{CLASS_NAMES[c.classId] ?? 'Другой класс'}{c.variantId !== '0' && ` · комплект ${c.variantId}`}</td><td class="num">{minutes(c.timeSeconds)}</td><td class="num">{c.kills} / {c.deaths}</td><td class="num">{c.pointSeconds}</td></tr>)}</tbody>
-      </table></div>}
-    </section>
+        <section>
+          <h2>Чем играет</h2>
+          {data.classes.length === 0 ? (
+            <p class="muted">Пока не за что зацепиться — сыгранных боёв нет.</p>
+          ) : (
+            <div class="table-wrap" tabindex="0" aria-label="Статистика классов">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Класс</th>
+                    <th class="num" scope="col">
+                      Минуты
+                    </th>
+                    <th class="num" scope="col">
+                      K / D
+                    </th>
+                    <th class="num" scope="col">
+                      На точках, сек
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.classes.map((c: any) => (
+                    <tr>
+                      <td>
+                        {CLASS_NAMES[c.classId] ?? 'Другой класс'}
+                        {c.variantId !== '0' && ` · комплект ${c.variantId}`}
+                      </td>
+                      <td class="num">{minutes(c.timeSeconds)}</td>
+                      <td class="num">
+                        {c.kills} / {c.deaths}
+                      </td>
+                      <td class="num">{c.pointSeconds}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
 
-    <section>
-      <h2>История боёв</h2>
-      <p class="muted">Время UTC.</p>
-      <div class="table-wrap" tabindex="0" aria-label="История матчей"><table>
-        <thead><tr><th scope="col">Когда</th><th scope="col">Что было</th><th scope="col">Чем кончилось</th><th class="num" scope="col">K / D</th></tr></thead>
-        <tbody>{data.history.map((r: any) => <tr><td>{time(r.endedAt)}</td><td>{modes[r.mode] || r.mode} · {r.kind === 'campaign' ? 'вся кампания' : 'бой'}</td><td>{reasons[r.reason] || r.reason}{outcomeLabel(r, data.profile.uuid)}</td><td class="num">{r.kind === 'match' ? `${r.kills} / ${r.deaths}` : '—'}</td></tr>)}</tbody>
-      </table></div>
-      <nav class="pagination" aria-label="Страницы истории">{data.page > 1 ? <a href={next(data.page - 1)}>← Назад</a> : <span></span>}<span>Страница {data.page}</span>{data.history.length === data.limit ? <a href={next(data.page + 1)}>Далее →</a> : <span></span>}</nav>
-    </section>
-  </>}
+        <section>
+          <h2>История боёв</h2>
+          <p class="muted">Время UTC.</p>
+          <div class="table-wrap" tabindex="0" aria-label="История матчей">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Когда</th>
+                  <th scope="col">Что было</th>
+                  <th scope="col">Чем кончилось</th>
+                  <th class="num" scope="col">
+                    K / D
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.history.map((r: any) => (
+                  <tr>
+                    <td>{time(r.endedAt)}</td>
+                    <td>
+                      {modes[r.mode] || r.mode} · {r.kind === 'campaign' ? 'вся кампания' : 'бой'}
+                    </td>
+                    <td>
+                      {reasons[r.reason] || r.reason}
+                      {outcomeLabel(r, data.profile.uuid)}
+                    </td>
+                    <td class="num">{r.kind === 'match' ? `${r.kills} / ${r.deaths}` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <nav class="pagination" aria-label="Страницы истории">
+            {data.page > 1 ? <a href={next(data.page - 1)}>← Назад</a> : <span></span>}
+            <span>Страница {data.page}</span>
+            {data.history.length === data.limit ? (
+              <a href={next(data.page + 1)}>Далее →</a>
+            ) : (
+              <span></span>
+            )}
+          </nav>
+        </section>
+      </>
+    )
+  )}
 
   <style is:global>
-    .hero { display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: clamp(20px, 3vw, 40px); align-items: start; }
-    .hero + section, section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
-    .hero__figure { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
-    .hero__hint { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim); text-align: center; }
-    .hero__copy { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-content: start; min-width: 0; }
-    .hero__copy h1 { font-size: clamp(34px, 5.4vw, 60px); }
-    .hero__sub { color: var(--sand); font-size: clamp(15px, 1.2vw, 18px); }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+      gap: clamp(20px, 3vw, 40px);
+      align-items: start;
+    }
+    .hero + section,
+    section {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 12px;
+    }
+    .hero__figure {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 10px;
+    }
+    .hero__hint {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--dim);
+      text-align: center;
+    }
+    .hero__copy {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 16px;
+      align-content: start;
+      min-width: 0;
+    }
+    .hero__copy h1 {
+      font-size: clamp(34px, 5.4vw, 60px);
+    }
+    .hero__sub {
+      color: var(--sand);
+      font-size: clamp(15px, 1.2vw, 18px);
+    }
     /* 2D-запасной вариант поверх сцены: скрипт убирает его, когда собрана 3D-фигура. */
-    .head--big { --head: clamp(96px, 16vw, 148px); position: absolute; left: 50%; top: 50%; translate: -50% -50%; }
-    .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--line); border: 1px solid var(--line); }
-    .stats > div { display: grid; gap: 6px; padding: 14px 16px; background: var(--panel); }
-    .stats dd { margin: 0; font-family: var(--mono); font-size: clamp(20px, 2vw, 26px); font-weight: 500; color: var(--cream); font-variant-numeric: tabular-nums; }
-    @media (max-width: 760px) { .hero { grid-template-columns: 1fr; } }
-    @media (max-width: 420px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    .head--big {
+      --head: clamp(96px, 16vw, 148px);
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      translate: -50% -50%;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1px;
+      margin: 0;
+      background: var(--line);
+      border: 1px solid var(--line);
+    }
+    .stats > div {
+      display: grid;
+      gap: 6px;
+      padding: 14px 16px;
+      background: var(--panel);
+    }
+    .stats dd {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: clamp(20px, 2vw, 26px);
+      font-weight: 500;
+      color: var(--cream);
+      font-variant-numeric: tabular-nums;
+    }
+    @media (max-width: 760px) {
+      .hero {
+        grid-template-columns: 1fr;
+      }
+    }
+    @media (max-width: 420px) {
+      .stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
   </style>
   <script>
     // Сцена собирается только в браузере; без скриптов на ней остаётся плоская голова из того же скина.
-    import { drawFigure } from '../../lib/skin-figure';
-    const stage = document.querySelector<HTMLElement>('#stage');
-    const figure = document.querySelector<HTMLElement>('#figure');
+    import { drawFigure } from '../../lib/skin-figure'
+    const stage = document.querySelector<HTMLElement>('#stage')
+    const figure = document.querySelector<HTMLElement>('#figure')
     if (stage && figure) {
-      drawFigure(stage, figure, { skinUrl: stage.dataset.skin || null, capeUrl: stage.dataset.cape || null, slim: stage.dataset.slim === '1' });
-      document.querySelector('#figure-fallback')?.remove();
+      drawFigure(stage, figure, {
+        skinUrl: stage.dataset.skin || null,
+        capeUrl: stage.dataset.cape || null,
+        slim: stage.dataset.slim === '1',
+      })
+      document.querySelector('#figure-fallback')?.remove()
     }
   </script>
 </Community>

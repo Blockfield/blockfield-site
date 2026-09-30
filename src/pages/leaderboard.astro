@@ -1,72 +1,276 @@
 ---
-import Community from '../layouts/Community.astro';
-import { statsStore, filters, seasons, StatsError, resolveNames, displayName, uuidLike } from '../lib/stats';
-import { resolveSkins } from '../lib/skins';
-let board: Awaited<ReturnType<Awaited<ReturnType<typeof statsStore>>['leaderboard']>> | null = null;
-let error = '';
-let skins = new Map<string, { url: string; slim: boolean }>();
-const started = seasons(), current = started.at(-1);
-const seasonName = (id?: string) => started.find(s => s.id === id)?.name ?? 'Сезон 1';
+import Community from '../layouts/Community.astro'
+import {
+  statsStore,
+  filters,
+  seasons,
+  StatsError,
+  resolveNames,
+  displayName,
+  uuidLike,
+} from '../lib/stats'
+import { resolveSkins } from '../lib/skins'
+let board: Awaited<ReturnType<Awaited<ReturnType<typeof statsStore>>['leaderboard']>> | null = null
+let error = ''
+let skins = new Map<string, { url: string; slim: boolean }>()
+const started = seasons(),
+  current = started.at(-1)
+const seasonName = (id?: string) => started.find((s) => s.id === id)?.name ?? 'Сезон 1'
 // The period select also lists seasons; the API takes those as `season`, never together with `period`.
-const params = new URLSearchParams(Astro.url.searchParams);
-if (started.some(s => s.id === params.get('period'))) { params.set('season', params.get('period')!); params.delete('period'); }
-try {
-  board = await (await statsStore()).leaderboard(filters(params));
-  const names = await resolveNames(await statsStore(), board.players.filter((p: any) => uuidLike(p.name)).map((p: any) => p.uuid));
-  for (const p of board.players as any[]) p.name = displayName(names.get(p.uuid) ?? p.name);
-  skins = await resolveSkins(board.players.map((p: any) => p.uuid));
+const params = new URLSearchParams(Astro.url.searchParams)
+if (started.some((s) => s.id === params.get('period'))) {
+  params.set('season', params.get('period')!)
+  params.delete('period')
 }
-catch (e) { Astro.response.status = e instanceof StatsError ? e.status : 503; error = e instanceof StatsError && e.status === 400 ? 'Такие фильтры не подходят. Нажмите «Сбросить» и попробуйте снова.' : 'Таблица сейчас недоступна. Ваши результаты никуда не делись — зайдите чуть позже.'; }
-const modes = [['', 'Все режимы'], ['room', 'Casual'], ['campaign', 'Ranked · кампания'], ['deathmatch', 'Deathmatch']];
-const periods = [['all','Всё время'],['week','Последние 7 дней'],['month','Последние 30 дней'], ...started.map(s => [s.id, s.name]).reverse()];
-const period = params.get('season') || params.get('period') || 'all';
-const day = (iso: string) => new Intl.DateTimeFormat('ru-RU', { dateStyle: 'long', timeZone: 'UTC' }).format(Date.parse(iso));
-const sorts = [['score','Очки'],['rating','MMR (Ranked)'],['kills','Убийства'],['captures','Захваты'],['pointSeconds','Время на точках'],['wins','Победы в боях'],['kd','K/D']];
-const rating = (m: any) => m ? `${m.rating}${m.provisional ? '*' : ''}` : '—';
-const pageLink = (page: number) => { const query = new URLSearchParams(Astro.url.searchParams); query.set('page', String(page)); return `/leaderboard?${query}`; };
-const number = (n: unknown) => Number(n).toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+try {
+  board = await (await statsStore()).leaderboard(filters(params))
+  const names = await resolveNames(
+    await statsStore(),
+    board.players.filter((p: any) => uuidLike(p.name)).map((p: any) => p.uuid),
+  )
+  for (const p of board.players as any[]) p.name = displayName(names.get(p.uuid) ?? p.name)
+  skins = await resolveSkins(board.players.map((p: any) => p.uuid))
+} catch (e) {
+  Astro.response.status = e instanceof StatsError ? e.status : 503
+  error =
+    e instanceof StatsError && e.status === 400
+      ? 'Такие фильтры не подходят. Нажмите «Сбросить» и попробуйте снова.'
+      : 'Таблица сейчас недоступна. Ваши результаты никуда не делись — зайдите чуть позже.'
+}
+const modes = [
+  ['', 'Все режимы'],
+  ['room', 'Casual'],
+  ['campaign', 'Ranked · кампания'],
+  ['deathmatch', 'Deathmatch'],
+]
+const periods = [
+  ['all', 'Всё время'],
+  ['week', 'Последние 7 дней'],
+  ['month', 'Последние 30 дней'],
+  ...started.map((s) => [s.id, s.name]).reverse(),
+]
+const period = params.get('season') || params.get('period') || 'all'
+const day = (iso: string) =>
+  new Intl.DateTimeFormat('ru-RU', { dateStyle: 'long', timeZone: 'UTC' }).format(Date.parse(iso))
+const sorts = [
+  ['score', 'Очки'],
+  ['rating', 'MMR (Ranked)'],
+  ['kills', 'Убийства'],
+  ['captures', 'Захваты'],
+  ['pointSeconds', 'Время на точках'],
+  ['wins', 'Победы в боях'],
+  ['kd', 'K/D'],
+]
+const rating = (m: any) => (m ? `${m.rating}${m.provisional ? '*' : ''}` : '—')
+const pageLink = (page: number) => {
+  const query = new URLSearchParams(Astro.url.searchParams)
+  query.set('page', String(page))
+  return `/leaderboard?${query}`
+}
+const number = (n: unknown) => Number(n).toLocaleString('ru-RU', { maximumFractionDigits: 2 })
 ---
-<Community title="Лидерборд" description="Кто как играет на Blockfield. Считаются бои в комнатах: полигон, лобби и мастерская сюда не попадают.">
+
+<Community
+  title="Лидерборд"
+  description="Кто как играет на Blockfield. Считаются бои в комнатах: полигон, лобби и мастерская сюда не попадают."
+>
   <form class="filters" method="get" action="/leaderboard" aria-label="Фильтры лидерборда">
-    <div class="field"><span id="f-mode">Режим</span><select name="mode" aria-labelledby="f-mode">{modes.map(([value,label]) => <option value={value} selected={value === (Astro.url.searchParams.get('mode') || '')}>{label}</option>)}</select></div>
-    <div class="field"><span id="f-period">Период</span><select name="period" aria-labelledby="f-period">{periods.map(([value,label]) => <option value={value} selected={value === period}>{label}</option>)}</select></div>
-    <div class="field"><span id="f-sort">Сортировка</span><select name="sort" aria-labelledby="f-sort">{sorts.map(([value,label]) => <option value={value} selected={value === (Astro.url.searchParams.get('sort') || 'score')}>{label}</option>)}</select></div>
-    <div class="actions"><button type="submit" class="primary">Показать</button><a href="/leaderboard">Сбросить</a></div>
-  </form>
-  {current && <p class="season-line">Идёт <strong>{current.name}</strong> · с {day(current.startsAt)} по {day(current.endsAt)}, время UTC.</p>}
-  {error ? <p class="notice" role="status">{error}</p> : board && board.total === 0 ? <p class="notice" role="status">За этот период боёв ещё не было. Сыграйте — и окажетесь здесь первым.</p> : board && <>
-    <div class="table-wrap" tabindex="0" aria-label="Таблица результатов, возможна горизонтальная прокрутка">
-      <table><thead><tr><th scope="col">Место</th><th scope="col">Игрок</th><th class="num mmr" scope="col">MMR&nbsp;· <span>{seasonName(board.mmrSeason)}</span></th><th class="num" scope="col">Очки</th><th class="num" scope="col">K / D</th><th class="num" scope="col">Захваты</th><th class="num" scope="col">Бои / победы</th></tr></thead>
-        <tbody>{board.players.map((p: any) => <tr>
-          <td class="rank">{p.rank}</td>
-          <td class="player"><a href={`/players/${p.uuid}`}><span class:list={['head', !skins.get(p.uuid) && 'head--none']} style={skins.get(p.uuid) ? `--skin:url("${skins.get(p.uuid)!.url}")` : undefined} aria-hidden="true"></span>{p.name}</a></td>
-          <td class="num">{rating(p.mmr)}</td><td class="num">{number(p.score)}</td><td class="num">{number(p.kills)} / {number(p.deaths)}</td><td class="num">{number(p.captures)}</td><td class="num">{number(p.matches)} / {number(p.wins)}</td>
-        </tr>)}</tbody>
-      </table>
+    <div class="field">
+      <span id="f-mode">Режим</span>
+      <select name="mode" aria-labelledby="f-mode">
+        {modes.map(([value, label]) => (
+          <option value={value} selected={value === (Astro.url.searchParams.get('mode') || '')}>
+            {label}
+          </option>
+        ))}
+      </select>
     </div>
-    <nav class="pagination" aria-label="Страницы результатов">{board.page > 1 ? <a href={pageLink(board.page - 1)}>← Назад</a> : <span></span>}<span>Страница {board.page} · игроков: {board.total}</span>{board.page * board.limit < board.total ? <a href={pageLink(board.page + 1)}>Далее →</a> : <span></span>}</nav>
-    <details class="how">
-      <summary>Что такое MMR и как он меняется</summary>
-      <p>MMR — ваша сила в Ranked. Он меняется один раз за целую кампанию: победа поднимает, поражение опускает, ничья почти не двигает. Отдельные бои, Casual и Deathmatch на него не влияют, прерванные и остановленные кампании — тоже.</p>
-      <p>Звёздочка рядом с числом значит «ещё присматриваемся»: сыграйте пять кампаний за сезон, и рейтинг станет точным. В начале каждого сезона MMR подтягивается к середине, чтобы сезон было с чего начинать.</p>
-    </details>
-  </>}
+    <div class="field">
+      <span id="f-period">Период</span>
+      <select name="period" aria-labelledby="f-period">
+        {periods.map(([value, label]) => (
+          <option value={value} selected={value === period}>
+            {label}
+          </option>
+        ))}
+      </select>
+    </div>
+    <div class="field">
+      <span id="f-sort">Сортировка</span>
+      <select name="sort" aria-labelledby="f-sort">
+        {sorts.map(([value, label]) => (
+          <option
+            value={value}
+            selected={value === (Astro.url.searchParams.get('sort') || 'score')}
+          >
+            {label}
+          </option>
+        ))}
+      </select>
+    </div>
+    <div class="actions">
+      <button type="submit" class="primary">
+        Показать
+      </button>
+      <a href="/leaderboard">Сбросить</a>
+    </div>
+  </form>
+  {current && (
+    <p class="season-line">
+      Идёт <strong>{current.name}</strong> · с {day(current.startsAt)} по {day(current.endsAt)},
+      время UTC.
+    </p>
+  )}
+  {error ? (
+    <p class="notice" role="status">
+      {error}
+    </p>
+  ) : board && board.total === 0 ? (
+    <p class="notice" role="status">
+      За этот период боёв ещё не было. Сыграйте — и окажетесь здесь первым.
+    </p>
+  ) : (
+    board && (
+      <>
+        <div
+          class="table-wrap"
+          tabindex="0"
+          aria-label="Таблица результатов, возможна горизонтальная прокрутка"
+        >
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Место</th>
+                <th scope="col">Игрок</th>
+                <th class="num mmr" scope="col">
+                  MMR&nbsp;· <span>{seasonName(board.mmrSeason)}</span>
+                </th>
+                <th class="num" scope="col">
+                  Очки
+                </th>
+                <th class="num" scope="col">
+                  K / D
+                </th>
+                <th class="num" scope="col">
+                  Захваты
+                </th>
+                <th class="num" scope="col">
+                  Бои / победы
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {board.players.map((p: any) => (
+                <tr>
+                  <td class="rank">{p.rank}</td>
+                  <td class="player">
+                    <a href={`/players/${p.uuid}`}>
+                      <span
+                        class:list={['head', !skins.get(p.uuid) && 'head--none']}
+                        style={
+                          skins.get(p.uuid) ? `--skin:url("${skins.get(p.uuid)!.url}")` : undefined
+                        }
+                        aria-hidden="true"
+                      ></span>
+                      {p.name}
+                    </a>
+                  </td>
+                  <td class="num">{rating(p.mmr)}</td>
+                  <td class="num">{number(p.score)}</td>
+                  <td class="num">
+                    {number(p.kills)} / {number(p.deaths)}
+                  </td>
+                  <td class="num">{number(p.captures)}</td>
+                  <td class="num">
+                    {number(p.matches)} / {number(p.wins)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <nav class="pagination" aria-label="Страницы результатов">
+          {board.page > 1 ? <a href={pageLink(board.page - 1)}>← Назад</a> : <span></span>}
+          <span>
+            Страница {board.page} · игроков: {board.total}
+          </span>
+          {board.page * board.limit < board.total ? (
+            <a href={pageLink(board.page + 1)}>Далее →</a>
+          ) : (
+            <span></span>
+          )}
+        </nav>
+        <details class="how">
+          <summary>Что такое MMR и как он меняется</summary>
+          <p>
+            MMR — ваша сила в Ranked. Он меняется один раз за целую кампанию: победа поднимает,
+            поражение опускает, ничья почти не двигает. Отдельные бои, Casual и Deathmatch на него
+            не влияют, прерванные и остановленные кампании — тоже.
+          </p>
+          <p>
+            Звёздочка рядом с числом значит «ещё присматриваемся»: сыграйте пять кампаний за сезон,
+            и рейтинг станет точным. В начале каждого сезона MMR подтягивается к середине, чтобы
+            сезон было с чего начинать.
+          </p>
+        </details>
+      </>
+    )
+  )}
   <style is:global>
-    th.mmr { white-space: normal; } th.mmr span { white-space: nowrap; }
-    td.rank { font-family: var(--mono); color: var(--sand); }
-    td.player a { display: inline-flex; align-items: center; gap: 12px; color: var(--cream); text-decoration: none; font-weight: 600; }
-    td.player a:hover { color: var(--amber); }
-    td.player a:hover .head { border-color: var(--amber); }
-    .season-line { color: var(--sand); font-size: 15px; }
-    .season-line strong { color: var(--cream); }
-    details.how { border: 1px solid var(--line); background: var(--panel); padding: 0 18px; }
-    details.how summary { padding: 16px 0; color: var(--cream); font-weight: 600; cursor: pointer; }
-    details.how summary::marker { color: var(--amber); }
-    details.how p { padding-bottom: 16px; max-width: 34em; color: var(--sand); }
+    th.mmr {
+      white-space: normal;
+    }
+    th.mmr span {
+      white-space: nowrap;
+    }
+    td.rank {
+      font-family: var(--mono);
+      color: var(--sand);
+    }
+    td.player a {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--cream);
+      text-decoration: none;
+      font-weight: 600;
+    }
+    td.player a:hover {
+      color: var(--amber);
+    }
+    td.player a:hover .head {
+      border-color: var(--amber);
+    }
+    .season-line {
+      color: var(--sand);
+      font-size: 15px;
+    }
+    .season-line strong {
+      color: var(--cream);
+    }
+    details.how {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      padding: 0 18px;
+    }
+    details.how summary {
+      padding: 16px 0;
+      color: var(--cream);
+      font-weight: 600;
+      cursor: pointer;
+    }
+    details.how summary::marker {
+      color: var(--amber);
+    }
+    details.how p {
+      padding-bottom: 16px;
+      max-width: 34em;
+      color: var(--sand);
+    }
   </style>
   <script>
-    import { customSelect } from '../lib/custom-select';
+    import { customSelect } from '../lib/custom-select'
     // Прогрессивное улучшение: нативный select остаётся в форме и по-прежнему отправляет значение.
-    document.querySelectorAll<HTMLSelectElement>('.field select').forEach(customSelect);
+    document.querySelectorAll<HTMLSelectElement>('.field select').forEach(customSelect)
   </script>
 </Community>

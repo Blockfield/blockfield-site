@@ -1,3 +1,3 @@
-import { texture } from '../../../lib/account';
+import { texture } from '../../../lib/account'
 
-export const { PUT, DELETE } = texture('cape');
+export const { PUT, DELETE } = texture('cape')

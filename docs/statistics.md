@@ -64,11 +64,11 @@ Combat metrics come from `kind=match` rows only; campaign summaries never add ro
 
 ## Outcome rules
 
-| `endReason` | Stored | Battle/campaign winner | MMR (Ranked campaign summary only) |
-| --- | --- | --- | --- |
-| `completed` | yes | `winner` side (FFA: `winnerUuid`) | win = 1, loss = 0 |
-| `draw` | yes | none | 0.5 for everyone |
-| `abandoned`, `stopped`, `shutdown`, `error` | yes | none (a declared winner is rejected with 422) | none |
+| `endReason`                                 | Stored | Battle/campaign winner                        | MMR (Ranked campaign summary only) |
+| ------------------------------------------- | ------ | --------------------------------------------- | ---------------------------------- |
+| `completed`                                 | yes    | `winner` side (FFA: `winnerUuid`)             | win = 1, loss = 0                  |
+| `draw`                                      | yes    | none                                          | 0.5 for everyone                   |
+| `abandoned`, `stopped`, `shutdown`, `error` | yes    | none (a declared winner is rejected with 422) | none                               |
 
 A win awarded by an administrator (`/bf stop … win TEAM`) is exported and stored as `stopped`: no winner, no MMR. MMR is Glicko-2 (`src/lib/glicko2.ts`), one operation per completed/drawn Ranked campaign per participant with team `RED`/`BLUE` (the other side is a composite opponent). Rounds, Casual and Deathmatch never rate. Rating is keyed by `(serverId, eventId, uuid)`: replays and a summary arriving before or after its rounds do not rate twice; later rounds never change ratings.
 
@@ -106,7 +106,7 @@ Late results: a campaign that ended in an earlier season but arrives later updat
 
 ## Verification and remaining integration
 
-`npm ci && npm test && npm run build`. Tests cover replay/conflict, transactional rollback, restarts on disk, both authorization boundaries, streamed limits, non-gameplay rejection, duplicate participants, stable paging, zero deaths, filters, name changes, round/campaign double counting, season carry-over and boundaries, late results, season-specific API MMR and the v1→v3 / v2→v3 migrations. Run the producer/API end-to-end check from the companion mod PR before merging both.
+`just setup && just test && npm run build`. Tests cover replay/conflict, transactional rollback, restarts on disk, both authorization boundaries, streamed limits, non-gameplay rejection, duplicate participants, stable paging, zero deaths, filters, name changes, round/campaign double counting, season carry-over and boundaries, late results, season-specific API MMR and the v1→v3 / v2→v3 migrations. Run the producer/API end-to-end check from the companion mod PR before merging both.
 
 Local review: submit the test fixture with a configured producer key, replay it, verify exactly one battle; submit a campaign summary, verify counters are unchanged; stop Minecraft, refresh leaderboard/account, and verify history still loads. Invalid/missing DB must show unavailable, not zero stats. Check layout at 360px and desktop, keyboard navigation, long display names and logout during a slow request.
 
@@ -137,8 +137,7 @@ Schema 6 gives ingestion keys explicit IDs and preserves existing SQLite row IDs
 Keep the pre-cutover SQLite backup for recovery. SQLite is an alternative backend, **not a live replica**: switching back after PostgreSQL has accepted writes requires transferring those changes first. Before any new PostgreSQL writes, the previous image/environment and original SQLite volume remain a rollback option.
 Back up PostgreSQL with `pg_dump` and retain the SQLite snapshot independently.
 
-Tests: `npm test` covers SQLite. Set `BLOCKFIELD_TEST_DATABASE_URL` to a PostgreSQL database where the test user may create schemas, then run `npm run test:postgres`. Tests create isolated random schemas and remove only those schemas; migration/reopen fixtures still exercise legacy SQLite files. CI runs both engines.
-
+Tests: `just test` covers SQLite. Set `BLOCKFIELD_TEST_DATABASE_URL` to a PostgreSQL database where the test user may create schemas, then run `just test-postgres`. Tests create isolated random schemas and remove only those schemas; migration/reopen fixtures still exercise legacy SQLite files. CI runs both engines.
 
 ## Legacy match import
 
@@ -155,13 +154,15 @@ Example manifest (replace the reviewed source checksum and IDs):
 {
   "serverId": "00000000-0000-4000-8000-000000000001",
   "classMap": { "Штурмовик (AK-47)": { "classId": "assault", "variantId": "0" } },
-  "files": [{
-    "path": "Stats_Campaign_123.json",
-    "sha256": "SHA256_OF_REVIEWED_FILE",
-    "sessionPurpose": "gameplay",
-    "modeId": "room",
-    "mapId": "fields"
-  }]
+  "files": [
+    {
+      "path": "Stats_Campaign_123.json",
+      "sha256": "SHA256_OF_REVIEWED_FILE",
+      "sessionPurpose": "gameplay",
+      "modeId": "room",
+      "mapId": "fields"
+    }
+  ]
 }
 ```
 

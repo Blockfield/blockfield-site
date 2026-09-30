@@ -19,12 +19,12 @@ The page is written for people who do not know the internals: Russian sentences,
 
 The site is the source of truth for roles. Identity is the Drasl session (`bf_session` cookie) → the account's player UUID, stored without dashes in lowercase.
 
-| Role | Can |
-| --- | --- |
-| `builder` | open `/admin`, see status and rooms (workshop access comes from the derived member list) |
+| Role        | Can                                                                                                                                                                                 |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `builder`   | open `/admin`, see status and rooms (workshop access comes from the derived member list)                                                                                            |
 | `moderator` | + RCON moderation (`list`, `say`, `kick`, `bf team kick`, `bf stop room`, `bf class lock/unlock`, `range`), mode switch game/workshop without recover, maintenance/workshop message |
-| `admin` | + `ban`/`pardon`, `bf maintenance status/drain/interrupt`, recover, settings, statistics admin, audit log, grant/revoke `builder` and `moderator`, workshop sync |
-| `owner` | + grant/revoke `admin` |
+| `admin`     | + `ban`/`pardon`, `bf maintenance status/drain/interrupt`, recover, settings, statistics admin, audit log, grant/revoke `builder` and `moderator`, workshop sync                    |
+| `owner`     | + grant/revoke `admin`                                                                                                                                                              |
 
 Permissions are one map in `src/lib/admin.ts` (`can(role, permission)`); every API route checks it on the server, the page only hides what the role cannot use.
 
@@ -51,11 +51,11 @@ BLOCKFIELD_WORKSHOP_KEY=...                          # optional; default: the fi
 
 Mounts for the site container (host → container):
 
-| Host | Container | Mode | Written by |
-| --- | --- | --- | --- |
-| `/srv/minecraft/workshop/admin` | `/workshop-admin` | ro | host controller: `status.json`, `session.json`, `members.json`, `candidates.json`, `results/<id>.json` |
-| `/srv/minecraft/workshop/inbox` | `/workshop-inbox` | rw | site: one `<id>.json` request per file (written as a dot temp file, then renamed) |
-| `/srv/minecraft/lobby/blockfield-admin` | `/blockfield-admin` | rw | site: `settings.json`; game server (`/data/blockfield-admin`): `applied.json` |
+| Host                                    | Container           | Mode | Written by                                                                                             |
+| --------------------------------------- | ------------------- | ---- | ------------------------------------------------------------------------------------------------------ |
+| `/srv/minecraft/workshop/admin`         | `/workshop-admin`   | ro   | host controller: `status.json`, `session.json`, `members.json`, `candidates.json`, `results/<id>.json` |
+| `/srv/minecraft/workshop/inbox`         | `/workshop-inbox`   | rw   | site: one `<id>.json` request per file (written as a dot temp file, then renamed)                      |
+| `/srv/minecraft/lobby/blockfield-admin` | `/blockfield-admin` | rw   | site: `settings.json`; game server (`/data/blockfield-admin`): `applied.json`                          |
 
 The image runs as `node` (UID 1000): the rw directories must be writable by it. The site joins `dokploy-network` to reach RCON; do not publish the RCON port.
 
@@ -92,7 +92,7 @@ There is no Drasl login for a local test account, so a dev-only identity exists:
 ```sh
 d=$(mktemp -d); mkdir -p $d/admin/results $d/inbox $d/settings
 BLOCKFIELD_STATS_DB=$d/stats.sqlite BLOCKFIELD_ADMIN_DIR=$d/admin BLOCKFIELD_INBOX_DIR=$d/inbox BLOCKFIELD_SETTINGS_DIR=$d/settings \
-BLOCKFIELD_OWNER_UUIDS=e10438e4797b49718cfecec6a8fa171b BLOCKFIELD_ADMIN_DEV_USER=e10438e4797b49718cfecec6a8fa171b:Nether npm run dev
+just dev  # configure the variables above in your native shell or .env
 ```
 
 ## Threat notes

@@ -1,23 +1,27 @@
 ---
-import { siteIdentity } from '../lib/admin';
-import { ui } from '../lib/icons';
+import { siteIdentity } from '../lib/admin'
+import { ui } from '../lib/icons'
 
-export type NavLink = { href: string; label: string; class?: string; hidden?: boolean };
+export type NavLink = { href: string; label: string; class?: string; hidden?: boolean }
 
 interface Props {
-  links?: NavLink[];
-  cta?: { href: string; label: string; title: string } | null;
+  links?: NavLink[]
+  cta?: { href: string; label: string; title: string } | null
 }
 
 const defaults: NavLink[] = [
   { href: '/leaderboard', label: 'Лидерборд' },
   { href: '/account', label: 'Аккаунт' },
   { href: '/#download', label: 'Скачать' },
-];
-const { links = defaults, cta = null } = Astro.props;
+]
+const { links = defaults, cta = null } = Astro.props
 // Рендерится на сервере, чтобы никнейм был в исходном HTML, а не подставлялся после загрузки.
-const identity = await siteIdentity(Astro.cookies).catch(() => null);
-const account = { href: '/account', label: identity ? identity.name : 'Аккаунт', aria: identity ? `Аккаунт: ${identity.name}` : undefined };
+const identity = await siteIdentity(Astro.cookies).catch(() => null)
+const account = {
+  href: '/account',
+  label: identity ? identity.name : 'Аккаунт',
+  aria: identity ? `Аккаунт: ${identity.name}` : undefined,
+}
 ---
 
 <header class="site-header">
@@ -26,31 +30,64 @@ const account = { href: '/account', label: identity ? identity.name : 'Акка�
     BLOCKFIELD
   </a>
   <nav class="site-header__links" aria-label="Разделы сайта">
-    {links.map(link => <a href={link.href} class={link.class} hidden={link.hidden}>{link.label}</a>)}
+    {links.map((link) => (
+      <a href={link.href} class={link.class} hidden={link.hidden}>
+        {link.label}
+      </a>
+    ))}
   </nav>
-  <a class="site-header__account" href={account.href} aria-label={account.aria}>{account.label}</a>
-  {identity?.hasAdminAccess && <a class="site-header__console" href="/admin">Панель</a>}
+  <a class="site-header__account" href={account.href} aria-label={account.aria}>
+    {account.label}
+  </a>
+  {identity?.hasAdminAccess && (
+    <a class="site-header__console" href="/admin">
+      Панель
+    </a>
+  )}
   {cta && (
     <a class="site-header__cta" href={cta.href} aria-label={cta.title} data-platform-download>
       <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
       {cta.label}
     </a>
   )}
-  <button class="site-header__burger" type="button" aria-expanded="false" aria-controls="mobile-menu" aria-label="Открыть меню">
-    <span></span><span></span><span></span>
+  <button
+    class="site-header__burger"
+    type="button"
+    aria-expanded="false"
+    aria-controls="mobile-menu"
+    aria-label="Открыть меню"
+  >
+    <span></span>
+    <span></span>
+    <span></span>
   </button>
 </header>
 
 <div class="mobile-menu" id="mobile-menu" hidden>
   <nav class="mobile-menu__links" aria-label="Мобильное меню">
-    {links.map(link => <a href={link.href} class={link.class} hidden={link.hidden}>{link.label}</a>)}
+    {links.map((link) => (
+      <a href={link.href} class={link.class} hidden={link.hidden}>
+        {link.label}
+      </a>
+    ))}
   </nav>
   <div class="mobile-menu__account">
-    <a href={account.href} aria-label={account.aria}>{account.label}</a>
-    {identity?.hasAdminAccess && <a class="site-header__console" href="/admin">Панель</a>}
+    <a href={account.href} aria-label={account.aria}>
+      {account.label}
+    </a>
+    {identity?.hasAdminAccess && (
+      <a class="site-header__console" href="/admin">
+        Панель
+      </a>
+    )}
   </div>
   {cta && (
-    <a class="button button--amber mobile-menu__cta" href={cta.href} aria-label={cta.title} data-platform-download>
+    <a
+      class="button button--amber mobile-menu__cta"
+      href={cta.href}
+      aria-label={cta.title}
+      data-platform-download
+    >
       <svg class="i" viewBox="0 0 24 24" aria-hidden="true" set:html={ui.download} />
       <span>{cta.title}</span>
     </a>
@@ -58,19 +95,24 @@ const account = { href: '/account', label: identity ? identity.name : 'Акка�
 </div>
 
 <script>
-  const burger = document.querySelector<HTMLButtonElement>('.site-header__burger');
-  const menu = document.querySelector<HTMLElement>('#mobile-menu');
+  const burger = document.querySelector<HTMLButtonElement>('.site-header__burger')
+  const menu = document.querySelector<HTMLElement>('#mobile-menu')
   if (burger && menu) {
     const setOpen = (open: boolean) => {
-      burger.setAttribute('aria-expanded', String(open));
-      menu.hidden = !open;
+      burger.setAttribute('aria-expanded', String(open))
+      menu.hidden = !open
       // Оверлей во весь экран — скролл фона под ним только мешает.
-      document.body.style.overflow = open ? 'hidden' : '';
-    };
-    burger.addEventListener('click', () => setOpen(menu.hidden));
-    menu.addEventListener('click', event => { if ((event.target as HTMLElement).closest('a')) setOpen(false); });
-    document.addEventListener('keydown', event => {
-      if (event.key === 'Escape' && !menu.hidden) { setOpen(false); burger.focus(); }
-    });
+      document.body.style.overflow = open ? 'hidden' : ''
+    }
+    burger.addEventListener('click', () => setOpen(menu.hidden))
+    menu.addEventListener('click', (event) => {
+      if ((event.target as HTMLElement).closest('a')) setOpen(false)
+    })
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !menu.hidden) {
+        setOpen(false)
+        burger.focus()
+      }
+    })
   }
 </script>

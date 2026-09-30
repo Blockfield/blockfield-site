@@ -1,52 +1,80 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
-import net from 'node:net';
-import { rcon } from '../src/lib/rcon.ts';
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import net from 'node:net'
+import { rcon } from '../src/lib/rcon.ts'
 
 const frame = (id, type, body) => {
-  const text = Buffer.from(body), out = Buffer.alloc(14 + text.length);
-  out.writeInt32LE(10 + text.length, 0); out.writeInt32LE(id, 4); out.writeInt32LE(type, 8); text.copy(out, 12);
-  return out;
-};
+  const text = Buffer.from(body),
+    out = Buffer.alloc(14 + text.length)
+  out.writeInt32LE(10 + text.length, 0)
+  out.writeInt32LE(id, 4)
+  out.writeInt32LE(type, 8)
+  text.copy(out, 12)
+  return out
+}
 
 // Behaves like vanilla Minecraft: one packet per read (a read with more than one packet drops the connection),
 // auth reply type 2, long output split in 4 KiB chunks, "Unknown request" for other types.
 function fakeServer(t, { password = 'secret', silent = false } = {}) {
-  const seen = [];
-  const server = net.createServer(socket => {
-    socket.on('data', chunk => {
+  const seen = []
+  const server = net.createServer((socket) => {
+    socket.on('data', (chunk) => {
       {
-        if (chunk.length < 4 || chunk.length !== chunk.readInt32LE(0) + 4) { socket.destroy(); return; }
-        const length = chunk.readInt32LE(0), id = chunk.readInt32LE(4), type = chunk.readInt32LE(8), body = chunk.subarray(12, length + 2).toString();
-        if (silent) return;
-        if (type === 3) socket.write(frame(body === password ? id : -1, 2, ''));
+        if (chunk.length < 4 || chunk.length !== chunk.readInt32LE(0) + 4) {
+          socket.destroy()
+          return
+        }
+        const length = chunk.readInt32LE(0),
+          id = chunk.readInt32LE(4),
+          type = chunk.readInt32LE(8),
+          body = chunk.subarray(12, length + 2).toString()
+        if (silent) return
+        if (type === 3) socket.write(frame(body === password ? id : -1, 2, ''))
         else if (type === 2) {
-          seen.push(body);
-          const output = body === 'big' ? 'x'.repeat(9000) : `ran ${body}`;
-          for (let i = 0; i < output.length; i += 4096) socket.write(frame(id, 0, output.slice(i, i + 4096)));
-        } else socket.write(frame(id, 0, `Unknown request ${type.toString(16)}`));
+          seen.push(body)
+          const output = body === 'big' ? 'x'.repeat(9000) : `ran ${body}`
+          for (let i = 0; i < output.length; i += 4096)
+            socket.write(frame(id, 0, output.slice(i, i + 4096)))
+        } else socket.write(frame(id, 0, `Unknown request ${type.toString(16)}`))
       }
-    });
-  });
-  t.after(() => server.close());
-  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ port: server.address().port, seen })));
+    })
+  })
+  t.after(() => server.close())
+  return new Promise((resolve) =>
+    server.listen(0, '127.0.0.1', () => resolve({ port: server.address().port, seen })),
+  )
 }
 
-test('RCON authenticates, runs commands in order and joins multi-packet output', async t => {
-  const { port, seen } = await fakeServer(t);
-  const outputs = await rcon(['list', 'big', 'say hi'], { host: '127.0.0.1', port, password: 'secret' });
-  assert.deepEqual(seen, ['list', 'big', 'say hi']);
-  assert.equal(outputs[0], 'ran list'); assert.equal(outputs[1].length, 9000); assert.equal(outputs[2], 'ran say hi');
-  assert.ok(!outputs.join('').includes('Unknown request'), 'the sentinel reply is not part of the output');
-});
+test('RCON authenticates, runs commands in order and joins multi-packet output', async (t) => {
+  const { port, seen } = await fakeServer(t)
+  const outputs = await rcon(['list', 'big', 'say hi'], {
+    host: '127.0.0.1',
+    port,
+    password: 'secret',
+  })
+  assert.deepEqual(seen, ['list', 'big', 'say hi'])
+  assert.equal(outputs[0], 'ran list')
+  assert.equal(outputs[1].length, 9000)
+  assert.equal(outputs[2], 'ran say hi')
+  assert.ok(
+    !outputs.join('').includes('Unknown request'),
+    'the sentinel reply is not part of the output',
+  )
+})
 
-test('RCON wrong password fails without running commands', async t => {
-  const { port, seen } = await fakeServer(t);
-  await assert.rejects(rcon(['stop'], { host: '127.0.0.1', port, password: 'wrong' }), /authentication failed/);
-  assert.deepEqual(seen, []);
-});
+test('RCON wrong password fails without running commands', async (t) => {
+  const { port, seen } = await fakeServer(t)
+  await assert.rejects(
+    rcon(['stop'], { host: '127.0.0.1', port, password: 'wrong' }),
+    /authentication failed/,
+  )
+  assert.deepEqual(seen, [])
+})
 
-test('RCON silent server times out', async t => {
-  const { port } = await fakeServer(t, { silent: true });
-  await assert.rejects(rcon(['list'], { host: '127.0.0.1', port, password: 'secret', timeout: 200 }), /timeout/);
-});
+test('RCON silent server times out', async (t) => {
+  const { port } = await fakeServer(t, { silent: true })
+  await assert.rejects(
+    rcon(['list'], { host: '127.0.0.1', port, password: 'secret', timeout: 200 }),
+    /timeout/,
+  )
+})

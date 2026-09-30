@@ -2,132 +2,132 @@
 name: Blockfield
 description: Field-console interface for a Minecraft team shooter — square plates, amber signal, mono labels.
 colors:
-  bg: "#070604"
-  bg-2: "#0b0906"
-  panel: "#11100d"
-  panel-2: "#18130d"
-  line: "#2a2116"
-  line-2: "#3a2c1d"
-  amber: "#f5a524"
-  amber-hi: "#ffc861"
-  amber-dim: "#8a571c"
-  cream: "#f3e7d0"
-  sand: "#c7ae86"
-  muted: "#8e7a5e"
-  dim: "#5e5040"
-  ok: "#82d66b"
-  danger: "#ff9d99"
-  info: "#91c8ff"
-  line-warn: "#4a3317"
-  stage-glow: "#3a2410"
-  shade: "rgb(0 0 0 / 0.7)"
+  bg: '#070604'
+  bg-2: '#0b0906'
+  panel: '#11100d'
+  panel-2: '#18130d'
+  line: '#2a2116'
+  line-2: '#3a2c1d'
+  amber: '#f5a524'
+  amber-hi: '#ffc861'
+  amber-dim: '#8a571c'
+  cream: '#f3e7d0'
+  sand: '#c7ae86'
+  muted: '#8e7a5e'
+  dim: '#5e5040'
+  ok: '#82d66b'
+  danger: '#ff9d99'
+  info: '#91c8ff'
+  line-warn: '#4a3317'
+  stage-glow: '#3a2410'
+  shade: 'rgb(0 0 0 / 0.7)'
 typography:
   display:
     fontFamily: "'Inter Variable', system-ui, sans-serif"
-    fontSize: "clamp(40px, 6.3vw, 96px)"
+    fontSize: 'clamp(40px, 6.3vw, 96px)'
     fontWeight: 800
     lineHeight: 1
-    letterSpacing: "-0.02em"
+    letterSpacing: '-0.02em'
   headline:
     fontFamily: "'Inter Variable', system-ui, sans-serif"
-    fontSize: "clamp(28px, 3.2vw, 48px)"
+    fontSize: 'clamp(28px, 3.2vw, 48px)'
     fontWeight: 800
     lineHeight: 1
-    letterSpacing: "-0.02em"
+    letterSpacing: '-0.02em'
   title:
     fontFamily: "'Inter Variable', system-ui, sans-serif"
-    fontSize: "clamp(19px, 1.6vw, 24px)"
+    fontSize: 'clamp(19px, 1.6vw, 24px)'
     fontWeight: 800
     lineHeight: 1.1
-    letterSpacing: "-0.01em"
+    letterSpacing: '-0.01em'
   body:
     fontFamily: "'Inter Variable', system-ui, sans-serif"
-    fontSize: "clamp(15px, 1.17vw, 17px)"
+    fontSize: 'clamp(15px, 1.17vw, 17px)'
     fontWeight: 400
     lineHeight: 1.6
-    letterSpacing: "normal"
+    letterSpacing: 'normal'
   label:
     fontFamily: "'IBM Plex Mono', ui-monospace, monospace"
-    fontSize: "clamp(10px, 0.8vw, 12px)"
+    fontSize: 'clamp(10px, 0.8vw, 12px)'
     fontWeight: 500
     lineHeight: 1.2
-    letterSpacing: "0.18em"
+    letterSpacing: '0.18em'
   data:
     fontFamily: "'IBM Plex Mono', ui-monospace, monospace"
-    fontSize: "16px"
+    fontSize: '16px'
     fontWeight: 500
     lineHeight: 1.3
-    letterSpacing: "0.01em"
+    letterSpacing: '0.01em'
   small:
     fontFamily: "'Inter Variable', system-ui, sans-serif"
-    fontSize: "14px"
+    fontSize: '14px'
     fontWeight: 400
     lineHeight: 1.45
-    letterSpacing: "normal"
+    letterSpacing: 'normal'
   stencil:
     fontFamily: "'IBM Plex Mono', ui-monospace, monospace"
-    fontSize: "clamp(9px, 0.7vw, 11px)"
+    fontSize: 'clamp(9px, 0.7vw, 11px)'
     fontWeight: 500
     lineHeight: 1.2
-    letterSpacing: "0.28em"
+    letterSpacing: '0.28em'
 rounded:
-  none: "0"
-  dot: "50%"
+  none: '0'
+  dot: '50%'
 spacing:
-  hair: "4px"
-  xs: "8px"
-  sm: "12px"
-  md: "16px"
-  lg: "24px"
-  xl: "32px"
-  "2xl": "48px"
-  "3xl": "64px"
+  hair: '4px'
+  xs: '8px'
+  sm: '12px'
+  md: '16px'
+  lg: '24px'
+  xl: '32px'
+  '2xl': '48px'
+  '3xl': '64px'
 components:
   button-primary:
-    backgroundColor: "{colors.amber}"
-    textColor: "{colors.bg}"
-    rounded: "{rounded.none}"
-    padding: "0 clamp(18px, 1.7vw, 26px)"
-    height: "clamp(44px, 3.9vw, 58px)"
+    backgroundColor: '{colors.amber}'
+    textColor: '{colors.bg}'
+    rounded: '{rounded.none}'
+    padding: '0 clamp(18px, 1.7vw, 26px)'
+    height: 'clamp(44px, 3.9vw, 58px)'
   button-primary-hover:
-    backgroundColor: "{colors.amber-hi}"
-    textColor: "{colors.bg}"
+    backgroundColor: '{colors.amber-hi}'
+    textColor: '{colors.bg}'
   button-secondary:
-    backgroundColor: "transparent"
-    textColor: "{colors.cream}"
-    rounded: "{rounded.none}"
-    padding: "0 18px"
-    height: "44px"
+    backgroundColor: 'transparent'
+    textColor: '{colors.cream}'
+    rounded: '{rounded.none}'
+    padding: '0 18px'
+    height: '44px'
   button-secondary-hover:
-    backgroundColor: "{colors.line}"
-    textColor: "{colors.cream}"
+    backgroundColor: '{colors.line}'
+    textColor: '{colors.cream}'
   button-danger:
-    backgroundColor: "transparent"
-    textColor: "{colors.danger}"
-    rounded: "{rounded.none}"
-    padding: "0 18px"
-    height: "44px"
+    backgroundColor: 'transparent'
+    textColor: '{colors.danger}'
+    rounded: '{rounded.none}'
+    padding: '0 18px'
+    height: '44px'
   input:
-    backgroundColor: "{colors.bg}"
-    textColor: "{colors.cream}"
-    rounded: "{rounded.none}"
-    padding: "0 12px"
-    height: "44px"
+    backgroundColor: '{colors.bg}'
+    textColor: '{colors.cream}'
+    rounded: '{rounded.none}'
+    padding: '0 12px'
+    height: '44px'
   card:
-    backgroundColor: "{colors.panel}"
-    textColor: "{colors.cream}"
-    rounded: "{rounded.none}"
-    padding: "clamp(16px, 3vw, 24px)"
+    backgroundColor: '{colors.panel}'
+    textColor: '{colors.cream}'
+    rounded: '{rounded.none}'
+    padding: 'clamp(16px, 3vw, 24px)'
   badge:
-    backgroundColor: "{colors.line}"
-    textColor: "{colors.sand}"
-    rounded: "{rounded.none}"
-    padding: "3px 8px"
+    backgroundColor: '{colors.line}'
+    textColor: '{colors.sand}'
+    rounded: '{rounded.none}'
+    padding: '3px 8px'
   nav-link:
-    backgroundColor: "transparent"
-    textColor: "{colors.sand}"
-    typography: "{typography.label}"
-    rounded: "{rounded.none}"
+    backgroundColor: 'transparent'
+    textColor: '{colors.sand}'
+    typography: '{typography.label}'
+    rounded: '{rounded.none}'
 ---
 
 # Design System: Blockfield
@@ -306,8 +306,8 @@ shorter card. The console gets its own, denser rules:
 
 The system is **flat by default and layered by hairline**. Depth comes from four warm tonal steps
 (Chassis → Recessed → Plate → Plate Deep) separated by 1px Seam borders. Cards do not lift. Sections
-do not float. A shadow in this system means one of exactly two things: *this element is temporarily
-above the page*, or *this element is energised*.
+do not float. A shadow in this system means one of exactly two things: _this element is temporarily
+above the page_, or _this element is energised_.
 
 ### Shadow Vocabulary
 
@@ -335,7 +335,7 @@ carried by a dot plus a word plus, at most, a 1px border in the state hue.
 - **The plate silhouette:** a rectangle, a 1px seam, and optionally a mono code in the corner. This
   is the repeated form of the whole product.
 - **The diagonal:** the landing hero's clipped polygon (`clip-path: polygon(0 0, 57% 0, 45% 100%, 0
-  100%)`) is the one non-orthogonal shape in the system. It belongs to the hero and nowhere else.
+100%)`) is the one non-orthogonal shape in the system. It belongs to the hero and nowhere else.
 - **The voxel field:** a two-scale radial dot grid at 16px (one Minecraft texel) and 96px (six
   blocks), amber at 11% / 22%, used behind sections that want to feel like ground. It is a texture,
   not a divider.

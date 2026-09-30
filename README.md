@@ -4,9 +4,10 @@
 Репозиторий `Blockfield/blockfield-site` (до 2026-09-27 — `netherg-io/blockfield-web`; старый адрес GitHub перенаправляет).
 
 ```bash
-npm install
-npm run dev        # http://localhost:4321
-npm run build && npm start
+just setup
+just dev           # http://localhost:4321
+just build
+just start
 ```
 
 ## Почему SSR
@@ -55,7 +56,7 @@ GitHub, а релиз меняется редко — так что почти �
 
 ## CI
 
-Push в `main`: тесты (в том числе на PostgreSQL) на Blacksmith, образ `ghcr.io/blockfield/blockfield-site:<sha>` и `:latest`,
+Ручной Deploy после подтверждения владельца: тесты (в том числе на PostgreSQL) на Blacksmith, образ `ghcr.io/blockfield/blockfield-site:<sha>` и `:latest`,
 затем вебхук Dokploy. Приложение Dokploy `blockfield-site` разворачивает `:latest`; откат — указать в нём тег `<sha>`
 предыдущего коммита. Старые образы `ghcr.io/netherg-io/blockfield-site` сохранены для отката на переходный период.
 
@@ -90,3 +91,16 @@ Push в `main`: тесты (в том числе на PostgreSQL) на Blacksmit
 ## Statistics
 
 Persistent gameplay history, leaderboard and account statistics: see `docs/statistics.md`. The site uses PostgreSQL (`BLOCKFIELD_DATABASE_URL`) or a persistent SQLite volume (`BLOCKFIELD_STATS_DB`) and remains independent of the Minecraft backend. Both backends preserve statistics, seasonal ratings and admin roles; see the migration instructions before switching.
+
+## Проверки и развёртывание
+
+Установите Python 3.12+, Node.js 22 и Just 1.57.0; затем `just setup`. Команды `just lint` и
+`just format-check` проверяют весь TypeScript/JavaScript/Astro и формат;
+`just format` применяет форматирование, `just check` запускает оба
+контроля. Коммиты main и PR выполняют проверки без публикации образа и без
+обращений к продовому webhook.
+
+Прод развёртывается только ручным запуском workflow `Build and deploy the
+landing page` после явного подтверждения владельца. Этот workflow повторяет
+проверки, запускает тесты, публикует образ и ожидает появления выбранного SHA
+на сайте. Push в main сам по себе прод не обновляет.
