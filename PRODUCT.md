@@ -51,7 +51,7 @@ A small, self-hosted, Russian-language project that controls its whole stack —
 auth server, stats ingestion, admin panel — and therefore can make promises a "Minecraft server with
 a website" cannot: your identity is not Mojang's, your history is not the server's uptime, your
 rating is a real seasonal Glicko-2 number, and the people running the server are visible and
-reachable (`@NetherG` in Telegram).
+reachable (support in Discord: `https://discord.gg/cAUcpeCVDM`).
 
 The site's second promise is honesty about being small: there is no marketing fiction, no invented
 player counts, no fake testimonials. Every number on the site is a number the database actually
