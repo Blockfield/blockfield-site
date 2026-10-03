@@ -10,9 +10,11 @@
     "test": "node --experimental-strip-types --test test/*.test.mjs",
     "test:postgres": "node --experimental-strip-types --test test/stats*.test.mjs test/admin.test.mjs test/names.test.mjs test/storage.test.mjs",
     "lint": "eslint .",
-    "format": "prettier --write \"src/**/*.{ts,astro,css}\" \"{scripts,test}/**/*.mjs\" \"*.mjs\" package.json \"*.md\" \"docs/**/*.md\" \".github/**/*.{yml,yaml}\" \"pnpm-lock.yaml\" \"pnpm-workspace.yaml\"",
-    "format:check": "prettier --check \"src/**/*.{ts,astro,css}\" \"{scripts,test}/**/*.mjs\" \"*.mjs\" package.json \"*.md\" \"docs/**/*.md\" \".github/**/*.{yml,yaml}\" \"pnpm-lock.yaml\" \"pnpm-workspace.yaml\"",
-    "check": "pnpm lint && pnpm format:check && pnpm test"
+    "format": "prettier --write \"src/**/*.{ts,astro,css}\" \"{scripts,test}/**/*.mjs\" \"*.{mjs,json}\" package.json \"*.md\" \"docs/**/*.md\" \".github/**/*.{yml,yaml}\" \"pnpm-lock.yaml\" \"pnpm-workspace.yaml\"",
+    "format:check": "prettier --check \"src/**/*.{ts,astro,css}\" \"{scripts,test}/**/*.mjs\" \"*.{mjs,json}\" package.json \"*.md\" \"docs/**/*.md\" \".github/**/*.{yml,yaml}\" \"pnpm-lock.yaml\" \"pnpm-workspace.yaml\"",
+    "check": "pnpm lint && pnpm stylelint && pnpm typecheck && pnpm format:check && pnpm test",
+    "stylelint": "stylelint \"src/**/*.{css,astro}\"",
+    "typecheck": "astro check"
   },
   "dependencies": {
     "@astrojs/node": "11.1.6",
@@ -25,6 +27,7 @@
     "node": ">=22.19.0"
   },
   "devDependencies": {
+    "@astrojs/check": "0.9.10",
     "@eslint/js": "10.0.1",
     "@types/node": "^22.20.4",
     "@types/pg": "^8.23.1",
@@ -32,8 +35,11 @@
     "eslint-plugin-astro": "3.2.1",
     "globals": "17.12.0",
     "jsdom": "^30.1.0",
+    "postcss-html": "2.0.0",
     "prettier": "3.8.3",
     "prettier-plugin-astro": "1.1.0",
+    "stylelint": "17.13.0",
+    "typescript": "5.9.3",
     "typescript-eslint": "8.71.0"
   },
   "packageManager": "pnpm@11.18.0"

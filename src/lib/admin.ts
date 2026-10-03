@@ -365,7 +365,7 @@ export function readMapCatalog(directory: string): MapCatalogAvailability {
 }
 function requiredMapCatalog() {
   const catalog = readMapCatalog(adminDir())
-  if (!catalog.available) throw fail(503, catalog.error)
+  if (catalog.available === false) throw fail(503, catalog.error)
   return catalog
 }
 function existingCandidate(id: unknown) {

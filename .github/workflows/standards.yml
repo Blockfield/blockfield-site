@@ -24,7 +24,16 @@ jobs:
           node-version: '22.23.2'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check
+      - name: Lint JavaScript and embedded styles
+        run: |
+          pnpm lint
+          pnpm stylelint
+      - name: Check source formatting
+        run: pnpm format:check
+      - name: Check TypeScript and Astro components
+        run: pnpm typecheck
+      - name: Run behavior tests
+        run: pnpm test
 
       - run: pnpm build
   postgres:
