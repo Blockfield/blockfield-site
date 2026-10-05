@@ -9,7 +9,7 @@ permissions:
   packages: write
 jobs:
   check:
-    runs-on: [self-hosted, blockfield]
+    runs-on: [self-hosted, small]
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -91,7 +91,7 @@ jobs:
             ghcr.io/blockfield/blockfield-site:latest
   deploy:
     needs: image
-    runs-on: [self-hosted, blockfield]
+    runs-on: [self-hosted, tiny]
     timeout-minutes: 15
     steps:
       - name: Deploy through the Dokploy webhook
