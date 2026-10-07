@@ -8,7 +8,7 @@
     "preview": "node ./dist/server/entry.mjs",
     "start": "node ./dist/server/entry.mjs",
     "test": "node --experimental-strip-types --test test/*.test.mjs",
-    "test:postgres": "node --experimental-strip-types --test test/stats*.test.mjs test/admin.test.mjs test/names.test.mjs test/storage.test.mjs",
+    "test:postgres": "node --experimental-strip-types --test test/stats*.test.mjs test/diagnostics.test.mjs test/admin.test.mjs test/names.test.mjs test/storage.test.mjs",
     "lint": "eslint .",
     "format": "prettier --write \"src/**/*.{ts,astro,css}\" \"{scripts,test}/**/*.mjs\" \"*.{mjs,json}\" package.json \"*.md\" \"docs/**/*.md\" \".github/**/*.{yml,yaml}\" \"pnpm-lock.yaml\" \"pnpm-workspace.yaml\"",
     "format:check": "prettier --check \"src/**/*.{ts,astro,css}\" \"{scripts,test}/**/*.mjs\" \"*.{mjs,json}\" package.json \"*.md\" \"docs/**/*.md\" \".github/**/*.{yml,yaml}\" \"pnpm-lock.yaml\" \"pnpm-workspace.yaml\"",

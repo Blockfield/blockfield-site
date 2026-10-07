@@ -1157,3 +1157,145 @@ test('class prices round-trip through settings with strict numeric limits', (t) 
     )
   }
 })
+
+test('raw console: owner only, one validated line, every call audited including refusals', async (t) => {
+  const net = await import('node:net')
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  // Minimal vanilla-like RCON: auth reply, command echo, "Unknown request" for the end-of-output sentinel.
+  const seen = []
+  const frame = (id, type, body) => {
+    const text = Buffer.from(body),
+      out = Buffer.alloc(14 + text.length)
+    out.writeInt32LE(10 + text.length, 0)
+    out.writeInt32LE(id, 4)
+    out.writeInt32LE(type, 8)
+    text.copy(out, 12)
+    return out
+  }
+  const server = net.createServer((socket) =>
+    socket.on('data', (chunk) => {
+      const id = chunk.readInt32LE(4),
+        type = chunk.readInt32LE(8),
+        body = chunk.subarray(12, chunk.readInt32LE(0) + 2).toString()
+      if (type === 3) socket.write(frame(id, 2, ''))
+      else if (type === 2) {
+        seen.push(body)
+        socket.write(
+          frame(
+            id,
+            0,
+            body === 'bogus'
+              ? 'Unknown or incomplete command'
+              : body.includes('example-short-password')
+                ? '{"client_secret":"response-short-secret","password":"reply-short-password"}'
+                : '§aDone',
+          ),
+        )
+      } else socket.write(frame(id, 0, 'Unknown request'))
+    }),
+  )
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  Object.assign(process.env, {
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_RCON_HOST: '127.0.0.1',
+    BLOCKFIELD_RCON_PORT: String(server.address().port),
+    BLOCKFIELD_RCON_PASSWORD: 'x',
+  })
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(MOD, 'Moddy', 'moderator', 'seed')
+  await s.setStaff(OTHER, 'Bob', 'builder', 'seed')
+  const call = (as, command) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL('http://site/api/admin/rcon/raw')
+    const request = new Request(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command }),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, 'rcon/raw', s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  for (const who of [`${ADMIN}:Adm`, `${MOD}:Moddy`, `${OTHER}:Bob`])
+    assert.equal((await call(who, 'stop')).status, 403, who)
+  assert.equal((await call(`${OWNER}:Nether`, 'say a\nstop')).status, 400)
+  const ok = await call(`${OWNER}:Nether`, '/time set day')
+  assert.equal(ok.status, 200)
+  assert.deepEqual(await ok.json(), { command: 'time set day', output: 'Done', rejected: false })
+  assert.equal((await (await call(`${OWNER}:Nether`, 'bogus')).json()).rejected, true)
+  assert.deepEqual(seen, ['time set day', 'bogus'], 'refused and invalid commands never reach RCON')
+
+  const log = await s.auditLog()
+  assert.deepEqual(
+    log.map((e) => [e.actorName, e.action, e.ok, e.target]),
+    [
+      ['Nether', 'rcon:raw', 1, 'bogus'],
+      ['Nether', 'rcon:raw', 1, 'time set day'],
+      ['Nether', 'rcon:raw', 0, 'say a stop'],
+      ['Bob', 'rcon:raw', 0, null],
+      ['Moddy', 'rcon:raw', 0, null],
+      ['Adm', 'rcon:raw', 0, null],
+    ],
+  )
+  assert.equal(JSON.parse(log[1].detail).output, 'Done')
+  const command =
+    'data modify storage test:config value set value {"password":"example-short-password","access_token":"short-token"}'
+  const privateReply = await (await call(`${OWNER}:Nether`, command)).json()
+  assert.equal(privateReply.command, command, 'the owner receives the original command')
+  assert.ok(
+    privateReply.output.includes('response-short-secret'),
+    'the owner receives the raw response',
+  )
+  assert.equal(
+    (await call(`${OWNER}:Nether`, 'say rcon_password=invalid-short-secret\nstop')).status,
+    400,
+  )
+  const sanitized = JSON.stringify((await s.auditLog()).slice(0, 2))
+  for (const leak of [
+    'example-short-password',
+    'short-token',
+    'response-short-secret',
+    'reply-short-password',
+    'invalid-short-secret',
+  ])
+    assert.ok(!sanitized.includes(leak), `${leak} must not reach the admin-readable audit`)
+  assert.ok(sanitized.includes('[secret]'))
+})
+
+test('diagnostics are admin-only and never report health without data', async (t) => {
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  delete process.env.BLOCKFIELD_RCON_HOST
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(MOD, 'Moddy', 'moderator', 'seed')
+  const call = (as, path) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL(`http://site/api/admin/${path}`)
+    return handleAdmin(
+      { request: new Request(url), url, cookies: { get: () => undefined } },
+      path,
+      s,
+    ).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  assert.equal((await call(`${MOD}:Moddy`, 'diagnostics')).status, 403)
+  const empty = await (await call(`${ADMIN}:Adm`, 'diagnostics')).json()
+  assert.equal(empty.lastSampleAt, null)
+  assert.deepEqual([empty.samples, empty.events], [[], []])
+  assert.equal((await call(`${ADMIN}:Adm`, 'diagnostics/live')).status, 503)
+})

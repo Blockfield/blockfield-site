@@ -8,7 +8,7 @@ The landing page header (`src/pages/index.astro`) shows the signed-in player's n
 
 ## Interface
 
-Routine actions use Russian labels instead of UUIDs or command strings. Weapon settings expose their data keys and nested JSON; map history exposes version digests. Tabs are grouped by task and only those the role can use are shown: «Обзор» (server state, mode switch, message, range, maintenance), «Игроки» (moderation by nickname), «Матчи» (room cards and match outcome), «Настройки игры» (game rules, parkour and weapon balance), «Команда» (roles and builder access), «Мастерская» (editing access, candidates and archive history), «Статистика» (results and ingest keys), «Журнал действий». Destructive actions use a native `<dialog>`. `<select>` uses the keyboard-accessible `customSelect()` in `admin.astro` over a hidden native form control.
+Routine actions use Russian labels instead of UUIDs or command strings. Weapon settings expose their data keys and nested JSON; map history exposes version digests. Tabs are grouped by task and only those the role can use are shown: «Обзор» (server state, mode switch, message, range, maintenance), «Игроки» (moderation by nickname), «Матчи» (room cards and match outcome), «Настройки игры» (game rules, parkour and weapon balance), «Команда» (roles and builder access), «Мастерская» (editing access, candidates and archive history), «Статистика» (results and ingest keys), «Производительность» (server health), «Консоль» (owner's raw RCON), «Журнал действий». Destructive actions use a native `<dialog>`. `<select>` uses the keyboard-accessible `customSelect()` in `admin.astro` over a hidden native form control.
 
 - Display names for class, map, mode and campaign ids, balance labels/groups and the game-file balance defaults live in `src/lib/game-names.ts`, a hand-kept copy of `blockfield-server/server/lobby/blockfield/{classes,campaigns,maps,modes}`. Update it when the server adds content; unknown ids show a neutral label and are preserved on save. A test checks that every `BALANCE` key has a label and a default.
 - ParCool action ids and their Russian labels are `PARCOOL_ACTIONS` in `src/lib/game-names.ts`, a hand-kept copy of ParCool's action enum (not modpack content, so it does not follow the "unknown ids preserved" rule above: the site only ever writes ids from this list).
@@ -21,12 +21,12 @@ Routine actions use Russian labels instead of UUIDs or command strings. Weapon s
 
 The site is the source of truth for roles. Identity is the Drasl session (`bf_session` cookie) → the account's player UUID, stored without dashes in lowercase.
 
-| Role        | Can                                                                                                                                                                                 |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `builder`   | open `/admin`, see status, rooms and map history (workshop access comes from the derived member list)                                                                               |
-| `moderator` | + RCON moderation (`list`, `say`, `kick`, `bf team kick`, `bf stop room`, `bf class lock/unlock`, `range`), mode switch game/workshop without recover, maintenance/workshop message |
-| `admin`     | + `ban`/`pardon`, maintenance/recover, game and weapon settings, statistics admin, audit log, grant/revoke builder/moderator, workshop sync, map publication/rollback/export        |
-| `owner`     | + grant/revoke `admin`                                                                                                                                                              |
+| Role        | Can                                                                                                                                                                                                              |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `builder`   | open `/admin`, see status, rooms and map history (workshop access comes from the derived member list)                                                                                                            |
+| `moderator` | + RCON moderation (`list`, `say`, `kick`, `bf team kick`, `bf stop room`, `bf class lock/unlock`, `range`), mode switch game/workshop without recover, maintenance/workshop message                              |
+| `admin`     | + `ban`/`pardon`, maintenance/recover, game and weapon settings, statistics admin, audit log, grant/revoke builder/moderator, workshop sync, map publication/rollback/export, server performance (`diagnostics`) |
+| `owner`     | + grant/revoke `admin`, raw RCON console (`rcon-raw`)                                                                                                                                                            |
 
 Permissions are one map in `src/lib/admin.ts` (`can(role, permission)`); every API route checks it on the server, the page only hides what the role cannot use.
 
@@ -72,6 +72,7 @@ The image runs as `node` (UID 1000): the rw directories must be writable by it. 
 - `parcool`: `{allowedActions: string[]}`, ids from `PARCOOL_ACTIONS` (`src/lib/game-names.ts`), no duplicates. Section present → exactly those actions are allowed, everything else forbidden (`allowedActions: []` forbids every parkour action). Section absent → the mod's base image file governs (currently `FastRun`, `ClingToCliff`, `Crawl`); the mod skips unknown names and reports them in `applied.json`. The UI has one toggle («Задать список действий на сайте»): off omits the section from the save entirely — even if it was set before, since every save replaces the whole file — and shows the checkboxes, disabled, reflecting the base file's own default so the effective value stays visible; on writes the checked ids. `ClimbUp` is the pull-up out of a cliff cling — without it, clinging only holds the player in place.
 - Workshop map access: a `builder` row in `staff_roles` (schema v6) carries an optional `maps` array of access scopes (`WORKSHOP_PLACES` in `src/lib/game-names.ts`). Missing/`null` grants every scope, including future ones; `[]` grants no editing scope. This ACL is separate from the frozen selected-session map list. `workshopMembers` drops `maps` for lead/admin roles. `POST /api/admin/staff/maps {uuid,maps:string[]|null}` (`roles`: admin/owner) validates known scopes and uniqueness, then syncs the controller member list. `POST staff/map-access {mapId,uuids}` updates one scope for all builders: granting preserves an existing all-scopes ACL; revoking from all expands the remaining known scopes. Neither operation silently grants future maps through an explicit list.
 - RCON: one connection per call, 5 s timeout. Only fixed command shapes from `rconCommand()`; nicknames `^[A-Za-z0-9_]{3,16}$`, room UUIDs, class ids, and free text ≤120 chars with control characters and `§` replaced, never starting with `/`. `range` is sent as `bf range <op>`. A reply starting with `Unknown or incomplete command`/`Unknown command` or containing `<--[HERE]` is reported as a failure. Connection errors reach the browser only as «Игровой сервер не отвечает»; the details go to the server log and the audit entry. `stop room … win RED|BLUE` is sent as `win RedTeam|BlueTeam` (the game's team names). A bare stop reason cannot start with `win`/`draw`. Interrupt sends `bf maintenance interrupt` and `… confirm <reason>` on the same connection (the game requires the same sender within 60 s).
+- Raw console (`POST /api/admin/rcon/raw {command}`, `rcon-raw`: owner only; `src/lib/console.ts`): one command per call through the same `rcon()`. The command must be a string without control characters (newlines included), at most 1000 characters after trimming; leading `/` is removed. The reply is returned whole with `§` codes stripped: `{command, output, rejected}`, where `rejected` marks a Brigadier refusal (see above). Connection errors behave like other RCON calls. Audit action `rcon:raw`: target is the redacted command, detail the first 500 characters of the redacted reply and `rejected`; the owner-only response stays whole. The shared `redact()` runs before truncation/storage, also for an invalid command. Refusals (403) are audited without the command, because the body of a refused call is never read. The page confirms commands matching `dangerousCommand()` (`stop`, `op`, `deop`, `ban`, `kick`, `kill`, `whitelist off|remove`, `execute`, `fill`, `gamerule`, `bf maintenance|stop`, …) with the native dialog; this is a UI guard only, the owner's server-side permission is the boundary. History (↑/↓) lives only in the open page.
 
 - Workshop scopes: access lists include arena IDs, `lobby`, `limbo` and the legacy `hub` building scope (`WORKSHOP_PLACES` in `src/lib/game-names.ts`). `null` means every scope; an explicit list grants only those listed.
 - `POST /api/workshop/access {actor, target, mapId, allowed}` (`src/pages/api/workshop/access.ts`, `handleWorkshopAccess`): called by the workshop server when an admin uses «Разрешить/Запретить строить» on the tablet. `Authorization: Bearer BLOCKFIELD_WORKSHOP_KEY` (constant-time compare; no key = 503), then the in-game actor's own site role must have `roles`; the target must be a builder. Applies `withMapAccess`, re-syncs the workshop `members` request and writes `workshop-map-access` to the journal with `from: 'game'` (refusals too).
@@ -126,6 +127,48 @@ For Limbo, the UI enables «Подготовить для прокси» only wi
 
 Legacy candidates and overlay metadata remain readable. The old `tools/workshop/fetch-map.py` command is retired. Accepted-map release artifacts and review PRs are prepared by `scripts/maps/publish_map.py` in [blockfield-server](https://github.com/Blockfield/blockfield-server/blob/main/docs/DEVELOPING.md); controller storage and operations belong to [blockfield-workshop](https://github.com/Blockfield/blockfield-workshop/blob/main/docs/OPERATIONS.md).
 
+## Server performance
+
+«Производительность» (`diagnostics`: admin/owner) exists to catch freezes, TPS drops and game errors. Code: `src/lib/diagnostics.ts`; tests `test/diagnostics.test.mjs`.
+
+- `GET /api/admin/diagnostics/live`: vanilla `tick query` over RCON (Minecraft 1.20.3+, no mod): state, target TPS, average and P50/P95/P99 tick time over the server's last 100 ticks. Read-only, not audited. Works today, without a producer.
+- `GET /api/admin/diagnostics`: samples of the last 24 h, the newest 500 events, and `lastSampleAt`. No samples or a last sample older than 3 minutes is shown as unknown/stale, never as healthy. The journal filters by kind and text, copies the shown records as text and exports them with the samples as JSON.
+- Producer: `POST /api/stats/diagnostics`, the same `Authorization: Bearer <ingest key>` and `X-Blockfield-Server-Id` as match results (env or DB keys, constant-time, authenticated before the body is read, 1 MiB limit); the body's `serverId` must equal the header. Response `{samples, events}` (counts accepted); resends are idempotent (`(serverId, at)` per sample, `(serverId, id)` per event).
+
+```json
+{
+  "schemaVersion": 1,
+  "serverId": "<server UUID>",
+  "startedAt": 1759790000000,
+  "samples": [
+    {
+      "at": 1759800000000,
+      "tps": 19.6,
+      "msptAvg": 21.4,
+      "msptP95": 38.0,
+      "msptMax": 3400,
+      "players": 12,
+      "heapUsedMb": 1800,
+      "heapMaxMb": 3072,
+      "gcPauseMs": 120
+    }
+  ],
+  "events": [
+    {
+      "id": "<UUID>",
+      "at": 1759800000000,
+      "kind": "freeze",
+      "durationMs": 3400,
+      "source": "Server thread",
+      "message": "…",
+      "repeats": 1
+    }
+  ]
+}
+```
+
+A sample summarizes one interval (one minute recommended): `tps` and `msptAvg` over it, `msptMax` its worst tick, `gcPauseMs` time spent in GC. `players`, `msptP95`, heap and GC fields are optional. `kind` is `freeze` (requires `durationMs`), `error`, `crash` or `warning`; `message` ≤ 4000 characters and `source` ≤ 120 after redaction; `repeats` coalesces identical events. At most 120 samples and 200 events per report; times more than 5 minutes ahead refuse the report, items older than retention are dropped. Retention: samples 7 days (cap 50 000 rows), events 14 days (cap 5000, retaining errors/crashes before freezes/warnings, newest within each group). The admin view, local filters, counts and export use the newest 500 retained events, not the complete journal. Before storage `redact()` removes control characters except newline/tab, URLs (webhooks included), e-mails, IPv4/IPv6 addresses, credentials after `password=`, `token:`, `Bearer` and similar (including quoted JSON keys, `rcon_password`, `access_token`, `client_secret`), and long letter+digit runs; canonical UUIDs stay. The producer must still never send secret-bearing logs.
+
 ## Statistics administration
 
 - Void/restore a result (`results.voided_at/voided_by`). Voided results leave every leaderboard, profile and history query. A producer replay of a voided result stays voided. Voiding or restoring a rated campaign (campaign, completed/draw) deletes the ratings and rating changes of its season **and every later season** and replays all non-voided rated campaigns from that season's start in `ended_at, server_id, event_id` order through the normal rating code, so later seasons' carry-over stays consistent. Earlier seasons are untouched.
@@ -148,7 +191,7 @@ in `.env` as `BLOCKFIELD_STATS_DB`, `BLOCKFIELD_ADMIN_DIR`, `BLOCKFIELD_INBOX_DI
 ## Threat notes
 
 - Fail closed: no DB, no owners and no grants, an unknown role, or a Drasl error all mean no access. Owners cannot be demoted from the UI, so a compromised admin cannot lock out the owner or grant admin.
-- No raw console: the browser sends an action name and arguments, never a command string. Validation rejects newline/space injection in names and leading `/` in text.
+- Only the owner has a raw console (`rcon-raw`, environment-only role). Everyone else sends an action name and arguments, never a command string. Validation rejects newline/space injection in names and leading `/` in text.
 - Mutations use the existing same-origin check (`route()`), the `SameSite=Strict` session cookie and `Cache-Control: no-store`. No rate limiting yet (put the reverse proxy in front).
 - A stolen session gives that player's role until the Drasl token is reset; revoke the role on the site, which also updates the workshop list.
 - The inbox is trusted by the controller: it must still validate requests itself (the site is not the only writer to the host directory).
