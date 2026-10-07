@@ -50,7 +50,7 @@ export function redact(text: string): string {
     text
       .replace(/[^\S\n]*(?:(?![\n\t])\p{Cc})[^\S\n]*/gu, ' ')
       .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, '[url]')
-      .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '[email]')
+      .replace(/(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '[email]')
       .replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b/g, '[ip]')
       // IPv6: five or more groups (timestamps have at most three) or a compressed `::` form.
       .replace(/\[?\b(?:[0-9a-f]{1,4}:){4,7}[0-9a-f]{1,4}\b\]?(?::\d{1,5})?/gi, '[ip]')
