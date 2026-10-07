@@ -3804,7 +3804,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                   heap ? `, память до ${number(heap)} МБ` : '',
                   freezes ? `, фризов ${freezes}` : '',
                   errors ? `, ошибок ${errors}` : '',
-                  restart ? `, перезапуск в ${date(restart.startedAt!)}` : '',
+                  restart ? `, перезапуск ${date(restart.startedAt!)}` : '',
                 ),
                 el('time', {
                   dateTime: new Date(hour).toISOString(),
@@ -3933,7 +3933,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             ),
           )
           dl.hidden = false
-          return `${TICK_STATES[t.state] ?? t.state} — ${date(t.at)}.`
+          const verdict = `${TICK_STATES[t.state] ?? t.state} — ${date(t.at)}.`
+          // A lagging or frozen server is the bad news this check exists for: show it in the error tone.
+          if (t.state === 'lagging' || t.state === 'frozen') throw new Error(verdict)
+          return verdict
         },
         $('#live-check').parentElement,
       ),
@@ -3979,15 +3982,13 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       run(
         form.querySelector<HTMLElement>('.form-status')!,
         async () => {
-          try {
-            const { output, rejected } = await api('rcon/raw', 'POST', { command })
-            consoleLine(command, output, rejected)
-            consoleInput.value = ''
-            return rejected ? 'Сервер не принял команду.' : ''
-          } catch (error) {
-            consoleLine(command, (error as Error).message, true)
+          const reply = await api('rcon/raw', 'POST', { command }).catch((error: Error) => {
+            consoleLine(command, error.message, true)
             throw error
-          }
+          })
+          consoleLine(command, reply.output, reply.rejected)
+          consoleInput.value = ''
+          if (reply.rejected) throw new Error('Сервер не принял команду.')
         },
         form,
       )

@@ -71,15 +71,19 @@ export function redact(text: string): string {
   )
 }
 
-const finite = (value: unknown, min: number, max: number) =>
-  typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max
-function optional(value: unknown, min: number, max: number, name: string): number | null {
+// `whole` fields are BIGINT columns on PostgreSQL, which refuses fractions.
+const finite = (value: unknown, min: number, max: number, whole: boolean) =>
+  typeof value === 'number' &&
+  (whole ? Number.isSafeInteger(value) : Number.isFinite(value)) &&
+  value >= min &&
+  value <= max
+function optional(value: unknown, min: number, max: number, name: string, whole = false) {
   if (value === undefined || value === null) return null
-  if (!finite(value, min, max)) throw new StatsError(400, `Invalid ${name}`)
+  if (!finite(value, min, max, whole)) throw new StatsError(400, `Invalid ${name}`)
   return value as number
 }
-function required(value: unknown, min: number, max: number, name: string): number {
-  if (!finite(value, min, max)) throw new StatsError(400, `Invalid ${name}`)
+function required(value: unknown, min: number, max: number, name: string, whole = false) {
+  if (!finite(value, min, max, whole)) throw new StatsError(400, `Invalid ${name}`)
   return value as number
 }
 function line(value: unknown, max: number): string | null {
@@ -103,7 +107,7 @@ export function validateReport(value: any, now = Date.now()): Report {
     (value.events ?? []).length > 200
   )
     throw new StatsError(400, 'Invalid diagnostics report')
-  const time = (at: unknown) => required(at, 0, now + 5 * MINUTE, 'time')
+  const time = (at: unknown) => required(at, 0, now + 5 * MINUTE, 'time', true)
   const samples = (value.samples ?? []).map((s: any): Sample => {
     if (!s || typeof s !== 'object') throw new StatsError(400, 'Invalid sample')
     return {
@@ -112,10 +116,10 @@ export function validateReport(value: any, now = Date.now()): Report {
       msptAvg: required(s.msptAvg, 0, 3_600_000, 'msptAvg'),
       msptP95: optional(s.msptP95, 0, 3_600_000, 'msptP95'),
       msptMax: required(s.msptMax, 0, 3_600_000, 'msptMax'),
-      players: optional(s.players, 0, 10_000, 'players'),
-      heapUsedMb: optional(s.heapUsedMb, 0, 1_048_576, 'heapUsedMb'),
-      heapMaxMb: optional(s.heapMaxMb, 0, 1_048_576, 'heapMaxMb'),
-      gcPauseMs: optional(s.gcPauseMs, 0, 3_600_000, 'gcPauseMs'),
+      players: optional(s.players, 0, 10_000, 'players', true),
+      heapUsedMb: optional(s.heapUsedMb, 0, 1_048_576, 'heapUsedMb', true),
+      heapMaxMb: optional(s.heapMaxMb, 0, 1_048_576, 'heapMaxMb', true),
+      gcPauseMs: optional(s.gcPauseMs, 0, 3_600_000, 'gcPauseMs', true),
     }
   })
   const events = (value.events ?? []).map((e: any): ServerEvent => {
@@ -130,8 +134,8 @@ export function validateReport(value: any, now = Date.now()): Report {
       kind: e.kind,
       durationMs:
         e.kind === 'freeze'
-          ? required(e.durationMs, 0, 3_600_000, 'durationMs')
-          : optional(e.durationMs, 0, 3_600_000, 'durationMs'),
+          ? required(e.durationMs, 0, 3_600_000, 'durationMs', true)
+          : optional(e.durationMs, 0, 3_600_000, 'durationMs', true),
       source: line(e.source, 120),
       message,
       repeats: Number.isSafeInteger(e.repeats ?? 1) && (e.repeats ?? 1) >= 1 ? (e.repeats ?? 1) : 1,
@@ -139,7 +143,7 @@ export function validateReport(value: any, now = Date.now()): Report {
   })
   return {
     serverId: value.serverId,
-    startedAt: optional(value.startedAt, 0, now + 5 * MINUTE, 'startedAt'),
+    startedAt: optional(value.startedAt, 0, now + 5 * MINUTE, 'startedAt', true),
     samples: samples.filter((s: Sample) => s.at >= now - SAMPLE_DAYS * DAY),
     events: events.filter((e: ServerEvent) => e.at >= now - EVENT_DAYS * DAY),
   }
@@ -209,12 +213,13 @@ export async function readDiagnostics(db: Database, hours = 24, now = Date.now()
  * RCON concatenates the command's messages without separators, so every field is matched on its own.
  */
 export function parseTickQuery(output: string) {
+  // The server formats with `%.1f` in its default locale: `80,0` under a Russian JVM locale.
   const num = (pattern: RegExp) => {
     const match = pattern.exec(output)
-    return match ? Number(match[1]) : null
+    return match ? Number(match[1].replace(',', '.')) : null
   }
-  const target = num(/Target tick rate: ([\d.]+)/),
-    msptAvg = num(/Average time per tick: ([\d.]+)ms/)
+  const target = num(/Target tick rate: (\d+(?:[.,]\d+)?)/),
+    msptAvg = num(/Average time per tick: (\d+(?:[.,]\d+)?)ms/)
   if (target === null || msptAvg === null) return null
   const state = /frozen/.test(output)
     ? 'frozen'
@@ -228,9 +233,9 @@ export function parseTickQuery(output: string) {
     targetTps: target,
     tps: state === 'frozen' ? 0 : Math.min(target, msptAvg > 0 ? 1000 / msptAvg : target),
     msptAvg,
-    msptP50: num(/P50: ([\d.]+)ms/),
-    msptP95: num(/P95: ([\d.]+)ms/),
-    msptP99: num(/P99: ([\d.]+)ms/),
+    msptP50: num(/P50: (\d+(?:[.,]\d+)?)ms/),
+    msptP95: num(/P95: (\d+(?:[.,]\d+)?)ms/),
+    msptP99: num(/P99: (\d+(?:[.,]\d+)?)ms/),
     sample: num(/sample: (\d+)/),
   }
 }

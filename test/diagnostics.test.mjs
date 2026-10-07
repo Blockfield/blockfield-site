@@ -60,6 +60,8 @@ test('diagnostics validation refuses malformed reports and drops expired items',
   for (const bad of [
     { ...base, schemaVersion: 2 },
     { ...base, samples: [sample(now, { tps: Number.NaN })] },
+    { ...base, samples: [sample(now, { heapUsedMb: 1800.5 })] },
+    { ...base, samples: [sample(now + 0.5)] },
     { ...base, samples: [sample(now + 3_600_000)] },
     { ...base, events: [event(now, { kind: 'info' })] },
     { ...base, events: [event(now, { kind: 'freeze' })] },
@@ -142,4 +144,9 @@ test('vanilla tick query output parses into authoritative tick timings', () => {
     sample: 100,
   })
   assert.equal(parseTickQuery('Unknown or incomplete command'), null)
+  const ru = parseTickQuery(
+    'The game is running normallyTarget tick rate: 20,0 per second.\nAverage time per tick: 12,5ms (Target: 50,0ms)' +
+      'Percentiles: P50: 10,1ms P95: 30,0ms P99: 1200,4ms, sample: 100',
+  )
+  assert.deepEqual([ru.state, ru.msptAvg, ru.msptP99, ru.tps], ['running', 12.5, 1200.4, 20])
 })
