@@ -1,5 +1,6 @@
 /** Durable, Minecraft-independent result ingestion. Node >=22.19; no browser imports. */
 import { Database } from './database.ts'
+import { saveReport, validateReport } from './diagnostics.ts'
 import { playerId, roleOf } from './admin.ts'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { composite, inflate, initial, softReset, update, RULES_VERSION } from './glicko2.ts'
@@ -468,6 +469,16 @@ export class StatsStore {
       );
       CREATE TABLE IF NOT EXISTS staff_roles (uuid TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL, maps TEXT);
       CREATE TABLE IF NOT EXISTS ingest_keys (id INTEGER PRIMARY KEY, server_id TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
+      CREATE TABLE IF NOT EXISTS server_samples (
+        server_id TEXT NOT NULL, at INTEGER NOT NULL, tps REAL NOT NULL, mspt_avg REAL NOT NULL, mspt_p95 REAL, mspt_max REAL NOT NULL,
+        players INTEGER, heap_used_mb INTEGER, heap_max_mb INTEGER, gc_pause_ms INTEGER, started_at INTEGER, PRIMARY KEY(server_id,at)
+      );
+      CREATE INDEX IF NOT EXISTS server_samples_at ON server_samples(at);
+      CREATE TABLE IF NOT EXISTS server_events (
+        server_id TEXT NOT NULL, event_id TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT NOT NULL, duration_ms INTEGER,
+        source TEXT, message TEXT NOT NULL, repeats INTEGER NOT NULL, PRIMARY KEY(server_id,event_id)
+      );
+      CREATE INDEX IF NOT EXISTS server_events_at ON server_events(at);
       `
       await this.db.exec(
         this.db.postgres
@@ -1183,6 +1194,20 @@ export async function handleStatsRequest(
         throw new StatsError(403, 'Producer cannot submit another server identity')
       const result = await (dependencies?.store ?? (await statsStore())).ingest(input)
       return Response.json(result, { status: result.inserted ? 201 : 200, headers })
+    }
+    // Health samples and freeze/error journal: the same producer keys and server identity rule as results.
+    if (path === '/api/stats/diagnostics') {
+      if (request.method !== 'POST')
+        return Response.json(
+          { error: 'Method not allowed' },
+          { status: 405, headers: { ...headers, Allow: 'POST' } },
+        )
+      const store = async () => dependencies?.store ?? (await statsStore())
+      const server = await authorized(request, dependencies?.keys ?? ingestKeys(), store),
+        report = validateReport(await boundedJson(request))
+      if (report.serverId !== server)
+        throw new StatsError(403, 'Producer cannot submit another server identity')
+      return Response.json(await saveReport((await store()).db, report), { headers })
     }
     if (request.method !== 'GET')
       return Response.json(

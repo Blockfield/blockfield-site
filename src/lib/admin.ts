@@ -18,6 +18,8 @@ import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
 import { account, drasl, fail, nickname, readJson, session, token } from './account.ts'
 import { rcon } from './rcon.ts'
+import { rawCommand, stripColors } from './console.ts'
+import { parseTickQuery, readDiagnostics } from './diagnostics.ts'
 import { currentRooms, roomId } from './rooms.ts'
 import { readGunBalance, validateGunOverrides, type GunBalanceCatalog } from './gun-balance.ts'
 import {
@@ -49,12 +51,13 @@ const admin = [
   'audit',
   'roles',
   'workshop',
+  'diagnostics',
 ]
 const PERMISSIONS: Record<Role, string[]> = {
   builder: ['view'],
   moderator,
   admin,
-  owner: [...admin, 'roles-admin'],
+  owner: [...admin, 'roles-admin', 'rcon-raw'],
 }
 export const permissions = (role: Role | null) =>
   role && Object.hasOwn(PERMISSIONS, role) ? PERMISSIONS[role] : []
@@ -907,7 +910,6 @@ export function rconCommand(body: any): {
       throw bad('Неизвестное действие.')
   }
 }
-const stripColors = (output: string) => output.replace(/§./g, '')
 /** Brigadier answers a bad command with text, not an error code. */
 export const rejectedByServer = (output: string) =>
   /^\s*(Unknown or incomplete command|Unknown command)/i.test(output) ||
@@ -915,6 +917,21 @@ export const rejectedByServer = (output: string) =>
 /** A failure whose `internal` text goes only to the server log and the audit log, never to the browser. */
 function hidden(status: number, message: string, internal: string) {
   return Object.assign(fail(status, message), { internal })
+}
+function rconConfigured() {
+  if (!process.env.BLOCKFIELD_RCON_HOST || !process.env.BLOCKFIELD_RCON_PASSWORD)
+    throw fail(503, 'RCON не настроен на сайте.')
+}
+function sendRcon(commands: string[]) {
+  const env = process.env
+  return rcon(commands, {
+    host: env.BLOCKFIELD_RCON_HOST!,
+    port: Number(env.BLOCKFIELD_RCON_PORT || 25575),
+    password: env.BLOCKFIELD_RCON_PASSWORD!,
+  }).catch((error: Error) => {
+    console.error('RCON failed', error.message)
+    throw hidden(502, 'Игровой сервер не отвечает.', error.message)
+  })
 }
 
 async function lookupName(name: unknown): Promise<{ uuid: string; name: string }> {
@@ -1063,23 +1080,14 @@ const routes: Record<string, Route> = {
     handler: async ({ actor, body }) => {
       const { permission, commands } = rconCommand(body)
       if (!can(actor.role, permission)) throw fail(403, 'Недостаточно прав.')
-      const env = process.env
-      if (!env.BLOCKFIELD_RCON_HOST || !env.BLOCKFIELD_RCON_PASSWORD)
-        throw fail(503, 'RCON не настроен на сайте.')
+      rconConfigured()
       // Room ids are not meaningful to people: keep the room's name and map for the audit log.
       const found =
         body.action === 'stop-room'
           ? (await currentRooms()).rooms.find((r) => r.id === body.roomId)
           : undefined
       const room = found ? { name: found.name, map: found.map } : undefined
-      const outputs = await rcon(commands, {
-        host: env.BLOCKFIELD_RCON_HOST,
-        port: Number(env.BLOCKFIELD_RCON_PORT || 25575),
-        password: env.BLOCKFIELD_RCON_PASSWORD,
-      }).catch((error: Error) => {
-        console.error('RCON failed', error.message)
-        throw hidden(502, 'Игровой сервер не отвечает.', error.message)
-      })
+      const outputs = await sendRcon(commands)
       const output = stripColors(outputs.at(-1) ?? '')
       const rejected = outputs.map(stripColors).find(rejectedByServer)
       if (rejected !== undefined)
@@ -1101,6 +1109,43 @@ const routes: Record<string, Route> = {
       target: body?.player ?? body?.roomId ?? body?.classId ?? body?.op ?? null,
       detail: { ...body, room: result?.room, output: result?.output?.slice(0, 500) },
     }),
+  },
+  // Owner only: any single command line. Refusals are audited too (without the command: the body is not read).
+  'POST rcon/raw': {
+    permission: 'rcon-raw',
+    handler: async ({ body }) => {
+      let command: string
+      try {
+        command = rawCommand(body?.command)
+      } catch (error) {
+        throw bad((error as Error).message)
+      }
+      rconConfigured()
+      const output = stripColors((await sendRcon([command]))[0] ?? '')
+      return { command, output, rejected: rejectedByServer(output) }
+    },
+    audit: (body, result) => ({
+      action: 'rcon:raw',
+      target:
+        result?.command ??
+        (typeof body?.command === 'string' ? body.command.replace(/\p{Cc}/gu, ' ') : null),
+      detail: { output: result?.output?.slice(0, 500), rejected: result?.rejected },
+    }),
+  },
+  'GET diagnostics': {
+    permission: 'diagnostics',
+    handler: async ({ store }) => readDiagnostics(store.db),
+  },
+  // The server's own tick window right now (vanilla `tick query`, read-only), independent of pushed samples.
+  'GET diagnostics/live': {
+    permission: 'diagnostics',
+    handler: async () => {
+      rconConfigured()
+      const output = stripColors((await sendRcon(['tick query']))[0] ?? '')
+      const tick = parseTickQuery(output)
+      if (!tick) throw fail(502, 'Сервер не вернул данные о тиках.')
+      return { at: Date.now(), ...tick }
+    },
   },
   'GET bans': {
     permission: 'ban',
