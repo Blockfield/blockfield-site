@@ -58,9 +58,9 @@ export function redact(text: string): string {
         /(?<![\w:])\[?(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?\]?(?::\d{1,5})?(?![\w:])/gi,
         '[ip]',
       )
-      .replace(/\b(bearer)\s+\S+/gi, '$1 [secret]')
+      .replace(/\b(bearer)\s+[^\s"',;}\]]+/gi, '$1 [secret]')
       .replace(
-        /\b(authorization|token|password|passwd|secret|api[_-]?key|access[_-]?key)(\s*[:=]\s*)("[^"]*"|\S+)/gi,
+        /\b([a-z0-9_-]*(?:authorization|token|password|passwd|secret|api[_-]?key|access[_-]?key))(["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)/gi,
         '$1$2[secret]',
       )
       // Long mixed letter+digit runs look like keys; canonical UUIDs (rooms, players) stay readable.
@@ -185,7 +185,7 @@ export async function saveReport(db: Database, report: Report, now = Date.now())
       .run()
     await db
       .prepare(
-        `DELETE FROM server_events WHERE at < (SELECT at FROM server_events ORDER BY at DESC LIMIT 1 OFFSET ${MAX_EVENTS})`,
+        `DELETE FROM server_events WHERE (server_id,event_id) NOT IN (SELECT server_id,event_id FROM server_events ORDER BY CASE kind WHEN 'crash' THEN 0 WHEN 'error' THEN 0 WHEN 'freeze' THEN 1 ELSE 2 END, at DESC, server_id, event_id LIMIT ${MAX_EVENTS})`,
       )
       .run()
     return { samples: report.samples.length, events: report.events.length }

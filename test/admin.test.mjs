@@ -1184,7 +1184,17 @@ test('raw console: owner only, one validated line, every call audited including 
       if (type === 3) socket.write(frame(id, 2, ''))
       else if (type === 2) {
         seen.push(body)
-        socket.write(frame(id, 0, body === 'bogus' ? 'Unknown or incomplete command' : '§aDone'))
+        socket.write(
+          frame(
+            id,
+            0,
+            body === 'bogus'
+              ? 'Unknown or incomplete command'
+              : body.includes('example-short-password')
+                ? '{"client_secret":"response-short-secret","password":"reply-short-password"}'
+                : '§aDone',
+          ),
+        )
       } else socket.write(frame(id, 0, 'Unknown request'))
     }),
   )
@@ -1236,6 +1246,28 @@ test('raw console: owner only, one validated line, every call audited including 
     ],
   )
   assert.equal(JSON.parse(log[1].detail).output, 'Done')
+  const command =
+    'data modify storage test:config value set value {"password":"example-short-password","access_token":"short-token"}'
+  const privateReply = await (await call(`${OWNER}:Nether`, command)).json()
+  assert.equal(privateReply.command, command, 'the owner receives the original command')
+  assert.ok(
+    privateReply.output.includes('response-short-secret'),
+    'the owner receives the raw response',
+  )
+  assert.equal(
+    (await call(`${OWNER}:Nether`, 'say rcon_password=invalid-short-secret\nstop')).status,
+    400,
+  )
+  const sanitized = JSON.stringify((await s.auditLog()).slice(0, 2))
+  for (const leak of [
+    'example-short-password',
+    'short-token',
+    'response-short-secret',
+    'reply-short-password',
+    'invalid-short-secret',
+  ])
+    assert.ok(!sanitized.includes(leak), `${leak} must not reach the admin-readable audit`)
+  assert.ok(sanitized.includes('[secret]'))
 })
 
 test('diagnostics are admin-only and never report health without data', async (t) => {

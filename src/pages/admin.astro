@@ -479,6 +479,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       </h2>
       <p class="muted">
         Фризы, TPS и ошибки игрового сервера. Сервер сам присылает замеры раз в минуту. Время UTC.
+        Число фризов и ошибок учитывает последние 500 записей журнала. Фильтры и экспорт работают с
+        этими же записями.
       </p>
       <div id="health-card" class="hero" data-tone="wait">
         <span class="dot" aria-hidden="true"></span>
@@ -3756,10 +3758,12 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           'Сервер мог зависнуть, упасть или потерять связь с сайтом. Проверьте тики ниже и логи сервера.',
         )
       const recent = health.samples.filter((s) => s.at >= hourAgo),
-        freezes = health.events.filter((e) => e.kind === 'freeze' && e.at >= hourAgo).length,
-        errors = health.events.filter(
-          (e) => e.kind !== 'freeze' && e.kind !== 'warning' && e.at >= hourAgo,
-        ).length,
+        freezes = health.events
+          .filter((e) => e.kind === 'freeze' && e.at >= hourAgo)
+          .reduce((n, e) => n + e.repeats, 0),
+        errors = health.events
+          .filter((e) => e.kind !== 'freeze' && e.kind !== 'warning' && e.at >= hourAgo)
+          .reduce((n, e) => n + e.repeats, 0),
         worst = Math.min(...recent.map((s) => s.tps))
       const now = `Сейчас TPS ${tps(last.tps)}, тик в среднем ${ms(last.msptAvg)}${memory(last)}.`
       if (worst < LAG_TPS || freezes || errors)
@@ -3780,10 +3784,12 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         ...(hours.size
           ? [...hours].reverse().map(([hour, list]) => {
               const inHour = (e: ServerEvent) => e.at >= hour && e.at < hour + 3_600_000,
-                freezes = health.events.filter((e) => e.kind === 'freeze' && inHour(e)).length,
-                errors = health.events.filter(
-                  (e) => (e.kind === 'error' || e.kind === 'crash') && inHour(e),
-                ).length,
+                freezes = health.events
+                  .filter((e) => e.kind === 'freeze' && inHour(e))
+                  .reduce((n, e) => n + e.repeats, 0),
+                errors = health.events
+                  .filter((e) => (e.kind === 'error' || e.kind === 'crash') && inHour(e))
+                  .reduce((n, e) => n + e.repeats, 0),
                 worst = Math.min(...list.map((s) => s.tps)),
                 heap = Math.max(...list.map((s) => s.heapUsedMb ?? 0)),
                 restart = list.find(

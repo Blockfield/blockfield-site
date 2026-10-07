@@ -19,7 +19,7 @@ import type { AstroCookies } from 'astro'
 import { account, drasl, fail, nickname, readJson, session, token } from './account.ts'
 import { rcon } from './rcon.ts'
 import { rawCommand, stripColors } from './console.ts'
-import { parseTickQuery, readDiagnostics } from './diagnostics.ts'
+import { parseTickQuery, readDiagnostics, redact } from './diagnostics.ts'
 import { currentRooms, roomId } from './rooms.ts'
 import { readGunBalance, validateGunOverrides, type GunBalanceCatalog } from './gun-balance.ts'
 import {
@@ -1127,9 +1127,13 @@ const routes: Record<string, Route> = {
     audit: (body, result) => ({
       action: 'rcon:raw',
       target:
-        result?.command ??
-        (typeof body?.command === 'string' ? body.command.replace(/\p{Cc}/gu, ' ') : null),
-      detail: { output: result?.output?.slice(0, 500), rejected: result?.rejected },
+        typeof (result?.command ?? body?.command) === 'string'
+          ? redact((result?.command ?? body.command).replace(/\p{Cc}/gu, ' '))
+          : null,
+      detail: {
+        output: result?.output === undefined ? undefined : redact(result.output).slice(0, 500),
+        rejected: result?.rejected,
+      },
     }),
   },
   'GET diagnostics': {

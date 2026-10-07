@@ -100,6 +100,30 @@ test('retention prunes old rows on every ingest', async (t) => {
   assert.equal((await s.db.prepare('SELECT count(*) n FROM server_events').get()).n, 0)
 })
 
+test('bounded journal retains errors and crashes before newer warnings, including tied times', async (t) => {
+  const s = await store(t),
+    now = Date.now()
+  await s.db
+    .prepare(
+      `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<5001)
+     INSERT INTO server_events (server_id,event_id,at,kind,message,repeats)
+     SELECT ?,CAST(n AS TEXT),?,'warning','noise',1 FROM seq`,
+    )
+    .run(SERVER, now)
+  const error = event(now - 1000),
+    crash = event(now - 2000, { kind: 'crash' })
+  assert.equal(
+    (await post(s, { schemaVersion: 1, serverId: SERVER, events: [error, crash] })).status,
+    200,
+  )
+  assert.equal((await s.db.prepare('SELECT count(*) n FROM server_events').get()).n, 5000)
+  for (const e of [error, crash])
+    assert.equal(
+      (await s.db.prepare('SELECT count(*) n FROM server_events WHERE event_id=?').get(e.id)).n,
+      1,
+    )
+})
+
 test('stored error text has no addresses, URLs, e-mails or credentials', () => {
   const text = redact(
     'Bob[/203.0.113.7:51234] lost; [0:0:0:0:0:0:0:1]:25565 and ::1 failed\n' +
@@ -124,6 +148,22 @@ test('stored error text has no addresses, URLs, e-mails or credentials', () => {
     'room ids and times survive',
   )
   assert.equal(text.split('\n').length, 4, 'stack lines stay separate')
+  const structured = redact(
+    '{"password":"example-short-password","token":"abc","client_secret":"escaped\\"value","Authorization":"Bearer xyz"}' +
+      " rcon_password=other-short-password access_token=short-token client_secret='quoted short secret' next=public",
+  )
+  for (const leak of [
+    'example-short-password',
+    'abc',
+    'escaped',
+    'xyz',
+    'other-short-password',
+    'short-token',
+    'quoted short secret',
+  ])
+    assert.ok(!structured.includes(leak), `${leak} leaked: ${structured}`)
+  assert.ok(structured.includes('next=public'))
+  assert.equal(redact('a_'.repeat(2000)).length, 4000)
 })
 
 test('vanilla tick query output parses into authoritative tick timings', () => {
