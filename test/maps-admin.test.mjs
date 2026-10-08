@@ -799,3 +799,234 @@ test('saved drafts are paged through the inbox and resume preserves their immuta
   )
   assert.equal((await call('GET', 'request?id=' + id)).status, 503)
 })
+
+test('map creation and rename require authoritative lead access, stable revision and exact copy; test mode belongs to frozen review', async (t) => {
+  const directory = temp(t),
+    inbox = temp(t),
+    environment = { ...process.env },
+    store = await database(t)
+  t.after(() => {
+    for (const key of Object.keys(process.env)) if (!(key in environment)) delete process.env[key]
+    Object.assign(process.env, environment)
+  })
+  Object.assign(process.env, {
+    NODE_ENV: 'test',
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    BLOCKFIELD_ADMIN_DIR: directory,
+    BLOCKFIELD_INBOX_DIR: inbox,
+  })
+  await store.setStaff(BUILDER, 'Tester', 'builder', 'seed')
+  const LEAD = '3'.repeat(32),
+    ADMIN = '4'.repeat(32)
+  await store.setStaff(LEAD, 'Tester', 'moderator', 'seed')
+  await store.setStaff(ADMIN, 'Tester', 'admin', 'seed')
+  seed(directory)
+  const status = {
+    schema: 1,
+    phase: 'workshop',
+    gate: 'builders',
+    revision: 4,
+    desired: { profile: 'workshop', session: COPY },
+  }
+  write(directory, 'status', status)
+  const call = async (path, body, actor = OWNER) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = `${actor}:Tester`
+    const url = new URL('http://site/api/admin/' + path)
+    return handleAdmin(
+      {
+        request: new Request(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+        url,
+        cookies: { get: () => undefined },
+      },
+      path,
+      store,
+    ).catch((error) => error)
+  }
+  const read = async (response) => {
+    assert.equal(response.status, 200)
+    return JSON.parse(readFileSync(join(inbox, (await response.json()).id + '.json')))
+  }
+  const create = {
+    mapId: 'zero_map',
+    name: '  Пустая карта  ',
+    supportedModes: ['campaign', 'room', 'tdm', 'snipers', 'awp', 'deathmatch', 'training'],
+    expectedRevision: 4,
+    sessionId: COPY,
+    actor: { role: 'owner' },
+  }
+  assert.equal((await call('maps/create', create, BUILDER)).status, 403)
+  for (const actor of [LEAD, ADMIN, OWNER]) {
+    const request = await read(await call('maps/create', create, actor))
+    assert.equal(request.kind, 'map-create')
+    assert.equal(request.name, 'Пустая карта')
+    assert.equal(request.actor.draslId, actor)
+    assert.notEqual(request.sessionId, COPY)
+    assert.match(
+      request.sessionId,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
+    assert.deepEqual(request.supportedModes, create.supportedModes)
+  }
+  for (const change of [
+    { mapId: '_invalid' },
+    { mapId: '../world' },
+    { name: 'x'.repeat(101) },
+    { name: 'bad\nname' },
+    { name: '§bad' },
+    { supportedModes: [] },
+    { supportedModes: ['tdm', 'tdm'] },
+    { supportedModes: ['unknown'] },
+    { expectedRevision: -1 },
+  ])
+    assert.equal((await call('maps/create', { ...create, ...change })).status, 400)
+  assert.equal((await call('maps/create', { ...create, name: '😀'.repeat(100) })).status, 200)
+  assert.equal((await call('maps/create', { ...create, mapId: 'custom_arena' })).status, 409)
+  assert.equal((await call('maps/create', { ...create, expectedRevision: 3 })).status, 409)
+  write(directory, 'status', { ...status, phase: 'STARTING', gate: 'closed' })
+  assert.equal((await call('maps/create', create)).status, 409)
+  write(directory, 'status', status)
+  const rename = {
+    mapId: 'custom_arena',
+    name: 'Новое имя',
+    workingCopyId: COPY,
+    expectedRevision: 4,
+  }
+  assert.equal((await call('maps/properties', rename, BUILDER)).status, 403)
+  assert.equal(
+    (
+      await call('maps/properties', {
+        ...rename,
+        workingCopyId: 'bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      })
+    ).status,
+    409,
+  )
+  assert.deepEqual((await read(await call('maps/properties', rename, LEAD))).name, 'Новое имя')
+  write(directory, 'candidates', {
+    schema: 1,
+    candidates: [
+      {
+        id: CANDIDATE,
+        mapId: 'custom_arena',
+        status: 'pending',
+        sourceBranch: BRANCH,
+        versionDigest: FIRST,
+        targetHead: null,
+        supportedModes: ['tdm', 'training'],
+      },
+    ],
+  })
+  const mode = { profile: 'test', candidateId: CANDIDATE, modeId: 'training', expectedRevision: 4 }
+  assert.equal((await call('mode', mode, BUILDER)).status, 403)
+  assert.equal((await read(await call('mode', mode, LEAD))).modeId, 'training')
+  assert.equal((await call('mode', { ...mode, modeId: 'campaign' })).status, 400)
+  assert.equal((await call('mode', { ...mode, modeId: 'unknown' })).status, 400)
+  const catalog = fixture()
+  catalog.maps[0].head = null
+  catalog.maps[0].branches = [ref('custom_arena', BRANCH, FIRST)]
+  write(directory, 'maps', catalog)
+  const preview = { mapId: 'custom_arena', versionDigest: FIRST, expectedHead: null }
+  assert.equal((await read(await call('maps/merge-preview', preview))).expectedHead, null)
+  assert.equal(
+    (await call('maps/merge-preview', { mapId: 'custom_arena', versionDigest: FIRST })).status,
+    400,
+  )
+  assert.equal(
+    (await read(await call('candidates/publish', { candidateId: CANDIDATE, expectedHead: null })))
+      .expectedHead,
+    null,
+  )
+  write(directory, 'maps', fixture())
+  assert.equal(
+    (await call('candidates/publish', { candidateId: CANDIDATE, expectedHead: SECOND })).status,
+    409,
+  )
+})
+
+test('published availability is admin-only, preserves settings/history and refuses stale or malformed updates', async (t) => {
+  const directory = temp(t),
+    settingsDir = temp(t),
+    environment = { ...process.env },
+    store = await database(t)
+  t.after(() => {
+    for (const key of Object.keys(process.env)) if (!(key in environment)) delete process.env[key]
+    Object.assign(process.env, environment)
+  })
+  Object.assign(process.env, {
+    NODE_ENV: 'test',
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    BLOCKFIELD_ADMIN_DIR: directory,
+    BLOCKFIELD_SETTINGS_DIR: settingsDir,
+  })
+  await store.setStaff(BUILDER, 'Tester', 'builder', 'seed')
+  const LEAD = '3'.repeat(32),
+    ADMIN = '4'.repeat(32)
+  await store.setStaff(LEAD, 'Tester', 'moderator', 'seed')
+  await store.setStaff(ADMIN, 'Tester', 'admin', 'seed')
+  seed(directory)
+  const initial = {
+    schema: 1,
+    revision: 4,
+    disabledMapIds: ['future-map-id'],
+    kits: { retained: { definition: true } },
+    fixedModeKits: { room: null },
+    gunBalance: { retained: true },
+    lobby: { pvpEnabled: false },
+  }
+  write(settingsDir, 'settings', initial)
+  const history = readFileSync(join(directory, 'maps.json'), 'utf8'),
+    session = readFileSync(join(directory, 'session.json'), 'utf8')
+  const call = async (method, path, body, actor = OWNER) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = `${actor}:Tester`
+    const url = new URL('http://site/api/admin/' + path),
+      request = new Request(url, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, store).catch(
+      (error) => error,
+    )
+  }
+  const body = { mapId: 'custom_arena', enabled: false, expectedRevision: 4 }
+  for (const actor of [BUILDER, LEAD])
+    assert.equal((await call('PUT', 'maps/availability', body, actor)).status, 403)
+  for (const mapId of ['other', 'lobby', 'missing'])
+    assert.equal((await call('PUT', 'maps/availability', { ...body, mapId })).status, 400)
+  const disabled = (await (await call('PUT', 'maps/availability', body, ADMIN)).json()).settings
+  assert.equal(disabled.revision, 5)
+  assert.deepEqual(disabled.disabledMapIds, ['custom_arena', 'future-map-id'])
+  for (const key of ['kits', 'fixedModeKits', 'gunBalance', 'lobby'])
+    assert.deepEqual(disabled[key], initial[key])
+  const bytes = readFileSync(join(settingsDir, 'settings.json'), 'utf8')
+  assert.equal((await call('PUT', 'maps/availability', body)).status, 409)
+  assert.equal(readFileSync(join(settingsDir, 'settings.json'), 'utf8'), bytes)
+  assert.equal(readFileSync(join(directory, 'maps.json'), 'utf8'), history)
+  assert.equal(readFileSync(join(directory, 'session.json'), 'utf8'), session)
+  const pending = (await (await call('GET', 'maps', undefined, BUILDER)).json()).availability
+  assert.equal(pending.applied, null)
+  write(settingsDir, 'applied', {
+    revision: 5,
+    attemptedRevision: 5,
+    errors: [],
+    disabledMapIds: disabled.disabledMapIds,
+  })
+  const observed = (await (await call('GET', 'maps', undefined, BUILDER)).json()).availability
+  assert.deepEqual(observed.applied.disabledMapIds, disabled.disabledMapIds)
+  const enabled = (
+    await (
+      await call('PUT', 'maps/availability', { ...body, enabled: true, expectedRevision: 5 })
+    ).json()
+  ).settings
+  assert.deepEqual(enabled.disabledMapIds, ['future-map-id'])
+  writeFileSync(join(settingsDir, 'settings.json'), '{corrupt')
+  assert.equal(
+    (await call('PUT', 'maps/availability', { ...body, expectedRevision: 0 })).status,
+    503,
+  )
+  assert.equal(readFileSync(join(settingsDir, 'settings.json'), 'utf8'), '{corrupt')
+})

@@ -53,6 +53,16 @@ export const MODE_NAMES: Record<string, string> = {
   room: 'Обычный бой',
   deathmatch: 'Каждый сам за себя',
 }
+/** Arena authoring/test IDs agreed with the Workshop controller and the game mode registry. */
+export const ARENA_MODES = {
+  campaign: 'Кампания',
+  room: 'Обычный бой',
+  tdm: 'Командный бой',
+  snipers: 'Снайперы',
+  awp: 'AWP',
+  deathmatch: 'Каждый сам за себя',
+  training: 'Тренировка',
+} as const
 export const TEAM_NAMES: Record<string, string> = { RED: 'красных', BLUE: 'синих' }
 
 /** Balance scopes of settings.json `campaignBalance`: "*" for all, campaign ids, "room" for Casual rooms. */
