@@ -651,6 +651,13 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         Любая команда игрового сервера, как в его консоли. Каждая команда попадает в журнал.
       </p>
       <form id="console-form" class="form-stack">
+        <div class="scope">
+          <label for="console-target">Цель консоли</label>
+          <select id="console-target" name="target">
+            <option value="game">Основной сервер</option>
+            <option value="workshop">Мастерская</option>
+          </select>
+        </div>
         <label for="console-input">Команда</label>
         <input
           id="console-input"
@@ -1243,6 +1250,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     }
     .admin-main .console-output .bad {
       color: var(--danger);
+    }
+    .admin-main #console-form .cselect-btn,
+    .admin-main #console-form .cselect-list li {
+      white-space: nowrap;
     }
 
     #dialog h2 {
@@ -5534,8 +5545,14 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     )
 
     // ---------- Console ----------
+    const TARGET_LABELS: Record<string, string> = {
+      game: 'Основной сервер',
+      workshop: 'Мастерская',
+    }
     const consoleHistory: string[] = []
     let historyAt = 0
+    const consoleTarget = $<HTMLSelectElement>('#console-target')
+    customSelect(consoleTarget)
     const consoleInput = $<HTMLInputElement>('#console-input')
     consoleInput.addEventListener('keydown', (e) => {
       if ((e.key !== 'ArrowUp' && e.key !== 'ArrowDown') || !consoleHistory.length) return
@@ -5546,10 +5563,11 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       )
       consoleInput.value = consoleHistory[historyAt] ?? ''
     })
-    function consoleLine(command: string, text: string, bad: boolean) {
+    function consoleLine(target: string, command: string, text: string, bad: boolean) {
       const out = $('#console-output')
+      const targetLabel = TARGET_LABELS[target] ?? target
       out.append(
-        el('span', { className: 'cmd', textContent: `> ${command}\n` }),
+        el('span', { className: 'cmd', textContent: `[${targetLabel}] > ${command}\n` }),
         el('span', { className: bad ? 'bad' : '', textContent: `${text || '(пустой ответ)'}\n` }),
       )
       // Keep the last 100 exchanges; the full record is the journal.
@@ -5559,6 +5577,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     $<HTMLFormElement>('#console-form').addEventListener('submit', async (e) => {
       e.preventDefault()
       const form = e.currentTarget as HTMLFormElement,
+        target = consoleTarget.value,
         command = consoleInput.value.trim().replace(/^\/+/, '').trim()
       if (!command) return
       if (consoleHistory.at(-1) !== command) consoleHistory.push(command)
@@ -5576,11 +5595,11 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       run(
         form.querySelector<HTMLElement>('.form-status')!,
         async () => {
-          const reply = await api('rcon/raw', 'POST', { command }).catch((error: Error) => {
-            consoleLine(command, error.message, true)
+          const reply = await api('rcon/raw', 'POST', { command, target }).catch((error: Error) => {
+            consoleLine(target, command, error.message, true)
             throw error
           })
-          consoleLine(command, reply.output, reply.rejected)
+          consoleLine(reply.target ?? target, command, reply.output, reply.rejected)
           consoleInput.value = ''
           if (reply.rejected) throw new Error('Сервер не принял команду.')
         },

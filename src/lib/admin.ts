@@ -18,7 +18,7 @@ import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
 import { account, drasl, fail, nickname, readJson, session, token } from './account.ts'
 import { rcon } from './rcon.ts'
-import { rawCommand, stripColors } from './console.ts'
+import { rawCommand, rconTarget, type RconTarget, stripColors } from './console.ts'
 import { parseTickQuery, readDiagnostics, redact } from './diagnostics.ts'
 import { currentRooms, roomId } from './rooms.ts'
 import { readGunBalance, validateGunOverrides, type GunBalanceCatalog } from './gun-balance.ts'
@@ -1400,19 +1400,32 @@ export const rejectedByServer = (output: string) =>
 function hidden(status: number, message: string, internal: string) {
   return Object.assign(fail(status, message), { internal })
 }
-function rconConfigured() {
-  if (!process.env.BLOCKFIELD_RCON_HOST || !process.env.BLOCKFIELD_RCON_PASSWORD)
+function rconConfigured(target: RconTarget = 'game') {
+  const env = process.env
+  if (target === 'workshop') {
+    if (!env.BLOCKFIELD_WORKSHOP_RCON_HOST || !env.BLOCKFIELD_WORKSHOP_RCON_PASSWORD)
+      throw fail(503, 'RCON для Workshop не настроен на сайте.')
+    return
+  }
+  if (!env.BLOCKFIELD_RCON_HOST || !env.BLOCKFIELD_RCON_PASSWORD)
     throw fail(503, 'RCON не настроен на сайте.')
 }
-function sendRcon(commands: string[]) {
+function sendRcon(commands: string[], target: RconTarget = 'game') {
   const env = process.env
+  const isWorkshop = target === 'workshop'
+  const host = isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_HOST : env.BLOCKFIELD_RCON_HOST
+  const port = Number(
+    (isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_PORT : env.BLOCKFIELD_RCON_PORT) || 25575,
+  )
+  const password = isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_PASSWORD : env.BLOCKFIELD_RCON_PASSWORD
   return rcon(commands, {
-    host: env.BLOCKFIELD_RCON_HOST!,
-    port: Number(env.BLOCKFIELD_RCON_PORT || 25575),
-    password: env.BLOCKFIELD_RCON_PASSWORD!,
+    host: host!,
+    port,
+    password: password!,
   }).catch((error: Error) => {
-    console.error('RCON failed', error.message)
-    throw hidden(502, 'Игровой сервер не отвечает.', error.message)
+    console.error(`RCON [${target}] failed`, error.message)
+    const serverDesc = isWorkshop ? 'Сервер Workshop' : 'Игровой сервер'
+    throw hidden(502, `${serverDesc} не отвечает.`, error.message)
   })
 }
 
@@ -1642,26 +1655,39 @@ const routes: Record<string, Route> = {
     permission: 'rcon-raw',
     handler: async ({ body }) => {
       let command: string
+      let target: RconTarget
       try {
+        target = rconTarget(body?.target)
         command = rawCommand(body?.command)
       } catch (error) {
         throw bad((error as Error).message)
       }
-      rconConfigured()
-      const output = stripColors((await sendRcon([command]))[0] ?? '')
-      return { command, output, rejected: rejectedByServer(output) }
+      rconConfigured(target)
+      const output = stripColors((await sendRcon([command], target))[0] ?? '')
+      return { command, output, rejected: rejectedByServer(output), target }
     },
-    audit: (body, result) => ({
-      action: 'rcon:raw',
-      target:
-        typeof (result?.command ?? body?.command) === 'string'
-          ? redact((result?.command ?? body.command).replace(/\p{Cc}/gu, ' '))
-          : null,
-      detail: {
-        output: result?.output === undefined ? undefined : redact(result.output).slice(0, 500),
-        rejected: result?.rejected,
-      },
-    }),
+    audit: (body, result) => {
+      let target: string | null = null
+      if (body !== undefined) {
+        try {
+          target = rconTarget(body?.target)
+        } catch {
+          target = typeof body?.target === 'string' ? redact(body.target).slice(0, 32) : 'unknown'
+        }
+      }
+      return {
+        action: 'rcon:raw',
+        target:
+          typeof (result?.command ?? body?.command) === 'string'
+            ? redact((result?.command ?? body.command).replace(/\p{Cc}/gu, ' '))
+            : null,
+        detail: {
+          target: result?.target ?? target ?? undefined,
+          output: result?.output === undefined ? undefined : redact(result.output).slice(0, 500),
+          rejected: result?.rejected,
+        },
+      }
+    },
   },
   'GET diagnostics': {
     permission: 'diagnostics',

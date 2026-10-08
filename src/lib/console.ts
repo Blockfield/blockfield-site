@@ -1,5 +1,15 @@
 /** Owner's raw RCON console: shared by the API (validation) and the page (confirmation). No server-only imports. */
 
+export type RconTarget = 'game' | 'workshop'
+export const RCON_TARGETS: readonly RconTarget[] = ['game', 'workshop'] as const
+
+/** Validates the console target enum: defaults to 'game', rejects unknown values. */
+export function rconTarget(value: unknown): RconTarget {
+  if (value === undefined || value === null || value === '') return 'game'
+  if (value === 'game' || value === 'workshop') return value
+  throw new Error('Неизвестная цель консоли.')
+}
+
 /** One command line as typed: trimmed, leading `/` removed. Throws a Russian message the API turns into a 400. */
 export function rawCommand(value: unknown): string {
   if (typeof value !== 'string') throw new Error('Введите команду.')

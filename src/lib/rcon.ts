@@ -2,6 +2,8 @@ import net from 'node:net'
 
 const AUTH = 3,
   COMMAND = 2
+const MAX_PACKET_LENGTH = 65_536
+const MAX_RESPONSE_BYTES = 1_048_576
 
 function packet(id: number, type: number, body: string): Buffer {
   const text = Buffer.from(body, 'utf8'),
@@ -16,7 +18,7 @@ function packet(id: number, type: number, body: string): Buffer {
 /**
  * Source RCON over one connection: authenticate, run commands in order, return one output per command.
  * Minecraft splits long output into several packets and never marks the last one, so after the first reply
- * packet an empty packet of an unknown type is sent; its reply ("Unknown request …") ends that command's output.
+ * packet an empty packet of an unknown type is sent; its reply ("Unknown request …") ends that command output.
  * Vanilla RCON reads one packet per socket read and drops the connection otherwise: never write two packets at once.
  */
 export function rcon(
@@ -33,7 +35,9 @@ export function rcon(
     const outputs: string[] = []
     let data = Buffer.alloc(0),
       step = 0,
-      current = '',
+      currentChunks: Buffer[] = [],
+      currentBytes = 0,
+      totalBytes = 0,
       authed = false,
       sentinel = false
     const finish = (error?: Error) => {
@@ -45,7 +49,8 @@ export function rcon(
     const timer = setTimeout(() => finish(new Error('RCON timeout')), timeout)
     const send = () => {
       if (step >= commands.length) return finish()
-      current = ''
+      currentChunks = []
+      currentBytes = 0
       sentinel = false
       socket.write(packet(10 + step * 2, COMMAND, commands[step]))
     }
@@ -54,14 +59,15 @@ export function rcon(
     socket.on('connect', () => socket.write(packet(1, AUTH, password)))
     socket.on('data', (chunk) => {
       data = Buffer.concat([data, chunk])
-      if (data.length > 1_048_576) return finish(new Error('RCON response too large'))
+      if (data.length > MAX_RESPONSE_BYTES) return finish(new Error('RCON response too large'))
       while (data.length >= 4) {
         const length = data.readInt32LE(0)
-        if (length < 10 || length > 65_536) return finish(new Error('Invalid RCON packet'))
+        if (length < 10 || length > MAX_PACKET_LENGTH)
+          return finish(new Error('Invalid RCON packet'))
         if (data.length < length + 4) return
         const id = data.readInt32LE(4),
           type = data.readInt32LE(8),
-          body = data.subarray(12, length + 2).toString('utf8')
+          bodyBuffer = data.subarray(12, length + 2)
         data = data.subarray(length + 4)
         if (id === -1) return finish(new Error('RCON authentication failed'))
         // Source servers may send an empty value packet before the auth reply; only the auth reply (type 2, id 1) starts commands.
@@ -73,13 +79,19 @@ export function rcon(
           continue
         }
         if (id === 10 + step * 2) {
-          current += body
+          currentBytes += bodyBuffer.length
+          totalBytes += bodyBuffer.length
+          if (currentBytes > MAX_RESPONSE_BYTES || totalBytes > MAX_RESPONSE_BYTES)
+            return finish(new Error('RCON response too large'))
+          currentChunks.push(Buffer.from(bodyBuffer))
           if (!sentinel) {
             sentinel = true
             socket.write(packet(11 + step * 2, 100, ''))
           }
         } else if (id === 11 + step * 2) {
-          outputs.push(current)
+          outputs.push(Buffer.concat(currentChunks).toString('utf8'))
+          currentChunks = []
+          currentBytes = 0
           step++
           send()
         }
