@@ -1,0 +1,576 @@
+/* Shared base for the five admin prototypes. Tokens copied from src/styles/system.css (DESIGN.md). */
+@import url('../../../node_modules/@fontsource-variable/inter/index.css');
+@import url('../../../node_modules/@fontsource/ibm-plex-mono/400.css');
+@import url('../../../node_modules/@fontsource/ibm-plex-mono/500.css');
+@import url('../../../node_modules/@fontsource/ibm-plex-mono/600.css');
+
+:root {
+  color-scheme: dark;
+  --bg: #070604;
+  --bg-2: #0b0906;
+  --panel: #11100d;
+  --panel-2: #18130d;
+  --line: #2a2116;
+  --line-2: #3a2c1d;
+  --amber: #f5a524;
+  --amber-hi: #ffc861;
+  --amber-dim: #8a571c;
+  --cream: #f3e7d0;
+  --sand: #c7ae86;
+  --muted: #8e7a5e;
+  --dim: #5e5040;
+  --ok: #82d66b;
+  --danger: #ff9d99;
+  --info: #91c8ff;
+  --line-warn: #4a3317;
+  --shade: rgb(0 0 0 / 0.7);
+  --text: 'Inter Variable', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --shadow-popover: 0 12px 28px rgb(0 0 0 / 0.55);
+  accent-color: var(--amber);
+  caret-color: var(--amber);
+  scrollbar-color: var(--line-2) transparent;
+  scrollbar-width: thin;
+}
+* {
+  box-sizing: border-box;
+}
+[hidden] {
+  display: none !important;
+}
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--cream);
+  font-family: var(--text);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+::selection {
+  background: var(--amber);
+  color: var(--bg);
+}
+:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+h1 {
+  font-size: 28px;
+}
+h2 {
+  font-size: 20px;
+}
+h3 {
+  font-size: 15px;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+}
+p {
+  margin: 0;
+}
+a {
+  color: var(--amber);
+  text-underline-offset: 4px;
+}
+ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.muted {
+  color: var(--sand);
+}
+.dim {
+  color: var(--muted);
+}
+.mono,
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.label {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.ok {
+  color: var(--ok);
+}
+.bad {
+  color: var(--danger);
+}
+.warn {
+  color: var(--amber);
+}
+
+/* Status lamp: colour plus a word, never colour alone. */
+.lamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.lamp::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+.lamp[data-tone='ok']::before {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px rgb(130 214 107 / 0.18);
+}
+.lamp[data-tone='warn']::before {
+  background: var(--amber);
+}
+.lamp[data-tone='bad']::before {
+  background: var(--danger);
+}
+.lamp[data-tone='live']::before {
+  background: var(--amber);
+  animation: pulse 2.4s var(--ease) infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(245 165 36 / 0.45);
+  }
+  60% {
+    box-shadow: 0 0 0 7px rgb(245 165 36 / 0);
+  }
+}
+
+/* Buttons: 36px in the console (dense), 44px only for primary verbs on touch layouts. */
+button,
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line-2);
+  background: transparent;
+  color: var(--cream);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+button:hover:not(:disabled) {
+  background: var(--line);
+  border-color: var(--line-2);
+}
+button.primary {
+  background: var(--amber);
+  border-color: var(--amber);
+  color: var(--bg);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+}
+button.primary:hover:not(:disabled) {
+  background: var(--amber-hi);
+  border-color: var(--amber-hi);
+}
+button.danger {
+  border-color: rgb(255 157 153 / 0.4);
+  color: var(--danger);
+}
+button.danger:hover:not(:disabled) {
+  background: rgb(255 157 153 / 0.1);
+}
+button.ghost {
+  border-color: transparent;
+  color: var(--sand);
+}
+button.ghost:hover:not(:disabled) {
+  color: var(--cream);
+}
+button.sm {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Fields */
+input:not([type='checkbox']):not([type='radio']),
+select,
+textarea {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line-2);
+  background: var(--bg);
+  color: var(--cream);
+  font: inherit;
+  font-size: 14px;
+}
+textarea {
+  height: auto;
+  padding: 8px 10px;
+  resize: vertical;
+}
+input.num,
+input[type='number'] {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  appearance: textfield;
+}
+input[type='number']::-webkit-inner-spin-button {
+  appearance: none;
+}
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--amber);
+  box-shadow: 0 0 0 1px var(--amber);
+}
+input[type='checkbox'] {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  border: 1px solid var(--line-2);
+  background: var(--bg);
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+  flex: none;
+}
+input[type='checkbox']:checked {
+  background: var(--amber);
+  border-color: var(--amber);
+}
+input[type='checkbox']:checked::after {
+  content: '';
+  width: 4px;
+  height: 8px;
+  border: solid var(--bg);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg) translateY(-1px);
+}
+
+/* Switch: square track, square knob — zero radius is the system. */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  flex: none;
+}
+.switch input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.switch span {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--line-2);
+  background: var(--bg);
+  transition: background 0.15s ease;
+}
+.switch span::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  background: var(--sand);
+  transition: transform 0.18s var(--ease);
+}
+.switch input:checked + span {
+  background: var(--amber);
+  border-color: var(--amber);
+}
+.switch input:checked + span::after {
+  background: var(--bg);
+  transform: translateX(18px);
+}
+.switch input:focus-visible + span {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+/* Stepper: value in mono between two square buttons. */
+.stepper {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--line-2);
+  height: 36px;
+}
+.stepper button {
+  height: auto;
+  width: 34px;
+  padding: 0;
+  border: 0;
+  font-size: 16px;
+  color: var(--sand);
+}
+.stepper button + button {
+  border-left: 1px solid var(--line-2);
+}
+.stepper output {
+  display: inline-grid;
+  place-items: center;
+  min-width: 56px;
+  padding: 0 8px;
+  border-left: 1px solid var(--line-2);
+  border-right: 1px solid var(--line-2);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  color: var(--cream);
+  background: var(--bg);
+}
+.stepper small {
+  display: inline-grid;
+  place-items: center;
+  padding: 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Segmented control */
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line-2);
+}
+.seg button {
+  height: 34px;
+  border: 0;
+  border-right: 1px solid var(--line-2);
+  color: var(--sand);
+  font-weight: 500;
+}
+.seg button:last-child {
+  border-right: 0;
+}
+.seg button[aria-pressed='true'] {
+  background: var(--panel-2);
+  color: var(--cream);
+  box-shadow: inset 0 -2px 0 var(--amber);
+}
+
+/* Save state glyphs next to a field */
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  transition: opacity 0.4s ease;
+}
+.state[data-s='saving'] {
+  color: var(--amber);
+}
+.state[data-s='saved'] {
+  color: var(--ok);
+}
+.state[data-s='other'] {
+  color: var(--amber);
+}
+.state[data-s='error'] {
+  color: var(--danger);
+}
+.state:empty {
+  opacity: 0;
+}
+
+/* Attention flash when a remote change lands */
+@keyframes flash {
+  0% {
+    box-shadow: inset 0 0 0 1px var(--amber);
+    background: rgb(245 165 36 / 0.12);
+  }
+  100% {
+    box-shadow: inset 0 0 0 1px transparent;
+    background: transparent;
+  }
+}
+.flash {
+  animation: flash 1.6s var(--ease) 1;
+}
+
+/* Avatar: a 20px Minecraft face stand-in (two-tone square), initial on top. */
+.av {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  color: var(--sand);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  image-rendering: pixelated;
+}
+.av[data-c='1'] {
+  background: #2f3b26;
+  color: #c6e4b4;
+}
+.av[data-c='2'] {
+  background: #3b2a26;
+  color: #f0c4bf;
+}
+.av[data-c='3'] {
+  background: #263238;
+  color: #bcdcf0;
+}
+.av[data-c='4'] {
+  background: #3a2410;
+  color: var(--amber-hi);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  background: var(--line);
+  color: var(--sand);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.badge.ok {
+  background: rgb(130 214 107 / 0.12);
+  color: var(--ok);
+}
+.badge.warn {
+  background: rgb(245 165 36 / 0.14);
+  color: var(--amber);
+}
+.badge.bad {
+  background: rgb(255 157 153 / 0.12);
+  color: var(--danger);
+}
+.badge.red {
+  background: rgb(255 157 153 / 0.12);
+  color: var(--danger);
+}
+.badge.blue {
+  background: rgb(145 200 255 / 0.12);
+  color: var(--info);
+}
+
+/* Toast stack (bottom right) */
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  display: grid;
+  gap: 8px;
+  width: min(380px, calc(100vw - 32px));
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--shadow-popover);
+  font-size: 14px;
+  animation: rise 0.35s var(--ease);
+}
+.toast .who {
+  color: var(--amber);
+  font-weight: 600;
+}
+.toast button {
+  margin-left: auto;
+}
+@keyframes rise {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/* Thin progress line while a write is in flight */
+.progress {
+  position: relative;
+  overflow: hidden;
+}
+.progress::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--amber), transparent);
+  transform: translateX(-100%);
+  animation: sweep 1.1s linear infinite;
+}
+@keyframes sweep {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+kbd {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border: 1px solid var(--line-2);
+  background: var(--panel-2);
+  color: var(--sand);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

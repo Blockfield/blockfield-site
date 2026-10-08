@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Прототип 2 · Черновик — одна кнопка на всю панель</title>
+<link rel="stylesheet" href="base.css" />
+<style>
+  /* Layout: compact top bar with tabs, content + right rail "Сейчас", sticky draft tray at the bottom. */
+  .top { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 20px; height: 52px; padding: 0 20px; border-bottom: 1px solid var(--line); background: var(--bg); }
+  .top .brand { font-weight: 800; text-transform: uppercase; letter-spacing: 0.02em; display: flex; gap: 8px; align-items: center; }
+  .top .brand svg { width: 18px; height: 18px; }
+  .tabs { display: flex; gap: 2px; overflow-x: auto; }
+  .tabs a { display: inline-flex; align-items: center; height: 52px; padding: 0 12px; color: var(--sand); font-size: 14px; text-decoration: none; border-bottom: 2px solid transparent; white-space: nowrap; }
+  .tabs a:hover { color: var(--cream); }
+  .tabs a[aria-current] { color: var(--cream); border-bottom-color: var(--amber); }
+  .tabs .sep { width: 1px; height: 20px; background: var(--line-2); align-self: center; margin: 0 8px; }
+  .top .right { margin-left: auto; display: flex; align-items: center; gap: 14px; font-size: 13px; color: var(--sand); }
+
+  .wrap { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 0; }
+  main { padding: 24px 28px 140px; max-width: 980px; }
+  aside.rail { border-left: 1px solid var(--line); padding: 20px 20px 140px; position: sticky; top: 52px; height: calc(100vh - 52px); overflow-y: auto; display: grid; gap: 22px; align-content: start; font-size: 13px; }
+  .rail h3 { margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .rail .feed li { display: grid; grid-template-columns: 40px 1fr; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .rail .feed time { font-family: var(--mono); font-size: 11px; color: var(--muted); padding-top: 2px; }
+  .rail .feed .who { color: var(--amber); font-weight: 600; }
+  .rail .feed li.new { animation: flash 1.6s var(--ease) 1; }
+  .rail .matches li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+  .rail .score { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .rail .score b { color: var(--danger); font-weight: 600; }
+  .rail .score i { color: var(--info); font-style: normal; }
+  .rail .presence li { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+  .rail .presence .where { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+
+  .status { display: flex; align-items: center; gap: 18px; padding: 14px 18px; border: 1px solid var(--line); background: var(--panel); margin-bottom: 20px; font-size: 14px; }
+  .status .lamp { font-size: 16px; }
+  .status .k { color: var(--sand); }
+  .status .k b { font-family: var(--mono); color: var(--cream); font-weight: 600; }
+  h1 { margin-bottom: 4px; }
+  .lead { color: var(--sand); font-size: 14px; margin-bottom: 20px; }
+
+  .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px 24px; padding: 14px 18px 18px; }
+  fieldset { border: 1px solid var(--line); padding: 0; margin: 0 0 16px; background: var(--panel); min-width: 0; }
+  legend { float: left; width: 100%; padding: 10px 18px; border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; }
+  legend + * { clear: both; }
+  .f { display: grid; gap: 6px; }
+  .f label { font-size: 13px; color: var(--sand); }
+  .f .in { display: flex; align-items: center; gap: 8px; }
+  .f .in input { max-width: 110px; }
+  .f .u { font-size: 12px; color: var(--muted); }
+  .f[data-dirty] label::after { content: ' · изменено'; color: var(--amber); font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .f[data-dirty] input { border-color: var(--amber-dim); }
+  .f[data-conflict] input { border-color: var(--danger); }
+  .f .note { font-size: 12px; color: var(--amber); }
+  .f .note.bad { color: var(--danger); }
+  .f .note button { height: 22px; padding: 0 6px; font-size: 11px; margin-left: 4px; }
+
+  /* The one save control of the whole panel. */
+  .tray { position: fixed; left: 0; right: 320px; bottom: 0; z-index: 6; border-top: 1px solid var(--line-2); background: var(--panel); box-shadow: 0 -12px 28px rgb(0 0 0 / 0.45); transition: background 0.25s var(--ease); }
+  .tray:not([data-open]) { background: var(--bg); box-shadow: none; }
+  .tray:not([data-open]) .cnt { background: var(--line); color: var(--muted); }
+  .tray .bar { display: flex; align-items: center; gap: 14px; padding: 10px 28px; }
+  .tray .bar b { font-family: var(--mono); font-weight: 600; }
+  .tray .bar .cnt { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; background: var(--amber); color: var(--bg); font-family: var(--mono); font-size: 12px; font-weight: 700; }
+  .tray .bar .spacer { flex: 1; }
+  .tray .diff { display: none; border-top: 1px solid var(--line); max-height: 40vh; overflow: auto; }
+  .tray[data-expanded] .diff { display: block; }
+  .tray .diff li { display: grid; grid-template-columns: 1fr auto auto; gap: 16px; align-items: center; padding: 8px 28px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .tray .diff .chg { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .tray .diff .chg s { color: var(--muted); }
+  .tray .diff .chg em { color: var(--amber); font-style: normal; }
+  .tray .diff .cf { color: var(--danger); font-size: 12px; }
+  .tray .bar .sent { color: var(--ok); font-size: 13px; }
+
+  @media (max-width: 1000px) {
+    .wrap { grid-template-columns: minmax(0, 1fr); }
+    .status { flex-wrap: wrap; gap: 8px 14px; }
+    aside.rail { position: static; height: auto; border-left: 0; border-top: 1px solid var(--line); }
+    .tray { right: 0; }
+    .tray .bar { padding: 10px 16px; flex-wrap: wrap; }
+    main { padding: 20px 16px 140px; }
+    .top { gap: 10px; padding: 0 12px; }
+    .top .right span:not(.lamp) { display: none; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2.2"><path d="M4 4l8 6 8-6M4 11l8 6 8-6M4 18l8 6 8-6"/></svg>Панель</span>
+  <nav class="tabs" aria-label="Разделы"><a href="#">Обзор</a><a href="#">Игроки</a><a href="#">Матчи</a><span class="sep"></span><a href="#" aria-current="page">Настройки</a><a href="#">Оружие</a><a href="#">Мастерская</a><a href="#">Статистика</a><span class="sep"></span><a href="#">Производительность</a><a href="#">Команда</a><a href="#">Журнал</a><a href="#">Консоль</a></nav>
+  <div class="right"><span class="lamp" data-tone="live">live</span><span>Nether · владелец</span></div>
+</header>
+<div class="wrap">
+  <main>
+    <div class="status"><span class="lamp" data-tone="ok" id="lamp">Сервер работает</span><span class="k">онлайн <b id="online">14</b></span><span class="k">матчей <b id="matches">2</b></span><span class="k">TPS <b id="tps">19.8</b></span><span class="k dim" id="checked">проверено только что</span></div>
+    <h1>Настройки игры</h1>
+    <p class="lead">Меняйте что угодно на любой вкладке — всё копится внизу и уходит на сервер одной кнопкой. Ревизия <span class="mono" id="rev">12</span>.</p>
+    <fieldset><legend>Комнаты</legend><div class="fields" id="rooms"></div></fieldset>
+    <fieldset><legend>Лобби</legend><div class="fields" id="lobby"></div></fieldset>
+    <fieldset><legend>Стоимость высадки</legend><div class="fields" id="costs"></div></fieldset>
+    <fieldset><legend>Каждый сам за себя</legend><div class="fields" id="dm"></div></fieldset>
+  </main>
+  <aside class="rail">
+    <section><h3>В панели</h3><ul class="presence" id="presence"></ul></section>
+    <section><h3>Матчи <span class="lamp" data-tone="live" aria-label="обновляется"></span></h3><ul class="matches" id="rooms-list"></ul></section>
+    <section><h3>Что делала команда</h3><ul class="feed" id="feed"></ul></section>
+  </aside>
+</div>
+<div class="tray" id="tray" role="region" aria-label="Несохранённые изменения">
+  <div class="bar">
+    <span class="cnt" id="cnt">0</span><b id="lbl">изменений нет</b>
+    <button class="ghost sm" id="expand">Показать</button>
+    <span class="spacer"></span>
+    <span class="sent" id="sent"></span>
+    <button class="ghost" id="discard">Отменить всё</button>
+    <button class="primary" id="apply">Применить</button>
+  </div>
+  <ul class="diff" id="diff"></ul>
+</div>
+<script src="mock.js"></script>
+<script>
+  const { state, LABELS, el, stream, write, ago, clock, avatar, $ } = BF
+  const S = state.settings
+  const draft = new Map() // path -> {from, to, conflict?}
+  const fields = {}
+  function field(path, unit, range) {
+    const [a, b] = path.split('.')
+    const input = el('input', { class: 'num', type: 'number', value: S[a][b], min: range[0], max: range[1] })
+    const note = el('p', { class: 'note' })
+    const box = el('div', { class: 'f' }, el('label', {}, LABELS[path]), el('div', { class: 'in' }, input, el('span', { class: 'u' }, unit)), note)
+    input.addEventListener('input', () => {
+      const v = Number(input.value), base = S[a][b]
+      if (v === base) { draft.delete(path); delete box.dataset.dirty } else { draft.set(path, { from: base, to: v }); box.dataset.dirty = '' }
+      renderTray()
+    })
+    fields[path] = { box, input, note }
+    return box
+  }
+  $('#rooms').append(field('rooms.maxRooms', 'шт', [1, 16]), field('rooms.idleCloseSeconds', 'сек', [30, 3600]), field('rooms.abandonCloseSeconds', 'сек', [5, 600]))
+  $('#lobby').append(field('lobby.pvpCooldownSeconds', 'сек', [0, 600]))
+  $('#costs').append(field('classCosts.engineer', 'БК', [0, 10000]), field('classCosts.sniper', 'БК', [0, 10000]), field('classCosts.fpv', 'БК', [0, 10000]))
+  $('#dm').append(field('deathmatch.minPlayers', 'чел', [1, 24]))
+
+  function renderTray() {
+    const tray = $('#tray')
+    tray.toggleAttribute('data-open', draft.size > 0)
+    $('#cnt').textContent = draft.size
+    $('#apply').disabled = $('#discard').disabled = $('#expand').disabled = draft.size === 0
+    $('#lbl').textContent = draft.size === 0 ? 'изменений нет' : draft.size === 1 ? 'изменение' : draft.size < 5 ? 'изменения' : 'изменений'
+    $('#diff').replaceChildren(...[...draft].map(([path, d]) => el('li', {}, el('span', {}, LABELS[path]),
+      el('span', { class: 'chg' }, el('s', {}, d.from), ' → ', el('em', {}, d.to)),
+      d.conflict ? el('span', { class: 'cf' }, `${d.conflict.by} уже поставил ${d.conflict.to}`) : el('button', { class: 'ghost sm', onclick: () => { fields[path].input.value = S[path.split('.')[0]][path.split('.')[1]]; fields[path].input.dispatchEvent(new Event('input')) } }, 'вернуть'))))
+  }
+  $('#expand').onclick = () => { const t = $('#tray'); t.toggleAttribute('data-expanded'); $('#expand').textContent = t.hasAttribute('data-expanded') ? 'Скрыть' : 'Показать' }
+  $('#discard').onclick = () => { for (const p of [...draft.keys()]) { const [a, b] = p.split('.'); fields[p].input.value = S[a][b]; fields[p].input.dispatchEvent(new Event('input')) } }
+  $('#apply').onclick = async () => {
+    $('#apply').disabled = true; $('#sent').textContent = 'отправляем…'; $('#tray').classList.add('progress')
+    const changes = [...draft]
+    try {
+      for (const [path, d] of changes) await write({ type: 'settings.change', by: 'Nether', path, from: d.from, to: d.to, revision: S.revision + 1, safe: true })
+      for (const [path] of changes) { delete fields[path].box.dataset.dirty; delete fields[path].box.dataset.conflict; fields[path].note.textContent = '' }
+      draft.clear(); renderTray(); $('#sent').textContent = ''
+      BF.toast(`Ревизия ${S.revision} применена на сервере`)
+    } finally { $('#apply').disabled = false; $('#tray').classList.remove('progress') }
+  }
+
+  function renderRail() {
+    $('#presence').replaceChildren(...[state.me, ...state.presence].map((p) => el('li', {}, avatar(p), el('span', {}, p.name), el('span', { class: 'where' }, p === state.me ? 'вы' : p.where))))
+    $('#rooms-list').replaceChildren(...state.rooms.map((r) => el('li', {}, el('span', {}, r.map, ' ', el('span', { class: 'dim' }, r.mode, ' · ', r.players)),
+      r.phase === 'GAME' ? el('span', { class: 'score' }, el('b', {}, r.red), ' : ', el('i', {}, r.blue)) : el('span', { class: 'dim' }, 'голосование'))))
+    $('#online').textContent = state.server.online; $('#matches').textContent = state.server.matches; $('#tps').textContent = state.server.tps.toFixed(1)
+    $('#checked').textContent = 'проверено ' + ago(state.server.checkedAt); $('#rev').textContent = S.revision
+  }
+  function renderFeed(newest) {
+    $('#feed').replaceChildren(...state.audit.slice(0, 8).map((a, i) => el('li', { class: newest && i === 0 ? 'new' : '' }, el('time', {}, clock(a.at)),
+      el('span', {}, el('span', { class: 'who' }, a.who), ' ', a.action.toLowerCase(), a.target ? ' ' + a.target : '', a.ok === false ? el('span', { class: 'bad' }, ' · не удалось') : null))))
+  }
+  renderRail(); renderFeed(); renderTray()
+  stream((ev) => {
+    renderRail()
+    if (ev.type === 'audit') renderFeed(true)
+    if (ev.type === 'settings.change' && !ev.mine) {
+      const f = fields[ev.path]; if (!f) return
+      if (draft.has(ev.path)) { draft.get(ev.path).conflict = ev; f.box.dataset.conflict = ''; f.note.className = 'note bad'; f.note.replaceChildren(`${ev.by} только что поставил ${ev.to}. `, el('button', { class: 'sm', onclick: () => { f.input.value = ev.to; f.input.dispatchEvent(new Event('input')) } }, 'взять'), ' или оставить своё'); renderTray() }
+      else { f.input.value = ev.to; f.box.classList.add('flash'); f.note.className = 'note'; f.note.textContent = `${ev.by} · только что: ${ev.from} → ${ev.to}` }
+      $('#rev').textContent = S.revision
+    }
+    if (ev.type === 'health') { $('#lamp').dataset.tone = ev.tps < 18 ? 'warn' : 'ok'; $('#lamp').textContent = ev.tps < 18 ? 'Сервер подтормаживает' : 'Сервер работает' }
+  })
+</script>
+</body>
+</html>

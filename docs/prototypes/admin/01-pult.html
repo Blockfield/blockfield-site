@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Прототип 1 · Пульт — автосохранение по полю</title>
+<link rel="stylesheet" href="base.css" />
+<style>
+  /* Layout: fixed sidebar, live strip on top of the content, content column capped at 880px. */
+  .app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
+  .side { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--bg-2); }
+  .brand { display: flex; align-items: center; gap: 10px; height: 56px; padding: 0 18px; border-bottom: 1px solid var(--line); font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; }
+  .brand svg { width: 20px; height: 20px; }
+  .nav { padding: 12px 10px; display: grid; gap: 14px; }
+  .nav .label { padding: 0 8px; }
+  .nav a { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 8px; color: var(--sand); text-decoration: none; font-size: 14px; }
+  .nav a:hover { color: var(--cream); background: var(--panel); }
+  .nav a[aria-current] { color: var(--cream); background: var(--panel); box-shadow: inset 2px 0 0 var(--amber); }
+  .nav a .cnt { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .nav a .av { width: 18px; height: 18px; font-size: 9px; margin-left: auto; }
+  .side .now { margin-top: auto; border-top: 1px solid var(--line); padding: 14px 18px; display: grid; gap: 10px; font-size: 13px; }
+  .side .match { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; }
+  .side .match .score { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .side .match .score b { color: var(--danger); font-weight: 600; }
+  .side .match .score i { color: var(--info); font-style: normal; }
+  .me { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--line); font-size: 13px; color: var(--sand); }
+
+  .strip { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 24px; height: 56px; padding: 0 28px; border-bottom: 1px solid var(--line); background: rgb(7 6 4 / 0.92); backdrop-filter: blur(6px); }
+  .strip .stat { display: flex; align-items: baseline; gap: 6px; font-size: 13px; color: var(--sand); }
+  .strip .stat b { font-family: var(--mono); font-size: 15px; font-weight: 600; color: var(--cream); font-variant-numeric: tabular-nums; }
+  .strip .who { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--sand); }
+  .strip .who .av { margin-left: -4px; }
+  .strip .conn { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+
+  main { padding: 28px 28px 96px; max-width: 920px; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+  .head p { font-size: 14px; }
+  .hint { font-size: 13px; color: var(--muted); }
+
+  /* Group = a plate with a seam list of rows; each row: label | control | state */
+  .group { border: 1px solid var(--line); background: var(--panel); margin-bottom: 16px; }
+  .group > header { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+  .group > header h2 { font-size: 14px; letter-spacing: 0; }
+  .group > header .hint { margin-left: auto; }
+  .row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 150px; align-items: center; gap: 16px; padding: 10px 18px; border-bottom: 1px solid var(--line); }
+  .row:last-child { border-bottom: 0; }
+  .row label { font-weight: 500; font-size: 14px; }
+  .row label small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
+  .row .ctl { display: flex; align-items: center; gap: 8px; }
+  .row .ctl input { max-width: 120px; }
+  .row .unit { font-size: 12px; color: var(--muted); }
+  .row .state { justify-self: end; text-align: right; }
+  .row[data-other] { background: rgb(245 165 36 / 0.04); }
+  .checks { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 12px 18px; }
+  .checks label { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; }
+  .foot { display: flex; align-items: center; gap: 16px; font-size: 13px; color: var(--muted); }
+  .foot .rev { font-family: var(--mono); }
+
+  @media (max-width: 900px) {
+    .app { grid-template-columns: minmax(0, 1fr); }
+    .side { position: static; height: auto; min-width: 0; }
+    .side .now, .me { display: none; }
+    .nav { display: flex; overflow-x: auto; gap: 0; padding: 6px 8px; }
+    .nav > div { display: flex; }
+    .nav .label { display: none; }
+    .nav a { flex: none; }
+    .nav a .av { margin-left: 4px; }
+    .strip { gap: 14px; padding: 0 16px; overflow-x: auto; white-space: nowrap; }
+    .strip .who span:first-child { display: none; }
+    main { padding: 20px 16px 96px; }
+    .row { grid-template-columns: 1fr auto; }
+    .row .state { grid-column: 1 / -1; justify-self: start; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2.2"><path d="M4 4l8 6 8-6M4 11l8 6 8-6M4 18l8 6 8-6"/></svg>Blockfield</div>
+    <nav class="nav" aria-label="Разделы">
+      <div><p class="label">Операции</p>
+        <a href="#">Обзор</a><a href="#">Игроки <span class="cnt" id="n-online">14</span><span class="av" data-c="2" title="Bobr здесь">B</span></a><a href="#">Матчи <span class="cnt" id="n-matches">2</span></a></div>
+      <div><p class="label">Игра и карты</p>
+        <a href="#" aria-current="page">Настройки <span class="av" data-c="1" title="Kira здесь">K</span></a><a href="#">Оружие</a><a href="#">Мастерская</a><a href="#">Статистика</a></div>
+      <div><p class="label">Управление</p>
+        <a href="#">Производительность</a><a href="#">Команда</a><a href="#">Журнал</a><a href="#">Консоль</a></div>
+    </nav>
+    <div class="now" id="now"><p class="label">Сейчас на сервере</p></div>
+    <div class="me"><span class="av" data-c="4">N</span>Nether · владелец</div>
+  </aside>
+  <div>
+    <div class="strip">
+      <span class="lamp" data-tone="ok" id="lamp">Сервер работает</span>
+      <span class="stat">онлайн <b id="s-online">14</b></span>
+      <span class="stat">матчей <b id="s-matches">2</b></span>
+      <span class="stat">TPS <b id="s-tps">19.8</b></span>
+      <span class="who" id="who"><span>в панели:</span></span>
+      <span class="conn lamp" data-tone="live">live</span>
+    </div>
+    <main>
+      <div class="head">
+        <div><h1>Настройки игры</h1><p class="muted">Каждое поле сохраняется само, как только вы его отпустите. Кнопок нет.</p></div>
+        <p class="foot"><span class="rev" id="rev">ревизия 12</span><span id="applied">применено 42 мин назад · Kira</span></p>
+      </div>
+
+      <section class="group" aria-labelledby="g1">
+        <header><h2 id="g1">Комнаты</h2><span class="hint">действует для новых матчей</span></header>
+        <div id="rooms"></div>
+      </section>
+      <section class="group" aria-labelledby="g2">
+        <header><h2 id="g2">Лобби</h2></header>
+        <div id="lobby"></div>
+      </section>
+      <section class="group" aria-labelledby="g3">
+        <header><h2 id="g3">Стоимость высадки</h2><span class="hint">0 — бесплатно · штурмовик и марксман всегда бесплатны</span></header>
+        <div id="costs"></div>
+      </section>
+      <section class="group" aria-labelledby="g4">
+        <header><h2 id="g4">Доступные классы</h2><span class="hint">кто играет — доиграет ещё 3 минуты</span></header>
+        <div class="checks" id="locks"></div>
+      </section>
+      <section class="group" aria-labelledby="g5">
+        <header><h2 id="g5">Каждый сам за себя</h2></header>
+        <div id="dm"></div>
+      </section>
+    </main>
+  </div>
+</div>
+<script src="mock.js"></script>
+<script>
+  const { state, LABELS, el, stream, write, ago, toast, avatar, $ } = BF
+  const S = state.settings
+  const rows = {}
+  function numRow(path, unit, hint, range) {
+    const [a, b] = path.split('.')
+    const stateEl = el('span', { class: 'state' })
+    const input = el('input', { class: 'num', type: 'number', value: S[a][b], min: range[0], max: range[1] })
+    let last = S[a][b]
+    const commit = async () => {
+      const v = Number(input.value)
+      if (v === last) return
+      if (v < range[0] || v > range[1]) { stateEl.dataset.s = 'error'; stateEl.textContent = `от ${range[0]} до ${range[1]}`; return }
+      const prev = last; last = v
+      stateEl.dataset.s = 'saving'; stateEl.textContent = 'сохраняем'
+      try {
+        await write({ type: 'settings.change', by: 'Nether', path, from: prev, to: v, revision: S.revision + 1 })
+        stateEl.dataset.s = 'saved'; stateEl.textContent = 'сохранено'
+        toast(`${LABELS[path]}: ${prev} → ${v}`, { undo: () => { input.value = prev; commit() } })
+        setTimeout(() => { if (stateEl.dataset.s === 'saved') stateEl.textContent = '' }, 2500)
+      } catch (e) { stateEl.dataset.s = 'error'; stateEl.textContent = e.message; input.value = prev; last = prev }
+    }
+    input.addEventListener('change', commit)
+    input.addEventListener('keydown', (e) => e.key === 'Enter' && input.blur())
+    const row = el('div', { class: 'row' },
+      el('label', {}, LABELS[path], hint ? el('small', {}, hint) : null),
+      el('div', { class: 'ctl' }, input, el('span', { class: 'unit' }, unit)),
+      stateEl)
+    rows[path] = { row, input, stateEl, set: (v) => { input.value = v; last = v } }
+    return row
+  }
+  function boolRow(path, hint) {
+    const [a, b] = path.split('.')
+    const stateEl = el('span', { class: 'state' })
+    const input = el('input', { type: 'checkbox', checked: S[a][b] })
+    input.addEventListener('change', async () => {
+      stateEl.dataset.s = 'saving'; stateEl.textContent = 'сохраняем'
+      await write({ type: 'settings.change', by: 'Nether', path, from: !input.checked, to: input.checked, revision: S.revision + 1, safe: true })
+      stateEl.dataset.s = 'saved'; stateEl.textContent = 'сохранено'
+      setTimeout(() => (stateEl.textContent = ''), 2500)
+    })
+    const row = el('div', { class: 'row' }, el('label', {}, LABELS[path], hint ? el('small', {}, hint) : null),
+      el('div', { class: 'ctl' }, el('label', { class: 'switch' }, input, el('span')), el('span', { class: 'unit' }, input.checked ? 'включено' : 'выключено')), stateEl)
+    input.addEventListener('change', () => (row.querySelector('.unit').textContent = input.checked ? 'включено' : 'выключено'))
+    rows[path] = { row, input, stateEl, set: (v) => (input.checked = v) }
+    return row
+  }
+  $('#rooms').append(numRow('rooms.maxRooms', 'шт', 'Сколько боёв может идти одновременно', [1, 16]), numRow('rooms.idleCloseSeconds', 'сек', null, [30, 3600]), numRow('rooms.abandonCloseSeconds', 'сек', null, [5, 600]))
+  $('#lobby').append(boolRow('lobby.pvpEnabled', 'Можно ли стрелять в лобби'), numRow('lobby.pvpCooldownSeconds', 'сек', null, [0, 600]))
+  $('#costs').append(numRow('classCosts.engineer', 'БК', null, [0, 10000]), numRow('classCosts.sniper', 'БК', null, [0, 10000]), numRow('classCosts.fpv', 'БК', null, [0, 10000]))
+  $('#dm').append(numRow('deathmatch.minPlayers', 'чел', null, [1, 24]))
+  for (const [id, name] of [['assault', 'Штурмовик'], ['marksman', 'Марксман'], ['sniper', 'Снайпер'], ['engineer', 'Инженер'], ['fpv', 'Оператор FPV']])
+    $('#locks').append(el('label', {}, el('input', { type: 'checkbox', checked: S.classLocks[id], onchange: (e) => toast(`${name}: ${e.target.checked ? 'доступен' : 'закрыт'} · сохранено`) }), name))
+
+  function renderNow() {
+    const box = $('#now')
+    box.replaceChildren(el('p', { class: 'label' }, 'Сейчас на сервере'),
+      ...state.rooms.map((r) => el('div', { class: 'match' }, el('span', {}, r.map, ' ', el('span', { class: 'dim' }, r.mode)),
+        r.phase === 'GAME' ? el('span', { class: 'score' }, el('b', {}, r.red), ' : ', el('i', {}, r.blue)) : el('span', { class: 'dim' }, 'голосование'))))
+    $('#s-online').textContent = $('#n-online').textContent = state.server.online
+    $('#s-matches').textContent = $('#n-matches').textContent = state.server.matches
+    $('#s-tps').textContent = state.server.tps.toFixed(1)
+    $('#who').replaceChildren(el('span', {}, 'в панели:'), ...state.presence.map(avatar))
+    $('#rev').textContent = `ревизия ${S.revision}`
+    $('#applied').textContent = `применено ${ago(S.appliedAt)} · ${S.updatedBy}`
+  }
+  renderNow()
+  stream((ev) => {
+    renderNow()
+    if (ev.type === 'settings.change' && !ev.mine) {
+      const r = rows[ev.path]; if (!r) return
+      r.set(ev.to); r.row.classList.remove('flash'); void r.row.offsetWidth; r.row.classList.add('flash'); r.row.dataset.other = ''
+      r.stateEl.dataset.s = 'other'; r.stateEl.textContent = `${ev.by} · только что`
+      toast(`${LABELS[ev.path]}: ${ev.from} → ${ev.to}`, { who: ev.by })
+    }
+    if (ev.type === 'health') { $('#lamp').dataset.tone = ev.tps < 18 ? 'warn' : 'ok'; $('#lamp').textContent = ev.tps < 18 ? 'Сервер подтормаживает' : 'Сервер работает' }
+  })
+</script>
+</body>
+</html>

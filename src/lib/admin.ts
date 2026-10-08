@@ -18,6 +18,7 @@ import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
 import { account, drasl, fail, nickname, readJson, session, token } from './account.ts'
 import { rcon } from './rcon.ts'
+import { eventStream, heartbeat } from './admin-events.ts'
 import { rawCommand, stripColors } from './console.ts'
 import { parseTickQuery, readDiagnostics, redact } from './diagnostics.ts'
 import { currentRooms, roomId } from './rooms.ts'
@@ -166,7 +167,7 @@ function readText(path: string, max = 1024): string | null {
     return null
   }
 }
-function readFile(path: string, max = 65_536): any {
+export function readFile(path: string, max = 65_536): any {
   let fd: number
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK)
@@ -1028,14 +1029,19 @@ const page = (url: URL) => {
   return n
 }
 
+export async function overviewSnapshot() {
+  const rooms = await currentRooms()
+  return {
+    status: readFile(join(adminDir(), 'status.json')),
+    session: readFile(join(adminDir(), 'session.json')),
+    rooms,
+  }
+}
+
 const routes: Record<string, Route> = {
   'GET overview': {
     permission: 'view',
-    handler: async () => ({
-      status: readFile(join(adminDir(), 'status.json')),
-      session: readFile(join(adminDir(), 'session.json')),
-      rooms: await currentRooms(),
-    }),
+    handler: overviewSnapshot,
   },
   'GET request': {
     permission: 'view',
@@ -1785,7 +1791,7 @@ export async function handleWorkshopAccess(
   }
 }
 
-/** Every /api/admin/* call: session → role → permission; every non-GET is audited, including refusals and failures. */
+/** Every /api/admin/* call: session → role → permission; every administrative write is audited, including refusals and failures. */
 export async function handleAdmin(
   context: APIContext,
   path: string,
@@ -1812,6 +1818,16 @@ export async function handleAdmin(
       },
       { headers: noStore },
     )
+  if ((method === 'GET' && path === 'events') || (method === 'POST' && path === 'presence')) {
+    if (!can(actor.role, 'view')) return fail(403, 'Нет доступа.')
+    if (path === 'events')
+      return eventStream(context.request, actor, () => roleOf(actor.uuid, store))
+    // Heartbeats describe transient presence, not administrative changes.
+    const body = await readJson(context.request, 4096)
+    if (typeof body?.tab !== 'string' || !/^[a-z-]{1,24}$/.test(body.tab))
+      return bad('Некорректная вкладка.')
+    return Response.json({ presence: heartbeat(actor, body.tab) }, { headers: noStore })
+  }
   const route = routes[`${method} ${path}`]
   if (!route) return fail(404, 'Неизвестный запрос.')
   // Non-staff are refused before the body is read and never reach the audit log, so they cannot grow it.
