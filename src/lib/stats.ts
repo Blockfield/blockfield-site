@@ -1,5 +1,6 @@
 /** Durable, Minecraft-independent result ingestion. Node >=22.19; no browser imports. */
 import { Database } from './database.ts'
+import { publish } from './admin-events.ts'
 import { saveReport, validateReport } from './diagnostics.ts'
 import { playerId, roleOf } from './admin.ts'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -830,11 +831,11 @@ export class StatsStore {
   }) {
     const json = entry.detail === undefined ? null : JSON.stringify(entry.detail)
     const detail = json !== null && json.length > 2048 ? `${json.slice(0, 2048)}…` : json
-    await this.db
+    const row = await this.db
       .prepare(
-        'INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error) VALUES (?,?,?,?,?,?,?,?,?)',
+        'INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error) VALUES (?,?,?,?,?,?,?,?,?) RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error',
       )
-      .run(
+      .get(
         Date.now(),
         entry.actorUuid,
         entry.actorName,
@@ -845,6 +846,7 @@ export class StatsStore {
         entry.ok ? 1 : 0,
         entry.error?.slice(0, 500) ?? null,
       )
+    publish({ type: 'audit', entry: row })
     // ponytail: keeps the newest 10 000 entries; export them elsewhere first if a longer history is ever required.
     await this.db
       .prepare(

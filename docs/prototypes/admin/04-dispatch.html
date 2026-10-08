@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Прототип 4 · Диспетчерская — один экран, контрол и есть состояние</title>
+<link rel="stylesheet" href="base.css" />
+<style>
+  /* Layout: no tabs. One dense board of plates for a wide monitor; a thin anchor rail at the left edge. */
+  body { font-size: 14px; }
+  .board { display: grid; grid-template-columns: 56px minmax(0, 1fr); min-height: 100vh; }
+  .rail { position: sticky; top: 0; height: 100vh; border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding: 14px 0; gap: 4px; background: var(--bg-2); }
+  .rail .logo { width: 24px; height: 24px; margin-bottom: 14px; }
+  .rail a { display: grid; place-items: center; width: 36px; height: 36px; color: var(--muted); text-decoration: none; }
+  .rail a:hover, .rail a[aria-current] { color: var(--amber); background: var(--panel); }
+  .rail a svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; }
+  .rail .me { margin-top: auto; }
+
+  .top { display: flex; align-items: center; gap: 18px; height: 52px; padding: 0 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; background: var(--bg); }
+  .top h1 { font-size: 16px; }
+  .top .lamp { font-size: 14px; }
+  .top .pres { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--sand); }
+  .top .pres .av { margin-left: -6px; }
+  .top .conn { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+
+  .grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 1px; background: var(--line); border-bottom: 1px solid var(--line); }
+  .plate { background: var(--bg); padding: 14px 18px 16px; min-width: 0; position: relative; }
+  .plate > header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .plate > header h2 { font-size: 13px; letter-spacing: 0.02em; }
+  .plate > header .av { width: 18px; height: 18px; font-size: 9px; }
+  .plate > header .st { margin-left: auto; font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  .plate > header .st.ok { color: var(--ok); }
+  .plate > header .st.warn { color: var(--amber); }
+  .c3 { grid-column: span 3; } .c4 { grid-column: span 4; } .c5 { grid-column: span 5; } .c6 { grid-column: span 6; } .c7 { grid-column: span 7; } .c8 { grid-column: span 8; } .c12 { grid-column: span 12; }
+
+  .big { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: baseline; }
+  .big .n { font-family: var(--mono); font-size: 34px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+  .big .n small { font-size: 12px; color: var(--muted); font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; margin-left: 6px; }
+  .big .n.warn { color: var(--amber); }
+  .mode { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+
+  .match { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+  .match:first-of-type { border-top: 0; padding-top: 0; }
+  .match .name b { font-weight: 600; }
+  .match .name span { color: var(--muted); }
+  .match .score { font-family: var(--mono); font-size: 22px; font-variant-numeric: tabular-nums; line-height: 1; }
+  .match .score b { color: var(--danger); font-weight: 600; } .match .score i { color: var(--info); font-style: normal; }
+  .match .pts { display: flex; gap: 4px; grid-column: 1; }
+  .match .pts span { width: 22px; height: 16px; display: grid; place-items: center; font-family: var(--mono); font-size: 10px; border: 1px solid var(--line-2); color: var(--muted); }
+  .match .pts span[data-o='RED'] { background: rgb(255 157 153 / 0.18); color: var(--danger); border-color: transparent; }
+  .match .pts span[data-o='BLUE'] { background: rgb(145 200 255 / 0.18); color: var(--info); border-color: transparent; }
+  .match .act { grid-column: 2; justify-self: end; }
+  .match .act button { height: 26px; font-size: 12px; }
+
+  .pl li { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-top: 1px solid var(--line); }
+  .pl li:first-child { border-top: 0; }
+  .pl .badge { font-size: 10px; padding: 1px 5px; }
+  .pl .r { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+  .pl .acts { display: none; gap: 4px; margin-left: 6px; }
+  .pl li:hover .acts, .pl li:focus-within .acts { display: flex; }
+  .pl .acts button { height: 24px; padding: 0 8px; font-size: 11px; }
+  .pl li.gone { opacity: 0.35; text-decoration: line-through; }
+
+  .ctl { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px 16px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .ctl:first-of-type { border-top: 0; padding-top: 0; }
+  .ctl label { font-weight: 500; }
+  .ctl label small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
+  .ctl .right { display: flex; align-items: center; gap: 10px; justify-self: end; }
+  .ctl .state { min-width: 0; }
+  .ctl .state:not(:empty) { grid-column: 1; grid-row: 2; justify-self: start; }
+  .ctl .right { grid-row: 1; }
+  .ctl.flash { margin: 0 -18px; padding-left: 18px; padding-right: 18px; }
+
+  .team li { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); }
+  .team li:first-child { border-top: 0; }
+  .team .role { margin-left: auto; }
+  .team .seg button { height: 26px; font-size: 11px; padding: 0 8px; }
+  .team .seen { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+
+  .log li { display: grid; grid-template-columns: 40px 1fr; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; }
+  .log li:first-child { border-top: 0; }
+  .log time { font-family: var(--mono); font-size: 11px; color: var(--muted); padding-top: 2px; }
+  .log .who { color: var(--amber); font-weight: 600; }
+  .log li.new { animation: flash 1.6s var(--ease) 1; }
+
+  .msg textarea { height: 64px; }
+  .msg .st { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
+
+  @media (max-width: 1100px) { .c3, .c4, .c5 { grid-column: span 6; } .c7, .c8 { grid-column: span 12; } }
+  .board > div { min-width: 0; }
+  @media (max-width: 720px) { .board { grid-template-columns: minmax(0, 1fr); } .rail { display: none; } .top { flex-wrap: wrap; height: auto; min-height: 52px; padding: 8px 16px; gap: 8px 14px; } .grid > * { grid-column: span 12; } .top .pres span:not(.av) { display: none; } }
+</style>
+</head>
+<body>
+<div class="board">
+  <nav class="rail" aria-label="Разделы">
+    <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2.2"><path d="M4 4l8 6 8-6M4 11l8 6 8-6M4 18l8 6 8-6"/></svg>
+    <a href="#server" aria-current="page" title="Сервер"><svg viewBox="0 0 24 24"><path d="M4 6h16v5H4zM4 13h16v5H4zM8 8.5h.01M8 15.5h.01"/></svg></a>
+    <a href="#matches" title="Матчи"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4zM12 6v12"/></svg></a>
+    <a href="#players" title="Игроки"><svg viewBox="0 0 24 24"><path d="M12 12a4 4 0 100-8 4 4 0 000 8zM4 21a8 8 0 0116 0"/></svg></a>
+    <a href="#settings" title="Настройки"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 12h2M10 12h10M4 17h14M14 5v4M8 10v4M18 15v4"/></svg></a>
+    <a href="#team" title="Команда"><svg viewBox="0 0 24 24"><path d="M9 11a3 3 0 100-6 3 3 0 000 6zM2 20a7 7 0 0114 0M16 11a3 3 0 100-6M22 20a7 7 0 00-6-7"/></svg></a>
+    <a href="#journal" title="Журнал"><svg viewBox="0 0 24 24"><path d="M5 3h14v18H5zM9 8h6M9 12h6M9 16h4"/></svg></a>
+    <span class="av me" data-c="4" title="Nether">N</span>
+  </nav>
+  <div>
+    <header class="top"><h1>Диспетчерская</h1><span class="lamp" data-tone="ok" id="lamp">Сервер работает</span><span class="dim" id="checked">проверено только что</span>
+      <div class="pres" id="pres"><span>в панели</span></div><span class="conn lamp" data-tone="live">live</span></header>
+    <div class="grid">
+      <section class="plate c4" id="server"><header><h2>Сервер</h2><span class="st ok" id="s-st">игра</span></header>
+        <div class="big"><span class="n" id="b-online">14<small>онлайн</small></span><span class="n" id="b-matches">2<small>матчей</small></span><span class="n" id="b-tps">19.8<small>tps</small></span></div>
+        <div class="mode"><span class="muted">Режим</span><div class="seg" id="mode"><button aria-pressed="true">Игра</button><button>Мастерская</button></div><span class="state" id="mode-st"></span></div>
+        <div class="ctl" style="margin-top:10px"><label>Полигон<small>площадка пристрелки в лобби</small></label><div class="right"><label class="switch"><input type="checkbox" checked id="range" /><span></span></label><span class="state" id="range-st"></span></div></div>
+      </section>
+      <section class="plate c4 msg" id="message"><header><h2>Сообщение при закрытом сервере</h2><span class="av" data-c="1" title="Kira смотрит">K</span></header>
+        <textarea id="msg" maxlength="200">Обновляем карты, вернёмся к 20:00</textarea>
+        <div class="st"><span class="dim" id="msg-len">34 / 200</span><span class="state" id="msg-st"></span></div>
+      </section>
+      <section class="plate c4" id="matches"><header><h2>Матчи</h2><span class="st" id="m-st">live</span></header><div id="rooms"></div></section>
+
+      <section class="plate c4" id="players"><header><h2>На сервере</h2><span class="av" data-c="2" title="Bobr здесь">B</span><span class="st" id="p-n">14</span></header><ul class="pl" id="pl"></ul></section>
+      <section class="plate c4" id="settings"><header><h2>Комнаты и лобби</h2><span class="st" id="rev">рев. 12</span></header><div id="ctl1"></div></section>
+      <section class="plate c4" id="costs"><header><h2>Стоимость высадки</h2><span class="av" data-c="1" title="Kira редактирует">K</span><span class="st">БК</span></header><div id="ctl2"></div></section>
+
+      <section class="plate c4" id="team"><header><h2>Команда</h2></header><ul class="team" id="team-list"></ul></section>
+      <section class="plate c8" id="journal"><header><h2>Журнал</h2><span class="st">последние действия</span></header><ul class="log" id="log"></ul></section>
+    </div>
+  </div>
+</div>
+<script src="mock.js"></script>
+<script>
+  const { state, LABELS, el, stream, write, ago, clock, toast, avatar, $ } = BF
+  const S = state.settings
+  const flashSt = (st, text, s = 'saved') => { st.dataset.s = s; st.textContent = text; if (s === 'saved') setTimeout(() => { if (st.dataset.s === 'saved') st.textContent = '' }, 2500) }
+  async function commit(plate, st, ev, label) {
+    plate.classList.add('progress'); st.dataset.s = 'saving'; st.textContent = 'применяем'
+    try { await write(ev); flashSt(st, 'применено ' + clock(Date.now())); return true }
+    catch (e) { flashSt(st, e.message, 'error'); toast(label + ': ' + e.message, { tone: 'bad' }); return false }
+    finally { plate.classList.remove('progress') }
+  }
+  // Stepper controls: the control is the state; each click commits (debounced 600 ms).
+  const ctls = {}
+  function stepper(path, unit, range, hint) {
+    const [a, b] = path.split('.'); const plate = $('#settings')
+    const out = el('output', {}, S[a][b]); const st = el('span', { class: 'state' })
+    let timer
+    const set = (v) => { v = Math.min(range[1], Math.max(range[0], v)); const from = S[a][b]; out.textContent = v; clearTimeout(timer); timer = setTimeout(() => commit(plate, st, { type: 'settings.change', by: 'Nether', path, from, to: v, revision: S.revision + 1 }, LABELS[path]).then((ok) => { if (!ok) out.textContent = S[a][b] }), 600) }
+    const row = el('div', { class: 'ctl' }, el('label', {}, LABELS[path], hint ? el('small', {}, hint) : null),
+      el('div', { class: 'right' }, st, el('div', { class: 'stepper' }, el('button', { onclick: () => set(Number(out.textContent) - 1), 'aria-label': 'меньше' }, '−'), out, el('button', { onclick: () => set(Number(out.textContent) + 1), 'aria-label': 'больше' }, '+'), el('small', {}, unit))))
+    ctls[path] = { row, out, st }
+    return row
+  }
+  function sw(path, hint) {
+    const [a, b] = path.split('.'); const st = el('span', { class: 'state' })
+    const inp = el('input', { type: 'checkbox', checked: S[a][b], onchange: () => commit($('#settings'), st, { type: 'settings.change', by: 'Nether', path, from: !inp.checked, to: inp.checked, revision: S.revision + 1, safe: true }, LABELS[path]) })
+    const row = el('div', { class: 'ctl' }, el('label', {}, LABELS[path], hint ? el('small', {}, hint) : null), el('div', { class: 'right' }, st, el('label', { class: 'switch' }, inp, el('span'))))
+    ctls[path] = { row, st, set: (v) => (inp.checked = v) }
+    return row
+  }
+  $('#ctl1').append(stepper('rooms.maxRooms', 'шт', [1, 16], 'для новых матчей'), stepper('rooms.idleCloseSeconds', 'сек', [30, 3600]), stepper('rooms.abandonCloseSeconds', 'сек', [5, 600]), sw('lobby.pvpEnabled'), stepper('lobby.pvpCooldownSeconds', 'сек', [0, 600]), stepper('deathmatch.minPlayers', 'чел', [1, 24]))
+  const c2 = $('#ctl2'); for (const p of ['classCosts.engineer', 'classCosts.sniper', 'classCosts.fpv']) { const r = stepper(p, 'БК', [0, 10000]); c2.append(r) }
+  // Range switch, mode segment, message autosave.
+  $('#range').addEventListener('change', (e) => commit($('#server'), $('#range-st'), { type: 'noop', safe: true }, 'Полигон').then(() => flashSt($('#range-st'), e.target.checked ? 'открыт' : 'закрыт')))
+  $('#mode').addEventListener('click', (e) => { if (e.target.tagName !== 'BUTTON') return; if (e.target.textContent === 'Мастерская' && !confirm('Переключить сервер в мастерскую? Игра перезапустится, обычные игроки не смогут зайти.')) return; [...$('#mode').children].forEach((b) => b.setAttribute('aria-pressed', b === e.target)); commit($('#server'), $('#mode-st'), { type: 'noop', safe: true }, 'Режим').then(() => flashSt($('#mode-st'), 'сервер применит за 15 с', 'saving')) })
+  let mt; $('#msg').addEventListener('input', () => { $('#msg-len').textContent = `${$('#msg').value.length} / 200`; clearTimeout(mt); $('#msg-st').dataset.s = 'saving'; $('#msg-st').textContent = 'печатаете…'; mt = setTimeout(() => commit($('#message'), $('#msg-st'), { type: 'noop', safe: true }, 'Сообщение').then(() => flashSt($('#msg-st'), 'сохранено')), 900) })
+
+  function renderRooms() {
+    $('#rooms').replaceChildren(...state.rooms.map((r) => el('div', { class: 'match' }, el('div', { class: 'name' }, el('b', {}, r.map), ' ', el('span', {}, `${r.mode} · ${r.players} · ${ago(r.startedAt)}`)),
+      r.phase === 'GAME' ? el('span', { class: 'score' }, el('b', {}, r.red), ' : ', el('i', {}, r.blue)) : el('span', { class: 'badge warn' }, 'голосование'),
+      el('div', { class: 'pts' }, ...r.points.map((p, i) => el('span', { 'data-o': r.owner[i] ?? '' }, p))),
+      el('div', { class: 'act' }, el('button', { class: 'ghost danger', onclick: () => confirm(`Остановить матч на ${r.map}?`) && toast(`Матч на ${r.map} остановлен`) }, 'стоп')))))
+    $('#b-online').firstChild.textContent = state.server.online; $('#b-matches').firstChild.textContent = state.server.matches; $('#b-tps').firstChild.textContent = state.server.tps.toFixed(1)
+    $('#b-tps').classList.toggle('warn', state.server.tps < 18); $('#p-n').textContent = state.server.online; $('#checked').textContent = 'проверено ' + ago(state.server.checkedAt)
+    $('#rev').textContent = 'рев. ' + S.revision
+    $('#pres').replaceChildren(el('span', {}, 'в панели'), ...state.presence.map(avatar))
+  }
+  function renderPlayers() {
+    $('#pl').replaceChildren(...state.players.map((p) => el('li', {}, avatar(p), el('span', {}, p.name), p.team ? el('span', { class: 'badge ' + p.team.toLowerCase() }, p.team) : null,
+      el('span', { class: 'acts' }, el('button', { class: 'ghost', onclick: (e) => { const li = e.target.closest('li'); li.classList.add('gone'); write({ type: 'player.leave', name: p.name }).then(() => toast(`${p.name} выгнан`), (err) => { li.classList.remove('gone'); toast(err.message, { tone: 'bad' }) }) } }, 'выгнать'), el('button', { class: 'ghost danger' }, 'бан')), el('span', { class: 'r' }, p.room))))
+  }
+  function renderTeam() {
+    $('#team-list').replaceChildren(...state.team.map((m) => el('li', {}, avatar(m), el('span', {}, m.name), el('span', { class: 'seen' }, ago(m.seen)),
+      m.role === 'owner' ? el('span', { class: 'role badge' }, 'владелец') : el('span', { class: 'role seg' }, ...['builder', 'moderator', 'admin'].map((r) => el('button', { 'aria-pressed': String(m.role === r), onclick: (e) => { m.role = r; renderTeam(); toast(`${m.name} — теперь ${{ builder: 'строитель', moderator: 'модератор', admin: 'администратор' }[r]}`) } }, { builder: 'стр', moderator: 'мод', admin: 'адм' }[r]))))))
+  }
+  function renderLog(fresh) {
+    $('#log').replaceChildren(...state.audit.slice(0, 7).map((a, i) => el('li', { class: fresh && i === 0 ? 'new' : '' }, el('time', {}, clock(a.at)), el('span', {}, el('span', { class: 'who' }, a.who), ' ' + a.action.toLowerCase() + (a.target ? ' ' + a.target : ''), a.detail ? el('span', { class: 'dim' }, ' — ' + a.detail) : null, a.ok === false ? el('span', { class: 'bad' }, ' · не удалось') : null))))
+  }
+  renderRooms(); renderPlayers(); renderTeam(); renderLog()
+  stream((ev) => {
+    renderRooms(); if (ev.type.startsWith('player')) renderPlayers(); if (ev.type === 'audit') renderLog(true)
+    if (ev.type === 'settings.change' && !ev.mine) { const c = ctls[ev.path]; if (!c) return; if (c.out) c.out.textContent = ev.to; else c.set(ev.to); c.row.classList.remove('flash'); void c.row.offsetWidth; c.row.classList.add('flash'); flashSt(c.st, `${ev.by} · только что`, 'other') }
+    if (ev.type === 'health') { const slow = ev.tps < 18; $('#lamp').dataset.tone = slow ? 'warn' : 'ok'; $('#lamp').textContent = slow ? 'Сервер подтормаживает' : 'Сервер работает' }
+  })
+</script>
+</body>
+</html>

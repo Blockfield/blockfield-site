@@ -55,6 +55,7 @@ const workshopHelpers = source.statements
         'describeGame',
         'describeWorkshop',
         'renderModes',
+        'renderProgress',
       ].includes(node.name?.text),
   )
   .map((node) => node.getText(source))

@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Прототип 5 · Пост — мобильный модератор</title>
+<link rel="stylesheet" href="base.css" />
+<style>
+  /* Mobile-first. On a desktop the same column sits centred at 520px, like a messenger. */
+  body { font-size: 15px; }
+  .shell { max-width: 520px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
+  .hd { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line); }
+  .hd .row1 { display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 16px; }
+  .hd h1 { font-size: 18px; }
+  .hd .conn { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .hd .conn .av { margin-left: -6px; }
+  .hd .live { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+  .status { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-top: 1px solid var(--line); font-size: 13px; color: var(--sand); background: var(--panel); }
+  .status b { font-family: var(--mono); font-weight: 600; color: var(--cream); }
+  .status .lamp { font-size: 14px; color: var(--cream); }
+
+  .pages { flex: 1; }
+  .page { display: none; padding-bottom: 90px; }
+  .page[data-on] { display: block; }
+  .page h2 { font-size: 13px; letter-spacing: 0.04em; color: var(--sand); padding: 18px 16px 8px; }
+  .list li { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 8px 16px; border-top: 1px solid var(--line); }
+  .list li:last-child { border-bottom: 1px solid var(--line); }
+  .list .t { display: grid; min-width: 0; }
+  .list .t b { font-weight: 600; }
+  .list .t small { color: var(--muted); font-size: 12px; }
+  .list .end { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .list .end .state { font-size: 10px; }
+  .list .val { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--cream); }
+  .list .val u { text-decoration: none; color: var(--muted); font-size: 12px; margin-left: 4px; }
+  .list li.flash { }
+  .list button.sm { height: 32px; padding: 0 10px; }
+  .list .av { width: 32px; height: 32px; font-size: 14px; }
+  .list .badge { font-size: 10px; padding: 1px 5px; }
+  .list .stepper { height: 32px; }
+  .list .stepper button { width: 32px; }
+  .list .stepper output { min-width: 48px; }
+
+  .chip { display: flex; gap: 8px; padding: 10px 16px; overflow-x: auto; }
+  .chip button { height: 34px; flex: none; }
+  .chip button[aria-pressed='true'] { background: var(--panel-2); border-color: var(--amber-dim); color: var(--cream); }
+
+  .match { padding: 12px 16px; border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; }
+  .match .score { font-family: var(--mono); font-size: 24px; font-variant-numeric: tabular-nums; line-height: 1; }
+  .match .score b { color: var(--danger); font-weight: 600; } .match .score i { color: var(--info); font-style: normal; }
+  .match small { color: var(--muted); }
+  .match .act { grid-column: 1 / -1; display: flex; gap: 8px; }
+  .match .act button { flex: 1; height: 40px; }
+
+  .big { display: flex; gap: 8px; padding: 8px 16px 0; }
+  .big button { flex: 1; height: 48px; font-size: 14px; }
+
+  .tabbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: 0; width: min(520px, 100vw); display: grid; grid-template-columns: repeat(5, 1fr); height: 64px; background: var(--bg); border-top: 1px solid var(--line-2); z-index: 6; }
+  .tabbar button { height: 100%; border: 0; flex-direction: column; gap: 4px; font-size: 11px; font-weight: 500; color: var(--muted); letter-spacing: 0; text-transform: none; padding: 0; }
+  .tabbar button:hover { background: transparent; color: var(--cream); }
+  .tabbar button svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; }
+  .tabbar button[aria-pressed='true'] { color: var(--amber); box-shadow: inset 0 2px 0 var(--amber); }
+  .tabbar button .dot { position: absolute; margin-left: 24px; margin-top: -24px; width: 8px; height: 8px; background: var(--amber); }
+
+  /* Bottom sheet for dangerous actions */
+  .sheet { position: fixed; inset: 0; z-index: 20; display: none; align-items: end; justify-content: center; background: var(--shade); }
+  .sheet[data-open] { display: flex; }
+  .sheet > div { width: min(520px, 100vw); background: var(--panel); border-top: 1px solid var(--line-2); padding: 20px 16px 24px; display: grid; gap: 12px; animation: rise 0.25s var(--ease); }
+  .sheet h3 { font-size: 18px; }
+  .sheet p { color: var(--sand); font-size: 14px; }
+  .sheet .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
+  .sheet .btns button { height: 48px; }
+
+  .toasts { bottom: 76px; left: 50%; right: auto; transform: translateX(-50%); width: min(488px, calc(100vw - 32px)); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="hd">
+    <div class="row1"><h1>Пост</h1><span class="dim">Nether</span><span class="conn"><span class="av" data-c="1" title="Kira в панели">K</span><span class="av" data-c="2" title="Bobr в панели">B</span><span class="lamp live" data-tone="live">live</span></span></div>
+    <div class="status"><span class="lamp" data-tone="ok" id="lamp">Работает</span><span>онлайн <b id="online">14</b></span><span>матчей <b id="matches">2</b></span><span>TPS <b id="tps">19.8</b></span></div>
+  </header>
+  <div class="pages">
+    <section class="page" data-page="server" data-on>
+      <h2>Режим</h2>
+      <ul class="list">
+        <li><div class="t"><b>Игра</b><small>все заходят и играют</small></div><div class="end"><span class="badge ok">сейчас</span></div></li>
+        <li><div class="t"><b>Мастерская</b><small>только команда, игра перезапустится</small></div><div class="end"><button class="sm" onclick="sheet('Включить мастерскую?', 'Сервер дождётся конца матчей и перезапустится. Обычные игроки не смогут зайти.', 'Включить', () => BF.toast('Запрос отправлен, сервер применит за 15 с'))">Включить</button></div></li>
+      </ul>
+      <h2>Лобби</h2>
+      <ul class="list" id="srv"></ul>
+      <h2>Срочно</h2>
+      <div class="big"><button onclick="sheet('Не начинать новые матчи?', 'Идущие доиграют, новые не стартуют. Снимается переключением режима.', 'Остановить приём', () => BF.toast('Новые матчи не начинаются'))">Не начинать матчи</button><button class="danger" onclick="sheet('Прервать все матчи?', 'Все бои остановятся прямо сейчас без результата. Игроки окажутся в лобби.', 'Прервать', () => BF.toast('Матчи прерваны', { tone: 'bad' }), true)">Прервать всё</button></div>
+    </section>
+    <section class="page" data-page="players">
+      <div class="chip"><button aria-pressed="true">Все</button><button>Поля</button><button>Констакса</button><button>Лобби</button></div>
+      <ul class="list" id="pl"></ul>
+      <h2>Объявить всем</h2>
+      <div style="padding: 0 16px; display: flex; gap: 8px"><input id="say" placeholder="Текст в чат всем" /><button class="primary" onclick="BF.toast('Отправлено всем: «' + (document.getElementById('say').value || 'Рестарт через 5 минут') + '»'); document.getElementById('say').value=''">Отправить</button></div>
+    </section>
+    <section class="page" data-page="matches"><h2>Идут сейчас</h2><div id="rooms"></div></section>
+    <section class="page" data-page="settings">
+      <h2>Комнаты</h2><ul class="list" id="st1"></ul>
+      <h2>Стоимость высадки, БК</h2><ul class="list" id="st2"></ul>
+      <p class="dim" style="padding: 10px 16px; font-size: 12px">Меняется сразу. Ревизия <span class="mono" id="rev">12</span>.</p>
+    </section>
+    <section class="page" data-page="more"><h2>Журнал</h2><ul class="list" id="log"></ul></section>
+  </div>
+  <nav class="tabbar" aria-label="Разделы">
+    <button aria-pressed="true" data-go="server"><svg viewBox="0 0 24 24"><path d="M4 6h16v5H4zM4 13h16v5H4zM8 8.5h.01M8 15.5h.01"/></svg>Сервер</button>
+    <button data-go="players"><svg viewBox="0 0 24 24"><path d="M12 12a4 4 0 100-8 4 4 0 000 8zM4 21a8 8 0 0116 0"/></svg>Игроки</button>
+    <button data-go="matches"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4zM12 6v12"/></svg>Матчи</button>
+    <button data-go="settings"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 12h2M10 12h10M4 17h14M14 5v4M8 10v4M18 15v4"/></svg>Настройки</button>
+    <button data-go="more"><svg viewBox="0 0 24 24"><path d="M5 3h14v18H5zM9 8h6M9 12h6M9 16h4"/></svg>Журнал</button>
+  </nav>
+</div>
+<div class="sheet" id="sheet"><div><h3 id="sh-t"></h3><p id="sh-p"></p><div class="btns"><button onclick="closeSheet()">Отмена</button><button class="primary" id="sh-ok"></button></div></div></div>
+<script src="mock.js"></script>
+<script>
+  const { state, LABELS, el, stream, write, ago, clock, toast, avatar, $, $$ } = BF
+  const S = state.settings
+  const go = (id) => { $$('.page').forEach((p) => p.toggleAttribute('data-on', p.dataset.page === id)); $$('.tabbar button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.go === id)); scrollTo(0, 0) }
+  $$('.tabbar button').forEach((b) => (b.onclick = () => go(b.dataset.go)))
+  function sheet(t, p, ok, fn, danger) { $('#sh-t').textContent = t; $('#sh-p').textContent = p; const b = $('#sh-ok'); b.textContent = ok; b.className = 'primary' + (danger ? ' danger' : ''); b.onclick = () => { closeSheet(); fn() }; $('#sheet').dataset.open = '' }
+  function closeSheet() { delete $('#sheet').dataset.open }
+  $('#sheet').addEventListener('click', (e) => e.target === e.currentTarget && closeSheet())
+
+  const ctls = {}
+  function stepRow(path, unit, range, hint) {
+    const [a, b] = path.split('.'); const out = el('output', {}, S[a][b]); const st = el('span', { class: 'state' }); let t
+    const set = (v) => { v = Math.min(range[1], Math.max(range[0], v)); const from = S[a][b]; out.textContent = v; st.dataset.s = 'saving'; st.textContent = '…'; clearTimeout(t); t = setTimeout(async () => { try { await write({ type: 'settings.change', by: 'Nether', path, from, to: v, revision: S.revision + 1 }); st.dataset.s = 'saved'; st.textContent = 'ок'; setTimeout(() => (st.textContent = ''), 2000) } catch (e) { out.textContent = from; st.dataset.s = 'error'; st.textContent = 'ошибка'; toast(e.message, { tone: 'bad' }) } }, 600) }
+    const li = el('li', {}, el('div', { class: 't' }, el('b', {}, LABELS[path]), hint ? el('small', {}, hint) : null), el('div', { class: 'end' }, st, el('div', { class: 'stepper' }, el('button', { onclick: () => set(Number(out.textContent) - 1), 'aria-label': 'меньше' }, '−'), out, el('button', { onclick: () => set(Number(out.textContent) + 1), 'aria-label': 'больше' }, '+'), el('small', {}, unit))))
+    ctls[path] = { li, out, st }; return li
+  }
+  function swRow(path, hint) {
+    const [a, b] = path.split('.'); const st = el('span', { class: 'state' })
+    const inp = el('input', { type: 'checkbox', checked: S[a][b], onchange: async () => { st.dataset.s = 'saving'; st.textContent = '…'; await write({ type: 'settings.change', by: 'Nether', path, from: !inp.checked, to: inp.checked, revision: S.revision + 1, safe: true }); st.dataset.s = 'saved'; st.textContent = 'ок'; setTimeout(() => (st.textContent = ''), 2000) } })
+    const li = el('li', {}, el('div', { class: 't' }, el('b', {}, LABELS[path]), hint ? el('small', {}, hint) : null), el('div', { class: 'end' }, st, el('label', { class: 'switch' }, inp, el('span'))))
+    ctls[path] = { li, st, set: (v) => (inp.checked = v) }; return li
+  }
+  $('#srv').append(swRow('lobby.pvpEnabled', 'стрельба в лобби'), el('li', {}, el('div', { class: 't' }, el('b', {}, 'Полигон'), el('small', {}, 'площадка пристрелки')), el('div', { class: 'end' }, el('label', { class: 'switch' }, el('input', { type: 'checkbox', checked: true, onchange: (e) => toast('Полигон ' + (e.target.checked ? 'открыт' : 'закрыт')) }), el('span')))))
+  $('#st1').append(stepRow('rooms.maxRooms', 'шт', [1, 16], 'для новых матчей'), stepRow('rooms.idleCloseSeconds', 'сек', [30, 3600]), stepRow('rooms.abandonCloseSeconds', 'сек', [5, 600]), stepRow('deathmatch.minPlayers', 'чел', [1, 24]))
+  $('#st2').append(stepRow('classCosts.engineer', '', [0, 10000]), stepRow('classCosts.sniper', '', [0, 10000]), stepRow('classCosts.fpv', '', [0, 10000]))
+
+  function renderPlayers() {
+    $('#pl').replaceChildren(...state.players.map((p) => el('li', {}, avatar(p), el('div', { class: 't' }, el('b', {}, p.name), el('small', {}, [p.room, p.cls].filter(Boolean).join(' · '))), p.team ? el('span', { class: 'badge ' + p.team.toLowerCase() }, p.team) : null,
+      el('div', { class: 'end' }, el('button', { class: 'sm', onclick: (e) => { const li = e.target.closest('li'); li.style.opacity = 0.4; write({ type: 'player.leave', name: p.name }).then(() => toast(`${p.name} выгнан`, { undo: () => toast('В прототипе возврата нет') }), (err) => { li.style.opacity = 1; toast(err.message, { tone: 'bad' }) }) } }, 'Выгнать'), el('button', { class: 'sm danger', onclick: () => sheet(`Забанить ${p.name}?`, 'Игрок не сможет зайти, пока бан не снимут здесь же.', 'Забанить', () => toast(`${p.name} забанен`), true) }, 'Бан')))))
+    $('#online').textContent = state.server.online; $('#matches').textContent = state.server.matches; $('#tps').textContent = state.server.tps.toFixed(1)
+  }
+  function renderRooms() {
+    $('#rooms').replaceChildren(...state.rooms.map((r) => el('div', { class: 'match' }, el('div', {}, el('b', {}, r.map), el('br'), el('small', {}, `${r.mode} · ${r.players} игроков · ${r.phase === 'GAME' ? 'идёт ' + ago(r.startedAt).replace('назад', '') : 'голосование'}`)),
+      r.phase === 'GAME' ? el('span', { class: 'score' }, el('b', {}, r.red), ' : ', el('i', {}, r.blue)) : el('span', { class: 'badge warn' }, 'ждёт'),
+      el('div', { class: 'act' }, el('button', { class: 'danger', onclick: () => sheet(`Остановить матч на ${r.map}?`, 'Бой закончится без результата. Можно выбрать победителя.', 'Остановить', () => toast('Матч остановлен'), true) }, 'Остановить'), el('button', {}, 'Ничья')))))
+  }
+  function renderLog(fresh) {
+    $('#log').replaceChildren(...state.audit.slice(0, 10).map((a, i) => el('li', { class: fresh && i === 0 ? 'flash' : '' }, el('div', { class: 't' }, el('b', {}, a.who + ' ' + a.action.toLowerCase() + (a.target ? ' ' + a.target : '')), el('small', {}, [clock(a.at), a.detail, a.ok === false ? 'не удалось' : null].filter(Boolean).join(' · '))))))
+  }
+  renderPlayers(); renderRooms(); renderLog()
+  stream((ev) => {
+    renderPlayers(); renderRooms(); $('#rev').textContent = S.revision
+    if (ev.mine) return
+    if (ev.type === 'audit') { renderLog(true); toast(`${ev.action} ${ev.target}`, { who: ev.who }); $$('.tabbar button')[4].append(el('span', { class: 'dot' })) }
+    if (ev.type === 'settings.change') { const c = ctls[ev.path]; if (c) { c.out ? (c.out.textContent = ev.to) : c.set(ev.to); c.li.classList.add('flash'); c.st.dataset.s = 'other'; c.st.textContent = ev.by } toast(`${LABELS[ev.path]}: ${ev.from} → ${ev.to}`, { who: ev.by }) }
+    if (ev.type === 'player.join') toast(`${ev.name} зашёл на сервер`)
+    if (ev.type === 'health') { const slow = ev.tps < 18; $('#lamp').dataset.tone = slow ? 'warn' : 'ok'; $('#lamp').textContent = slow ? 'Тормозит' : 'Работает'; if (slow) toast(`TPS упал до ${ev.tps}`, { tone: 'warn' }) }
+  })
+</script>
+</body>
+</html>

@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { JSDOM } from 'jsdom'
+import ts from 'typescript'
 import { parseKitCatalog, validateKitChanges } from '../src/lib/kit-schema.ts'
 import { effectiveKits, renderKitForm } from '../src/lib/kit-form.ts'
 import { handleAdmin, saveKitSettings, saveSettings } from '../src/lib/admin.ts'
@@ -288,7 +289,7 @@ test('SBW ammo editor preserves its loaded value and only exposes supported gun 
   item.dispatchEvent(new dom.window.Event('toggle'))
   const labels = [...item.querySelectorAll('label')]
   assert.deepEqual(
-    labels.map((label) => label.textContent),
+    labels.map((label) => label.firstChild.textContent),
     ['Предмет', 'Количество', 'Боеприпасов в оружии'],
   )
   const count = document.getElementById(labels[1].htmlFor),
@@ -310,4 +311,245 @@ test('SBW ammo editor preserves its loaded value and only exposes supported gun 
   select.value = 'minecraft:stone'
   select.dispatchEvent(new dom.window.Event('change'))
   assert.equal(draft.variants[0].items[0].data, undefined)
+})
+
+const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
+const source = ts.createSourceFile(
+  'admin.ts',
+  page.split('<script>')[1].split('</script>')[0],
+  ts.ScriptTarget.Latest,
+  true,
+)
+const autosave = ts.transpileModule(
+  source.statements
+    .filter(
+      (node) =>
+        ts.isFunctionDeclaration(node) &&
+        [
+          'commitKits',
+          'loadKits',
+          'kitDiff',
+          'kitDraftDiff',
+          'kitPatch',
+          'kitValue',
+          'rememberKitChange',
+        ].includes(node.name?.text),
+    )
+    .map((node) => node.getText(source))
+    .join('\n'),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+).outputText
+
+function kitAutosave(t) {
+  const dom = new JSDOM(
+    '<form id="kits-form"><div class="field"><input><span class="state"></span></div></form><p id="kits-status"></p>',
+    { runScripts: 'outside-only' },
+  )
+  t.after(() => dom.window.close())
+  const window = dom.window
+  window.structuredClone = structuredClone
+  window.effectiveKits = effectiveKits
+  window.validateKitChanges = validateKitChanges
+  window.initialCatalog = parseKitCatalog(kitFixture())
+  window.eval(`
+    const $ = s => document.querySelector(s);
+    const kitChanges = new Map(), kitTimers = new Map(); let kitEditingControl = null, observedSettingsRevision = 0;
+    let kitClassCosts = {}, kitCatalog = initialCatalog, kitQueue = Promise.resolve(), kitPending = 0, kitTimer, kitRevision = 3;
+    let kitOverrides = {}, kitBindings = {}, kitSnapshot = JSON.stringify({kits:{},fixedModeKits:{}}), kitDraftSnapshot = kitSnapshot;
+    const kitBody = () => JSON.stringify({kits:kitOverrides,fixedModeKits:kitBindings});
+    const fieldState = (line, text) => line.textContent = text;
+    const say = fieldState, autosaveError = error => error.message;
+    const loadSettings = async () => {}, kitMeta = () => {}, renderKits = () => {};
+    const toast = text => window.notice = text;
+    const changeToast = (_label,_old,_new,_secret,undo) => window.undo = undo;
+    ${autosave}
+    window.draft = (kits, bindings = {}) => { kitOverrides = kits; kitBindings = bindings; };
+    window.flush = () => kitQueue;
+    window.snapshot = () => kitSnapshot;
+    window.observe = revision => observedSettingsRevision = revision;
+    window.baseline = kits => { kitOverrides = structuredClone(kits); kitSnapshot = kitDraftSnapshot = kitBody(); };
+    window.edit = (control, before, after, path) => { kitEditingControl = control; rememberKitChange(before, after, path); kitPatch({kits:kitOverrides,fixedModeKits:kitBindings}, {path,value:after}); };
+    window.state = () => ({ revision:kitRevision, kits:kitOverrides });
+    window.dropCatalog = () => { kitCatalog = undefined; kitSnapshot = kitDraftSnapshot = ''; kitOverrides = {}; };
+  `)
+  return window
+}
+
+test('kit autosave retries stale revisions without overwriting other kits; undo refuses a newer edit', async (t) => {
+  const window = kitAutosave(t),
+    kit = structuredClone(kitFixture().kits[0].effective)
+  window.draft({ rifle: { ...kit, name: 'Новый набор' } })
+  let settings = { revision: 3, kits: {} },
+    writes = 0
+  window.api = async (_path, method, body) => {
+    if (!method) return { settings: structuredClone(settings) }
+    writes++
+    if (writes === 1) {
+      settings = { revision: 4, kits: { remote: { ...kit, id: 'remote' } } }
+      throw Object.assign(new Error('stale'), { status: 409 })
+    }
+    assert.equal(body.expectedRevision, 4)
+    assert.equal(body.kits.remote.id, 'remote')
+    settings = structuredClone({ revision: 5, ...body })
+    return { settings }
+  }
+  await window.commitKits()
+  assert.equal(writes, 2)
+  assert.equal(settings.kits.rifle.name, 'Новый набор')
+  assert.match(window.document.querySelector('#kits-status').textContent, /Сохранено/)
+  settings.kits.rifle.name = 'Чужая правка'
+  window.undo()
+  await window.flush()
+  assert.equal(writes, 2)
+  assert.match(window.notice, /Отмена недоступна/)
+})
+
+test('kit autosave keeps invalid drafts and blocks live catalog replacement while editing', async (t) => {
+  const window = kitAutosave(t),
+    kit = structuredClone(kitFixture().kits[0].effective)
+  window.draft({ rifle: { ...kit, name: '' } })
+  let writes = 0
+  window.api = async (_path, method) => {
+    if (method) writes++
+    return { settings: { revision: 3, kits: {} } }
+  }
+  await window.commitKits()
+  assert.equal(writes, 0)
+  assert.match(window.document.querySelector('#kits-status').textContent, /Наборы/)
+  window.api = () => {
+    throw Error('Focused draft must stay')
+  }
+  window.document.querySelector('input').focus()
+  await window.loadKits(true)
+  assert.equal(JSON.parse(window.snapshot()).kits.rifle, undefined)
+  window.draft({ rifle: kit })
+  const control = window.document.querySelector('input')
+  control.required = true
+  control.value = ''
+  window.api = () => {
+    throw Error('Invalid native control must not save')
+  }
+  window.edit(control, kit.name, 'Edited', ['kits', 'rifle', 'name'])
+  await window.commitKits(undefined, control)
+  assert.equal(window.document.querySelector('.state').textContent, 'Исправьте значение.')
+  control.required = false
+  window.dropCatalog()
+  window.api = async (path) =>
+    path === 'kits'
+      ? { available: true, catalog: window.initialCatalog }
+      : { settings: { revision: 4, kits: {} } }
+  await window.loadKits(true)
+  assert.match(window.document.querySelector('#kits-status').textContent, /3 наборов в каталоге/)
+})
+
+test('one kit control preserves a concurrent price and an unrelated invalid name draft', async (t) => {
+  const window = kitAutosave(t),
+    kit = structuredClone(kitFixture().kits[0].effective),
+    name = window.document.querySelector('input'),
+    price = name.cloneNode()
+  name.after(price)
+  window.baseline({ rifle: kit })
+  window.edit(name, kit.name, '', ['kits', 'rifle', 'name'])
+  name.required = true
+  name.value = ''
+  window.edit(price, kit.deploymentCost, 50, ['kits', 'rifle', 'deploymentCost'])
+  let settings = { revision: 4, kits: { rifle: { ...kit, name: 'Чужое название' } } }
+  window.api = async (_path, method, body) => {
+    if (!method) return { settings: structuredClone(settings) }
+    assert.equal(body.kits.rifle.name, 'Чужое название')
+    assert.equal(body.kits.rifle.deploymentCost, 50)
+    settings = { revision: 5, kits: structuredClone(body.kits) }
+    return { settings }
+  }
+  await window.commitKits(undefined, price)
+  assert.equal(window.state().kits.rifle.name, '')
+  assert.equal(window.state().kits.rifle.deploymentCost, 50)
+  assert.equal(settings.kits.rifle.name, 'Чужое название')
+  window.edit(name, '', 'Моё название', ['kits', 'rifle', 'name'])
+  name.value = 'Моё название'
+  settings.kits.rifle.deploymentCost = 75
+  window.api = async (_path, method, body) => {
+    if (!method) return { settings: structuredClone(settings) }
+    assert.equal(body.kits.rifle.deploymentCost, 75)
+    assert.equal(body.kits.rifle.name, 'Моё название')
+    return { settings: { revision: 6, kits: body.kits } }
+  }
+  await window.commitKits(undefined, name)
+  assert.equal(window.state().kits.rifle.deploymentCost, 75)
+})
+
+test('stale kit catalog and save replies acknowledge without replacing newer baselines', async (t) => {
+  const window = kitAutosave(t),
+    kit = structuredClone(kitFixture().kits[0].effective),
+    control = window.document.querySelector('input')
+  window.baseline({ rifle: kit })
+  const snapshot = window.snapshot()
+  window.observe(8)
+  window.api = async (path) =>
+    path === 'kits'
+      ? { available: true, catalog: window.initialCatalog }
+      : { settings: { revision: 7, kits: { rifle: { ...kit, name: 'Старый' } } } }
+  await window.loadKits()
+  assert.equal(window.snapshot(), snapshot)
+  window.edit(control, kit.name, 'Моё название', ['kits', 'rifle', 'name'])
+  let writes = 0
+  window.api = async (_path, method) => {
+    if (!method) return { settings: { revision: 8, kits: { rifle: kit } } }
+    writes++
+    window.observe(10)
+    return { settings: { revision: 9, kits: { rifle: { ...kit, name: 'Моё название' } } } }
+  }
+  await window.commitKits(undefined, control)
+  assert.equal(writes, 1)
+  assert.equal(window.snapshot(), snapshot)
+  assert.equal(window.state().revision, 3)
+  assert.match(window.document.querySelector('#kits-status').textContent, /Сохранено/)
+})
+
+test('live kit refresh rechecks drafts and focus after its requests finish', async (t) => {
+  const window = kitAutosave(t),
+    kit = structuredClone(kitFixture().kits[0].effective)
+  window.baseline({ rifle: kit })
+  let finish
+  window.api = async (path) =>
+    path === 'kits'
+      ? { available: true, catalog: window.initialCatalog }
+      : new Promise((resolve) => {
+          finish = resolve
+        })
+  const refreshing = window.loadKits(true)
+  const control = window.document.querySelector('input')
+  control.focus()
+  window.edit(control, kit.name, 'Черновик', ['kits', 'rifle', 'name'])
+  finish({ settings: { revision: 4, kits: { rifle: kit } } })
+  await refreshing
+  assert.equal(window.state().kits.rifle.name, 'Черновик')
+  assert.equal(window.state().revision, 3)
+})
+
+test('kit reset removes its override without recreating a partial kit; undo restores only its field', async (t) => {
+  const window = kitAutosave(t),
+    kit = structuredClone(kitFixture().kits[0].effective),
+    control = window.document.querySelector('input')
+  window.baseline({ rifle: { ...kit, name: 'Изменённый' } })
+  window.edit(control, { ...kit, name: 'Изменённый' }, undefined, ['kits', 'rifle'])
+  let settings = { revision: 3, kits: { rifle: { ...kit, name: 'Изменённый' } } }
+  window.api = async (_path, method, body) => {
+    if (!method) return { settings: structuredClone(settings) }
+    settings = { revision: settings.revision + 1, kits: structuredClone(body.kits) }
+    return { settings }
+  }
+  await window.commitKits(undefined, control)
+  assert.equal(window.state().kits.rifle, undefined)
+  assert.equal(settings.kits.rifle, undefined)
+  window.baseline({ rifle: kit })
+  settings.kits = { rifle: structuredClone(kit) }
+  window.edit(control, kit.name, 'Название', ['kits', 'rifle', 'name'])
+  await window.commitKits(undefined, control)
+  settings.kits.rifle.deploymentCost = 85
+  window.undo()
+  await window.flush()
+  assert.equal(settings.kits.rifle.name, kit.name)
+  assert.equal(settings.kits.rifle.deploymentCost, 85)
+  assert.equal(window.state().kits.rifle.name, kit.name)
 })

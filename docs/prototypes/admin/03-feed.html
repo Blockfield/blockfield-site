@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Прототип 3 · Лента — командная строка и живой журнал</title>
+<link rel="stylesheet" href="base.css" />
+<style>
+  /* Layout: a command line on top, a live timeline on the left, compact inline-editable parameters on the right. */
+  body { font-size: 14px; }
+  .bar { position: sticky; top: 0; z-index: 5; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 20px; padding: 12px 24px; border-bottom: 1px solid var(--line); background: var(--bg); }
+  .bar .st { display: flex; align-items: center; gap: 14px; font-size: 13px; color: var(--sand); }
+  .bar .st b { font-family: var(--mono); color: var(--cream); font-weight: 600; }
+  .cmd { position: relative; }
+  .cmd #cmdi { height: 40px; padding-left: 40px; font-family: var(--mono); font-size: 14px; background: var(--panel); }
+  .cmd svg { position: absolute; left: 12px; top: 11px; width: 18px; height: 18px; stroke: var(--amber); fill: none; stroke-width: 2; }
+  .cmd kbd { position: absolute; right: 10px; top: 11px; }
+  .cmd .sug { position: absolute; left: 0; right: 0; top: calc(100% + 4px); background: var(--panel); border: 1px solid var(--line-2); box-shadow: var(--shadow-popover); display: none; }
+  .cmd[data-open] .sug { display: block; }
+  .sug li { display: flex; gap: 12px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .sug li:hover, .sug li[data-active] { background: var(--line); }
+  .sug li .k { font-family: var(--mono); font-size: 12px; color: var(--amber); min-width: 150px; }
+  .sug li .d { color: var(--sand); }
+  .sug li .danger { margin-left: auto; font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
+  .bar .me { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--sand); }
+
+  .cols { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(320px, 1fr); }
+  .timeline { padding: 20px 24px 60px; border-right: 1px solid var(--line); }
+  .timeline h2 { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-size: 13px; letter-spacing: 0.02em; }
+  .timeline h2 .f { margin-left: auto; display: flex; gap: 2px; }
+  .timeline h2 .f button { height: 26px; font-size: 12px; font-weight: 500; text-transform: none; letter-spacing: 0; }
+  .ev { display: grid; grid-template-columns: 44px 24px 1fr; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); align-items: start; }
+  .ev time { font-family: var(--mono); font-size: 11px; color: var(--muted); padding-top: 3px; }
+  .ev .ic { width: 18px; height: 18px; stroke: var(--sand); fill: none; stroke-width: 2; margin-top: 1px; }
+  .ev[data-k='audit'] .ic { stroke: var(--amber); }
+  .ev[data-k='bad'] .ic { stroke: var(--danger); }
+  .ev[data-k='match'] .ic { stroke: var(--info); }
+  .ev[data-k='server'] .ic { stroke: var(--ok); }
+  .ev .t .who { color: var(--amber); font-weight: 600; }
+  .ev .t .me { color: var(--cream); font-weight: 600; }
+  .ev .t small { display: block; color: var(--muted); font-size: 12px; }
+  .ev .t .score { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .ev .t .score b { color: var(--danger); font-weight: 600; }
+  .ev .t .score i { color: var(--info); font-style: normal; }
+  .ev.new { animation: flash 1.6s var(--ease) 1; }
+  .ev[data-pending] { opacity: 0.7; }
+  .ev[data-pending] .t::after { content: ' · отправлено, ждём сервер'; color: var(--amber); font-family: var(--mono); font-size: 11px; }
+  .ev .act { margin-top: 4px; display: flex; gap: 6px; }
+
+  .params { padding: 20px 24px 60px; display: grid; gap: 20px; align-content: start; position: sticky; top: 65px; height: calc(100vh - 65px); overflow-y: auto; }
+  .params h2 { font-size: 13px; letter-spacing: 0.02em; margin-bottom: 8px; display: flex; align-items: baseline; gap: 10px; }
+  .params h2 .rev { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); font-weight: 500; letter-spacing: 0.08em; }
+  .kv { display: grid; grid-template-columns: 1fr auto; }
+  .kv > div { display: contents; }
+  .kv dt, .kv dd { margin: 0; padding: 7px 0; border-top: 1px solid var(--line); }
+  .kv dt { color: var(--sand); }
+  .kv dd { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .kv dd .v { display: inline-block; min-width: 72px; padding: 1px 6px; border: 1px dashed transparent; cursor: text; }
+  .kv dd .v:hover { border-color: var(--line-2); background: var(--panel); }
+  .kv dd .v u { text-decoration: none; color: var(--muted); font-size: 12px; margin-left: 4px; }
+  .kv dd input[type='number'] { width: 90px; height: 28px; text-align: right; padding: 0 6px; }
+  .kv dd[data-s='saving'] .v { color: var(--amber); }
+  .kv dd[data-s='other'] .v { color: var(--amber); border-color: var(--amber-dim); }
+  .kv dd[data-s='error'] .v { color: var(--danger); }
+  .kv .by { grid-column: 1 / -1; font-family: var(--mono); font-size: 11px; color: var(--amber); padding: 0 0 6px; text-align: right; }
+  .online li { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-top: 1px solid var(--line); }
+  .online li .r { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+  .online li button { display: none; }
+  .online li:hover button { display: inline-flex; }
+  .online .badge { font-size: 10px; padding: 1px 5px; }
+
+  @media (max-width: 900px) {
+    .bar { grid-template-columns: 1fr; gap: 10px; padding: 10px 14px; }
+    .bar .me, .cmd kbd { display: none; }
+    .cols { grid-template-columns: 1fr; }
+    .timeline { border-right: 0; border-bottom: 1px solid var(--line); padding: 16px 14px 24px; }
+    .params { position: static; height: auto; padding: 16px 14px 60px; }
+  }
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="st"><span class="lamp" data-tone="ok" id="lamp">Работает</span><span>онлайн <b id="online">14</b></span><span>матчей <b id="matches">2</b></span><span>TPS <b id="tps">19.8</b></span></div>
+  <div class="cmd" id="cmd">
+    <svg viewBox="0 0 24 24"><path d="M5 7l5 5-5 5M12 17h7"/></svg>
+    <input id="cmdi" placeholder="Что сделать? выгнать, объявить, полигон, мастерская, стоп…" autocomplete="off" spellcheck="false" />
+    <kbd>Ctrl K</kbd>
+    <ul class="sug" id="sug"></ul>
+  </div>
+  <div class="me"><span class="lamp" data-tone="live">live</span><span class="av" data-c="4">N</span>Nether</div>
+</header>
+<div class="cols">
+  <section class="timeline" aria-label="Лента событий">
+    <h2>Лента <span class="lamp" data-tone="live" aria-hidden="true"></span><span class="f"><button class="ghost" aria-pressed="true">всё</button><button class="ghost">команда</button><button class="ghost">матчи</button><button class="ghost">сервер</button></span></h2>
+    <div id="tl"></div>
+  </section>
+  <aside class="params">
+    <section><h2>Сейчас играют <span class="rev" id="n">14</span></h2><ul class="online" id="online-list"></ul></section>
+    <section><h2>Параметры <span class="rev" id="rev">ревизия 12</span></h2><p class="dim" style="font-size:12px;margin-bottom:6px">Нажмите на значение, Enter — сохранить, Esc — отмена.</p><dl class="kv" id="kv"></dl></section>
+  </aside>
+</div>
+<script src="mock.js"></script>
+<script>
+  const { state, LABELS, el, stream, write, clock, toast, avatar, $ } = BF
+  const S = state.settings
+  const ICON = {
+    audit: 'M12 3l8 4.5v9L12 21l-8-4.5v-9z', bad: 'M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 8v5M12 16h.01', match: 'M4 6h16v12H4zM12 6v12', server: 'M4 6h16v5H4zM4 13h16v5H4zM8 8.5h.01M8 15.5h.01', player: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21a8 8 0 0116 0',
+  }
+  const icon = (k) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.classList.add('ic'); const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', ICON[k]); s.append(p); return s }
+  function evRow(kind, at, content, opts = {}) {
+    const row = el('div', { class: 'ev' + (opts.fresh ? ' new' : ''), 'data-k': kind }, el('time', {}, clock(at)), icon(kind === 'player' ? 'player' : kind), el('div', { class: 't' }, ...content))
+    if (opts.pending) row.dataset.pending = ''
+    return row
+  }
+  const tl = $('#tl')
+  const prepend = (row) => tl.prepend(row)
+  // Seed from the audit log plus match state.
+  for (const a of [...state.audit].reverse()) prepend(evRow(a.ok === false ? 'bad' : 'audit', a.at, [el('span', { class: 'who' }, a.who), ' ', a.action.toLowerCase(), a.target ? ' ' + a.target : '', a.detail ? el('small', {}, a.detail) : null]))
+  prepend(evRow('match', state.rooms[0].startedAt, ['Начался матч на ', el('b', {}, 'Поля'), ' · Ranked · 12 игроков']))
+  prepend(evRow('server', Date.now() - 60000, ['TPS 19.8 · 21 мс на тик · 14 онлайн']))
+
+  function renderOnline() {
+    $('#n').textContent = state.server.online
+    $('#online-list').replaceChildren(...state.players.map((p) => el('li', {}, avatar(p), el('span', {}, p.name), p.team ? el('span', { class: 'badge ' + p.team.toLowerCase() }, p.team) : null, el('button', { class: 'sm ghost', onclick: () => kick(p.name) }, 'выгнать'), el('span', { class: 'r' }, p.room))))
+    $('#online').textContent = state.server.online; $('#matches').textContent = state.server.matches; $('#tps').textContent = state.server.tps.toFixed(1)
+  }
+  async function kick(name) {
+    const row = evRow('audit', Date.now(), [el('span', { class: 'me' }, 'Вы'), ' выгнали игрока ' + name], { fresh: true, pending: true })
+    prepend(row)
+    try { await write({ type: 'player.leave', name }); delete row.dataset.pending } catch (e) { row.dataset.k = 'bad'; delete row.dataset.pending; row.querySelector('.t').append(el('small', {}, e.message)) }
+  }
+  const COMMANDS = [
+    ['выгнать <ник>', 'Выгнать игрока с сервера', false], ['забанить <ник> [причина]', 'Запретить вход', true], ['объявить <текст>', 'Сообщение всем в чате', false],
+    ['полигон открыть|закрыть', 'Площадка в лобби', false], ['мастерская', 'Переключить сервер в мастерскую', true], ['стоп <карта> [ничья|red|blue]', 'Остановить матч', true], ['сообщение <текст>', 'Что видят игроки при закрытом сервере', false],
+  ]
+  const cmd = $('#cmd'), ci = $('#cmdi'), sug = $('#sug')
+  function renderSug() {
+    const q = ci.value.trim().toLowerCase()
+    const list = COMMANDS.filter(([k]) => !q || k.startsWith(q.split(' ')[0]))
+    sug.replaceChildren(...list.map(([k, d, danger], i) => el('li', { 'data-active': i === 0 ? '' : null, onclick: () => runCmd(k) }, el('span', { class: 'k' }, k), el('span', { class: 'd' }, d), danger ? el('span', { class: 'danger' }, 'подтверждение') : null)))
+    cmd.toggleAttribute('data-open', list.length > 0)
+  }
+  ci.addEventListener('focus', renderSug); ci.addEventListener('input', renderSug)
+  ci.addEventListener('blur', () => setTimeout(() => cmd.removeAttribute('data-open'), 150))
+  ci.addEventListener('keydown', (e) => { if (e.key === 'Enter') runCmd(ci.value); if (e.key === 'Escape') ci.blur() })
+  addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); ci.focus(); ci.select() } })
+  function runCmd(text) {
+    const [verb, ...rest] = text.replace(/<.*?>|\[.*?\]/g, '').trim().split(/\s+/)
+    ci.value = ''; cmd.removeAttribute('data-open'); ci.blur()
+    if (verb === 'выгнать' && rest[0]) return kick(rest[0])
+    if (verb === 'объявить') { const row = evRow('audit', Date.now(), [el('span', { class: 'me' }, 'Вы'), ' объявили: «' + (rest.join(' ') || 'Рестарт через 5 минут') + '»'], { fresh: true, pending: true }); prepend(row); write({ type: 'noop', safe: true }).then(() => delete row.dataset.pending); return }
+    toast('В прототипе работают «выгнать <ник>» и «объявить <текст>»')
+  }
+
+  // Parameters: click-to-edit.
+  const kv = $('#kv'), cells = {}
+  function param(path, unit) {
+    const [a, b] = path.split('.')
+    const v = el('span', { class: 'v', tabindex: 0, role: 'button' }, String(S[a][b]), el('u', {}, unit))
+    const dd = el('dd', {}, v)
+    const by = el('div', { class: 'by', hidden: true })
+    const edit = () => {
+      const inp = el('input', { class: 'num', type: 'number', value: S[a][b] })
+      dd.replaceChildren(inp); inp.focus(); inp.select()
+      const done = async (save) => {
+        const nv = Number(inp.value), old = S[a][b]
+        dd.replaceChildren(v)
+        if (!save || nv === old) return
+        v.firstChild.textContent = nv; dd.dataset.s = 'saving'
+        try { await write({ type: 'settings.change', by: 'Nether', path, from: old, to: nv, revision: S.revision + 1 }); dd.dataset.s = ''; prepend(evRow('audit', Date.now(), [el('span', { class: 'me' }, 'Вы'), ' изменили ' + LABELS[path].toLowerCase() + ': ', el('span', { class: 'score' }, old + ' → ' + nv)], { fresh: true })) }
+        catch (e) { dd.dataset.s = 'error'; v.firstChild.textContent = old; toast(e.message, { tone: 'bad' }) }
+        $('#rev').textContent = 'ревизия ' + S.revision
+      }
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false) })
+      inp.addEventListener('blur', () => done(true))
+    }
+    v.addEventListener('click', edit); v.addEventListener('keydown', (e) => e.key === 'Enter' && edit())
+    cells[path] = { v, dd, by }
+    kv.append(el('div', {}, el('dt', {}, LABELS[path]), dd, by))
+  }
+  param('rooms.maxRooms', 'шт'); param('rooms.idleCloseSeconds', 'сек'); param('rooms.abandonCloseSeconds', 'сек'); param('lobby.pvpCooldownSeconds', 'сек'); param('deathmatch.minPlayers', 'чел'); param('classCosts.engineer', 'БК'); param('classCosts.sniper', 'БК'); param('classCosts.fpv', 'БК')
+
+  renderOnline()
+  stream((ev) => {
+    renderOnline()
+    if (ev.mine) return
+    if (ev.type === 'player.join') prepend(evRow('player', Date.now(), [el('b', {}, ev.name), ' зашёл на сервер'], { fresh: true }))
+    if (ev.type === 'audit') prepend(evRow(ev.ok ? 'audit' : 'bad', Date.now(), [el('span', { class: 'who' }, ev.who), ' ' + ev.action.toLowerCase() + ' ' + ev.target, ev.detail ? el('small', {}, ev.detail) : null], { fresh: true }))
+    if (ev.type === 'match.score') { const r = state.rooms.find((r) => r.id === ev.room); prepend(evRow('match', Date.now(), [r.map, ' · ', el('span', { class: 'score' }, el('b', {}, ev.red), ' : ', el('i', {}, ev.blue))])) }
+    if (ev.type === 'match.start') { const r = state.rooms.find((r) => r.id === ev.room); prepend(evRow('match', Date.now(), ['Начался матч на ', el('b', {}, r.map), ` · ${r.mode} · ${ev.players} игрока`], { fresh: true })) }
+    if (ev.type === 'settings.change') { const c = cells[ev.path]; if (c) { c.v.firstChild.textContent = ev.to; c.dd.dataset.s = 'other'; c.by.hidden = false; c.by.textContent = `${ev.by} · только что`; c.dd.classList.add('flash') } $('#rev').textContent = 'ревизия ' + S.revision; prepend(evRow('audit', Date.now(), [el('span', { class: 'who' }, ev.by), ' изменила ' + LABELS[ev.path].toLowerCase() + ': ', el('span', { class: 'score' }, ev.from + ' → ' + ev.to)], { fresh: true })) }
+    if (ev.type === 'health') { const slow = ev.tps < 18; $('#lamp').dataset.tone = slow ? 'warn' : 'ok'; $('#lamp').textContent = slow ? 'Тормозит' : 'Работает'; prepend(evRow(slow ? 'bad' : 'server', Date.now(), [`TPS ${ev.tps} · ${ev.mspt} мс на тик`, slow ? el('small', {}, 'сервер не успевает за тиком') : null], { fresh: slow })) }
+  })
+</script>
+</body>
+</html>
