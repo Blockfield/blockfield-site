@@ -1026,19 +1026,53 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
         kind: 'arena',
         mapJson: { id: mapId },
         head: null,
-        versions: [],
+        versions: [
+          {
+            schema: 1,
+            mapId,
+            kind: 'arena',
+            versionDigest: 'a'.repeat(64),
+            parent: null,
+            createdAt: 1,
+            author: { name: 'Bob' },
+            source: 'commit',
+            note: 'Layout update',
+            worldDigest: 'b'.repeat(64),
+            changed: ['world/region/r.0.0.mca'],
+            deleted: [],
+            fileCount: 2,
+          },
+        ],
+        branches: [
+          {
+            schema: 1,
+            mapId,
+            name: 'layout-work',
+            versionDigest: 'a'.repeat(64),
+            generation: 1,
+            workingCopyId: null,
+            createdAt: 1,
+            createdBy: { draslId: OTHER, name: 'Bob' },
+          },
+        ],
       })),
     }),
   )
   writeFileSync(
     join(dirs.BLOCKFIELD_ADMIN_DIR, 'session.json'),
-    JSON.stringify({ schema: 1, id: workingCopyId, maps: ['fields', 'konstaxa'] }),
+    JSON.stringify({
+      schema: 1,
+      id: workingCopyId,
+      maps: ['fields', 'konstaxa'],
+      branches: { fields: 'layout-work', konstaxa: 'layout-work' },
+    }),
   )
   writeFileSync(
     join(dirs.BLOCKFIELD_ADMIN_DIR, 'status.json'),
     JSON.stringify({
       schema: 1,
       phase: 'workshop',
+      gate: 'builders',
       desired: { profile: 'workshop', session: workingCopyId },
     }),
   )
@@ -1079,6 +1113,8 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
     ['candidate', 'fields', 'Bob'],
   )
   assert.equal(request.workingCopyId, workingCopyId)
+  assert.equal(request.branch, 'layout-work')
+  assert.equal(request.expectedBranchHead, 'a'.repeat(64))
   assert.ok(
     (await s.auditLog(5)).some(
       (e) => e.action === 'workshop-candidate' && e.ok && e.target === 'fields',

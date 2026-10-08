@@ -34,10 +34,12 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           <p id="server-detail" class="muted"></p>
         </div>
       </div>
-      <div class="panel" data-perm="mode" aria-labelledby="mode-title">
+      <div class="panel" data-perm="view" aria-labelledby="mode-title">
         <div class="stack-head">
-          <h3 id="mode-title">Режим сервера</h3>
-          <p class="muted">Кто сейчас может зайти на сервер. Переключение перезапускает игру.</p>
+          <h3 id="mode-title">Игра и мастерская</h3>
+          <p class="muted">
+            Работают независимо. Смена сеанса или тест карты перезапускает мастерскую.
+          </p>
         </div>
         <p class="form-status" id="mode-progress" role="status"></p>
         <div id="mode-options" class="options"></div>
@@ -45,8 +47,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       </div>
       <div class="panel" data-perm="message" aria-labelledby="message-title">
         <div class="stack-head">
-          <h3 id="message-title">Сообщение для игроков</h3>
-          <p class="muted">Что игроки увидят при попытке зайти, пока сервер закрыт.</p>
+          <h3 id="message-title">Сообщение мастерской</h3>
+          <p class="muted">Что участники увидят при входе, пока мастерская недоступна.</p>
         </div>
         <form id="message-form" class="form-stack">
           <label for="message">Текст сообщения</label>
@@ -92,8 +94,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         <div class="quick-group quick-group--warn" data-perm="maintenance">
           <h4 id="maint-title">Техработы и аварии</h4>
           <p class="muted">
-            Если сервер нужно освободить прямо сейчас. Обычно хватает мастерской: она дождётся конца
-            матчей сама.
+            Эти действия относятся к игре. Перед техработами дождитесь конца матчей или прервите их.
           </p>
           <div class="actions">
             <button type="button" id="drain">
@@ -384,14 +385,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         Кто какие карты правит. Модераторы и администраторы правят все карты, строителям доступ
         выдаётся по картам. В игре строители переходят между картами планшетом (M).
       </p>
+      <p id="editor-state" class="form-status" role="status">
+        Проверяем состояние мастерской…
+      </p>
       <div class="stack" aria-labelledby="candidates-title">
         <div class="stack-head">
           <h3 id="candidates-title">Карты на проверке</h3>
           <p class="muted">
-            Строитель отправляет карту из планшета («Разметка» → «На проверку») или администратор
-            кнопкой у карты ниже. Принятие выбирает точную версию карты. Уже начатые матчи сохраняют
-            свою копию; следующие используют выбранную версию. Лобби применяются отдельно при
-            безопасной смене серверного мира.
+            Сначала зафиксируйте изменения в ветке, затем отправьте коммит на проверку. Новые правки
+            в мире в эту проверку не входят. Администратор сравнивает версии и сливает изменения в
+            main. Уже начатые матчи сохраняют свою копию.
           </p>
         </div>
         <p class="form-status" id="candidates-status" role="status"></p>
@@ -399,10 +402,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       </div>
       <div class="stack" aria-labelledby="map-history-title">
         <div class="stack-head">
-          <h3 id="map-history-title">Архив карт</h3>
+          <h3 id="map-history-title">Ветки и история карт</h3>
           <p class="muted">
-            У каждой карты своя история и рабочая копия сеанса. Можно выбрать любую сохранённую
-            версию, включая игровое лобби и лобби прокси. Архив сохраняется при откате.
+            main — версия для игры. Рабочие ветки и коммиты сохраняются отдельно. Восстановление
+            старой карты создаёт новый коммит и сохраняет всю историю.
           </p>
           <button id="maps-refresh" class="small" type="button">
             Обновить историю
@@ -412,6 +415,17 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           Получаем историю…
         </p>
         <div id="map-history"></div>
+      </div>
+      <div class="stack" aria-labelledby="map-drafts-title">
+        <h3 id="map-drafts-title">Сохранённые черновики</h3>
+        <p class="muted">
+          При смене ветки прежние рабочие копии сохраняются. Модератор может открыть их снова.
+        </p>
+        <p id="map-drafts-status" class="form-status" role="status"></p>
+        <ul id="map-drafts" class="rows"></ul>
+        <button id="map-drafts-more" class="small" type="button" hidden>
+          Показать ещё
+        </button>
       </div>
       <div class="stack" data-perm="workshop" aria-labelledby="map-access-title">
         <div class="stack-head">
@@ -855,9 +869,19 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     }
     .admin-main #gun-fields pre,
     .admin-main #gun-fields small,
-    .admin-main #map-history small {
+    .admin-main #map-history small,
+    .admin-main #map-drafts small,
+    .admin-main .git-diff pre,
+    .admin-main .git-diff strong {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
+    }
+    .admin-main .map-git {
+      margin-block: 16px;
+    }
+    .admin-main .git-diff pre {
+      max-width: 100%;
+      margin-block: 8px;
     }
     .admin-main .row .actions select {
       width: auto;
@@ -1287,7 +1311,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     } from '../lib/game-names'
     import { settingsBody, settingsReceipt } from '../lib/settings-form'
     import { customSelect, customCombo } from '../lib/custom-select'
-    import { switchView } from '../lib/switch-status'
+    import { gameReady, switchView } from '../lib/switch-status'
     import { dangerousCommand } from '../lib/console'
     import { NAV_GROUPS, resolveTab } from '../lib/admin-navigation'
     import type {
@@ -1304,7 +1328,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     const ROLES: Record<string, { name: string; about: string }> = {
       builder: {
         name: 'Строитель',
-        about: 'Делает карты в мастерской. В панели только смотрит, что происходит на сервере.',
+        about:
+          'Правит доступные карты, создаёт ветки и коммиты, отправляет сохранённые версии на проверку.',
       },
       moderator: {
         name: 'Модератор',
@@ -1558,7 +1583,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               'error',
             )
           loadOverview()
-          return
+          return result
         }
       }
       if (followTokens.get(line) !== id) return
@@ -1589,40 +1614,25 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         : 'все карты'
       return `Сеанс: ${maps} · начал ${current.startedBy?.name ?? '?'} ${ago(current.startedAt)}.`
     }
-    function describe(
+    function describeWorkshop(
       state: any,
-      rooms: any,
       current: any,
       testCandidate: any,
     ): { tone: string; title: string; detail: string } {
-      const matches = rooms.rooms?.length ?? 0
-      const counts = [
-        typeof rooms.online === 'number' ? `Игроков онлайн: ${rooms.online}` : null,
-        rooms.available ? `Идёт матчей: ${matches}` : null,
-      ]
-        .filter(Boolean)
-        .join(' · ')
-      const target =
-        state?.desired?.profile === 'workshop'
-          ? 'мастерскую'
-          : state?.desired?.profile === 'test'
-            ? 'тестовый режим'
-            : 'игровой режим'
       const view = switchView(state),
         when = timing(view)
-      switch (state?.phase) {
+      switch (state?.schema === 1 ? state.phase : undefined) {
         case 'workshop':
+          if (state.gate !== 'builders') break
           return {
-            tone: 'warn',
-            title: 'Открыта мастерская',
-            detail: [
-              sessionLine(current),
-              'Заходить могут только участники команды. Обычные игроки видят сообщение о техработах.',
-            ]
+            tone: 'ok',
+            title: 'Мастерская открыта',
+            detail: [sessionLine(current), 'Доступна участникам команды с выданными правами.']
               .filter(Boolean)
               .join(' '),
           }
         case 'test': {
+          if (state.gate !== 'testers') break
           const name = testCandidate
             ? (WORKSHOP_PLACES[testCandidate.mapId] ?? testCandidate.mapId)
             : 'карта'
@@ -1640,41 +1650,55 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         case 'DRAINING':
           return {
             tone: 'warn',
-            title: 'Готовимся к мастерской',
-            detail: [
-              `${view.step}: новые матчи не начинаются, сервер ждёт, пока закончатся идущие.`,
-              counts,
-              when,
-            ]
-              .filter(Boolean)
-              .join(' · '),
+            title: 'Мастерская готовится к смене режима',
+            detail: [view.step, when].filter(Boolean).join(' · '),
           }
         case 'REQUESTED':
         case 'SAVING':
         case 'STARTING':
           return {
             tone: 'warn',
-            title: `Сервер переключается в ${target}`,
-            detail:
-              [`${view.step}.`, when].filter(Boolean).join(' · ') || 'Игроки пока не могут зайти.',
+            title: view.step ?? 'Мастерская перезапускается',
+            detail: when || 'Вход в мастерскую временно закрыт.',
           }
         case 'ERROR':
           return {
             tone: 'bad',
-            title: 'Вход закрыт из-за ошибки',
+            title: 'Мастерская недоступна из-за ошибки',
             detail: [
               view.errorMessage ? `Причина: ${view.errorMessage}.` : null,
               can('recover')
-                ? 'Игроки не могут зайти. Восстановите игровой режим в карточке «Режим сервера».'
-                : 'Игроки не могут зайти. Сообщите администратору.',
+                ? 'Восстановите мастерскую в карточке «Игра и мастерская».'
+                : 'Сообщите администратору.',
             ]
               .filter(Boolean)
               .join(' '),
           }
       }
+      return {
+        tone: 'warn',
+        title: 'Готовность мастерской не подтверждена',
+        detail: 'Дождитесь состояния от управляющей программы.',
+      }
+    }
+    function describeGame(state: any, rooms: any): { tone: string; title: string; detail: string } {
       if (rooms.maintenance)
-        return { tone: 'warn', title: 'Вход на сервер закрыт', detail: rooms.maintenance.message }
-      if (rooms.available) return { tone: 'ok', title: 'Сервер работает', detail: counts }
+        return { tone: 'warn', title: 'Вход в игру закрыт', detail: rooms.maintenance.message }
+      if (!gameReady(state))
+        return {
+          tone: 'warn',
+          title:
+            state?.game?.phase === 'STARTING'
+              ? 'Игра запускается'
+              : 'Готовность игры не подтверждена',
+          detail: 'Дождитесь состояния игрового сервера.',
+        }
+      if (rooms.available)
+        return {
+          tone: 'ok',
+          title: 'Игра работает',
+          detail: `Идёт матчей: ${rooms.rooms?.length ?? 0}`,
+        }
       return {
         tone: 'bad',
         title: 'Игровой сервер не отвечает',
@@ -1694,7 +1718,13 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               (c: any) => c.sha256 === state.desired.candidate,
             ) ?? null)
           : null
-      const view = describe(state, rooms, session, testCandidate)
+      const workshop = describeWorkshop(state, session, testCandidate)
+      say(
+        $('#editor-state'),
+        `${workshop.title}. ${workshop.detail}`,
+        workshop.tone === 'bad' ? 'error' : workshop.tone === 'warn' ? 'pending' : 'ok',
+      )
+      const view = describeGame(state, rooms)
       $('#server-card').dataset.tone = view.tone
       $('#server-headline').textContent = view.title
       $('#server-detail').textContent = [
@@ -1704,119 +1734,81 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         .filter(Boolean)
         .join(' · ')
       const message = $<HTMLTextAreaElement>('#message')
-      if (!message.value && rooms.maintenance?.message && document.activeElement !== message)
-        message.value = rooms.maintenance.message
-      renderModes()
+      if (
+        !message.value &&
+        typeof state?.message === 'string' &&
+        document.activeElement !== message
+      )
+        message.value = state.message
+      renderModes(workshop, rooms)
       renderRooms(rooms)
       // The candidates card's «Тест» button depends on the phase just learned above; keep it in sync (cheap local read).
       if (can('workshop')) loadCandidates().catch(() => {})
     }
 
-    const MODES = [
-      { id: 'game', title: 'Игра', about: 'Обычный режим: все игроки заходят и играют матчи.' },
-      {
-        id: 'workshop',
-        title: 'Мастерская',
-        about: 'Сервер для строителей карт. Обычные игроки зайти не смогут.',
-      },
-    ]
-    /** Empty text collapses per the status-line convention; busy wins over an error, which wins over a stale rollback notice. */
-    function renderProgress(view: ReturnType<typeof switchView>) {
-      const line = $('#mode-progress')
-      if (view.busy) say(line, [view.step, timing(view)].filter(Boolean).join(' · '), 'pending')
-      else if (view.errorMessage) say(line, `Причина: ${view.errorMessage}.`, 'error')
-      else if (view.notice) say(line, view.notice, 'error')
-      else say(line, '')
-    }
-    function renderModes() {
+    function renderModes(workshop: { title: string; detail: string; tone: string }, rooms: any) {
       const box = $('#mode-options')
-      if (!controller || controller.phase === 'UNINITIALIZED') {
-        box.replaceChildren(
-          el('p', {
-            className: 'muted',
-            textContent:
-              'Переключение режимов недоступно: управляющая программа сервера ещё не сообщила своё состояние.',
-          }),
-        )
-        say($('#mode-progress'), '')
-        return
-      }
       const view = switchView(controller)
-      renderProgress(view)
-      // "test" is not a switchable target from here (only from a candidate's «Тест»), so it gets its own box instead of a MODES entry.
-      if (controller.phase === 'test' && !view.busy) {
-        box.replaceChildren(
+      say($('#mode-progress'), view.notice ?? '', view.notice ? 'error' : 'ok')
+      const ready = gameReady(controller) && !rooms.maintenance
+      const editor = el(
+        'div',
+        { className: 'option' },
+        el(
+          'div',
+          { className: 'option-head' },
+          workshop.title,
+          el('span', {
+            className: `badge ${workshop.tone}`,
+            textContent: view.busy
+              ? 'Применяется…'
+              : controller?.phase === 'test'
+                ? 'Закрытый тест'
+                : workshop.tone === 'ok'
+                  ? 'Доступна'
+                  : 'Вход закрыт',
+          }),
+        ),
+        el('p', { textContent: workshop.detail }),
+      )
+      const actionable =
+        controller?.schema === 1 &&
+        Number.isSafeInteger(controller.revision) &&
+        controller.revision >= 0
+      if (actionable && can('mode')) {
+        if (view.busy && view.canCancel)
+          editor.append(button('Отменить смену режима', cancelSwitch, 'small danger'))
+        else if (controller.phase === 'ERROR' && can('recover'))
+          editor.append(button('Восстановить мастерскую', recoverWorkshop, 'small primary'))
+        else if (controller.phase === 'test')
+          editor.append(button('Вернуться в мастерскую', resumeWorkshop, 'small'))
+        else if (!view.busy && controller.phase !== 'ERROR')
+          editor.append(button('Выбрать сеанс и карты', startWorkshop, 'small'))
+      }
+      box.replaceChildren(
+        el(
+          'div',
+          { className: 'option', ...(ready ? { dataCurrent: '' } : {}) },
           el(
             'div',
-            { className: 'option', dataCurrent: '' },
-            el(
-              'div',
-              { className: 'option-head' },
-              'Тестовый матч',
-              el('span', { className: 'badge ok', textContent: 'Включено сейчас' }),
-            ),
-            el('p', {
-              textContent: 'Закрытый тест версии карты. Обычные игроки зайти не смогут.',
-            }),
-            can('mode') ? button('Вернуться в мастерскую', resumeWorkshop, 'small') : null,
-            can('mode')
-              ? button('Вернуть игровой режим', () => switchMode('game', false), 'small danger')
-              : null,
-          ),
-        )
-        return
-      }
-      const busy = view.busy,
-        broken = controller.phase === 'ERROR'
-      const target = controller.desired?.profile
-      box.replaceChildren(
-        ...MODES.map((mode) => {
-          const current = !busy && !broken && controller.phase === mode.id,
-            pending = busy && target === mode.id
-          const head = el(
-            'div',
             { className: 'option-head' },
-            mode.title,
-            current
-              ? el('span', { className: 'badge ok', textContent: 'Включено сейчас' })
-              : pending
-                ? el('span', { className: 'badge warn', textContent: 'Переключается…' })
-                : null,
-          )
-          const option = el(
-            'div',
-            { className: 'option', ...(current ? { dataCurrent: '' } : {}) },
-            head,
-            el('p', { textContent: mode.about }),
-          )
-          if (!current && !pending && !broken)
-            option.append(
-              button(
-                mode.id === 'game' ? 'Вернуть игровой режим' : 'Включить мастерскую',
-                () => (mode.id === 'workshop' ? startWorkshop() : switchMode('game', false)),
-                'small',
-                undefined,
-              ),
-            )
-          if (busy && !pending)
-            option.lastElementChild instanceof HTMLButtonElement &&
-              ((option.lastElementChild as HTMLButtonElement).disabled = true)
-          if (pending && view.canCancel && can('mode'))
-            option.append(button('Отменить переключение', cancelSwitch, 'small danger'))
-          if (broken && mode.id === 'game' && can('recover'))
-            option.append(
-              button('Восстановить игровой режим', () => switchMode('game', true), 'small primary'),
-            )
-          return option
-        }),
+            'Игра',
+            el('span', {
+              className: `badge ${ready ? 'ok' : 'warn'}`,
+              textContent: ready ? 'Вход открыт' : 'Готовность не подтверждена',
+            }),
+          ),
+          el('p', { textContent: 'Матчи и обычный вход обслуживает отдельный игровой сервер.' }),
+        ),
+        editor,
       )
     }
     async function cancelSwitch() {
       if (
         !(await ask({
-          title: 'Отменить переключение?',
-          text: 'Сервер вернётся в тот режим, в котором был до переключения. Отменить можно только пока идёт переключение — позже потребуется восстановление вручную.',
-          ok: 'Отменить переключение',
+          title: 'Отменить смену режима мастерской?',
+          text: 'Мастерская вернётся в прежний режим. Отмена доступна на текущем этапе; после сохранения мира может потребоваться восстановление.',
+          ok: 'Отменить смену режима',
           danger: true,
         }))
       )
@@ -1826,41 +1818,38 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         line,
         async () => {
           const { id } = await api('cancel', 'POST', {})
-          follow(line, id, 'Переключение отменено, сервер возвращается в прежний режим.')
+          follow(line, id, 'Мастерская возвращается в прежний режим.')
           return 'Запрос отправлен. Сервер применит его в течение 15 секунд…'
         },
         $('#mode-options'),
       )
     }
-    async function switchMode(profile: 'game', recover: boolean) {
-      const texts = recover
-        ? {
-            title: 'Восстановить игровой режим?',
-            text: 'Сервер остановит всё, что сейчас запущено, и заново запустит игру. Используйте это, если сервер застрял в ошибке.',
-            ok: 'Восстановить',
-          }
-        : {
-            title: 'Вернуть игровой режим?',
-            text: 'Мастерская закроется, строители будут отключены. Сервер перезапустится для всех игроков, обычно это занимает несколько минут.',
-            ok: 'Вернуть игровой режим',
-          }
-      if (!(await ask({ ...texts, danger: true }))) return
+    async function recoverWorkshop() {
+      if (
+        !(await ask({
+          title: 'Восстановить мастерскую?',
+          text: 'Мастерская перезапустится в редакторе с прежним сеансом. Используйте это после ошибки запуска.',
+          ok: 'Восстановить мастерскую',
+          danger: true,
+        }))
+      )
+        return
       const line = $('#mode-status')
       run(
         line,
         async () => {
           const { id } = await api('mode', 'POST', {
-            profile,
+            profile: 'game',
             expectedRevision: controller.revision,
-            ...(recover ? { recover } : {}),
+            recover: true,
           })
-          follow(line, id, 'Сервер принял запрос: запускаем игровой режим.')
+          follow(line, id, 'Сервер принял запрос: восстанавливаем мастерскую.')
           return 'Запрос отправлен. Сервер применит его в течение 15 секунд…'
         },
         $('#mode-options'),
       )
     }
-    /** «Включить мастерскую»: which maps for a fresh session, or resume the previous one as-is. */
+    /** A new session selects published map copies; resume keeps the existing edits and selection. */
     async function startWorkshop() {
       const known = mapScopes()
       const checks = el(
@@ -1922,9 +1911,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       }
       fields.push(mapsBlock)
       const answer = await ask({
-        title: 'Включить мастерскую?',
-        text: 'Новые матчи перестанут начинаться. Когда закончатся идущие (это может занять целую кампанию), сервер сохранит мир и перезапустится в мастерскую. Пока она открыта, обычные игроки не смогут зайти.',
-        ok: 'Включить мастерскую',
+        title: 'Выбрать сеанс мастерской?',
+        text: 'При смене сеанса мастерская сохранит мир и перезапустится. Новый сеанс готовит рабочие копии из опубликованных версий карт; продолжение сохраняет текущие правки и список карт.',
+        ok: 'Открыть сеанс',
         danger: true,
         fields,
       })
@@ -1942,7 +1931,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         line,
         async () => {
           const { id } = await api('mode', 'POST', body)
-          follow(line, id, 'Сервер принял запрос: переключение в мастерскую началось.')
+          follow(line, id, 'Сервер принял запрос: готовим выбранный сеанс мастерской.')
           return 'Запрос отправлен. Сервер применит его в течение 15 секунд…'
         },
         $('#mode-options'),
@@ -1952,7 +1941,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       if (
         !(await ask({
           title: 'Вернуться в мастерскую?',
-          text: 'Тестовый матч остановится, сервер вернётся в мастерскую с тем же сеансом.',
+          text: 'Тестовый матч остановится, мастерская вернётся в редактор с тем же сеансом и рабочими копиями.',
           ok: 'Вернуться в мастерскую',
         }))
       )
@@ -3219,6 +3208,462 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       )
     }
     let mapCatalog: MapCatalogEntry[] | undefined, mapSession: MapSession | undefined
+    let editableMaps = new Set<string>(),
+      savedMapSessions: MapSession[] = [],
+      savedSessionsNext: number | null = null,
+      savedSessionsTotal = 0
+    const mapNotes = new Map<string, string>()
+    const mayEditMap = (id: string) => can('map-edit') && editableMaps.has(id)
+    function mapRequestError(line: HTMLElement, error: string) {
+      const message = /stale|head|revision|target.*changed|branch.*changed/i.test(error)
+        ? 'Версия ветки или main изменилась. Обновите историю и проверьте новую версию.'
+        : /conflict|resolution|merge/i.test(error)
+          ? 'Слияние требует выбора версии для каждого конфликта. Обновите сравнение и проверьте выбор.'
+          : /missing|corrupt|unsafe|behind/i.test(error)
+            ? 'Рабочая копия или сохранённая версия недоступна. Сообщите администратору.'
+            : /actor|member|scope|permission/i.test(error)
+              ? 'Мастерская не подтвердила участника или доступ к карте. Попросите администратора обновить доступ.'
+              : 'Контроллер не выполнил запрос. Обновите состояние и попробуйте снова.'
+      say(line, message, 'error')
+      return true
+    }
+    async function mapRequest(
+      path: string,
+      body: Record<string, unknown>,
+      line: HTMLElement,
+      done: string,
+    ) {
+      const { id } = await api(path, 'POST', body)
+      const result = await follow(line, id, done, (error) => mapRequestError(line, error))
+      if (!result?.ok) return null
+      if (
+        !result.payload ||
+        typeof result.payload !== 'object' ||
+        (body.mapId && result.payload.mapId !== body.mapId)
+      ) {
+        say(line, 'Контроллер не передал данные результата. Обновите историю карты.', 'error')
+        return null
+      }
+      return result.payload
+    }
+    function renderMapChanges(outlet: HTMLElement, data: any) {
+      if (!Array.isArray(data?.files) || !Array.isArray(data?.config))
+        throw new Error('Контроллер не передал корректное сравнение. Обновите историю.')
+      const rows = el('ul', { className: 'rows git-diff' }),
+        more = button('Показать ещё изменения', append, 'small')
+      const entries = [
+        ...data.files.map((file: any) => ({ file })),
+        ...data.config.map((config: any) => ({ config })),
+      ]
+      let shown = 0
+      function append() {
+        for (const entry of entries.slice(shown, shown + 100)) {
+          if (entry.file) {
+            const file = entry.file,
+              area = file.area
+            rows.append(
+              el(
+                'li',
+                { className: 'row' },
+                el(
+                  'div',
+                  { className: 'row-main' },
+                  el('strong', { textContent: file.path }),
+                  el('small', {
+                    textContent: `${({ added: 'Добавлен', deleted: 'Удалён', modified: 'Изменён' } as Record<string, string>)[file.change] ?? 'Изменён'} · ${file.before?.slice(0, 12) ?? 'нет'} → ${file.after?.slice(0, 12) ?? 'нет'}`,
+                  }),
+                  area
+                    ? el('small', {
+                        textContent: `Область: X ${area.minX}…${area.maxX}, Z ${area.minZ}…${area.maxZ}`,
+                      })
+                    : null,
+                ),
+              ),
+            )
+          } else {
+            const config = entry.config
+            rows.append(
+              el(
+                'li',
+                { className: 'row' },
+                el(
+                  'details',
+                  { className: 'disclosure row-main' },
+                  el('summary', {
+                    textContent: `Разметка ${config.path || '/'} — ${!config.beforePresent ? 'добавлено' : !config.afterPresent ? 'удалено' : 'изменено'}`,
+                  }),
+                  el('strong', { textContent: 'До' }),
+                  el('pre', {
+                    textContent: config.beforePresent
+                      ? JSON.stringify(config.before)
+                      : 'Отсутствует',
+                  }),
+                  el('strong', { textContent: 'После' }),
+                  el('pre', {
+                    textContent: config.afterPresent ? JSON.stringify(config.after) : 'Отсутствует',
+                  }),
+                ),
+              ),
+            )
+          }
+        }
+        shown = Math.min(shown + 100, entries.length)
+        more.hidden = shown === entries.length
+      }
+      outlet.replaceChildren(
+        el('p', {
+          textContent: `Файлов: ${data.files.length}. Полей разметки: ${data.config.length}.`,
+        }),
+        rows,
+        more,
+      )
+      if (!entries.length)
+        rows.append(el('li', { className: 'empty', textContent: 'Содержимое версий совпадает.' }))
+      append()
+    }
+    async function compareMap(
+      mapId: string,
+      before: string,
+      after: string,
+      outlet: HTMLElement,
+      line: HTMLElement,
+    ) {
+      const data = await mapRequest(
+        'maps/compare',
+        { mapId, before, after },
+        line,
+        'Сравнение готово.',
+      )
+      if (!data) return
+      if (data.before !== before || data.after !== after)
+        throw new Error('Контроллер вернул сравнение других версий. Обновите историю.')
+      renderMapChanges(outlet, data)
+    }
+    async function openMapBranch(map: MapCatalogEntry, branch: string) {
+      if (
+        !(await ask({
+          title: `Открыть ветку «${branch}»?`,
+          text: `Мастерская сохранит текущий мир и откроет отдельную рабочую копию карты «${mapName(map.mapId)}». Прежний черновик останется в списке сохранённых. Игра продолжит работать.`,
+          ok: 'Открыть ветку',
+          danger: true,
+        }))
+      )
+        return
+      const line = $('#map-history-status')
+      await run(line, async () => {
+        const { id } = await api('mode', 'POST', {
+          profile: 'workshop',
+          session: 'new',
+          maps: [map.mapId],
+          branches: { [map.mapId]: branch },
+          expectedRevision: controller.revision,
+        })
+        await follow(line, id, 'Ветка открыта в отдельной рабочей копии.')
+        await loadMapHistory()
+      })
+    }
+    function mapGitControls(map: MapCatalogEntry, line: HTMLElement) {
+      const name = mapName(map.mapId),
+        selected = mapSession?.branches?.[map.mapId],
+        branch = map.branches?.find((ref) => ref.name === selected)
+      const content = el('div', { className: 'stack map-git' })
+      content.append(
+        el('p', {
+          textContent: branch
+            ? `Редактируется ветка ${branch.name}. main — проверенная версия карты.`
+            : 'Рабочая ветка этой карты сейчас не открыта. main защищена от прямой записи.',
+        }),
+      )
+      const refs = el(
+        'ul',
+        { className: 'rows' },
+        ...(map.branches ?? []).map((ref) =>
+          el(
+            'li',
+            { className: 'row' },
+            el(
+              'div',
+              { className: 'row-main' },
+              el('strong', {
+                textContent: `${ref.name}${ref.name === selected ? ' · текущая' : ''}`,
+              }),
+              el('small', { textContent: `Коммит ${ref.versionDigest.slice(0, 12)}` }),
+            ),
+            can('mode') && ref.name !== 'main'
+              ? el(
+                  'div',
+                  { className: 'actions' },
+                  button(
+                    'Открыть ветку',
+                    () => openMapBranch(map, ref.name),
+                    'small',
+                    `Открыть ветку ${ref.name} карты ${name}`,
+                  ),
+                )
+              : null,
+          ),
+        ),
+      )
+      content.append(refs)
+      if (!mayEditMap(map.mapId)) return content
+      if (map.versions.length) {
+        const create = el('form', { className: 'form-grid' }),
+          branchInput = el('input', {
+            name: 'branch',
+            required: true,
+            maxLength: 64,
+            pattern: '[a-z0-9][a-z0-9._\\-]{0,63}',
+            autocomplete: 'off',
+          })
+        const from = el(
+          'select',
+          { name: 'version' },
+          ...map.versions.map((version) =>
+            el('option', {
+              value: version.versionDigest,
+              textContent: `${date(version.createdAt)} · ${version.versionDigest.slice(0, 8)}`,
+            }),
+          ),
+        )
+        create.append(
+          field(
+            'Новая ветка',
+            branchInput,
+            'Строчные латинские буквы, цифры, точка, дефис или подчёркивание. main защищена.',
+          ),
+          field('Начать с коммита', from),
+          el(
+            'div',
+            { className: 'actions' },
+            el('button', { type: 'submit', className: 'small', textContent: 'Создать ветку' }),
+          ),
+        )
+        create.onsubmit = (event) => {
+          event.preventDefault()
+          const form = new FormData(create)
+          run(
+            line,
+            async () => {
+              const payload = await mapRequest(
+                'maps/branches',
+                {
+                  mapId: map.mapId,
+                  branch: String(form.get('branch')),
+                  versionDigest: String(form.get('version')),
+                },
+                line,
+                'Ветка создана. Открыть отдельную рабочую копию может модератор.',
+              )
+              if (payload) await loadMapHistory()
+            },
+            create,
+          )
+        }
+        content.append(create)
+      }
+      if (branch && mapSession) {
+        const commit = el('form', { className: 'stack' }),
+          note = el('textarea', { name: 'note', required: true, maxLength: 200, rows: 2 })
+        note.value = mapNotes.get(map.mapId) ?? ''
+        note.addEventListener('input', () => mapNotes.set(map.mapId, note.value))
+        commit.append(
+          field(
+            'Что изменилось',
+            note,
+            'Коммит сохранит мир и разметку текущей рабочей копии. В игру изменения попадут после проверки.',
+          ),
+          el(
+            'div',
+            { className: 'actions' },
+            el('button', {
+              type: 'submit',
+              className: 'small primary',
+              textContent: 'Зафиксировать изменения',
+            }),
+          ),
+        )
+        commit.onsubmit = (event) => {
+          event.preventDefault()
+          const submittedNote = String(new FormData(commit).get('note'))
+          run(
+            line,
+            async () => {
+              const payload = await mapRequest(
+                'maps/commit',
+                {
+                  mapId: map.mapId,
+                  branch: branch.name,
+                  workingCopyId: mapSession!.id,
+                  expectedBranchHead: branch.versionDigest,
+                  note: submittedNote,
+                },
+                line,
+                'Коммит сохранён. Можно продолжать редактирование или отправить его на проверку.',
+              )
+              if (payload) {
+                if (mapNotes.get(map.mapId) === submittedNote) mapNotes.delete(map.mapId)
+                await loadMapHistory()
+              }
+            },
+            commit,
+          )
+        }
+        const review = button(
+          'Отправить коммит на проверку',
+          () => submitMap(map.mapId, name),
+          'small',
+          `Отправить коммит ветки ${branch.name} карты ${name} на проверку`,
+        )
+        review.disabled = branch.versionDigest === map.head?.versionDigest
+        content.append(
+          commit,
+          el('p', {
+            className: 'muted',
+            textContent:
+              'На проверку отправляется сохранённый коммит. Незакоммиченные изменения в мире остаются в черновике.',
+          }),
+          el('div', { className: 'actions' }, review),
+        )
+      }
+      if (map.versions.length > 1) {
+        const compare = el('form', { className: 'form-grid' }),
+          output = el('div', {})
+        const choose = (name: string) =>
+          el(
+            'select',
+            { name },
+            ...map.versions.map((version) =>
+              el('option', {
+                value: version.versionDigest,
+                textContent: `${date(version.createdAt)} · ${version.versionDigest.slice(0, 8)}`,
+              }),
+            ),
+          )
+        const before = choose('before'),
+          after = choose('after')
+        ;(before as HTMLSelectElement).selectedIndex = 1
+        compare.append(
+          field('Сравнить: до', before),
+          field('После', after),
+          el(
+            'div',
+            { className: 'actions' },
+            el('button', { type: 'submit', className: 'small', textContent: 'Сравнить коммиты' }),
+          ),
+        )
+        compare.onsubmit = (event) => {
+          event.preventDefault()
+          const data = new FormData(compare)
+          run(
+            line,
+            () =>
+              compareMap(
+                map.mapId,
+                String(data.get('before')),
+                String(data.get('after')),
+                output,
+                line,
+              ),
+            compare,
+          )
+        }
+        content.append(compare, output)
+      }
+      return content
+    }
+    function renderSavedMapSessions() {
+      $('#map-drafts').replaceChildren(
+        ...savedMapSessions.map((saved) =>
+          el(
+            'li',
+            { className: 'row' },
+            el(
+              'div',
+              { className: 'row-main' },
+              el('strong', {
+                textContent: `${date(saved.startedAt)}${saved.id === mapSession?.id ? ' · текущий' : ''}`,
+              }),
+              el('small', {
+                textContent: `${saved.startedBy?.name ?? 'Участник команды'} · ${(saved.maps ?? []).map((id) => `${mapName(id)}: ${saved.branches?.[id] ?? 'рабочая копия'}`).join(', ')}`,
+              }),
+            ),
+            can('mode') && saved.id !== mapSession?.id
+              ? el(
+                  'div',
+                  { className: 'actions' },
+                  button(
+                    'Продолжить черновик',
+                    async () => {
+                      if (
+                        !(await ask({
+                          title: 'Продолжить сохранённый черновик?',
+                          text: 'Текущая рабочая копия сохранится. Мастерская откроет прежние карты и ветки вместе с их незакоммиченными правками. Игра продолжит работать.',
+                          ok: 'Продолжить',
+                          danger: true,
+                        }))
+                      )
+                        return
+                      const line = $('#map-drafts-status')
+                      await run(line, async () => {
+                        const { id } = await api('mode', 'POST', {
+                          profile: 'workshop',
+                          session: 'resume',
+                          sessionId: saved.id,
+                          expectedRevision: controller.revision,
+                        })
+                        await follow(line, id, 'Сохранённый черновик открыт.')
+                        await loadMapHistory()
+                      })
+                    },
+                    'small',
+                    `Продолжить черновик от ${date(saved.startedAt)}`,
+                  ),
+                )
+              : null,
+          ),
+        ),
+      )
+      if (!savedMapSessions.length)
+        $('#map-drafts').append(
+          el('li', {
+            className: 'empty',
+            textContent: 'Сохранённые черновики появятся после открытия сеанса мастерской.',
+          }),
+        )
+      $('#map-drafts-more').hidden = savedSessionsNext === null
+      say(
+        $('#map-drafts-status'),
+        `Показано черновиков: ${savedMapSessions.length} из ${savedSessionsTotal}.`,
+      )
+    }
+    $('#map-drafts-more').onclick = () =>
+      run(
+        $('#map-drafts-status'),
+        async () => {
+          if (savedSessionsNext === null) return
+          const data = await mapRequest(
+            'maps/sessions',
+            { offset: savedSessionsNext, limit: 100 },
+            $('#map-drafts-status'),
+            'Следующие черновики получены.',
+          )
+          if (!data) return
+          if (
+            !Array.isArray(data.sessions) ||
+            !Number.isSafeInteger(data.total) ||
+            !(data.next === null || Number.isSafeInteger(data.next))
+          )
+            throw new Error('Контроллер не передал список черновиков. Попробуйте обновить историю.')
+          const byId = new Map(
+            [...savedMapSessions, ...data.sessions].map((saved) => [saved.id, saved]),
+          )
+          savedMapSessions = [...byId.values()]
+          savedSessionsNext = data.next
+          savedSessionsTotal = data.total
+          renderSavedMapSessions()
+        },
+        $('#map-drafts-more').parentElement,
+      )
     const mapName = (id: string) =>
       WORKSHOP_PLACES[id] ?? String(mapCatalog?.find((map) => map.mapId === id)?.mapJson.name ?? id)
     const mapScopes = () =>
@@ -3235,11 +3680,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       }
       mapCatalog = data.maps
       mapSession = data.session
+      editableMaps = new Set(data.editableMaps ?? [])
+      savedMapSessions = data.sessions ?? []
+      savedSessionsNext = data.sessionsNext ?? null
+      savedSessionsTotal = data.sessionsTotal ?? savedMapSessions.length
+      renderSavedMapSessions()
       say(
         line,
         mapSession
-          ? `Рабочая копия сеанса: ${mapSession.id}. Архивы карт независимы.`
-          : 'Мастерская сейчас не редактирует активный сеанс. История доступна для выбора версии.',
+          ? 'Открыта рабочая копия сеанса. Коммиты, версии на проверке и main сохраняются отдельно.'
+          : 'Рабочий сеанс сейчас не открыт. История и сохранённые черновики доступны.',
       )
       $('#map-history').replaceChildren(
         ...mapCatalog!.map((map) => {
@@ -3260,18 +3710,18 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               el('small', { textContent: version.versionDigest }),
             )
             const choose = button(
-              'Выбрать версию',
+              'Восстановить как новый коммит',
               async () => {
                 if (
                   !(await ask({
-                    title: `Выбрать эту версию «${name}»?`,
+                    title: `Восстановить содержимое «${name}»?`,
                     text:
                       map.kind === 'arena'
-                        ? 'Следующие матчи используют выбранную копию. Уже начатые матчи и весь архив сохранятся.'
+                        ? 'В main появится новый коммит с содержимым этой версии. Все прежние коммиты и уже начатые матчи сохранятся.'
                         : map.kind === 'limbo'
                           ? 'Сначала подготовьте эту версию для прокси. Выбор доступен только при остановленном прокси; геометрия и точка входа применятся вместе при следующем запуске.'
                           : 'Будет выбрана эта версия игрового лобби. Она применяется при следующем безопасном запуске сервера.',
-                    ok: 'Выбрать версию',
+                    ok: 'Восстановить',
                     danger: true,
                   }))
                 )
@@ -3282,14 +3732,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                     versionDigest: version.versionDigest,
                     expectedHead: head,
                   })
-                  follow(line, id, `Версия «${name}» выбрана.`).then(loadMapHistory)
+                  follow(line, id, `Содержимое «${name}» восстановлено новым коммитом.`).then(
+                    loadMapHistory,
+                  )
                   return 'Запрос отправлен. Ожидаем подтверждение контроллера…'
                 })
               },
               'small',
-              `Выбрать ${name}, версия ${version.versionDigest.slice(0, 8)}`,
+              `Восстановить ${name}, коммит ${version.versionDigest.slice(0, 8)}`,
             )
-            // Readonly view for builders: unauthorized mutation buttons are hidden, not disabled.
+            // Only reviewers move protected main; editing rights belong to the selected work branch.
             choose.disabled = current
             const actions = el(
               'div',
@@ -3327,6 +3779,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                     'Подготовка версии доступна в режиме мастерской. Выбор версии требует остановленного прокси и не запускает его автоматически.',
                 })
               : null,
+            mapGitControls(map, line),
             el(
               'ul',
               { className: 'rows' },
@@ -3343,9 +3796,171 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           )
         }),
       )
+      $('#map-history').querySelectorAll<HTMLSelectElement>('select').forEach(customSelect)
+      await loadCandidates()
     }
     $('#maps-refresh').onclick = () => run($('#map-history-status'), loadMapHistory)
     // ---------- Map candidates ----------
+    const reviewOutlets = new Map<string, HTMLElement>()
+    async function previewMapReview(
+      candidate: any,
+      outlet: HTMLElement,
+      line: HTMLElement,
+      choices: Record<string, 'ours' | 'theirs'> = {},
+    ) {
+      const map = mapCatalog?.find((entry) => entry.mapId === candidate.mapId)
+      if (!map || map.head?.versionDigest !== candidate.targetHead)
+        throw new Error('Main изменилась после отправки. Нужна новая проверка из ветки.')
+      const data = await mapRequest(
+        'maps/merge-preview',
+        {
+          mapId: candidate.mapId,
+          versionDigest: candidate.versionDigest,
+          expectedHead: candidate.targetHead,
+          ...(Object.keys(choices).length ? { resolutions: choices } : {}),
+        },
+        line,
+        'Сравнение для слияния готово.',
+      )
+      if (!data) return
+      if (
+        data.sourceVersion !== candidate.versionDigest ||
+        data.targetVersion !== candidate.targetHead ||
+        !Array.isArray(data.conflicts) ||
+        !Array.isArray(data.unresolved) ||
+        !data.changes
+      )
+        throw new Error('Контроллер не подтвердил точные версии слияния. Обновите историю.')
+      const changes = el('div', {}),
+        conflicts = el('div', { className: 'stack git-diff' }),
+        fields: HTMLSelectElement[] = []
+      outlet.replaceChildren(
+        el('p', {
+          textContent: `Слияние коммита ${candidate.versionDigest.slice(0, 12)} в main ${candidate.targetHead.slice(0, 12)}. Конфликтов: ${data.conflicts.length}.`,
+        }),
+        changes,
+        conflicts,
+      )
+      renderMapChanges(changes, data.changes)
+      for (const conflict of data.conflicts) {
+        const item = el(
+          'details',
+          { className: 'disclosure' },
+          el('summary', { textContent: conflict.path }),
+          el('strong', { textContent: 'main' }),
+          el('pre', {
+            textContent: conflict.oursPresent ? JSON.stringify(conflict.ours) : 'Отсутствует',
+          }),
+          el('strong', { textContent: 'Коммит на проверке' }),
+          el('pre', {
+            textContent: conflict.theirsPresent ? JSON.stringify(conflict.theirs) : 'Отсутствует',
+          }),
+        )
+        if (can('workshop')) {
+          const select = el(
+            'select',
+            { name: conflict.path },
+            el('option', { value: '', textContent: 'Выберите версию' }),
+            el('option', { value: 'ours', textContent: 'Оставить main' }),
+            el('option', { value: 'theirs', textContent: 'Взять коммит на проверке' }),
+          ) as HTMLSelectElement
+          select.value = choices[conflict.path] ?? ''
+          fields.push(select)
+          item.append(
+            field(
+              'Решение конфликта',
+              select,
+              conflict.kind === 'binary'
+                ? 'Регион заменяется целиком; блоки двух версий автоматически не смешиваются.'
+                : 'Применится именно выбранное значение этого поля.',
+            ),
+          )
+        }
+        conflicts.append(item)
+      }
+      const actions = el('div', { className: 'actions' })
+      if (can('workshop')) {
+        if (fields.length)
+          actions.append(
+            button(
+              'Проверить выбранные версии',
+              () =>
+                run(
+                  line,
+                  () =>
+                    previewMapReview(
+                      candidate,
+                      outlet,
+                      line,
+                      Object.fromEntries(
+                        fields
+                          .filter((select) => select.value)
+                          .map((select) => [select.name, select.value as 'ours' | 'theirs']),
+                      ),
+                    ),
+                  outlet,
+                ),
+              'small',
+            ),
+          )
+        const merge = button(
+          'Слить в main',
+          async () => {
+            if (
+              !(await ask({
+                title: `Слить «${mapName(candidate.mapId)}» в main?`,
+                text: 'Будет применён именно сохранённый коммит и проверенные решения конфликтов. Новый коммит сохранит обе истории. Незакоммиченные правки в мире в слияние не входят.',
+                ok: 'Слить в main',
+                danger: true,
+              }))
+            )
+              return
+            await run(
+              line,
+              async () => {
+                const { id } = await api('candidates/publish', 'POST', {
+                  candidateId: candidate.id,
+                  mapId: candidate.mapId,
+                  expectedHead: candidate.targetHead,
+                  resolutions: choices,
+                })
+                const result = await follow(
+                  line,
+                  id,
+                  'Коммит слит в main. Следующие матчи используют новую версию.',
+                  (error) => mapRequestError(line, error),
+                )
+                if (result?.ok) {
+                  reviewOutlets.delete(candidate.id)
+                  await loadMapHistory()
+                }
+              },
+              outlet,
+            )
+          },
+          'small primary',
+          `Слить коммит карты ${mapName(candidate.mapId)} в main`,
+        )
+        merge.disabled = data.unresolved.length > 0
+        fields.forEach((select) =>
+          select.addEventListener('change', () => {
+            merge.disabled = true
+            say(line, 'Проверьте выбранные версии перед слиянием.', 'pending')
+          }),
+        )
+        actions.append(merge)
+      }
+      outlet.append(
+        data.unresolved.length
+          ? el('p', {
+              className: 'muted',
+              textContent: 'Для слияния нужно решить все конфликты и проверить выбранные версии.',
+            })
+          : el('p', { textContent: 'Неразрешённых конфликтов нет.' }),
+        actions,
+      )
+      outlet.querySelectorAll<HTMLSelectElement>('select').forEach(customSelect)
+    }
     const CANDIDATE_STATUS: Record<string, [string, string]> = {
       pending: ['Ждёт проверки', 'warn'],
       accepted: ['Принята', 'ok'],
@@ -3364,8 +3979,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         // baseMatches: false — the map's reference changed since editing started; null — unknown base (older drafts). Either needs a forced publish.
         // Two versions of one map need distinct accessible names on their buttons.
         const version = c.id.slice(0, 6)
-        const baseWarn =
-          c.baseMatches === false
+        const baseWarn = c.sourceBranch
+          ? null
+          : c.baseMatches === false
             ? 'эталон карты изменился после начала правки'
             : c.baseMatches === null
               ? 'база неизвестна'
@@ -3385,6 +4001,39 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           }),
         )
         const actions = el('div', { className: 'actions' })
+        if (c.sourceBranch && mayEditMap(c.mapId)) {
+          if (c.status !== 'pending') reviewOutlets.delete(c.id)
+          const outlet = reviewOutlets.get(c.id) ?? el('div', { className: 'stack' })
+          if (c.status === 'pending') reviewOutlets.set(c.id, outlet)
+          main.append(
+            el('small', {
+              textContent: `Ветка ${c.sourceBranch} · коммит ${c.versionDigest?.slice(0, 12) ?? 'не подтверждён'}. Правки после отправки не включены.`,
+            }),
+            outlet,
+          )
+          actions.append(
+            button(
+              'Сравнить с main',
+              () =>
+                run(line, async () => {
+                  const map = mapCatalog?.find((entry) => entry.mapId === c.mapId)
+                  if (!map?.head) throw new Error('Main не подтверждена. Обновите историю.')
+                  await compareMap(c.mapId, map.head.versionDigest, c.versionDigest, outlet, line)
+                }),
+              'small',
+              `Сравнить коммит карты ${name} с main`,
+            ),
+          )
+          if (can('workshop') && c.status === 'pending')
+            actions.append(
+              button(
+                'Проверить слияние',
+                () => run(line, () => previewMapReview(c, outlet, line)),
+                'small primary',
+                `Проверить слияние карты ${name}`,
+              ),
+            )
+        }
         const confirmForce = (reason: string) =>
           ask({
             title: `Принять «${name}» с другой базой?`,
@@ -3421,7 +4070,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             }).then(() => Promise.all([loadCandidates(), loadMapHistory()]))
             return 'Запрос отправлен. Сервер применит его в течение 15 секунд…'
           })
-        if (can('workshop') && c.status === 'pending') {
+        if (can('workshop') && c.status === 'pending' && !c.sourceBranch) {
           actions.append(
             button(
               'Принять',
@@ -3470,7 +4119,42 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             ),
           )
         }
-        if (can('mode') && c.status === 'pending' && controller?.phase === 'workshop') {
+        if (can('workshop') && c.status === 'pending' && c.sourceBranch)
+          actions.append(
+            button(
+              'Отклонить',
+              async () => {
+                if (
+                  !(await ask({
+                    title: `Отклонить проверку «${name}»?`,
+                    text: 'Коммит и рабочая ветка останутся в истории. В main эта проверка не попадёт.',
+                    ok: 'Отклонить',
+                    danger: true,
+                  }))
+                )
+                  return
+                await run(line, async () => {
+                  const { id } = await api('candidates/reject', 'POST', {
+                    candidateId: c.id,
+                    mapId: c.mapId,
+                  })
+                  const result = await follow(line, id, 'Проверка отклонена.')
+                  if (result?.ok) {
+                    reviewOutlets.delete(c.id)
+                    await loadCandidates()
+                  }
+                })
+              },
+              'small danger',
+              `Отклонить проверку карты ${name}`,
+            ),
+          )
+        if (
+          can('mode') &&
+          c.status === 'pending' &&
+          controller?.phase === 'workshop' &&
+          controller.gate === 'builders'
+        ) {
           actions.append(
             button(
               'Тест',
@@ -3478,7 +4162,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 if (
                   !(await ask({
                     title: `Тестовый матч «${name}»?`,
-                    text: 'Мастерская перезапустится в закрытый тестовый матч на копии этой версии карты — это займёт около 2–3 минут. Строителей переведёт с собой сервер. Результат теста не идёт в статистику.',
+                    text: 'Мастерская перезапустится в закрытый тестовый матч на копии этой версии карты — это займёт около 2–3 минут. Допуск проверяется по списку тестеров. Результат теста не идёт в статистику.',
                     ok: 'Начать тест',
                     danger: true,
                   }))
@@ -3536,17 +4220,29 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     async function submitMap(mapId: string, name: string) {
       if (
         !(await ask({
-          title: `Отправить «${name}» на проверку?`,
-          text: 'Сервер сохранит изменения мира и разметки из рабочей копии текущего сеанса. Активная версия не изменится до отдельного принятия.',
-          ok: 'Отправить',
+          title: `Отправить коммит «${name}» на проверку?`,
+          text: 'Будет отправлен последний сохранённый коммит текущей ветки. Незакоммиченные правки в мире в него не входят. Ветка останется доступна для дальнейшего редактирования.',
+          ok: 'Отправить коммит',
         }))
       )
         return
       const line = $('#candidates-status')
       run(line, async () => {
-        const { id } = await api('candidates/create', 'POST', { mapId })
-        follow(line, id, `Копия «${name}» готова к проверке.`).then(loadCandidates)
-        return 'Запрос отправлен. Сервер снимет копию в течение 15 секунд…'
+        const map = mapCatalog?.find((entry) => entry.mapId === mapId),
+          branch = map?.branches?.find((ref) => ref.name === mapSession?.branches?.[mapId])
+        if (!branch) throw new Error('Выбранная рабочая ветка не подтверждена. Обновите историю.')
+        const { id } = await api('candidates/create', 'POST', {
+          mapId,
+          branch: branch.name,
+          expectedBranchHead: branch.versionDigest,
+        })
+        await follow(
+          line,
+          id,
+          `Коммит «${name}» отправлен на проверку. Новые правки остаются в черновике.`,
+          (error) => mapRequestError(line, error),
+        )
+        await loadCandidates()
       })
     }
 
@@ -3840,12 +4536,14 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       switch (a.action) {
         case 'mode':
           return a.target === 'workshop'
-            ? ['включил', 'включить', ' мастерскую']
-            : d.recover
-              ? ['восстановил', 'восстановить', ' игровой режим']
-              : ['вернул', 'вернуть', ' игровой режим']
+            ? ['открыл', 'открыть', ' сеанс мастерской']
+            : a.target === 'test'
+              ? ['начал', 'начать', ' тест карты в мастерской']
+              : d.recover
+                ? ['восстановил', 'восстановить', ' мастерскую']
+                : ['вернул', 'вернуть', ' мастерскую в редактор']
         case 'cancel':
-          return ['отменил', 'отменить', ' переключение режима']
+          return ['отменил', 'отменить', ' смену режима мастерской']
         case 'message':
           return ['изменил', 'изменить', ` сообщение для игроков: «${d.message ?? ''}»`]
         case 'rcon:say':
@@ -3913,7 +4611,24 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             ` версию карты «${WORKSHOP_PLACES[a.target] ?? 'другая карта'}»`,
           ]
         case 'workshop-rollback':
-          return ['откатил', 'откатить', ` карту «${WORKSHOP_PLACES[a.target] ?? 'другая карта'}»`]
+          return [
+            'восстановил',
+            'восстановить',
+            ` содержимое карты «${mapName(a.target)}» новым коммитом`,
+          ]
+        case 'map-branch-create':
+          return ['создал', 'создать', ` ветку ${d.branch ?? ''} карты «${mapName(a.target)}»`]
+        case 'map-commit':
+          return [
+            'зафиксировал',
+            'зафиксировать',
+            ` изменения ветки ${d.branch ?? ''} карты «${mapName(a.target)}»`,
+          ]
+        case 'map-compare':
+        case 'map-merge-preview':
+          return ['сравнил', 'сравнить', ` коммиты карты «${mapName(a.target)}»`]
+        case 'map-sessions':
+          return ['открыл', 'открыть', ' список сохранённых черновиков']
         case 'workshop-map-access':
           return d.from === 'game'
             ? [
@@ -4393,7 +5108,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       if (
         !(await ask({
           title: 'Не начинать новые матчи?',
-          text: 'Идущие матчи доиграют, а новые начаться не смогут. Используйте перед техработами, если мастерская не нужна.',
+          text: 'Идущие матчи доиграют, а новые начаться не смогут. Используйте перед техработами игрового сервера.',
           ok: 'Не начинать новые',
           danger: true,
         }))
