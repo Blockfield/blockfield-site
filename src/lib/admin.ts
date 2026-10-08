@@ -40,7 +40,7 @@ import {
 
 export const ROLES = ['builder', 'moderator', 'admin', 'owner'] as const
 export type Role = (typeof ROLES)[number]
-const moderator = ['view', 'moderate', 'mode', 'message']
+const moderator = ['view', 'map-edit', 'moderate', 'mode', 'message']
 const admin = [
   ...moderator,
   'ban',
@@ -54,7 +54,7 @@ const admin = [
   'diagnostics',
 ]
 const PERMISSIONS: Record<Role, string[]> = {
-  builder: ['view'],
+  builder: ['view', 'map-edit'],
   moderator,
   admin,
   owner: [...admin, 'roles-admin', 'rcon-raw'],
@@ -201,6 +201,7 @@ export type MapVersion = {
   kind: MapHead['kind']
   versionDigest: string
   parent: string | null
+  parents?: string[]
   createdAt: number
   author: Record<string, unknown>
   source: string
@@ -211,22 +212,42 @@ export type MapVersion = {
   deleted: string[]
   fileCount: number
 }
+export type MapBranch = {
+  schema: 1
+  mapId: string
+  name: string
+  versionDigest: string
+  generation: number
+  workingCopyId: string | null
+  createdAt: number
+  createdBy: Record<string, unknown>
+}
 export type MapCatalogEntry = {
   mapId: string
   kind: MapHead['kind']
   mapJson: Record<string, unknown>
   head: MapHead | null
   versions: MapVersion[]
+  branches?: MapBranch[]
 }
 export type MapSession = {
   schema: 1
   id: string
   maps: string[] | null
+  branches?: Record<string, string>
   startedAt?: number
-  startedBy?: Record<string, unknown>
+  startedBy?: Record<string, unknown> | null
+  selectionDigest?: string
 }
 export type MapCatalogAvailability =
-  | { available: true; maps: MapCatalogEntry[]; session?: MapSession }
+  | {
+      available: true
+      maps: MapCatalogEntry[]
+      session?: MapSession
+      sessions?: MapSession[]
+      sessionsTotal?: number
+      sessionsNext?: number | null
+    }
   | { available: false; error: string }
 const mapKind = (value: unknown) => ['arena', 'lobby', 'limbo'].includes(value as string)
 const digest = (value: unknown): value is string =>
@@ -234,6 +255,28 @@ const digest = (value: unknown): value is string =>
 const timestamp = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0
 const mapId = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-z0-9_]{1,32}$/.test(value)
+const branchName = (value: unknown): value is string =>
+  typeof value === 'string' && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(value)
+const mutableBranch = (value: unknown): value is string => branchName(value) && value !== 'main'
+const mapPath = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  (value === 'map.json' ||
+    /^world\/(region|entities|poi)\/[rc]\.-?\d+\.-?\d+\.(mca|mcc)$/.test(value))
+function resolutions(value: unknown): Record<string, 'ours' | 'theirs'> | undefined {
+  if (value === undefined) return undefined
+  if (
+    !plain(value) ||
+    Object.keys(value).length > 10_000 ||
+    !Object.entries(value).every(
+      ([path, choice]) =>
+        path.length <= 4096 &&
+        (mapPath(path) || /^map\.json#(?:\/(?:[^~]|~[01])*)*$/.test(path)) &&
+        (choice === 'ours' || choice === 'theirs'),
+    )
+  )
+    throw bad('Для каждого конфликта выберите версию main или версию на проверке.')
+  return value as Record<string, 'ours' | 'theirs'>
+}
 function mapJsonSafe(value: unknown, depth = 0): boolean {
   if (depth > 16) return false
   if (value === null || typeof value === 'boolean') return true
@@ -244,6 +287,44 @@ function mapJsonSafe(value: unknown, depth = 0): boolean {
     Object.keys(value).length <= 10_000 &&
     Object.values(value).every((child) => mapJsonSafe(child, depth + 1))
   )
+}
+
+function catalogSession(value: unknown, maps: MapCatalogEntry[]): MapSession | null {
+  if (
+    !plain(value) ||
+    value.schema !== 1 ||
+    typeof value.id !== 'string' ||
+    !COPY_UUID.test(value.id) ||
+    !mapJsonSafe(value) ||
+    (value.startedAt !== undefined && !timestamp(value.startedAt)) ||
+    (value.startedBy !== undefined && value.startedBy !== null && !plain(value.startedBy)) ||
+    (value.selectionDigest !== undefined && !digest(value.selectionDigest))
+  )
+    return null
+  const ids = maps.map((entry) => entry.mapId),
+    selected = value.maps === null ? ids : value.maps
+  if (
+    !Array.isArray(selected) ||
+    !selected.length ||
+    new Set(selected).size !== selected.length ||
+    !selected.every((id) => typeof id === 'string' && ids.includes(id))
+  )
+    return null
+  if (
+    value.branches !== undefined &&
+    (!plain(value.branches) ||
+      Object.keys(value.branches).length !== selected.length ||
+      !Object.entries(value.branches).every(
+        ([id, name]) =>
+          selected.includes(id) &&
+          mutableBranch(name) &&
+          maps
+            .find((entry) => entry.mapId === id)
+            ?.branches?.some((branch) => branch.name === name),
+      ))
+  )
+    return null
+  return value as MapSession
 }
 
 /** The controller catalog supplies available IDs and immutable history; static labels never invent map versions. */
@@ -315,12 +396,21 @@ export function readMapCatalog(directory: string): MapCatalogAvailability {
     if (
       entry.versions.some(
         (version: any) =>
-          version.parent !== null &&
-          (!versions.has(version.parent) || version.parent === version.versionDigest),
+          (version.parent !== null &&
+            (!versions.has(version.parent) || version.parent === version.versionDigest)) ||
+          (version.parents !== undefined &&
+            (!Array.isArray(version.parents) ||
+              version.parents.length > 2 ||
+              new Set(version.parents).size !== version.parents.length ||
+              (version.parents[0] ?? null) !== version.parent ||
+              version.parents.some(
+                (parent: unknown) =>
+                  !digest(parent) || !versions.has(parent) || parent === version.versionDigest,
+              ))),
       )
     )
       return unavailable
-    const head = entry.head
+    const head = entry.head as MapHead | null
     if (
       head !== null &&
       (!plain(head) ||
@@ -338,32 +428,76 @@ export function readMapCatalog(directory: string): MapCatalogAvailability {
         !plain(head.activatedBy))
     )
       return unavailable
+    if (entry.branches !== undefined) {
+      const names = new Set<string>()
+      if (!Array.isArray(entry.branches) || entry.branches.length > 1024) return unavailable
+      for (const branch of entry.branches) {
+        if (
+          !plain(branch) ||
+          branch.schema !== 1 ||
+          branch.mapId !== entry.mapId ||
+          !branchName(branch.name) ||
+          names.has(branch.name) ||
+          !digest(branch.versionDigest) ||
+          !versions.has(branch.versionDigest) ||
+          !Number.isSafeInteger(branch.generation) ||
+          (branch.generation as number) < 1 ||
+          (branch.workingCopyId !== null &&
+            (typeof branch.workingCopyId !== 'string' || !COPY_UUID.test(branch.workingCopyId))) ||
+          !timestamp(branch.createdAt) ||
+          !plain(branch.createdBy) ||
+          (branch.name === 'main' &&
+            (branch.versionDigest !== head?.versionDigest ||
+              branch.generation !== head?.generation))
+        )
+          return unavailable
+        names.add(branch.name)
+      }
+      if (head !== null && !names.has('main')) return unavailable
+    }
   }
-  const session = readFile(join(directory, 'session.json')),
+  const maps = value.maps as MapCatalogEntry[]
+  if (
+    (value.sessionsTotal !== undefined &&
+      (!Number.isSafeInteger(value.sessionsTotal) || (value.sessionsTotal as number) < 0)) ||
+    (value.sessionsNext !== undefined &&
+      value.sessionsNext !== null &&
+      (!Number.isSafeInteger(value.sessionsNext) || (value.sessionsNext as number) < 0))
+  )
+    return unavailable
+  if (
+    value.sessions !== undefined &&
+    (!Array.isArray(value.sessions) ||
+      value.sessions.length > 1024 ||
+      value.sessions.some((session) => catalogSession(session, maps) === null) ||
+      new Set(value.sessions.map((session: any) => session.id)).size !== value.sessions.length ||
+      (value.sessionsTotal !== undefined &&
+        (value.sessionsTotal as number) < value.sessions.length) ||
+      (typeof value.sessionsNext === 'number' &&
+        (value.sessionsNext < value.sessions.length ||
+          (typeof value.sessionsTotal === 'number' && value.sessionsNext > value.sessionsTotal))))
+  )
+    return unavailable
+  const session = catalogSession(readFile(join(directory, 'session.json')), maps),
     status = readFile(join(directory, 'status.json'))
   const verified =
-    plain(session) &&
-    session.schema === 1 &&
-    typeof session.id === 'string' &&
-    COPY_UUID.test(session.id) &&
-    (session.maps === null ||
-      (Array.isArray(session.maps) &&
-        session.maps.length > 0 &&
-        new Set(session.maps).size === session.maps.length &&
-        session.maps.every((id: unknown) => typeof id === 'string' && ids.has(id)))) &&
-    mapJsonSafe(session) &&
-    (session.startedAt === undefined || timestamp(session.startedAt)) &&
-    (session.startedBy === undefined || plain(session.startedBy)) &&
+    session !== null &&
     plain(status) &&
     status.schema === 1 &&
     status.phase === 'workshop' &&
+    status.gate === 'builders' &&
     plain(status.desired) &&
     status.desired.profile === 'workshop' &&
     status.desired.session === session.id
   return {
     available: true,
-    maps: value.maps as MapCatalogEntry[],
+    maps,
     ...(verified ? { session: session as MapSession } : {}),
+    ...(value.sessions === undefined ? {} : { sessions: value.sessions as MapSession[] }),
+    ...(value.sessionsTotal === undefined ? {} : { sessionsTotal: value.sessionsTotal as number }),
+    ...(value.sessionsNext === undefined
+      ? {}
+      : { sessionsNext: value.sessionsNext as number | null }),
   }
 }
 function requiredMapCatalog() {
@@ -391,6 +525,47 @@ function expectedMapHead(body: any, entry: MapCatalogEntry) {
     throw fail(409, 'Версия карты уже изменилась. Обновите историю.')
   return body.expectedHead as string | null
 }
+async function editableMapIds(
+  actor: Actor,
+  store: StatsStore,
+  catalog: MapCatalogAvailability,
+): Promise<string[]> {
+  if (!catalog.available || !can(actor.role, 'map-edit')) return []
+  const ids = catalog.maps.map((entry) => entry.mapId)
+  if (actor.role !== 'builder') return ids
+  const grant = (await store.staff()).find(
+    (row) => row.uuid === actor.uuid && row.role === 'builder',
+  )
+  return grant ? ids.filter((id) => grant.maps == null || grant.maps.includes(id)) : []
+}
+async function editableMap(actor: Actor, store: StatsStore, id: unknown) {
+  const catalog = requiredMapCatalog(),
+    entry = catalog.maps.find((map) => map.mapId === id)
+  if (!entry) throw bad('Неизвестная карта.')
+  if (!(await editableMapIds(actor, store, catalog)).includes(entry.mapId))
+    throw fail(403, 'Нет права строить на этой карте.')
+  return { catalog, entry }
+}
+function selectedMapBranch(
+  catalog: Extract<MapCatalogAvailability, { available: true }>,
+  entry: MapCatalogEntry,
+) {
+  const copy = catalog.session,
+    name = copy?.branches?.[entry.mapId]
+  const branch = entry.branches?.find((ref) => ref.name === name)
+  if (
+    !copy ||
+    !(copy.maps === null || copy.maps.includes(entry.mapId)) ||
+    !branch ||
+    !mutableBranch(name)
+  )
+    throw fail(409, 'Выберите ветку этой карты в действующем сеансе мастерской.')
+  return { copy, branch }
+}
+function workshopMapIds() {
+  const catalog = readMapCatalog(adminDir())
+  return catalog.available ? new Set(['hub', ...catalog.maps.map((entry) => entry.mapId)]) : MAP_IDS
+}
 /** Readers (controller, game server) must never see a half-written file: write a dot-file in the same directory, then rename. */
 export function writeAtomic(directory: string, name: string, value: unknown) {
   const temp = join(directory, `.${name}.${randomUUID()}.tmp`)
@@ -414,9 +589,10 @@ export function withMapAccess(
   maps: string[] | null,
   mapId: string,
   allowed: boolean,
+  knownMaps = MAP_IDS,
 ): string[] | null {
   if (allowed) return maps === null || maps.includes(mapId) ? maps : [...maps, mapId]
-  return (maps ?? [...MAP_IDS]).filter((id) => id !== mapId)
+  return (maps ?? [...knownMaps]).filter((id) => id !== mapId)
 }
 export type WorkshopMember = {
   draslId: string
@@ -473,7 +649,7 @@ export function writeRequest(
     if (body.recover !== undefined && typeof body.recover !== 'boolean')
       throw bad('Некорректный запрос.')
     if (body.recover && body.profile !== 'game')
-      throw bad('Восстановление возможно только в игровой режим.')
+      throw bad('Для восстановления мастерской используйте запрос game.')
     if (body.recover && !can(actor.role, 'recover'))
       throw fail(403, 'Восстановление доступно администратору.')
     let extra: Record<string, unknown> = {}
@@ -487,11 +663,35 @@ export function writeRequest(
           (!Array.isArray(maps) ||
             !maps.length ||
             new Set(maps).size !== maps.length ||
-            !maps.every((id: unknown) => typeof id === 'string' && MAP_IDS.has(id)))
+            !maps.every(
+              (id: unknown) => typeof id === 'string' && (knownMaps.has(id) || id === 'hub'),
+            ))
         )
           throw bad('Некорректный список карт.')
         extra = { session: 'new', maps }
-      } else extra = { session: 'resume' } // resume always keeps the previous session's maps; a client-sent list here is dropped, never forwarded.
+        if (body.branches !== undefined) {
+          if (
+            !Array.isArray(maps) ||
+            !plain(body.branches) ||
+            Object.keys(body.branches).length !== maps.length ||
+            !Object.entries(body.branches).every(
+              ([id, name]) => maps.includes(id) && mutableBranch(name),
+            )
+          )
+            throw bad('Выберите одну рабочую ветку для каждой карты сеанса.')
+          extra.branches = body.branches
+        }
+      } else {
+        if (
+          body.sessionId !== undefined &&
+          (typeof body.sessionId !== 'string' || !COPY_UUID.test(body.sessionId))
+        )
+          throw bad('Выберите сохранённый черновик мастерской.')
+        extra = {
+          session: 'resume',
+          ...(body.sessionId === undefined ? {} : { sessionId: body.sessionId }),
+        }
+      } // resume keeps its stored maps/branches; a client-sent selection is never forwarded.
     } else if (body.profile === 'test') {
       if (typeof body.candidateId !== 'string' || !/^[0-9a-f]{32}$/.test(body.candidateId))
         throw bad('Неизвестная версия карты.')
@@ -518,7 +718,9 @@ export function writeRequest(
       m.maps === undefined ||
       (Array.isArray(m.maps) &&
         new Set(m.maps).size === m.maps.length &&
-        m.maps.every((id: unknown) => typeof id === 'string' && MAP_IDS.has(id)))
+        m.maps.every(
+          (id: unknown) => typeof id === 'string' && (knownMaps.has(id) || id === 'hub'),
+        ))
     const valid =
       Array.isArray(body.members) &&
       body.members.every(
@@ -541,6 +743,57 @@ export function writeRequest(
   } else if (body?.kind === 'limbo-export') {
     if (!digest(body.versionDigest)) throw bad('Неизвестная версия лобби прокси.')
     request = { ...base, versionDigest: body.versionDigest }
+  } else if (body?.kind === 'sessions') {
+    if (
+      !Number.isSafeInteger(body.offset) ||
+      body.offset < 0 ||
+      body.offset > 1_000_000 ||
+      (body.limit !== undefined &&
+        (!Number.isSafeInteger(body.limit) || body.limit < 1 || body.limit > 100))
+    )
+      throw bad('Некорректная страница сохранённых черновиков.')
+    request = { ...base, offset: body.offset, limit: body.limit ?? 100 }
+  } else if (['branch-create', 'commit', 'compare', 'merge-preview'].includes(body?.kind)) {
+    if (!mapId(body.mapId) || !knownMaps.has(body.mapId)) throw bad('Неизвестная карта.')
+    const common = { ...base, mapId: body.mapId }
+    if (body.kind === 'branch-create') {
+      if (!mutableBranch(body.branch) || !digest(body.versionDigest))
+        throw bad('Укажите имя рабочей ветки и сохранённую версию.')
+      request = { ...common, branch: body.branch, versionDigest: body.versionDigest }
+    } else if (body.kind === 'commit') {
+      if (
+        !mutableBranch(body.branch) ||
+        typeof body.workingCopyId !== 'string' ||
+        !COPY_UUID.test(body.workingCopyId) ||
+        !digest(body.expectedBranchHead) ||
+        typeof body.note !== 'string' ||
+        !body.note.trim() ||
+        body.note.length > 200
+      )
+        throw bad(
+          'Коммит требует выбранную ветку, рабочую копию, её текущую версию и описание изменений до 200 символов.',
+        )
+      request = {
+        ...common,
+        branch: body.branch,
+        workingCopyId: body.workingCopyId,
+        expectedBranchHead: body.expectedBranchHead,
+        note: body.note.trim(),
+      }
+    } else if (body.kind === 'compare') {
+      if (!digest(body.before) || !digest(body.after))
+        throw bad('Выберите две сохранённые версии карты.')
+      request = { ...common, before: body.before, after: body.after }
+    } else {
+      if (!digest(body.versionDigest) || !digest(body.expectedHead))
+        throw bad('Слияние требует исходную версию и текущую main.')
+      request = {
+        ...common,
+        versionDigest: body.versionDigest,
+        expectedHead: body.expectedHead,
+        ...(body.resolutions === undefined ? {} : { resolutions: resolutions(body.resolutions) }),
+      }
+    }
   } else if (body?.kind === 'candidate' || body?.kind === 'rollback') {
     if (typeof body.mapId !== 'string' || !knownMaps.has(body.mapId))
       throw bad('Неизвестная карта.')
@@ -554,6 +807,15 @@ export function writeRequest(
         ...base,
         mapId: body.mapId,
         ...(body.workingCopyId === undefined ? {} : { workingCopyId: body.workingCopyId }),
+      }
+      if (body.branch !== undefined || body.expectedBranchHead !== undefined) {
+        if (
+          !mutableBranch(body.branch) ||
+          !digest(body.expectedBranchHead) ||
+          typeof body.workingCopyId !== 'string'
+        )
+          throw bad('Проверка требует выбранную ветку, её текущую версию и рабочую копию.')
+        Object.assign(request, { branch: body.branch, expectedBranchHead: body.expectedBranchHead })
       }
     } else {
       if (
@@ -587,6 +849,9 @@ export function writeRequest(
       ...(body.kind === 'publish' && body.force ? { force: true } : {}),
       ...(body.kind === 'publish' && Object.hasOwn(body, 'expectedHead')
         ? { expectedHead: body.expectedHead }
+        : {}),
+      ...(body.kind === 'publish' && body.resolutions !== undefined
+        ? { resolutions: resolutions(body.resolutions) }
         : {}),
     }
   } else throw bad('Неизвестный тип запроса.')
@@ -980,7 +1245,7 @@ async function syncWorkshop(store: StatsStore, actor: Actor, resolve = ownerName
       ),
     )
   const members = workshopMembers(await store.staff(), names)
-  const id = writeRequest(inboxDir(), actor, { kind: 'members', members })
+  const id = writeRequest(inboxDir(), actor, { kind: 'members', members }, workshopMapIds())
   return { id, members }
 }
 
@@ -1042,14 +1307,44 @@ const routes: Record<string, Route> = {
     handler: ({ context }) => {
       const id = context.url.searchParams.get('id') ?? ''
       if (!UUID.test(id)) throw bad('Некорректный запрос.')
-      return { result: readFile(join(adminDir(), 'results', `${id}.json`)) }
+      const result = readFile(join(adminDir(), 'results', `${id}.json`), 8 * 1024 * 1024)
+      if (
+        result !== null &&
+        (!plain(result) ||
+          result.schema !== 1 ||
+          result.id !== id ||
+          typeof result.ok !== 'boolean' ||
+          !mapJsonSafe(result))
+      )
+        throw fail(503, 'Ответ контроллера повреждён. Обновите состояние позже.')
+      return { result }
     },
   },
   'POST mode': {
     permission: 'mode',
-    handler: ({ actor, body }) => ({
-      id: writeRequest(inboxDir(), actor, { ...body, kind: 'mode' }),
-    }),
+    handler: ({ actor, body }) => {
+      const catalog = readMapCatalog(adminDir())
+      if (body?.profile === 'workshop' && body?.session === 'new' && body.branches !== undefined) {
+        if (
+          !catalog.available ||
+          !plain(body.branches) ||
+          !Object.entries(body.branches).every(([id, name]) =>
+            catalog.maps
+              .find((entry) => entry.mapId === id)
+              ?.branches?.some((ref) => ref.name === name && ref.name !== 'main'),
+          )
+        )
+          throw bad('Выбранная ветка отсутствует в каталоге карт.')
+      }
+      return {
+        id: writeRequest(
+          inboxDir(),
+          actor,
+          { ...body, kind: 'mode' },
+          catalog.available ? new Set(catalog.maps.map((entry) => entry.mapId)) : MAP_IDS,
+        ),
+      }
+    },
     audit: (body) => ({
       action: 'mode',
       target: String(body?.profile),
@@ -1069,7 +1364,7 @@ const routes: Record<string, Route> = {
     }),
     audit: (body) => ({ action: 'message', detail: { message: body?.message } }),
   },
-  // Same gate as switching: an unprivileged rollback of a switch that is still DRAINING/STARTING, no --recover/root needed.
+  // Cancelling rolls back only the Workshop transition; recovery remains admin-only.
   'POST cancel': {
     permission: 'mode',
     handler: ({ actor }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'cancel' }) }),
@@ -1216,7 +1511,117 @@ const routes: Record<string, Route> = {
   },
   'GET maps': {
     permission: 'view',
-    handler: () => readMapCatalog(adminDir()),
+    handler: async ({ actor, store }) => {
+      const catalog = readMapCatalog(adminDir())
+      return { ...catalog, editableMaps: await editableMapIds(actor, store, catalog) }
+    },
+  },
+  'POST maps/branches': {
+    permission: 'map-edit',
+    handler: async ({ actor, store, body }) => {
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId)
+      if (!entry.versions.some((version) => version.versionDigest === body?.versionDigest))
+        throw bad('Выбранная версия отсутствует в истории карты.')
+      if (entry.branches?.some((ref) => ref.name === body?.branch))
+        throw fail(409, 'Ветка с таким именем уже существует.')
+      return {
+        id: writeRequest(
+          inboxDir(),
+          actor,
+          { ...body, kind: 'branch-create' },
+          new Set(catalog.maps.map((map) => map.mapId)),
+        ),
+      }
+    },
+    audit: (body) => ({
+      action: 'map-branch-create',
+      target: body?.mapId,
+      detail: { branch: body?.branch, versionDigest: body?.versionDigest },
+    }),
+  },
+  'POST maps/sessions': {
+    permission: 'view',
+    handler: ({ actor, body }) => ({
+      id: writeRequest(inboxDir(), actor, { ...body, kind: 'sessions' }),
+    }),
+    audit: (body) => ({ action: 'map-sessions', target: null, detail: { offset: body?.offset } }),
+  },
+  'POST maps/commit': {
+    permission: 'map-edit',
+    handler: async ({ actor, store, body }) => {
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId),
+        { copy, branch } = selectedMapBranch(catalog, entry)
+      if (
+        body?.branch !== branch.name ||
+        body?.workingCopyId !== copy.id ||
+        body?.expectedBranchHead !== branch.versionDigest
+      )
+        throw fail(409, 'Ветка или рабочая копия изменилась. Обновите историю перед коммитом.')
+      return {
+        id: writeRequest(
+          inboxDir(),
+          actor,
+          { ...body, kind: 'commit' },
+          new Set(catalog.maps.map((map) => map.mapId)),
+        ),
+      }
+    },
+    audit: (body) => ({
+      action: 'map-commit',
+      target: body?.mapId,
+      detail: {
+        branch: body?.branch,
+        expectedBranchHead: body?.expectedBranchHead,
+        note: body?.note,
+      },
+    }),
+  },
+  'POST maps/compare': {
+    permission: 'map-edit',
+    handler: async ({ actor, store, body }) => {
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId)
+      if (
+        ![body?.before, body?.after].every((value) =>
+          entry.versions.some((version) => version.versionDigest === value),
+        )
+      )
+        throw bad('Обе версии должны принадлежать выбранной карте.')
+      return {
+        id: writeRequest(
+          inboxDir(),
+          actor,
+          { ...body, kind: 'compare' },
+          new Set(catalog.maps.map((map) => map.mapId)),
+        ),
+      }
+    },
+    audit: (body) => ({
+      action: 'map-compare',
+      target: body?.mapId,
+      detail: { before: body?.before, after: body?.after },
+    }),
+  },
+  'POST maps/merge-preview': {
+    maxBody: 8 * 1024 * 1024,
+    permission: 'map-edit',
+    handler: async ({ actor, store, body }) => {
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId)
+      if (!entry.versions.some((version) => version.versionDigest === body?.versionDigest))
+        throw bad('Исходная версия не принадлежит этой карте.')
+      return {
+        id: writeRequest(
+          inboxDir(),
+          actor,
+          { ...body, kind: 'merge-preview', expectedHead: expectedMapHead(body, entry) },
+          new Set(catalog.maps.map((map) => map.mapId)),
+        ),
+      }
+    },
+    audit: (body) => ({
+      action: 'map-merge-preview',
+      target: body?.mapId,
+      detail: { versionDigest: body?.versionDigest, expectedHead: body?.expectedHead },
+    }),
   },
   'GET candidates/download': {
     permission: 'workshop',
@@ -1250,13 +1655,17 @@ const routes: Record<string, Route> = {
     },
   },
   'POST candidates/create': {
-    permission: 'workshop',
-    handler: ({ actor, body }) => {
-      const catalog = requiredMapCatalog()
-      const entry = catalog.maps.find((map) => map.mapId === body?.mapId)
-      if (!entry) throw bad('Неизвестная карта.')
-      if (!catalog.session || !catalog.session.maps?.includes(entry.mapId))
-        throw fail(409, 'Для снимка карты нужна выбранная рабочая копия в действующей мастерской.')
+    permission: 'map-edit',
+    handler: async ({ actor, store, body }) => {
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId),
+        { copy, branch } = selectedMapBranch(catalog, entry)
+      if (
+        (body.branch !== undefined && body.branch !== branch.name) ||
+        (body.expectedBranchHead !== undefined && body.expectedBranchHead !== branch.versionDigest)
+      )
+        throw fail(409, 'Ветка уже изменилась. Обновите историю перед отправкой на проверку.')
+      if (branch.versionDigest === entry.head?.versionDigest)
+        throw fail(409, 'Сначала зафиксируйте изменения в ветке: её коммит совпадает с main.')
       return {
         id: writeRequest(
           inboxDir(),
@@ -1264,7 +1673,9 @@ const routes: Record<string, Route> = {
           {
             kind: 'candidate',
             mapId: entry.mapId,
-            workingCopyId: catalog.session.id,
+            workingCopyId: copy.id,
+            branch: branch.name,
+            expectedBranchHead: branch.versionDigest,
           },
           new Set(catalog.maps.map((map) => map.mapId)),
         ),
@@ -1273,18 +1684,31 @@ const routes: Record<string, Route> = {
     audit: (body) => ({ action: 'workshop-candidate', target: body?.mapId ?? null }),
   },
   'POST candidates/publish': {
+    maxBody: 8 * 1024 * 1024,
     permission: 'workshop',
     handler: ({ actor, body }) => {
       const candidate = existingCandidate(body?.candidateId),
         catalog = requiredMapCatalog()
       const entry = catalog.maps.find((map) => map.mapId === candidate?.mapId)
       if (!candidate || !entry) throw fail(404, 'Кандидат или карта не найдены.')
+      const expectedHead = expectedMapHead(body, entry)
+      if (
+        candidate.sourceBranch !== undefined &&
+        (body.force === true || candidate.targetHead !== expectedHead)
+      )
+        throw fail(
+          body.force === true ? 400 : 409,
+          body.force === true
+            ? 'Конфликты слияния требуют точного выбора main или версии на проверке.'
+            : 'Main изменилась после отправки. Нужна новая проверка из ветки.',
+        )
       return {
         id: writeRequest(inboxDir(), actor, {
           kind: 'publish',
           candidateId: body.candidateId,
           force: body.force,
-          expectedHead: expectedMapHead(body, entry),
+          expectedHead,
+          resolutions: body.resolutions,
         }),
       }
     },
@@ -1476,7 +1900,7 @@ const routes: Record<string, Route> = {
         maps !== null &&
         (!Array.isArray(maps) ||
           new Set(maps).size !== maps.length ||
-          !maps.every((id: unknown) => typeof id === 'string' && MAP_IDS.has(id)))
+          !maps.every((id: unknown) => typeof id === 'string' && workshopMapIds().has(id)))
       )
         throw bad('Некорректный список карт.')
       await store.setStaffMaps(uuid!, maps)
@@ -1503,7 +1927,7 @@ const routes: Record<string, Route> = {
     handler: async ({ actor, store, body }) => {
       const mapId = body?.mapId,
         uuids = body?.uuids
-      if (typeof mapId !== 'string' || !MAP_IDS.has(mapId)) throw bad('Неизвестная карта.')
+      if (typeof mapId !== 'string' || !workshopMapIds().has(mapId)) throw bad('Неизвестная карта.')
       const builders = (await store.staff()).filter((s) => s.role === 'builder')
       const ids = Array.isArray(uuids) ? uuids.map(playerId) : null
       if (
@@ -1514,7 +1938,7 @@ const routes: Record<string, Route> = {
         throw bad('Некорректный список строителей.')
       const changed = []
       for (const b of builders) {
-        const maps = withMapAccess(b.maps ?? null, mapId, ids.includes(b.uuid))
+        const maps = withMapAccess(b.maps ?? null, mapId, ids.includes(b.uuid), workshopMapIds())
         if (JSON.stringify(maps) === JSON.stringify(b.maps ?? null)) continue
         await store.setStaffMaps(b.uuid, maps)
         changed.push(b.name)
@@ -1656,21 +2080,20 @@ export async function handleWorkshopSubmit(
   let error: string | null = null,
     id: string | null = null
   try {
-    const catalog = requiredMapCatalog()
-    if (!catalog.maps.some((entry) => entry.mapId === mapId)) throw bad('Неизвестная карта.')
-    const builds =
-      role !== null && (role !== 'builder' || row?.maps == null || row.maps.includes(mapId))
-    if (!builds) throw fail(403, 'Нет права строить на этой карте.')
-    if (
-      !catalog.session ||
-      !catalog.session.maps?.includes(mapId) ||
-      body.workingCopyId !== catalog.session.id
-    )
+    const { catalog, entry } = await editableMap(actor, store, mapId),
+      { copy, branch } = selectedMapBranch(catalog, entry)
+    if (body.workingCopyId !== copy.id)
       throw fail(409, 'Рабочая копия карты уже изменилась. Вернитесь в действующую мастерскую.')
     id = writeRequest(
       inboxDir(),
       actor,
-      { kind: 'candidate', mapId, workingCopyId: catalog.session.id },
+      {
+        kind: 'candidate',
+        mapId,
+        workingCopyId: copy.id,
+        branch: branch.name,
+        expectedBranchHead: branch.versionDigest,
+      },
       new Set(catalog.maps.map((entry) => entry.mapId)),
     )
     return Response.json({ id }, { headers: noStore })

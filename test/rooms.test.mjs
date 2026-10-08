@@ -125,6 +125,22 @@ test('parseRooms passes only a release-tag build through', () => {
 test('gate values fail closed with a bounded message', async () => {
   const { maintenanceFrom, readGate, maintenanceMessage } = await import('../src/lib/rooms.ts')
   assert.equal(maintenanceFrom({ mode: 'game', message: 'x', since: 1 }), null)
+  assert.equal(
+    maintenanceFrom({
+      mode: 'game',
+      workshop: { mode: 'maintenance', message: 'Мастерская перезапускается' },
+    }),
+    null,
+    'Workshop unavailability never closes Game',
+  )
+  assert.deepEqual(
+    maintenanceFrom({
+      mode: 'maintenance',
+      workshop: { mode: 'workshop', message: '' },
+    }),
+    { message: maintenanceMessage, since: null },
+    'Workshop availability cannot reopen Game',
+  )
   assert.deepEqual(
     maintenanceFrom({ mode: 'workshop', message: '  Карта  ', since: 5, extra: 1 }),
     { message: 'Карта', since: 5 },
