@@ -1,17 +1,17 @@
 ---
 import Site from '../layouts/Site.astro'
-import SectionRule from '../components/SectionRule.astro'
 Astro.response.headers.set('Cache-Control', 'no-store')
 ---
 
 <Site title="Панель управления — Blockfield" noindex>
   <main id="content" class="page-main admin-main">
-    <div class="top">
-      <SectionRule label="Панель" code="CONSOLE" />
-      <h1>Сервер Blockfield</h1>
-      <p id="whoami" role="status">
-        Проверяем доступ…
-      </p>
+    <div class="console-head">
+      <div>
+        <h1>Панель управления</h1>
+        <p id="whoami" class="whoami" role="status">
+          Проверяем доступ…
+        </p>
+      </div>
     </div>
     <nav id="tabs" class="tabs" aria-label="Разделы панели" hidden></nav>
 
@@ -34,71 +34,77 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           <p id="server-detail" class="muted"></p>
         </div>
       </div>
-      <div class="cards">
-        <article class="card" data-perm="mode" aria-labelledby="mode-title">
+      <div class="panel" data-perm="mode" aria-labelledby="mode-title">
+        <div class="stack-head">
           <h3 id="mode-title">Режим сервера</h3>
           <p class="muted">Кто сейчас может зайти на сервер. Переключение перезапускает игру.</p>
-          <p class="form-status" id="mode-progress" role="status"></p>
-          <div id="mode-options" class="options"></div>
-          <p class="form-status" id="mode-status" role="status"></p>
-        </article>
-        <article class="card" data-perm="message" aria-labelledby="message-title">
+        </div>
+        <p class="form-status" id="mode-progress" role="status"></p>
+        <div id="mode-options" class="options"></div>
+        <p class="form-status" id="mode-status" role="status"></p>
+      </div>
+      <div class="panel" data-perm="message" aria-labelledby="message-title">
+        <div class="stack-head">
           <h3 id="message-title">Сообщение для игроков</h3>
           <p class="muted">Что игроки увидят при попытке зайти, пока сервер закрыт.</p>
-          <form id="message-form" class="form-grid">
-            <label for="message">Текст сообщения</label>
-            <textarea
-              id="message"
-              name="message"
-              maxlength="200"
-              rows="3"
-              required
-              aria-describedby="message-hint"
-            ></textarea>
-            <small id="message-hint">
-              Например: «Обновляем карты, вернёмся к 20:00». До 200 символов.
-            </small>
+        </div>
+        <form id="message-form" class="form-stack">
+          <label for="message">Текст сообщения</label>
+          <textarea
+            id="message"
+            name="message"
+            maxlength="200"
+            rows="3"
+            required
+            aria-describedby="message-hint"
+          ></textarea>
+          <small id="message-hint">
+            Например: «Обновляем карты, вернёмся к 20:00». До 200 символов.
+          </small>
+          <div class="actions">
             <button class="primary" type="submit">
               Сохранить сообщение
             </button>
-            <p class="form-status" role="status"></p>
-          </form>
-        </article>
-        <article class="card" data-perm="moderate" aria-labelledby="quick-title">
+          </div>
+          <p class="form-status" role="status"></p>
+        </form>
+      </div>
+      <div class="panel" data-perm="moderate" aria-labelledby="quick-title">
+        <div class="stack-head">
           <h3 id="quick-title">Быстрые действия</h3>
-          <div class="quick-group">
-            <h4 id="range-title">Полигон</h4>
-            <p class="muted">Площадка в лобби, где пристреливают оружие.</p>
-            <div class="actions">
-              <button type="button" data-range="open">
-                Открыть
-              </button>
-              <button type="button" data-range="close">
-                Закрыть
-              </button>
-              <button type="button" data-range="reset">
-                Сбросить
-              </button>
-            </div>
-            <p class="form-status" id="range-status" role="status"></p>
+        </div>
+        <div class="quick-group">
+          <h4 id="range-title">Полигон</h4>
+          <p class="muted">Площадка в лобби, где пристреливают оружие.</p>
+          <div class="actions">
+            <button type="button" data-range="open">
+              Открыть
+            </button>
+            <button type="button" data-range="close">
+              Закрыть
+            </button>
+            <button type="button" data-range="reset">
+              Сбросить
+            </button>
           </div>
-          <div class="quick-group quick-group--warn" data-perm="maintenance">
-            <h4 id="maint-title">Техработы и аварии</h4>
-            <p class="muted">
-              Если сервер нужно освободить прямо сейчас. Обычно хватает мастерской: она дождётся
-              конца матчей сама.
-            </p>
-            <div class="actions">
-              <button type="button" id="drain">
-                Не начинать новые матчи
-              </button>
-              <button type="button" id="interrupt" class="danger">
-                Прервать все матчи
-              </button>
-            </div>
-            <p class="form-status" id="maint-status" role="status"></p>
+          <p class="form-status" id="range-status" role="status"></p>
+        </div>
+        <div class="quick-group quick-group--warn" data-perm="maintenance">
+          <h4 id="maint-title">Техработы и аварии</h4>
+          <p class="muted">
+            Если сервер нужно освободить прямо сейчас. Обычно хватает мастерской: она дождётся конца
+            матчей сама.
+          </p>
+          <div class="actions">
+            <button type="button" id="drain">
+              Не начинать новые матчи
+            </button>
+            <button type="button" id="interrupt" class="danger">
+              Прервать все матчи
+            </button>
           </div>
-        </article>
+          <p class="form-status" id="maint-status" role="status"></p>
+        </div>
       </div>
     </section>
 
@@ -112,8 +118,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       <h2 id="players-title" tabindex="-1">
         Игроки
       </h2>
-      <article class="card" aria-labelledby="online-title">
-        <div class="card-head">
+      <div class="panel" aria-labelledby="online-title">
+        <div class="stack-head stack-head--row">
           <h3 id="online-title">Сейчас на сервере</h3>
           <button type="button" id="online-refresh" class="small">
             Обновить
@@ -123,59 +129,65 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           Загружаем список…
         </p>
         <ul id="online-list" class="rows"></ul>
-      </article>
-      <div class="cards">
-        <article class="card" aria-labelledby="say-title">
+      </div>
+      <div class="panel" aria-labelledby="say-title">
+        <div class="stack-head">
           <h3 id="say-title">Объявление всем</h3>
           <p class="muted">Сообщение сразу появится в чате у всех, кто сейчас на сервере.</p>
-          <form id="say-form" class="form-grid">
-            <label for="say-text">Текст объявления</label>
-            <input id="say-text" name="text" maxlength="120" required autocomplete="off" />
+        </div>
+        <form id="say-form" class="form-stack">
+          <label for="say-text">Текст объявления</label>
+          <input id="say-text" name="text" maxlength="120" required autocomplete="off" />
+          <div class="actions">
             <button class="primary" type="submit">
               Отправить всем
             </button>
-            <p class="form-status" role="status"></p>
-          </form>
-        </article>
-        <article class="card" aria-labelledby="byname-title">
+          </div>
+          <p class="form-status" role="status"></p>
+        </form>
+      </div>
+      <div class="panel" aria-labelledby="byname-title">
+        <div class="stack-head">
           <h3 id="byname-title">Найти по никнейму</h3>
           <p class="muted" id="byname-about">
             Для тех, кого сейчас нет на сервере. Начните вводить никнейм — подскажем знакомые.
           </p>
-          <form id="byname-form" class="form-grid">
-            <label for="byname">Никнейм игрока</label>
-            <input
-              id="byname"
-              name="player"
-              required
-              pattern="[A-Za-z0-9_]{3,16}"
-              autocomplete="off"
-              aria-describedby="byname-hint"
-            />
-            <small id="byname-hint">Точно как в игре: латинские буквы, цифры и _.</small>
-            <div class="actions">
-              <button type="submit" value="kick">
-                Выгнать
-              </button>
-              <button type="submit" value="ban" data-perm="ban" class="danger">
-                Забанить
-              </button>
-              <button type="submit" value="pardon" data-perm="ban">
-                Разбанить
-              </button>
-            </div>
-            <p class="form-status" role="status"></p>
-          </form>
-        </article>
+        </div>
+        <form id="byname-form" class="form-stack">
+          <label for="byname">Никнейм игрока</label>
+          <input
+            id="byname"
+            name="player"
+            required
+            pattern="[A-Za-z0-9_]{3,16}"
+            autocomplete="off"
+            aria-describedby="byname-hint"
+          />
+          <small id="byname-hint">Точно как в игре: латинские буквы, цифры и _.</small>
+          <div class="actions">
+            <button type="submit" value="kick">
+              Выгнать
+            </button>
+            <button type="submit" value="ban" data-perm="ban" class="danger">
+              Забанить
+            </button>
+            <button type="submit" value="pardon" data-perm="ban">
+              Разбанить
+            </button>
+          </div>
+          <p class="form-status" role="status"></p>
+        </form>
       </div>
-      <article class="card" data-perm="ban" aria-labelledby="bans-title">
-        <h3 id="bans-title">Забаненные игроки</h3>
-        <p class="muted">
-          Кого забанили отсюда. Если бан выдали прямо в игре, снимайте его в «Найти по никнейму».
-        </p>
+      <div class="panel" data-perm="ban" aria-labelledby="bans-title">
+        <div class="stack-head">
+          <h3 id="bans-title">Забаненные игроки</h3>
+          <p class="muted">
+            Кого забанили отсюда. Если бан выдали прямо в игре, снимайте его в «Найти по никнейму».
+          </p>
+        </div>
         <ul id="ban-list" class="rows"></ul>
         <p class="form-status" id="ban-status" role="status"></p>
-      </article>
+      </div>
     </section>
 
     <section id="matches" data-perm="view" data-tab="Матчи" hidden aria-labelledby="matches-title">
@@ -200,9 +212,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       <p id="settings-state" class="banner" role="status">
         Загружаем настройки…
       </p>
-      <form id="settings-form" class="form-grid">
-        <fieldset class="card">
-          <legend>Лобби</legend>
+      <form id="settings-form" class="form-stack">
+        <details class="panel settings-group" open>
+          <summary>Лобби</summary>
           <div class="fields">
             <div class="field">
               <label for="pvp">PvP в лобби</label>
@@ -213,17 +225,17 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             </div>
           </div>
           <div id="lobby-fields" class="fields"></div>
-        </fieldset>
-        <fieldset class="card">
-          <legend>Комнаты</legend>
+        </details>
+        <details class="panel settings-group" open>
+          <summary>Комнаты</summary>
           <div id="room-fields" class="fields"></div>
-        </fieldset>
-        <fieldset class="card">
-          <legend>Каждый сам за себя</legend>
+        </details>
+        <details class="panel settings-group" open>
+          <summary>Каждый сам за себя</summary>
           <div id="deathmatch-fields" class="fields"></div>
-        </fieldset>
-        <fieldset class="card">
-          <legend>Стоимость высадки</legend>
+        </details>
+        <details class="panel settings-group" open>
+          <summary>Стоимость высадки</summary>
           <small class="muted">
             Боевые кредиты (БК) зарабатываются в бою и сбрасываются в конце матча. Цена списывается
             за каждую высадку. Изменения действуют со следующей высадки, включая текущие матчи. 0 —
@@ -233,14 +245,14 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           <small class="muted">
             Штурмовик и марксман всегда бесплатны. Численность команды не закрывает сильные классы.
           </small>
-        </fieldset>
-        <fieldset class="card">
-          <legend>Аварийное отключение классов</legend>
+        </details>
+        <details class="panel settings-group" open>
+          <summary>Аварийное отключение классов</summary>
           <small class="muted">Кто уже играет этим классом, доиграет ещё три минуты.</small>
           <div id="class-list" class="checks"></div>
-        </fieldset>
-        <fieldset class="card">
-          <legend>Ограничения паркура</legend>
+        </details>
+        <details class="panel settings-group">
+          <summary>Ограничения паркура</summary>
           <small class="muted">
             Какие действия паркура разрешены игрокам. Выключено — сервер сам решает по своему
             базовому файлу.
@@ -250,9 +262,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             Задать список действий на сайте
           </label>
           <div id="parcool-list" class="checks"></div>
-        </fieldset>
-        <fieldset class="card">
-          <legend>Баланс матчей</legend>
+        </details>
+        <details class="panel settings-group">
+          <summary>Баланс матчей</summary>
           <small class="muted">Новые значения подхватит следующий матч.</small>
           <div class="scope">
             <label for="scope">Для каких матчей</label>
@@ -260,50 +272,61 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             <small id="scope-hint"></small>
           </div>
           <div id="balance-fields"></div>
-        </fieldset>
+        </details>
+        <div class="savebar">
+          <button class="primary" type="submit" id="settings-save">
+            Сохранить и применить
+          </button>
+          <p class="savebar__meta" id="settings-meta" role="status"></p>
+          <p class="form-status" role="status"></p>
+        </div>
+      </form>
+    </section>
+
+    <section
+      id="weapons"
+      data-perm="settings"
+      data-tab="Оружие"
+      hidden
+      aria-labelledby="weapons-title"
+    >
+      <h2 id="weapons-title" tabindex="-1">
+        Оружие
+      </h2>
+      <p class="muted">
+        Изменения применяются к игрокам онлайн без перезагрузки сервера. Анимации, модели, звуки и
+        код скриптов остаются из клиентского пака.
+      </p>
+      <p id="gun-balance-status" class="form-status" role="status">
+        Получаем каталог оружия…
+      </p>
+      <form id="gun-balance-form" class="form-stack" hidden>
+        <div class="scope">
+          <label for="gun-search">Найти оружие</label>
+          <input id="gun-search" type="search" placeholder="Название, ID или тип оружия" />
+          <label for="gun-select">Оружие</label>
+          <select id="gun-select"></select>
+        </div>
+        <p id="gun-about" class="muted"></p>
+        <p id="gun-warnings" class="form-status"></p>
+        <p class="muted">
+          Отметьте поле, чтобы изменить его. Снятая отметка возвращает значение ганпака. Составные
+          поля редактируются как JSON; доступные вложенные поля указаны под ними.
+        </p>
+        <div id="gun-fields"></div>
         <div class="savebar">
           <button class="primary" type="submit">
-            Сохранить и применить
+            Применить баланс оружия
+          </button>
+          <button id="gun-reset" type="button">
+            Сбросить это оружие
+          </button>
+          <button id="gun-refresh" type="button">
+            Обновить каталог
           </button>
           <p class="form-status" role="status"></p>
         </div>
       </form>
-      <article class="card" aria-labelledby="gun-balance-title">
-        <h3 id="gun-balance-title">Баланс оружия</h3>
-        <p class="muted">
-          Изменения применяются к игрокам онлайн без перезагрузки сервера. Анимации, модели, звуки и
-          код скриптов остаются из клиентского пака.
-        </p>
-        <p id="gun-balance-status" class="form-status" role="status">
-          Получаем каталог оружия…
-        </p>
-        <form id="gun-balance-form" hidden>
-          <div class="scope">
-            <label for="gun-search">Найти оружие</label>
-            <input id="gun-search" type="search" placeholder="Название, ID или тип оружия" />
-            <label for="gun-select">Оружие</label>
-            <select id="gun-select"></select>
-          </div>
-          <p id="gun-about" class="muted"></p>
-          <p id="gun-warnings" class="form-status"></p>
-          <p class="muted">
-            Отметьте поле, чтобы изменить его. Снятая отметка возвращает значение ганпака. Составные
-            поля редактируются как JSON; доступные вложенные поля указаны под ними.
-          </p>
-          <div id="gun-fields"></div>
-          <div class="actions">
-            <button class="primary" type="submit">
-              Применить баланс оружия
-            </button>
-            <button id="gun-reset" type="button">
-              Сбросить это оружие
-            </button>
-            <button id="gun-refresh" type="button">
-              Обновить каталог
-            </button>
-          </div>
-        </form>
-      </article>
     </section>
 
     <section id="team" data-perm="roles" data-tab="Команда" hidden aria-labelledby="team-title">
@@ -316,38 +339,40 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       <dl id="role-legend" class="legend"></dl>
       <ul id="staff-list" class="rows"></ul>
       <p class="form-status" id="staff-status" role="status"></p>
-      <div class="cards">
-        <article class="card" aria-labelledby="grant-title">
+      <div class="panel" aria-labelledby="grant-title">
+        <div class="stack-head">
           <h3 id="grant-title">Добавить в команду</h3>
-          <form id="grant-form" class="form-grid">
-            <label for="grant-name">Никнейм игрока</label>
-            <input
-              id="grant-name"
-              name="nickname"
-              required
-              pattern="[A-Za-z0-9_]{3,16}"
-              autocomplete="off"
-              aria-describedby="grant-hint"
-            />
-            <small id="grant-hint">
-              Начните вводить — подскажем тех, кто уже играл. Нужен аккаунт Blockfield.
-            </small>
-            <fieldset class="plain">
-              <legend>Роль</legend>
-              <div id="grant-roles" class="radios"></div>
-            </fieldset>
+        </div>
+        <form id="grant-form" class="form-stack">
+          <label for="grant-name">Никнейм игрока</label>
+          <input
+            id="grant-name"
+            name="nickname"
+            required
+            pattern="[A-Za-z0-9_]{3,16}"
+            autocomplete="off"
+            aria-describedby="grant-hint"
+          />
+          <small id="grant-hint">
+            Начните вводить — подскажем тех, кто уже играл. Нужен аккаунт Blockfield.
+          </small>
+          <fieldset class="plain">
+            <legend>Роль</legend>
+            <div id="grant-roles" class="radios"></div>
+          </fieldset>
+          <div class="actions">
             <button class="primary" type="submit">
               Добавить в команду
             </button>
-            <p class="form-status" role="status"></p>
-          </form>
-        </article>
+          </div>
+          <p class="form-status" role="status"></p>
+        </form>
       </div>
     </section>
 
     <section
       id="workshop"
-      data-perm="workshop"
+      data-perm="view"
       data-tab="Мастерская"
       hidden
       aria-labelledby="workshop-title"
@@ -359,35 +384,44 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         Кто какие карты правит. Модераторы и администраторы правят все карты, строителям доступ
         выдаётся по картам. В игре строители переходят между картами планшетом (M).
       </p>
-      <article class="card" aria-labelledby="candidates-title">
-        <h3 id="candidates-title">Карты на проверке</h3>
-        <p class="muted">
-          Строитель отправляет карту из планшета («Разметка» → «На проверку») или администратор
-          кнопкой у карты ниже. Принятие выбирает точную версию карты. Уже начатые матчи сохраняют
-          свою копию; следующие используют выбранную версию. Лобби применяются отдельно при
-          безопасной смене серверного мира.
-        </p>
+      <div class="stack" aria-labelledby="candidates-title">
+        <div class="stack-head">
+          <h3 id="candidates-title">Карты на проверке</h3>
+          <p class="muted">
+            Строитель отправляет карту из планшета («Разметка» → «На проверку») или администратор
+            кнопкой у карты ниже. Принятие выбирает точную версию карты. Уже начатые матчи сохраняют
+            свою копию; следующие используют выбранную версию. Лобби применяются отдельно при
+            безопасной смене серверного мира.
+          </p>
+        </div>
         <p class="form-status" id="candidates-status" role="status"></p>
         <ul id="candidate-list" class="rows"></ul>
-      </article>
-      <article class="card" aria-labelledby="map-history-title">
-        <h3 id="map-history-title">Архив карт</h3>
-        <p class="muted">
-          У каждой карты своя история и рабочая копия сеанса. Можно выбрать любую сохранённую
-          версию, включая игровое лобби и лобби прокси. Архив сохраняется при откате.
-        </p>
-        <button id="maps-refresh" class="small" type="button">
-          Обновить историю
-        </button>
+      </div>
+      <div class="stack" aria-labelledby="map-history-title">
+        <div class="stack-head">
+          <h3 id="map-history-title">Архив карт</h3>
+          <p class="muted">
+            У каждой карты своя история и рабочая копия сеанса. Можно выбрать любую сохранённую
+            версию, включая игровое лобби и лобби прокси. Архив сохраняется при откате.
+          </p>
+          <button id="maps-refresh" class="small" type="button">
+            Обновить историю
+          </button>
+        </div>
         <p id="map-history-status" class="form-status" role="status">
           Получаем историю…
         </p>
         <div id="map-history"></div>
-      </article>
-      <p class="form-status" id="map-access-status" role="status"></p>
-      <ul id="map-access" class="rows"></ul>
-      <div class="cards">
-        <article class="card" data-perm="workshop" aria-labelledby="ws-title">
+      </div>
+      <div class="stack" data-perm="workshop" aria-labelledby="map-access-title">
+        <div class="stack-head">
+          <h3 id="map-access-title">Кто строит</h3>
+        </div>
+        <p class="form-status" id="map-access-status" role="status"></p>
+        <ul id="map-access" class="rows"></ul>
+      </div>
+      <div class="stack" data-perm="workshop" aria-labelledby="ws-title">
+        <div class="stack-head">
           <h3 id="ws-title">Доступ в мастерскую</h3>
           <p id="workshop-state" class="muted">
             Проверяем список…
@@ -395,8 +429,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           <button type="button" id="sync">
             Обновить доступ
           </button>
-          <p class="form-status" id="sync-status" role="status"></p>
-        </article>
+        </div>
+        <p class="form-status" id="sync-status" role="status"></p>
       </div>
     </section>
 
@@ -442,7 +476,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           Игровой сервер отправляет результаты матчей с секретным ключом. Заведите ключ, когда
           подключаете новый сервер, и отзовите, если он мог утечь. Ключ показывается один раз.
         </p>
-        <form id="key-form" class="form-grid">
+        <form id="key-form" class="form-stack">
           <label for="key-server">ID игрового сервера</label>
           <input
             id="key-server"
@@ -491,8 +525,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           <p id="health-detail" class="muted"></p>
         </div>
       </div>
-      <article class="card" aria-labelledby="live-title">
-        <div class="card-head">
+      <div class="panel" aria-labelledby="live-title">
+        <div class="stack-head stack-head--row">
           <h3 id="live-title">Тики прямо сейчас</h3>
           <button type="button" id="live-check" class="small">
             Проверить
@@ -501,7 +535,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         <p class="muted">Последние 100 тиков по данным самого сервера. Норма — до 50 мс на тик.</p>
         <p class="form-status" id="live-status" role="status"></p>
         <dl id="live-values" class="legend" hidden></dl>
-      </article>
+      </div>
       <h3>Последние сутки по часам</h3>
       <ul id="hour-list" class="log"></ul>
       <h3 id="events-title">Фризы и ошибки</h3>
@@ -545,7 +579,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       <p class="muted">
         Любая команда игрового сервера, как в его консоли. Каждая команда попадает в журнал.
       </p>
-      <form id="console-form" class="form-grid">
+      <form id="console-form" class="form-stack">
         <label for="console-input">Команда</label>
         <input
           id="console-input"
@@ -583,7 +617,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
   </main>
 
   <dialog id="dialog" aria-labelledby="dialog-title" aria-describedby="dialog-text">
-    <form method="dialog" class="form-grid">
+    <form method="dialog" class="form-stack">
       <h2 id="dialog-title"></h2>
       <p id="dialog-text"></p>
       <div id="dialog-fields"></div>
@@ -597,45 +631,135 @@ Astro.response.headers.set('Cache-Control', 'no-store')
   </dialog>
 
   <style is:global>
-    /* Console container: wider than the 1200px reading-page default so staff cards pack instead of running down a mid-screen column on a wide monitor. */
+    /* This global stylesheet stays inside the admin surface, including comma-list selectors. */
     .admin-main {
+      /* Console container: wider than the 1200px reading-page default so operational rows use a wide monitor. */
       max-width: 1320px;
     }
-    .top {
-      display: grid;
-      gap: 10px;
+    /* Compact operational header: identity first, active workspace beside it. */
+    .admin-main .console-head {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 32px;
+      align-items: baseline;
+      justify-content: space-between;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--line);
     }
-    h2 {
-      margin: 0 0 4px;
+    .admin-main .console-head h1 {
+      font-size: clamp(24px, 3.2vw, 34px);
     }
-    h3 {
-      margin: 0;
-    }
-    #whoami {
+    .admin-main .whoami {
       color: var(--sand);
+      margin-top: 8px;
     }
-    #whoami strong {
+    .admin-main .whoami strong {
       color: var(--cream);
     }
-    section {
+    .admin-main h2 {
+      margin: 0 0 4px;
+    }
+    .admin-main h3 {
+      margin: 0;
+    }
+    .admin-main section {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      gap: 16px;
+      gap: 0;
       min-width: 0;
       scroll-margin-top: 80px;
     }
+    /* Operational sections: rows divided by seams, not equal card grids. */
+    .admin-main section > * + * {
+      border-top: 1px solid var(--line);
+    }
+    .admin-main section > h2,
+    .admin-main section > .muted:first-of-type {
+      border-top: 0;
+    }
+    .admin-main section > .panel,
+    .admin-main section > .stack,
+    .admin-main section > .hero,
+    .admin-main section > .banner {
+      padding-block: 20px;
+    }
+    .admin-main section > h2 {
+      padding-top: 4px;
+    }
+    .admin-main .panel,
+    .admin-main .stack {
+      display: grid;
+      gap: 12px;
+      align-content: start;
+      min-width: 0;
+      margin: 0;
+    }
+    .admin-main .stack-head {
+      display: grid;
+      gap: 4px;
+      max-width: 78ch;
+    }
+    .admin-main .stack-head--row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      max-width: none;
+    }
+    .admin-main .form-stack {
+      display: grid;
+      gap: 12px;
+      align-content: start;
+      max-width: 720px;
+    }
+    .admin-main .form-stack .actions {
+      max-width: none;
+    }
+    .admin-main #console-form,
+    .admin-main #gun-balance-form,
+    .admin-main #settings-form {
+      max-width: none;
+    }
+    .admin-main #settings-form .settings-group,
+    .admin-main #settings-form .savebar,
+    .admin-main #console-form > *,
+    .admin-main #gun-balance-form > * {
+      max-width: 720px;
+    }
+    .admin-main #settings-form .settings-group {
+      width: 100%;
+    }
 
-    .tabs {
+    /* Grouped persistent navigation: three labelled groups share one list, CSS changes its orientation. */
+    .admin-main .tabs {
       position: sticky;
       top: 0;
       z-index: 2;
-      background: rgb(7 6 4 / 0.95);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 20px;
+      background: color-mix(in srgb, var(--bg) 95%, transparent);
       border-bottom: 1px solid var(--line);
       padding: 8px 0;
     }
+    .admin-main .tabs__group {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+    }
+    .admin-main .tabs__label {
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      margin-right: 2px;
+    }
 
     /* Карточка состояния сервера: тон несёт точка и слово, а не толстая полоса сбоку. */
-    .hero {
+    .admin-main .hero {
       display: flex;
       gap: 14px;
       align-items: flex-start;
@@ -643,11 +767,11 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       border: 1px solid var(--line);
       padding: 18px 20px;
     }
-    .hero .headline {
+    .admin-main .hero .headline {
       font-size: clamp(19px, 3vw, 23px);
       font-weight: 700;
     }
-    .dot {
+    .admin-main .dot {
       flex: none;
       width: 12px;
       height: 12px;
@@ -655,53 +779,46 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       margin-top: 7px;
       background: var(--muted);
     }
-    [data-tone='ok'] {
+    .admin-main [data-tone='ok'] {
       border-color: rgb(130 214 107 / 0.45);
     }
-    [data-tone='ok'] .dot {
+    .admin-main [data-tone='ok'] .dot {
       background: var(--ok);
       box-shadow: 0 0 0 4px rgb(130 214 107 / 0.15);
     }
-    [data-tone='warn'] {
+    .admin-main [data-tone='warn'] {
       border-color: rgb(245 165 36 / 0.45);
     }
-    [data-tone='warn'] .dot {
+    .admin-main [data-tone='warn'] .dot {
       background: var(--amber);
     }
-    [data-tone='bad'] {
+    .admin-main [data-tone='bad'] {
       border-color: rgb(255 157 153 / 0.45);
     }
-    [data-tone='bad'] .dot {
+    .admin-main [data-tone='bad'] .dot {
       background: var(--danger);
     }
 
-    .card.warn {
-      border-color: var(--line-warn);
-    }
-    .card-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      flex-wrap: wrap;
+    .admin-main .panel--warn {
+      border-top-color: var(--line-warn);
     }
     /* «Быстрые действия»: several small action groups share one card instead of each stretching a whole grid row for three buttons. */
-    .quick-group + .quick-group {
+    .admin-main .quick-group + .quick-group {
       padding-top: 12px;
       border-top: 1px solid var(--line);
     }
-    .quick-group--warn {
+    .admin-main .quick-group--warn {
       border-top-color: var(--line-warn);
     }
-    .quick-group h4 {
+    .admin-main .quick-group h4 {
       margin: 0;
       font-size: 15px;
       font-weight: 700;
     }
-    fieldset.card {
+    .admin-main fieldset.settings-group {
       padding-top: 8px;
     }
-    legend {
+    .admin-main legend {
       font-size: 17px;
       font-weight: 700;
       text-transform: uppercase;
@@ -709,14 +826,14 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       padding: 0 6px;
       margin-left: -6px;
     }
-    fieldset.plain {
+    .admin-main fieldset.plain {
       border: 0;
       padding: 0;
       margin: 0;
       display: grid;
       gap: 8px;
     }
-    fieldset.plain legend {
+    .admin-main fieldset.plain legend {
       font-size: 15px;
       font-weight: 600;
       text-transform: none;
@@ -724,48 +841,48 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       margin-bottom: 8px;
     }
 
-    textarea {
+    .admin-main textarea {
       min-height: 88px;
     }
-    #gun-fields .disclosure {
+    .admin-main #gun-fields .disclosure {
       margin-bottom: 12px;
     }
-    #gun-fields input:not([type='checkbox']),
-    #gun-fields select,
-    #gun-fields textarea {
+    .admin-main #gun-fields input:not([type='checkbox']),
+    .admin-main #gun-fields select,
+    .admin-main #gun-fields textarea {
       width: 100%;
       margin-block: 8px;
     }
-    #gun-fields pre,
-    #gun-fields small,
-    #map-history small {
+    .admin-main #gun-fields pre,
+    .admin-main #gun-fields small,
+    .admin-main #map-history small {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
-    .row .actions select {
+    .admin-main .row .actions select {
       width: auto;
       min-width: 170px;
     }
 
-    .options {
+    .admin-main .options {
       display: grid;
       gap: 10px;
     }
-    .option {
+    .admin-main .option {
       border: 1px solid var(--line);
       padding: 14px;
       display: grid;
       gap: 8px;
     }
-    .option[data-current] {
+    .admin-main .option[data-current] {
       border-color: var(--ok);
       background: rgb(130 214 107 / 0.05);
     }
-    .option p {
+    .admin-main .option p {
       color: var(--sand);
       font-size: 15px;
     }
-    .option-head {
+    .admin-main .option-head {
       display: flex;
       justify-content: space-between;
       gap: 8px;
@@ -774,14 +891,14 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       font-weight: 700;
     }
 
-    .rows {
+    .admin-main .rows {
       list-style: none;
       margin: 0;
       padding: 0;
       display: grid;
       gap: 8px;
     }
-    .row {
+    .admin-main .row {
       background: var(--panel);
       border: 1px solid var(--line);
       padding: 12px 14px;
@@ -791,155 +908,152 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       align-items: center;
       justify-content: space-between;
     }
-    .card .row {
-      background: var(--bg-2);
-    }
-    .row-main {
+    .admin-main .row-main {
       display: grid;
       gap: 4px;
       min-width: 0;
       flex: 1 1 240px;
     }
-    .row-main strong {
+    .admin-main .row-main strong {
       overflow-wrap: anywhere;
     }
-    .row.voided {
+    .admin-main .row.voided {
       opacity: 0.75;
       border-style: dashed;
     }
     /* Eighteen short map rows pack into columns instead of one long full-width list. */
-    #map-access {
+    .admin-main #map-access {
       grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr));
     }
-    .empty {
+    .admin-main .empty {
       color: var(--muted);
       padding: 8px 0;
     }
-    .team-RED {
+    .admin-main .team-RED {
       color: var(--danger);
     }
-    .team-BLUE {
+    .admin-main .team-BLUE {
       color: var(--info);
     }
 
-    .room {
+    .admin-main .room {
       gap: 14px;
     }
-    .facts {
+    .admin-main .facts {
       display: grid;
       grid-template-columns: max-content 1fr;
       gap: 6px 16px;
       margin: 0;
     }
-    .facts dt {
+    .admin-main .facts dt {
       color: var(--sand);
     }
-    .facts dd {
+    .admin-main .facts dd {
       margin: 0;
       font-weight: 600;
       font-variant-numeric: tabular-nums;
     }
 
-    .banner {
+    .admin-main .banner {
       background: var(--panel);
       border: 1px solid var(--line);
       padding: 14px 16px;
     }
-    .banner.ok {
+    .admin-main .banner.ok {
       border-color: rgb(130 214 107 / 0.45);
       color: var(--cream);
     }
-    .banner.pending {
+    .admin-main .banner.pending {
       border-color: rgb(245 165 36 / 0.45);
       color: var(--cream);
     }
-    .banner.error {
+    .admin-main .banner.error {
       border-color: rgb(255 157 153 / 0.45);
       color: var(--cream);
     }
 
-    #settings-form {
+    .admin-main #settings-form {
       gap: 16px;
     }
     /* Поля пакуются в несколько колонок на широком экране, а не тянутся в одну узкую полосу. */
-    .fields {
+    .admin-main .fields {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
       align-items: start;
       gap: 10px 24px;
     }
-    .field {
+    .admin-main .field {
       display: grid;
       grid-template-columns: minmax(140px, 260px) minmax(0, 340px);
       align-items: center;
       gap: 4px 16px;
     }
-    .field small {
+    .admin-main .field small {
       grid-column: 2;
     }
-    .group {
+    .admin-main .group {
       display: grid;
       gap: 12px;
       padding-top: 16px;
       border-top: 1px solid var(--line);
     }
-    .group h4 {
+    .admin-main .group h4 {
       margin: 0;
       font-size: 15px;
       color: var(--amber);
       font-weight: 650;
     }
-    .switch,
-    .check,
-    .radio {
+    .admin-main .switch,
+    .admin-main .check,
+    .admin-main .radio {
       display: flex;
       gap: 10px;
       align-items: flex-start;
       font-weight: 600;
       cursor: pointer;
     }
-    .switch input,
-    .check input,
-    .radio input {
+    .admin-main .switch input,
+    .admin-main .check input,
+    .admin-main .radio input {
       margin-top: 2px;
     }
-    .checks {
+    .admin-main .checks {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
       gap: 10px;
     }
-    .check,
-    .radio {
+    .admin-main .check,
+    .admin-main .radio {
       border: 1px solid var(--line);
       padding: 12px;
     }
-    .radios {
+    .admin-main .radios {
       display: grid;
       gap: 8px;
     }
-    .radio:has(input:checked) {
+    .admin-main .radio:has(input:checked) {
       border-color: var(--amber);
     }
-    .radio span,
-    .check span {
+    .admin-main .radio span,
+    .admin-main .check span {
       display: grid;
       gap: 2px;
     }
-    .radio small,
-    .check small {
+    .admin-main .radio small,
+    .admin-main .check small {
       font-weight: 400;
     }
-    .scope {
+    .admin-main .scope {
       display: grid;
       gap: 6px;
       max-width: 420px;
     }
     /* Липкая полоса, чтобы «сохранить» не уезжало вверх на длинной форме. */
-    .savebar {
+    .admin-main .savebar {
       position: sticky;
       bottom: 0;
       z-index: 3;
-      background: rgb(7 6 4 / 0.95);
+      background: color-mix(in srgb, var(--bg) 95%, transparent);
       backdrop-filter: blur(4px);
       border-top: 1px solid var(--line);
       padding: 16px 0;
@@ -949,40 +1063,40 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       align-items: center;
     }
 
-    .legend {
+    .admin-main .legend {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
       gap: 10px;
       margin: 0;
     }
-    .legend div {
+    .admin-main .legend div {
       background: var(--panel);
       border: 1px solid var(--line);
       padding: 12px 14px;
     }
-    .legend dt {
+    .admin-main .legend dt {
       font-weight: 700;
     }
-    .legend dd {
+    .admin-main .legend dd {
       margin: 4px 0 0;
       color: var(--sand);
       font-size: 15px;
       line-height: 1.45;
     }
 
-    .pager {
+    .admin-main .pager {
       justify-content: space-between;
     }
-    .plain-list {
+    .admin-main .plain-list {
       margin: 0;
       padding-left: 20px;
       color: var(--sand);
       line-height: 1.7;
     }
-    .plain-list li::marker {
+    .admin-main .plain-list li::marker {
       color: var(--amber-dim);
     }
-    .secret {
+    .admin-main .secret {
       font-family: var(--mono);
       background: var(--panel-2);
       padding: 8px 10px;
@@ -990,40 +1104,40 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       color: var(--cream);
     }
 
-    .log {
+    .admin-main .log {
       list-style: none;
       margin: 0;
       padding: 0;
       display: grid;
     }
-    .log li {
+    .admin-main .log li {
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 4px 16px;
       padding: 12px 0;
       border-bottom: 1px solid var(--line);
     }
-    .log time {
+    .admin-main .log time {
       color: var(--muted);
       font-family: var(--mono);
       font-size: 13px;
       white-space: nowrap;
     }
-    .log li.failed .fail {
+    .admin-main .log li.failed .fail {
       color: var(--danger);
       font-weight: 600;
     }
-    .log .bad {
+    .admin-main .log .bad {
       color: var(--danger);
     }
-    .filters {
+    .admin-main .filters {
       display: flex;
       flex-wrap: wrap;
       gap: 12px 24px;
     }
     /* Server text (stack traces, console replies) keeps its own line breaks but never widens the page. */
-    .server-text,
-    .console-output {
+    .admin-main .server-text,
+    .admin-main .console-output {
       grid-column: 1 / -1;
       margin: 0;
       font-family: var(--mono);
@@ -1032,7 +1146,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       overflow-wrap: anywhere;
       color: var(--sand);
     }
-    .console-output {
+    .admin-main .console-output {
       background: var(--panel);
       border: 1px solid var(--line);
       padding: 12px 14px;
@@ -1040,48 +1154,117 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       overflow-y: auto;
       color: var(--cream);
     }
-    .console-output:empty {
+    .admin-main .console-output:empty {
       display: none;
     }
-    .console-output .cmd {
+    .admin-main .console-output .cmd {
       color: var(--amber);
     }
-    .console-output .bad {
+    .admin-main .console-output .bad {
       color: var(--danger);
     }
 
-    dialog h2 {
+    #dialog h2 {
       font-size: 22px;
     }
-    #dialog-fields {
+    #dialog #dialog-fields {
       display: grid;
       gap: 10px;
     }
-    #dialog-fields:empty {
+    #dialog #dialog-fields:empty {
       display: none;
     }
 
+    /* Browser surfaces the global stylesheet leaves at defaults: theme them from the palette. */
+    .admin-main ::selection {
+      background: var(--amber);
+      color: var(--bg);
+    }
+    .admin-main table {
+      font-variant-numeric: tabular-nums;
+    }
+    .admin-main th {
+      font-variant-numeric: tabular-nums;
+    }
+    .admin-main td {
+      font-variant-numeric: tabular-nums;
+    }
+    /* Settings groups: native disclosure keeps long forms scannable without extra JS. */
+    .admin-main .settings-group {
+      border: 1px solid var(--line);
+      padding: 16px;
+      margin: 0;
+      min-width: 0;
+      display: grid;
+      gap: 12px;
+    }
+    .admin-main .settings-group > summary {
+      cursor: pointer;
+      font-size: 17px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: -0.01em;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+    }
+    .admin-main .settings-group > summary:focus-visible {
+      outline: 2px solid var(--amber);
+      outline-offset: 3px;
+    }
+    .admin-main .savebar__meta {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .admin-main .savebar__meta:empty {
+      display: none;
+    }
+    .admin-main #gun-fields .disclosure > summary {
+      min-height: 44px;
+    }
+
     @media (max-width: 600px) {
-      main {
+      .admin-main {
         padding-top: 24px;
-        gap: 20px;
       }
-      /* Скроллится горизонтально, а не переносится в два ряда — как задано в системе (.tabs). */
-      .tabs {
+      /* One nav list: wrap into labelled group rows instead of a second mobile DOM. */
+      .admin-main .tabs {
         position: static;
+        flex-direction: column;
+        align-items: stretch;
+        max-height: none;
+        overflow: visible;
       }
-      .log li {
+      .admin-main .tabs__group {
+        flex-wrap: wrap;
+      }
+      .admin-main .tabs__label {
+        flex: 1 1 100%;
+      }
+      .admin-main .log li {
         grid-template-columns: 1fr;
       }
-      .row > .actions {
+      .admin-main .row > .actions {
         width: 100%;
       }
-      .field {
+      .admin-main .field {
         grid-template-columns: 1fr;
         gap: 6px;
       }
-      .field small {
+      .admin-main .field small {
         grid-column: 1;
+      }
+      .admin-main .console-head {
+        gap: 4px;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .admin-main .tabs {
+        scroll-behavior: auto;
       }
     }
   </style>
@@ -1106,6 +1289,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     import { customSelect, customCombo } from '../lib/custom-select'
     import { switchView } from '../lib/switch-status'
     import { dangerousCommand } from '../lib/console'
+    import { NAV_GROUPS, resolveTab } from '../lib/admin-navigation'
     import type {
       GunBalanceCatalog,
       GunDefinition,
@@ -1221,6 +1405,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       if (!response.ok)
         throw Object.assign(new Error(friendly(data?.error, response.status)), {
           raw: data?.error ?? '',
+          status: response.status,
         })
       return data
     }
@@ -1270,7 +1455,11 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       try {
         const text = await action()
         if (text) say(line, text)
-        else line.textContent = ''
+        else {
+          // Some actions render a one-time key or other structured success feedback directly.
+          if (line.textContent === 'Выполняем…') line.textContent = ''
+          line.classList.replace('pending', 'ok')
+        }
       } catch (error) {
         say(line, (error as Error).message, 'error')
       } finally {
@@ -1338,18 +1527,27 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     /**
      * Controller requests are applied by the host within ~15 s; poll its result file for up to a minute.
      * `onError`, when given, sees the raw error text first and may handle it itself (return true) instead of the generic message.
+     * Each line tracks its own request id: a newer request on the same line supersedes the older poll, never the reverse.
      */
+    const followTokens = new WeakMap<HTMLElement, string>()
     async function follow(
       line: HTMLElement,
       id: string,
       done: string,
       onError?: (error: string) => Promise<boolean> | boolean,
     ) {
-      say(line, 'Запрос отправлен. Сервер применит его в течение 15 секунд…', 'pending')
+      followTokens.set(line, id)
+      say(
+        line,
+        `Запрос ${id.slice(0, 8)} отправлен. Сервер применит его в течение 15 секунд…`,
+        'pending',
+      )
       for (let i = 0; i < 30; i++) {
         await new Promise((r) => setTimeout(r, 2000))
+        if (followTokens.get(line) !== id) return
         const { result } = await api(`request?id=${id}`).catch(() => ({ result: null }))
         if (result) {
+          if (followTokens.get(line) !== id) return
           if (result.ok) say(line, done)
           else if (!(await onError?.(String(result.error))))
             say(
@@ -1363,6 +1561,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           return
         }
       }
+      if (followTokens.get(line) !== id) return
       say(
         line,
         'Сервер не ответил за минуту. Возможно, управляющая программа выключена — проверьте состояние позже.',
@@ -2493,6 +2692,20 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     async function loadSettings(waitStarted = 0, statusOnly = false) {
       const { settings, applied, balance: balanceRules } = await api('settings')
       rules = balanceRules
+      // A server revision poll must never replace an unsaved draft silently. The guard keys
+      // on the snapshot (not the revision): a confirmed 409 reload clears the snapshot first,
+      // so it skips the second prompt, and a draft at revision 0 is still covered.
+      if (!statusOnly && settingsSnapshot && settingsDirty()) {
+        if (
+          !(await ask({
+            title: 'Сбросить несохранённые изменения?',
+            text: 'Настройки на сервере обновились, а у вас есть несохранённые правки. Обновить форму — ваши правки будут потеряны.',
+            ok: 'Обновить форму',
+            danger: true,
+          }))
+        )
+          return
+      }
       if (!statusOnly) {
         settingsRevision = settings.revision ?? 0
         const form = $<HTMLFormElement>('#settings-form')
@@ -2598,10 +2811,12 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         balance = structuredClone(settings.campaignBalance ?? {})
         renderScopes()
         renderBalance()
+        settingsSnapshot = snapshotBody()
+        settingsMeta(false)
       }
 
       clearTimeout(settingsPoll)
-      if (statusOnly && (settings.revision ?? 0) !== settingsRevision) {
+      if (statusOnly && (settings.revision ?? 0) !== settingsRevision && !settingsDirty()) {
         settingsStatus(
           'Настройки изменены в другой сессии. Обновите страницу перед сохранением.',
           'error',
@@ -2652,14 +2867,18 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       if (short) say(line, short, tone)
       else line.textContent = ''
     }
-    $<HTMLFormElement>('#settings-form').addEventListener('submit', async (e) => {
-      e.preventDefault()
-      const form = e.currentTarget as HTMLFormElement,
-        save = form.querySelector<HTMLButtonElement>('.savebar button')!
+    // Snapshot of the last loaded server state, serialized the same way settingsBody serializes
+    // the form: an untouched form compares equal, so tab switches and polls never fake a dirty draft.
+    let settingsSnapshot = ''
+    // expectedRevision is compared separately, never as part of the dirty draft.
+    // collectBalance runs inside: b_* fields only land in `balance` on scope change or save,
+    // so dirty detection must fold the live inputs in before comparing.
+    const collectSettingsBody = (revision: number) => {
       collectBalance()
-      const value = (name: string) => (form.elements.namedItem(name) as HTMLInputElement).value
-      const body = settingsBody(
-        settingsRevision,
+      const form = $<HTMLFormElement>('#settings-form'),
+        value = (name: string) => (form.elements.namedItem(name) as HTMLInputElement).value
+      return settingsBody(
+        revision,
         {
           pvpEnabled: value('pvpEnabled'),
           classCosts: Object.fromEntries(
@@ -2685,14 +2904,80 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         },
         defaults,
       )
+    }
+    const snapshotBody = () => JSON.stringify(collectSettingsBody(0))
+    const settingsDirty = () => snapshotBody() !== settingsSnapshot
+    function settingsMeta(dirty: boolean) {
+      $('#settings-meta').textContent = dirty
+        ? `Есть несохранённые изменения · ревизия ${settingsRevision}`
+        : settingsRevision
+          ? `Ревизия ${settingsRevision} · изменений нет`
+          : 'Ревизия 0 · сервер на значениях по умолчанию'
+    }
+    $('#settings-form').addEventListener('input', () => settingsMeta(settingsDirty()))
+    $('#settings-form').addEventListener('change', () => settingsMeta(settingsDirty()))
+    $<HTMLFormElement>('#settings-form').addEventListener('submit', async (e) => {
+      e.preventDefault()
+      const form = e.currentTarget as HTMLFormElement,
+        save = form.querySelector<HTMLButtonElement>('.savebar button')!
+      settingsMeta(settingsDirty())
       save.disabled = true
       settingsStatus('Сохраняем…', 'pending', 'Сохраняем…')
+      // Capture the submitted draft before await: the form stays editable while the PUT
+      // is pending, so snapshotting after success would swallow edits made meanwhile.
+      const body = collectSettingsBody(settingsRevision)
+      const submitted = JSON.stringify({ ...body, expectedRevision: 0 })
       try {
         const { settings } = await api('settings', 'PUT', body)
         if (gunRevision === settingsRevision) gunRevision = settings.revision
-        await loadSettings()
+        settingsRevision = settings.revision
+        if (snapshotBody() === submitted) {
+          // Nothing changed during the PUT: the submitted draft is now the saved state,
+          // so refresh the form without a discard prompt.
+          settingsSnapshot = submitted
+          settingsMeta(false)
+          await loadSettings()
+        } else {
+          // Live inputs moved during the PUT: preserve them. The revision advances so the
+          // next save targets it; the snapshot stays at the submitted draft so the live
+          // edits keep reading as dirty. Receipt only — the form is untouched.
+          settingsSnapshot = submitted
+          settingsMeta(true)
+          await loadSettings(Date.now(), true)
+        }
       } catch (error) {
-        settingsStatus((error as Error).message, 'error', (error as Error).message)
+        // 409 means somebody else saved first: the draft is preserved; a reload button
+        // offers to discard it after confirmation, then the user edits and saves again.
+        if ((error as Error & { status?: number }).status === 409) {
+          const line = form.querySelector<HTMLElement>('.savebar .form-status')!
+          line.replaceChildren(
+            'Настройки уже изменил кто-то другой — ваш черновик сохранён в форме. ',
+            el(
+              'button',
+              {
+                type: 'button',
+                className: 'small',
+                onclick: async () => {
+                  if (
+                    await ask({
+                      title: 'Отбросить черновик?',
+                      text: 'Форма перезагрузится с чужими изменениями, ваши несохранённые правки будут потеряны.',
+                      ok: 'Перезагрузить',
+                      danger: true,
+                    })
+                  ) {
+                    settingsSnapshot = ''
+                    await loadSettings()
+                  }
+                },
+              },
+              'Перезагрузить',
+            ),
+          )
+          line.classList.remove('ok', 'pending')
+          line.classList.add('error')
+          say($('#settings-state'), (error as Error).message, 'error')
+        } else settingsStatus((error as Error).message, 'error', (error as Error).message)
       } finally {
         save.disabled = false
       }
@@ -2900,10 +3185,12 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 : 'Строителей в команде нет',
             }),
           )
+          // Mutation buttons stay workshop-gated: builders keep the read-only row.
+          const mayWrite = can('workshop')
           const actions = el(
             'div',
             { className: 'actions' },
-            builders.length
+            builders.length && mayWrite
               ? button(
                   'Кто строит',
                   () =>
@@ -2918,7 +3205,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                   `Кто строит: ${name}`,
                 )
               : null,
-            id !== 'hub'
+            id !== 'hub' && mayWrite
               ? button(
                   'На проверку',
                   () => submitMap(id, name),
@@ -3002,8 +3289,13 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               'small',
               `Выбрать ${name}, версия ${version.versionDigest.slice(0, 8)}`,
             )
-            choose.disabled = current || !can('workshop')
-            const actions = el('div', { className: 'actions' }, choose)
+            // Readonly view for builders: unauthorized mutation buttons are hidden, not disabled.
+            choose.disabled = current
+            const actions = el(
+              'div',
+              { className: 'actions' },
+              can('workshop') && !current ? choose : null,
+            )
             if (map.kind === 'limbo' && can('workshop')) {
               const prepare = button(
                 'Подготовить для прокси',
@@ -3949,14 +4241,17 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     )
 
     // ---------- Console ----------
-    const history: string[] = []
+    const consoleHistory: string[] = []
     let historyAt = 0
     const consoleInput = $<HTMLInputElement>('#console-input')
     consoleInput.addEventListener('keydown', (e) => {
-      if ((e.key !== 'ArrowUp' && e.key !== 'ArrowDown') || !history.length) return
+      if ((e.key !== 'ArrowUp' && e.key !== 'ArrowDown') || !consoleHistory.length) return
       e.preventDefault()
-      historyAt = Math.max(0, Math.min(history.length, historyAt + (e.key === 'ArrowUp' ? -1 : 1)))
-      consoleInput.value = history[historyAt] ?? ''
+      historyAt = Math.max(
+        0,
+        Math.min(consoleHistory.length, historyAt + (e.key === 'ArrowUp' ? -1 : 1)),
+      )
+      consoleInput.value = consoleHistory[historyAt] ?? ''
     })
     function consoleLine(command: string, text: string, bad: boolean) {
       const out = $('#console-output')
@@ -3973,8 +4268,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       const form = e.currentTarget as HTMLFormElement,
         command = consoleInput.value.trim().replace(/^\/+/, '').trim()
       if (!command) return
-      if (history.at(-1) !== command) history.push(command)
-      historyAt = history.length
+      if (consoleHistory.at(-1) !== command) consoleHistory.push(command)
+      historyAt = consoleHistory.length
       if (
         dangerousCommand(command) &&
         !(await ask({
@@ -4001,9 +4296,37 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     })
 
     // ---------- Tabs and start ----------
+    // One #tabs list for every breakpoint: groups share it, CSS changes its orientation.
+    function renderNav() {
+      const nav = $('#tabs'),
+        labels = new Map(
+          [...document.querySelectorAll<HTMLElement>('main > section')].map((s) => [
+            s.id,
+            s.dataset.tab ?? s.id,
+          ]),
+        )
+      nav.replaceChildren(
+        ...NAV_GROUPS.map((group) => {
+          const links = group.tabs
+            .filter((tab) => can(tab.perm) && labels.has(tab.id))
+            .map((tab) => el('a', { href: `#${tab.id}`, textContent: labels.get(tab.id) }))
+          if (!links.length) return null
+          return el(
+            'span',
+            { className: 'tabs__group', role: 'group', ariaLabel: group.label },
+            el('span', { className: 'tabs__label', ariaHidden: 'true', textContent: group.label }),
+            ...links,
+          )
+        }).filter((g): g is HTMLElement => g !== null),
+      )
+      nav.hidden = false
+    }
+    // Hash is resolved against permitted tabs only: a forbidden hash falls back to the role default.
     function showTab(id: string, focus: boolean) {
+      const target = `#${resolveTab(me.role, me.permissions, id)}`
+      if (location.hash !== target) window.history.replaceState(null, '', target)
       const tabs = [...document.querySelectorAll<HTMLAnchorElement>('#tabs a')]
-      const current = tabs.find((t) => t.hash === `#${id}`) ?? tabs[0]
+      const current = tabs.find((t) => t.hash === target) ?? tabs[0]
       if (!current) return
       tabs.forEach((t) =>
         t === current ? t.setAttribute('aria-current', 'page') : t.removeAttribute('aria-current'),
@@ -4011,7 +4334,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       document
         .querySelectorAll<HTMLElement>('main > section')
         .forEach((s) => (s.hidden = `#${s.id}` !== current.hash))
-      if (focus) document.querySelector<HTMLElement>(`${current.hash} h2`)?.focus()
+      const section = document.querySelector<HTMLElement>(current.hash)
+      if (focus) section?.querySelector<HTMLElement>('h2')?.focus()
     }
     addEventListener('hashchange', () => showTab(location.hash.slice(1), true))
 
@@ -4163,16 +4487,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         document.querySelectorAll<HTMLElement>('[data-perm]').forEach((node) => {
           node.hidden = !can(node.dataset.perm!)
         })
+        // A hidden submit would still fire on Enter: disable it too, so Enter picks a permitted action.
+        document
+          .querySelectorAll<HTMLButtonElement>('#byname-form button[data-perm]')
+          .forEach((b) => (b.disabled = b.hidden))
         if (!can('ban'))
           $('#byname-about').textContent =
             'Если игрока нет в списке «Сейчас на сервере», его можно выгнать по никнейму.'
-        const sections = [...document.querySelectorAll<HTMLElement>('main > section:not([hidden])')]
-        const nav = $('#tabs')
-        nav.replaceChildren(
-          ...sections.map((s) => el('a', { href: `#${s.id}`, textContent: s.dataset.tab })),
-        )
-        nav.hidden = false
+        renderNav()
         showTab(location.hash.slice(1), false)
+        // Workshop reads are view-gated (safe existing GET maps/candidates), so a builder lands on a full tab.
         const loaders: [string, () => Promise<void>, string][] = [
           ['view', loadOverview, 'Обзор'],
           ['moderate', loadOnline, 'Игроки'],
@@ -4180,8 +4504,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           ['settings', () => loadSettings(), 'Настройки'],
           ['settings', loadGunBalance, 'Баланс оружия'],
           ['roles', loadTeam, 'Команда'],
-          ['workshop', loadCandidates, 'Кандидаты'],
-          ['workshop', loadMapHistory, 'Архив карт'],
+          ['view', loadCandidates, 'Кандидаты'],
+          ['view', loadMapHistory, 'Архив карт'],
           ['stats', loadResults, 'Статистика'],
           ['stats', loadSeasons, 'Сезоны'],
           ['stats', loadKeys, 'Ключи'],

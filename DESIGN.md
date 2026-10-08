@@ -329,26 +329,21 @@ The product uses two container widths and one gutter ramp:
 
 ### Admin console (`/admin`)
 
-Staff open this page mid-session, often to fix one thing fast (Product Principle 5: staff speed
-beats staff elegance) — on a wide monitor the reading-page width (1200px) reads as a narrow column
-with the rest of the screen empty, and unequal card content in the same row visibly stretches the
-shorter card. The console gets its own, denser rules:
+Staff use the console to complete a specific server task. It keeps the Field-console palette and
+square controls, with a compact identity header and a 1320px workspace.
 
-- **Container:** `max-width: 1320px` (wider than the 1200px reading-page default), same padding
-  ramp otherwise. A left-rail tab layout was considered and rejected for now — the horizontal tab
-  strip already scrolls under 600px and a rail would add a second navigation pattern to the system
-  for one page; revisit only if a future tab count makes the horizontal strip unwieldy.
-- **Small action-only groups merge into one card.** Two or more cards whose entire body is a short
-  description plus a row of buttons (no form, no list) become one card titled «Быстрые действия»
-  with each action group as a labelled subsection (`h4`) separated by a 1px Seam hairline — never a
-  fresh `.cards` grid cell each, which forces a whole grid row for three buttons and leaves the rest
-  of the row (or, if it is the last card, the rest of that page width) blank. A subsection keeps its
-  own `data-perm` gate so permission-based hiding still works per subsection.
-- **Field grids pack too.** `.fields` (the label/input rows inside a settings `fieldset`) is
-  `repeat(auto-fit, minmax(300px, 1fr))` with `align-items: start`, so short fieldsets (one field)
-  still take one row and long ones (several fields) wrap into two or three columns on a wide screen
-  instead of running one field per row down a narrow strip. Each `.field` keeps its own internal
-  label/input column template; alignment is shared within a column, not across the whole fieldset.
+- One permission-filtered navigation list groups «Операции», «Игра и карты», and «Управление».
+  Desktop navigation stays at the top while scrolling; below 600px the same groups wrap into rows.
+  Builder opens the read-only Workshop, moderator opens Players, admin and owner open Overview.
+  A forbidden or unknown hash returns to the role's permitted default. Console is owner-only.
+- Operational sections use stacked rows separated by 1px seams. Status, mode changes, messages,
+  moderation and map history retain their own permissions and action feedback.
+- Game settings use native disclosure groups. Weapon balance has its own section and save action;
+  both forms retain the shared server revision. The settings save bar exposes the revision,
+  unsaved changes and actual server application receipt. Reloading a draft requires confirmation.
+- Native dialogs protect destructive actions, Escape cancels, and focus returns to the opener.
+  The existing keyboard-accessible selects remain shared controls; no parallel mobile navigation
+  or page-specific palette is introduced.
 
 ## Elevation & Depth
 
