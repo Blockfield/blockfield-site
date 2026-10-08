@@ -22,6 +22,7 @@ import { rawCommand, stripColors } from './console.ts'
 import { parseTickQuery, readDiagnostics, redact } from './diagnostics.ts'
 import { currentRooms, roomId } from './rooms.ts'
 import { readGunBalance, validateGunOverrides, type GunBalanceCatalog } from './gun-balance.ts'
+import { parseKitCatalog, validateKitChanges } from './kit-schema.ts'
 import {
   resolveNames,
   seasons,
@@ -33,6 +34,7 @@ import {
 import {
   BALANCE_LABELS,
   BALANCE_SCOPES,
+  ARENA_MODES,
   MAP_NAMES,
   PARCOOL_IDS,
   WORKSHOP_PLACES,
@@ -229,6 +231,7 @@ export type MapCatalogEntry = {
   head: MapHead | null
   versions: MapVersion[]
   branches?: MapBranch[]
+  draft?: { workingCopyId: string; name: string }
 }
 export type MapSession = {
   schema: 1
@@ -255,6 +258,20 @@ const digest = (value: unknown): value is string =>
 const timestamp = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0
 const mapId = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-z0-9_]{1,32}$/.test(value)
+const newMapId = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  /^[a-z0-9][a-z0-9_]{0,31}$/.test(value) &&
+  !['hub', 'lobby', 'limbo'].includes(value)
+function mapTitle(value: unknown): string {
+  if (typeof value !== 'string' || /[\p{Cc}§]/u.test(value))
+    throw bad('Название карты: 1–100 символов без управляющих знаков.')
+  const name = value.trim()
+  if (![...name].length || [...name].length > 100)
+    throw bad('Название карты: 1–100 символов без управляющих знаков.')
+  return name
+}
+const arenaMode = (value: unknown): value is keyof typeof ARENA_MODES =>
+  typeof value === 'string' && Object.hasOwn(ARENA_MODES, value)
 const branchName = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(value)
 const mutableBranch = (value: unknown): value is string => branchName(value) && value !== 'main'
@@ -351,6 +368,14 @@ export function readMapCatalog(directory: string): MapCatalogAvailability {
       !mapKind(entry.kind) ||
       !plain(entry.mapJson) ||
       entry.mapJson.id !== entry.mapId ||
+      (entry.draft !== undefined &&
+        (!plain(entry.draft) ||
+          typeof entry.draft.workingCopyId !== 'string' ||
+          !COPY_UUID.test(entry.draft.workingCopyId) ||
+          typeof entry.draft.name !== 'string' ||
+          !entry.draft.name.trim() ||
+          [...entry.draft.name].length > 100 ||
+          /[\p{Cc}§]/u.test(entry.draft.name))) ||
       (entry.mapJson.kind ?? 'arena') !== entry.kind ||
       !Array.isArray(entry.versions) ||
       entry.versions.length > 10_000
@@ -525,6 +550,17 @@ function expectedMapHead(body: any, entry: MapCatalogEntry) {
     throw fail(409, 'Версия карты уже изменилась. Обновите историю.')
   return body.expectedHead as string | null
 }
+function editorRevision(body: any) {
+  const status = readFile(join(adminDir(), 'status.json'))
+  if (status?.schema !== 1 || !Number.isSafeInteger(status.revision) || status.revision < 0)
+    throw fail(503, 'Состояние мастерской недоступно. Обновите страницу.')
+  if (status.phase !== 'workshop' || status.gate !== 'builders')
+    throw fail(409, 'Дождитесь открытия мастерской перед изменением карты.')
+  if (!Number.isSafeInteger(body?.expectedRevision) || body.expectedRevision < 0)
+    throw bad('Нет ревизии состояния: обновите страницу.')
+  if (body.expectedRevision !== status.revision)
+    throw fail(409, 'Состояние мастерской изменилось. Обновите страницу.')
+}
 async function editableMapIds(
   actor: Actor,
   store: StatsStore,
@@ -568,9 +604,12 @@ function workshopMapIds() {
 }
 /** Readers (controller, game server) must never see a half-written file: write a dot-file in the same directory, then rename. */
 export function writeAtomic(directory: string, name: string, value: unknown) {
+  const contents = JSON.stringify(value, null, 2) + '\n'
+  if (name === 'settings.json' && Buffer.byteLength(contents) > 1_048_576)
+    throw fail(413, 'Настройки превышают доступный размер. Уменьшите наборы перед сохранением.')
   const temp = join(directory, `.${name}.${randomUUID()}.tmp`)
   try {
-    writeFileSync(temp, JSON.stringify(value, null, 2) + '\n', { flag: 'wx' })
+    writeFileSync(temp, contents, { flag: 'wx' })
     renameSync(temp, join(directory, name))
   } catch (error) {
     try {
@@ -696,6 +735,10 @@ export function writeRequest(
       if (typeof body.candidateId !== 'string' || !/^[0-9a-f]{32}$/.test(body.candidateId))
         throw bad('Неизвестная версия карты.')
       extra = { candidateId: body.candidateId }
+      if (body.modeId !== undefined) {
+        if (!arenaMode(body.modeId)) throw bad('Выберите поддерживаемый режим теста.')
+        extra.modeId = body.modeId
+      }
     }
     request = {
       ...base,
@@ -703,6 +746,48 @@ export function writeRequest(
       expectedRevision: body.expectedRevision,
       ...(body.recover ? { recover: true } : {}),
       ...extra,
+    }
+  } else if (body?.kind === 'map-create' || body?.kind === 'map-properties') {
+    if (!can(actor.role, 'mode')) throw fail(403, 'Создание и название карты доступны модератору.')
+    if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 0)
+      throw bad('Нет ревизии состояния: обновите страницу.')
+    const name = mapTitle(body.name)
+    if (body.kind === 'map-create') {
+      if (!newMapId(body.mapId))
+        throw bad(
+          'ID карты: до 32 строчных латинских букв, цифр и подчёркиваний; первый знак — буква или цифра.',
+        )
+      if (
+        !Array.isArray(body.supportedModes) ||
+        !body.supportedModes.length ||
+        body.supportedModes.length > 7 ||
+        new Set(body.supportedModes).size !== body.supportedModes.length ||
+        !body.supportedModes.every(arenaMode)
+      )
+        throw bad('Выберите хотя бы один поддерживаемый режим карты.')
+      request = {
+        ...base,
+        mapId: body.mapId,
+        name,
+        supportedModes: body.supportedModes,
+        expectedRevision: body.expectedRevision,
+        sessionId: randomUUID(),
+      }
+    } else {
+      if (
+        !mapId(body.mapId) ||
+        !knownMaps.has(body.mapId) ||
+        typeof body.workingCopyId !== 'string' ||
+        !COPY_UUID.test(body.workingCopyId)
+      )
+        throw bad('Выберите рабочую копию карты для изменения названия.')
+      request = {
+        ...base,
+        mapId: body.mapId,
+        name,
+        workingCopyId: body.workingCopyId,
+        expectedRevision: body.expectedRevision,
+      }
     }
   } else if (body?.kind === 'message') {
     // Same rule as the controller: strip control characters (Unicode Cc) and §, keep format characters such as ZWJ.
@@ -785,7 +870,11 @@ export function writeRequest(
         throw bad('Выберите две сохранённые версии карты.')
       request = { ...common, before: body.before, after: body.after }
     } else {
-      if (!digest(body.versionDigest) || !digest(body.expectedHead))
+      if (
+        !digest(body.versionDigest) ||
+        !Object.hasOwn(body, 'expectedHead') ||
+        (body.expectedHead !== null && !digest(body.expectedHead))
+      )
         throw bad('Слияние требует исходную версию и текущую main.')
       request = {
         ...common,
@@ -1023,6 +1112,134 @@ export function readSettings(directory: string) {
     applied: readFile(join(directory, 'applied.json')),
   }
 }
+function storedSettings(directory: string) {
+  const path = join(directory, 'settings.json'),
+    stored = readFile(path, 1_048_576)
+  if (stored !== null) return stored
+  try {
+    statSync(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { schema: 1, revision: 0 }
+  }
+  throw fail(503, 'Текущие настройки повреждены. Сохранение недоступно.')
+}
+const disabledMapId = (value: unknown) =>
+  typeof value === 'string' && /^[a-z0-9][a-z0-9_-]{0,127}$/.test(value)
+const disabledMapList = (value: unknown): value is string[] =>
+  Array.isArray(value) &&
+  value.length <= 4096 &&
+  new Set(value).size === value.length &&
+  value.every(disabledMapId)
+function mapAvailability(directory: string) {
+  let settings
+  try {
+    settings = storedSettings(directory)
+  } catch {
+    return { available: false as const, error: 'Состояние доступности карт повреждено.' }
+  }
+  const ids = settings.disabledMapIds ?? [],
+    rawApplied = readSettings(directory).applied
+  if (
+    settings.schema !== 1 ||
+    !Number.isSafeInteger(settings.revision) ||
+    settings.revision < 0 ||
+    !disabledMapList(ids)
+  )
+    return { available: false as const, error: 'Состояние доступности карт повреждено.' }
+  const applied =
+    rawApplied &&
+    Number.isSafeInteger(rawApplied.revision) &&
+    rawApplied.revision >= 0 &&
+    disabledMapList(rawApplied.disabledMapIds) &&
+    (rawApplied.errors === undefined ||
+      (Array.isArray(rawApplied.errors) &&
+        rawApplied.errors.length <= 256 &&
+        rawApplied.errors.every((error: unknown) => typeof error === 'string')))
+      ? {
+          revision: rawApplied.revision,
+          attemptedRevision: rawApplied.attemptedRevision,
+          errors: rawApplied.errors ?? [],
+          disabledMapIds: rawApplied.disabledMapIds,
+        }
+      : null
+  return { available: true as const, revision: settings.revision, disabledMapIds: ids, applied }
+}
+export function saveMapAvailability(directory: string, body: any, actorName: string) {
+  if (
+    !plain(body) ||
+    Object.keys(body).some((key) => !['mapId', 'enabled', 'expectedRevision'].includes(key)) ||
+    typeof body.enabled !== 'boolean' ||
+    !mapId(body.mapId)
+  )
+    throw bad('Укажите карту и её доступность для новых матчей.')
+  const availability = mapAvailability(directory)
+  if (!availability.available) throw fail(503, availability.error)
+  if (body.expectedRevision !== availability.revision)
+    throw fail(409, 'Настройки уже изменил кто-то другой. Обновите историю; черновики сохранены.')
+  const current = readSettings(directory).settings,
+    disabled = new Set(availability.disabledMapIds)
+  if (body.enabled) disabled.delete(body.mapId)
+  else disabled.add(body.mapId)
+  if (disabled.size > 4096) throw bad('Слишком много отключённых карт.')
+  const settings = {
+    ...current,
+    disabledMapIds: [...disabled].sort(),
+    schema: 1,
+    revision: availability.revision + 1,
+    updatedAt: Date.now(),
+    updatedBy: actorName,
+  }
+  writeAtomic(directory, 'settings.json', settings)
+  return settings
+}
+function readKits(directory: string) {
+  try {
+    return {
+      available: true as const,
+      catalog: parseKitCatalog(readFile(join(directory, 'kits.json'), 8 * 1024 * 1024)),
+    }
+  } catch {
+    return {
+      available: false as const,
+      error: 'Каталог наборов недоступен. Дождитесь данных игрового сервера.',
+    }
+  }
+}
+export function saveKitSettings(directory: string, body: any, actorName: string) {
+  if (
+    !plain(body) ||
+    Object.keys(body).some((key) => !['expectedRevision', 'kits', 'fixedModeKits'].includes(key))
+  )
+    throw bad('Некорректные настройки наборов.')
+  const current = storedSettings(directory)
+  if (current.schema !== 1 || !Number.isSafeInteger(current.revision) || current.revision < 0)
+    throw fail(503, 'Текущие настройки повреждены. Сохранение недоступно.')
+  if (body.expectedRevision !== current.revision)
+    throw fail(409, 'Настройки уже изменил кто-то другой. Обновите страницу.')
+  const availability = readKits(directory)
+  if (!availability.available) throw fail(503, availability.error)
+  let changes: ReturnType<typeof validateKitChanges>
+  try {
+    changes = validateKitChanges(
+      body.kits,
+      body.fixedModeKits,
+      availability.catalog,
+      current.classCosts ?? {},
+    )
+  } catch (error) {
+    throw bad((error as Error).message)
+  }
+  const settings = {
+    ...current,
+    ...changes,
+    schema: 1,
+    revision: current.revision + 1,
+    updatedAt: Date.now(),
+    updatedBy: actorName,
+  }
+  writeAtomic(directory, 'settings.json', settings)
+  return settings
+}
 export function saveSettings(
   directory: string,
   body: any,
@@ -1052,8 +1269,8 @@ export function saveSettings(
     }
   } else {
     values = validateSettings(body, catalog)
-    if (!Object.hasOwn(body, 'gunBalance') && Object.hasOwn(current, 'gunBalance'))
-      values.gunBalance = current.gunBalance
+    for (const key of ['gunBalance', 'kits', 'fixedModeKits', 'disabledMapIds'])
+      if (!Object.hasOwn(body, key) && Object.hasOwn(current, key)) values[key] = current[key]
   }
   if (editingGuns && Object.keys(values.gunBalance as object).length === 0) delete values.gunBalance
   const settings = {
@@ -1324,6 +1541,20 @@ const routes: Record<string, Route> = {
     permission: 'mode',
     handler: ({ actor, body }) => {
       const catalog = readMapCatalog(adminDir())
+      if (body?.profile === 'test' && body.modeId !== undefined) {
+        const candidate = existingCandidate(body.candidateId),
+          modes = candidate.supportedModes
+        if (
+          !Array.isArray(modes) ||
+          !modes.length ||
+          modes.length > 7 ||
+          new Set(modes).size !== modes.length ||
+          !modes.every(arenaMode)
+        )
+          throw fail(503, 'Режимы сохранённой версии не подтверждены. Обновите список проверок.')
+        if (!modes.includes(body.modeId))
+          throw bad('Сохранённая версия карты не поддерживает этот режим.')
+      }
       if (body?.profile === 'workshop' && body?.session === 'new' && body.branches !== undefined) {
         if (
           !catalog.available ||
@@ -1354,6 +1585,7 @@ const routes: Record<string, Route> = {
         session: body?.session,
         maps: body?.maps,
         candidateId: body?.candidateId,
+        modeId: body?.modeId,
       },
     }),
   },
@@ -1487,6 +1719,20 @@ const routes: Record<string, Route> = {
     permission: 'settings',
     handler: () => readGunBalance(settingsDir()),
   },
+  'GET kits': {
+    permission: 'settings',
+    handler: () => readKits(settingsDir()),
+  },
+  'PUT kits': {
+    permission: 'settings',
+    maxBody: 1_048_576,
+    handler: ({ actor, body }) => ({ settings: saveKitSettings(settingsDir(), body, actor.name) }),
+    audit: (body, result) => ({
+      action: 'kits',
+      target: result?.settings ? `revision ${result.settings.revision}` : null,
+      detail: body,
+    }),
+  },
   'PUT gun-balance': {
     permission: 'settings',
     maxBody: 1_048_576,
@@ -1513,7 +1759,11 @@ const routes: Record<string, Route> = {
     permission: 'view',
     handler: async ({ actor, store }) => {
       const catalog = readMapCatalog(adminDir())
-      return { ...catalog, editableMaps: await editableMapIds(actor, store, catalog) }
+      return {
+        ...catalog,
+        editableMaps: await editableMapIds(actor, store, catalog),
+        availability: mapAvailability(settingsDir()),
+      }
     },
   },
   'POST maps/branches': {
@@ -1537,6 +1787,63 @@ const routes: Record<string, Route> = {
       action: 'map-branch-create',
       target: body?.mapId,
       detail: { branch: body?.branch, versionDigest: body?.versionDigest },
+    }),
+  },
+  'POST maps/create': {
+    permission: 'mode',
+    handler: ({ actor, body }) => {
+      const catalog = requiredMapCatalog()
+      editorRevision(body)
+      if (catalog.maps.some((map) => map.mapId === body?.mapId))
+        throw fail(409, 'Карта с таким ID уже существует. Выберите другой ID.')
+      return { id: writeRequest(inboxDir(), actor, { ...body, kind: 'map-create' }) }
+    },
+    audit: (body) => ({
+      action: 'map-create',
+      target: body?.mapId,
+      detail: {
+        name: body?.name,
+        supportedModes: body?.supportedModes,
+        expectedRevision: body?.expectedRevision,
+      },
+    }),
+  },
+  'PUT maps/availability': {
+    permission: 'workshop',
+    handler: ({ actor, body }) => {
+      const catalog = requiredMapCatalog(),
+        entry = catalog.maps.find((map) => map.mapId === body?.mapId)
+      if (!entry || entry.kind !== 'arena' || !entry.head)
+        throw bad('Доступность меняется только для опубликованной арены.')
+      return { settings: saveMapAvailability(settingsDir(), body, actor.name) }
+    },
+    audit: (body, result) => ({
+      action: 'map-availability',
+      target: body?.mapId,
+      detail: { enabled: body?.enabled, revision: result?.settings?.revision },
+    }),
+  },
+  'POST maps/properties': {
+    permission: 'mode',
+    handler: async ({ actor, store, body }) => {
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId),
+        { copy } = selectedMapBranch(catalog, entry)
+      editorRevision(body)
+      if (body?.workingCopyId !== copy.id)
+        throw fail(409, 'Рабочая копия изменилась. Обновите историю.')
+      return {
+        id: writeRequest(
+          inboxDir(),
+          actor,
+          { ...body, kind: 'map-properties' },
+          new Set(catalog.maps.map((map) => map.mapId)),
+        ),
+      }
+    },
+    audit: (body) => ({
+      action: 'map-properties',
+      target: body?.mapId,
+      detail: { name: body?.name, expectedRevision: body?.expectedRevision },
     }),
   },
   'POST maps/sessions': {
