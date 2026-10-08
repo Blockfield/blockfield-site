@@ -1,6 +1,6 @@
 # Admin panel (`/admin`)
 
-Staff page of the site: independent Game and Workshop status, live moderation over RCON, persistent game settings, staff roles, map history, statistics administration and an audit log. Code: [admin.ts](../src/lib/admin.ts) (roles, validation, API), [gun-balance.ts](../src/lib/gun-balance.ts) (server catalog and overrides), `src/lib/rcon.ts`, `src/pages/api/admin/[...path].ts`, `src/pages/admin.astro`; storage in the statistics DB (`src/lib/stats.ts`, schema v6). Tests: `test/admin.test.mjs`, `test/gun-balance.test.mjs`, `test/maps-admin.test.mjs`, `test/rcon.test.mjs`, `test/stats-admin.test.mjs`, `test/names.test.mjs`.
+Staff page of the site: independent Game and Workshop status, live moderation over RCON, persistent game settings, AI budgets, staff roles, map history, statistics administration and an audit log. Code: [admin.ts](../src/lib/admin.ts) (roles, validation, API), [gun-balance.ts](../src/lib/gun-balance.ts) (server catalog and overrides), [ai-limits.ts](../src/lib/ai-limits.ts) (money policy), `src/lib/rcon.ts`, `src/pages/api/admin/[...path].ts`, `src/pages/admin.astro`; storage in the statistics DB (`src/lib/stats.ts`, schema v6). Tests: `test/admin.test.mjs`, `test/gun-balance.test.mjs`, `test/body-part-form.test.mjs`, `test/ai-limits.test.mjs`, `test/ai-budget-form.test.mjs`, `test/maps-admin.test.mjs`, `test/rcon.test.mjs`, `test/stats-admin.test.mjs`, `test/names.test.mjs`.
 
 **Gun balance, native map history and isolated-copy integration below are implemented in the working code, pending release/deployment and game acceptance.** Selecting an archive head and applying it to a running game are separate operations.
 
@@ -60,10 +60,12 @@ Mounts for the site container (host → container):
 | --------------------------------------- | ------------------- | ---- | ------------------------------------------------------------------------------------------------------------------- |
 | `/srv/minecraft/workshop/admin`         | `/workshop-admin`   | ro   | host controller: `status.json`, `session.json`, `members.json`, `maps.json`, `candidates.json`, `results/<id>.json` |
 | `/srv/minecraft/workshop/inbox`         | `/workshop-inbox`   | rw   | site: one `<id>.json` request per file (written as a dot temp file, then renamed)                                   |
-| `/srv/minecraft/lobby/blockfield-admin` | `/blockfield-admin` | rw   | site: `settings.json`; game server (`/data/blockfield-admin`): `applied.json`, `gun-balance.json`                   |
+| `/srv/minecraft/lobby/blockfield-admin` | `/blockfield-admin` | rw   | site: `settings.json`, `ai-limits.json`; game server (`/data/blockfield-admin`): `applied.json`, `gun-balance.json` |
 | Controller `BF_MAP_PACKAGES_DIR` (HDD)  | `/map-packages`     | ro   | host controller: derived `<sha256>.zip` cache; set `BLOCKFIELD_MAP_PACKAGES_DIR` to this mount                      |
 
 The image runs as `node` (UID 1000): the rw directories must be writable by it. The site joins `dokploy-network` to reach RCON; do not publish the RCON port.
+
+Workshop needs the same host settings directory mounted **read-only** at `/blockfield-admin` for `ai-limits.json`, matching the backend's default `BLOCKFIELD_WORKSHOP_AI_LIMITS_FILE=/blockfield-admin/ai-limits.json`. Its persistent money ledger is a separate server-owned file, outside this read-only mount. The site never writes or resets the ledger. These mount requirements describe preparation; this change does not deploy or restart services.
 
 ## Contracts
 
@@ -84,7 +86,7 @@ The image runs as `node` (UID 1000): the rw directories must be writable by it. 
 
 `GET /api/admin/gun-balance` (`settings`: admin/owner) returns `{available:true,catalog}` or `{available:false,error}`. `GET settings` includes the same availability beside `settings` and `applied`. The server writes `gun-balance.json` next to `settings.json`: `{schema:1,revision,fields,guns}`. Each gun has its index `id`, shared `data` ID, `name`, `type`, complete `defaults`, current `effective` values and baseline `warnings`.
 
-The recursive `fields` metadata describes all 33 synchronized root fields of pinned TaCZ bf7, including `bullet`, `reload`, `recoil`, `heat`, `charging`, attachment maps and script parameters. It supplies types, bounds, enum values, nullable fields and supported unions (`infinite`, legacy ignite boolean). Nested values are edited as JSON; kit weapons are listed first, with search across the full catalog. Defaults and metadata come from the server, not a copied ganpack in the site. Enum-map defaults use wire keys such as `aim`, `semi` and `scope`, without duplicate uppercase enum names. Missing or invalid catalog data disables saves (503) rather than inventing defaults.
+The recursive `fields` metadata describes all 33 synchronized native root fields of pinned TaCZ bf7, including `bullet`, `reload`, `recoil`, `heat`, `charging`, attachment maps and script parameters. It also exposes the server-only `body_part_multipliers` described below. It supplies types, bounds, enum values, nullable fields and supported unions (`infinite`, legacy ignite boolean). Native nested values are edited as JSON; kit weapons are listed first, with search across the full catalog. Defaults and metadata come from the server, not a copied ganpack in the site. Enum-map defaults use wire keys such as `aim`, `semi` and `scope`, without duplicate uppercase enum names. Missing or invalid catalog data disables saves (503) rather than inventing defaults.
 
 `PUT /api/admin/gun-balance` takes `{expectedRevision,gunBalance}` and returns `{settings}`. It preserves every unrelated settings section. Keys are gun **index IDs**, for example `elitex:ak47`, not data filenames:
 
@@ -98,7 +100,42 @@ The recursive `fields` metadata describes all 33 synchronized root fields of pin
 }
 ```
 
-Only changed fields are stored. Objects merge recursively; arrays replace the whole value. Remove a field or gun to restore current ganpack/datapack defaults; an omitted or empty `gunBalance` on this dedicated route resets the whole section. A general settings save omitting it preserves it. `null` disables only a metadata-nullable value and is not a reset; `gunBalance:null` is invalid. Multiple explicit indices sharing a `data` ID must produce identical effective data. Old baseline values outside edit bounds stay readable and resettable; changed values must satisfy the metadata.
+Only changed fields are stored. Objects merge recursively; arrays replace the whole value. Remove a field or gun to restore current ganpack/datapack defaults; an omitted or empty `gunBalance` on this dedicated route resets the whole section. A general settings save omitting it preserves it. `null` disables only a metadata-nullable value and is not a reset; `gunBalance:null` is invalid. Multiple explicit native overrides sharing a `data` ID must produce identical effective native data. Body-only entries do not claim or reset native data. Old baseline values outside edit bounds stay readable and resettable; changed values must satisfy the metadata.
+
+#### Body-part damage
+
+The existing `gunBalance` route also stores per-weapon `body_part_multipliers`: `head`, `torso`, `left_arm`, `right_arm`, `left_leg`, `right_leg`. Each coefficient is finite, numeric and between 0 and 10; missing values mean 1. `null`, unknown parts and nonnumeric values are refused. Six labelled numeric controls replace raw JSON for this field. Removing the field/weapon/section restores all relative coefficients to 1. There is no separate limb health or injury system.
+
+TaCZ uses its gun **index ID**, for example `elitex:ak47`. Registered item weapons use the typed key `item:<namespace>/<path>`, for example `item:superbwarfare/ak_47` or `item:lrtactical/melee`. Item entries permit only body multipliers. Catalog rows add `weaponKind:tacz|item` and their canonical `sourceId`; item rows have `data=id`, `type:item`, and only body multipliers in `defaults/effective`. TaCZ rows retain native values as well. All six body defaults equal 1. The existing catalog is still authoritative: the site cannot invent a supported registry item or infer combat support from a translation key. The LR melee row covers the supported dagger adapter; its server warning records that restriction.
+
+Body coefficients belong to each weapon index, including aliases sharing native TaCZ data. Native overrides for those aliases must still agree. The mod strips this field before building native TaCZ JSON or client deltas and applies its coefficient exactly once after the normal weapon damage, including native head/leg rules. No hidden global coefficient is multiplied on top. The additive `bodyPartsEnabled` catalog flag reports the actual server acceptance gate; `false` permits preparing coefficients but does not claim that body damage is active. The gate remains disabled pending game acceptance.
+
+### AI money budgets
+
+The compact «Бюджет AI» disclosure inside «Мастерская» is site-admin/owner-only. `GET /api/admin/ai-limits` returns `{policy}`; `PUT` uses `{expectedRevision,mode,sessions?,builders?}` and returns the saved `{policy}`. Both routes require `settings`; mutations use the same-origin wrapper, bounded JSON body, server-side role check and audit journal. A map/session owner or permissive Workshop ACL cannot authorize a write. A site owner edits through their inherited site-admin permission; running an AI request gives them no budget exception.
+
+The independent `ai-limits.json` in `BLOCKFIELD_SETTINGS_DIR` has a closed schema:
+
+```json
+{
+  "schema": 1,
+  "revision": 1,
+  "currency": "USD",
+  "mode": "session",
+  "sessions": { "11111111-1111-4111-8111-111111111111": 10000000 },
+  "builders": { "22222222-2222-4222-8222-222222222222": 2000000 }
+}
+```
+
+Amounts are nonnegative **integer microUSD**: 1 USD = 1,000,000 microUSD, with a maximum of 1,000,000,000,000 per grant. Each map allows at most 256 canonical lowercase UUIDs with hyphens. Budget 0 or no grant denies requests. `session` shares the exact selected Workshop session's allowance across participants; `builder` uses the participant's stable UUID. UI choices come from the existing verified session catalog and site staff/owners; Drasl UUIDs are normalized before writing. Dollar input accepts up to six decimal places, including a decimal comma, and converts exactly without floating-point rounding.
+
+Policy revision is independent of Game settings. Amounts set the **total spending allowance**, including money already spent; saving is not a top-up. Builder accounts persist across Workshop sessions. Present grant maps replace their stored maps; omitted maps remain intact, so changing only `mode` preserves both. Stale writes return 409 with the form draft intact. General `PUT settings` cannot change this file. A missing policy displays empty deny grants at revision 0; malformed, oversized or inaccessible policy data returns 503 and cannot be silently replaced. Mode switching, grant removal/re-addition and restarts do not erase persistent spend or give a fresh allowance automatically.
+
+The preparation runtime reserves a conservative **1.330816 USD** before generation, covering the generator and both semantic guards; only confirmed provider cost settles as actual spend. Remaining budget below the complete reservation denies generation before a provider request. The number is a conservative preparation bound, not a displayed price or a promise of actual cost. Reservation bounds, exact model/API compatibility and current provider prices must be revalidated before enabling this feature or game acceptance. Uncertain results retain reserved liability. Provider credentials stay server-side, using ordinary OpenRouter credits without BYOK; the browser contains no API key.
+
+Voice uses `openai/whisper-1`, [priced at $0.006/minute on 2026-10-08](https://openrouter.ai/openai/whisper-1/pricing), with nearest-second billing. The server derives duration from validated PCM bytes and rounds seconds up: the fixed 8-second recording reserves at most **0.0008 USD** from the same session/builder allowance before any HTTP call; generation is charged separately and keeps its own reservation. Before the paid call the server reads the free public endpoint catalog and refuses an unknown provider or a rate above $0.0001/second. This is **budget accounting at the observed tariff, not an enforceable provider price ceiling**: OpenRouter transcription accepts no `max_price`, and the catalog does not lock the next request's tariff. A tariff raised between both calls would be billed upstream beyond the reservation. Confirmed usage settles the difference; missing or larger cost keeps the full reservation. Owner accounts get no bypass, and the recognized text only fills the editable request.
+
+Persisted usage and application receipts are not yet exported to the site. The UI reports **saved policy only**, never invented current spend, remaining money or runtime application. Server preparation and acceptance details belong to the mod/workspace contracts.
 
 The server polls settings every 5 seconds, validates the entire revision and sends a dedicated `blockfield:gun_balance` delta to online clients immediately after applying it. It does not run `/reload` or `tacz reload`, refill magazines, or restart draw/reload/bolt actions. Models, animations, sounds and Lua are outside this update. A join receives complete effective data; a natural TaCZ reload recaptures genuine defaults and reapplies overrides. A hot update is refused if an online client lacks delta support.
 

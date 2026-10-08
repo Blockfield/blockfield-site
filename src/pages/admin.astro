@@ -311,8 +311,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         <p id="gun-about" class="muted"></p>
         <p id="gun-warnings" class="form-status"></p>
         <p class="muted">
-          Отметьте поле, чтобы изменить его. Снятая отметка возвращает значение ганпака. Составные
-          поля редактируются как JSON; доступные вложенные поля указаны под ними.
+          Отметьте поле, чтобы изменить его. Снятая отметка возвращает исходное значение. Множители
+          частей тела задаются отдельно для каждого оружия. Составные поля TaCZ редактируются как
+          JSON; доступные вложенные поля указаны под ними.
         </p>
         <div id="gun-fields"></div>
         <div class="savebar">
@@ -435,6 +436,20 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       <p id="editor-state" class="form-status" role="status">
         Проверяем состояние мастерской…
       </p>
+      <details class="disclosure" data-perm="settings">
+        <summary>Бюджет AI</summary>
+        <p class="muted">
+          Общий бюджет текущего сеанса или отдельный для участника. Настраивают только
+          администраторы сайта; владение картой или сеансом не даёт дополнительных прав.
+        </p>
+        <p id="ai-budget-status" class="form-status" role="status">
+          Получаем политику бюджета…
+        </p>
+        <div id="ai-budget-form"></div>
+        <button id="ai-budget-refresh" type="button" class="small">
+          Обновить состояние бюджета
+        </button>
+      </details>
       <div class="stack" data-perm="mode" aria-labelledby="map-create-title">
         <h3 id="map-create-title">Новая карта</h3>
         <p class="muted">
@@ -804,6 +819,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     .admin-main #console-form > *,
     .admin-main #gun-balance-form > * {
       max-width: 720px;
+    }
+    /* Keep weapon actions in flow: a sticky bar covers the body-part inputs on short screens. */
+    .admin-main #gun-balance-form .savebar {
+      position: static;
     }
     .admin-main #settings-form .settings-group {
       width: 100%;
@@ -1383,6 +1402,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       TEAM_NAMES,
     } from '../lib/game-names'
     import { settingsBody, settingsReceipt } from '../lib/settings-form'
+    import { renderBodyPartField } from '../lib/body-part-form'
+    import { renderAiBudgetForm, type BudgetTarget } from '../lib/ai-budget-form'
+    import { canonicalBudgetUuid } from '../lib/ai-budget'
+    import { weaponFields } from '../lib/gun-fields'
     import { effectiveKits, renderKitForm } from '../lib/kit-form'
     import { validateKitChanges, type KitCatalog, type KitDefinition } from '../lib/kit-schema'
     import { customSelect, customCombo } from '../lib/custom-select'
@@ -2364,14 +2387,21 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         return
       }
       $('#gun-about').textContent =
-        `${gun.id} · данные ${gun.data} · ${gun.type}. Оружие с тем же ID данных получает тот же баланс.`
+        gun.weaponKind === 'item'
+          ? `${gun.sourceId} · предмет. Здесь доступны только множители частей тела.`
+          : `${gun.id} · данные ${gun.data} · ${gun.type}. Общие данные дают одинаковый базовый баланс; множители частей тела задаются для каждого оружия.`
       $('#gun-warnings').textContent = gun.warnings.join(' ')
       $('#gun-fields').replaceChildren(
-        ...Object.entries(gunCatalog.fields.fields!).map(([key, field]) => {
+        ...Object.entries(weaponFields(gunCatalog, gun).fields!).map(([key, field]) => {
           const hasOverride = Object.hasOwn(gunOverrides[gun.id] ?? {}, key)
           const value = hasOverride
             ? gunValues(gun.defaults[key], gunOverrides[gun.id][key])
             : gun.defaults[key]
+          if (key === 'body_part_multipliers') {
+            const control = renderBodyPartField(value as Record<string, any>, field, hasOverride)
+            gunReaders.set(key, control.read)
+            return control.node
+          }
           const id = `gun-field-${key}`
           const edit = el('input', {
             type: 'checkbox',
@@ -2493,7 +2523,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       filterGuns()
       say(
         $('#gun-balance-status'),
-        `${gunCatalog!.guns.length} оружий. Изменения хранятся поверх ганпака.`,
+        `${gunCatalog!.guns.length} оружий. Изменения хранятся поверх исходных настроек.${gunCatalog!.bodyPartsEnabled === false ? ' Урон по частям тела пока выключен на сервере; множители можно подготовить заранее.' : ''}`,
       )
     }
     $<HTMLInputElement>('#gun-search').oninput = () => {
@@ -3266,6 +3296,58 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     })
 
     // ---------- Team ----------
+    async function loadAiBudget() {
+      const [{ policy }, catalog, staff] = await Promise.all([
+        api('ai-limits'),
+        api('maps'),
+        api('staff'),
+      ])
+      const members = new Map<string, BudgetTarget>()
+      for (const member of [...staff.owners, ...staff.staff]) {
+        const id = canonicalBudgetUuid(member.uuid)
+        if (id) members.set(id, { id, name: member.name })
+      }
+      const id =
+        catalog.available && catalog.session ? canonicalBudgetUuid(catalog.session.id) : null
+      const control = renderAiBudgetForm(policy, {
+        session: id
+          ? {
+              id,
+              name: `Текущий сеанс${catalog.session.startedAt ? ` · ${date(catalog.session.startedAt)}` : ''}`,
+            }
+          : undefined,
+        builders: [...members.values()].sort((a, b) => a.name.localeCompare(b.name, 'ru')),
+      })
+      $('#ai-budget-form').replaceChildren(control.node)
+      control.node.querySelectorAll<HTMLSelectElement>('select').forEach(customSelect)
+      say(
+        $('#ai-budget-status'),
+        `Политика сохранена в ревизии ${policy.revision}. Применение сервером и расход здесь пока не подтверждаются.`,
+      )
+      control.node.onsubmit = (event) => {
+        event.preventDefault()
+        run(
+          $('#ai-budget-status'),
+          async () => {
+            const body = control.read()
+            const { policy: saved } = await api('ai-limits', 'PUT', body)
+            control.saved(saved.revision)
+            return `Бюджет сохранён, ревизия ${saved.revision}. Подтверждение применения и расход появятся отдельно.`
+          },
+          control.node,
+        )
+      }
+    }
+    $('#ai-budget-refresh').onclick = async () => {
+      if (
+        await ask({
+          title: 'Обновить бюджет AI?',
+          text: 'Несохранённые изменения бюджета будут заменены сохранённой политикой.',
+          ok: 'Обновить',
+        })
+      )
+        run($('#ai-budget-status'), loadAiBudget)
+    }
     const assignable = () =>
       can('roles-admin') ? ['builder', 'moderator', 'admin'] : ['builder', 'moderator']
     async function loadTeam() {
@@ -5816,6 +5898,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           ['settings', () => loadSettings(), 'Настройки'],
           ['settings', loadGunBalance, 'Баланс оружия'],
           ['settings', loadKits, 'Наборы'],
+          ['settings', loadAiBudget, 'Бюджет AI'],
           ['roles', loadTeam, 'Команда'],
           ['view', loadCandidates, 'Кандидаты'],
           ['view', loadMapHistory, 'Архив карт'],
