@@ -97,7 +97,7 @@ test('live sidebar shows unavailable, empty and scored matches without placehold
       can: () => false,
     })
     dom.window.eval(
-      `const $ = (s) => document.querySelector(s); let controller, session; const PHASES = { VOTING: 'Голосование за карту' }; const describe = () => ({ tone: 'bad', title: 'недоступно', detail: '' }); const ago = () => 'только что'; const renderModes = () => {}; const renderRooms = () => {}; ${functions(['el', 'renderRoomSummary', 'renderOverview', 'loadOverview'])}`,
+      `const $ = (s) => document.querySelector(s); let controller, session; const PHASES = { VOTING: 'Голосование за карту' }; const describeGame = () => ({ tone: 'bad', title: 'недоступно', detail: '' }); const describeWorkshop = describeGame; const say = () => {}; const ago = () => 'только что'; const renderModes = () => {}; const renderRooms = () => {}; ${functions(['el', 'renderRoomSummary', 'renderOverview', 'loadOverview'])}`,
     )
     await dom.window.loadOverview()
     const box = dom.window.document.querySelector('#side-now')
@@ -278,7 +278,7 @@ test('settings event advances the revision, flashes once and keeps a focused con
     const LOBBY = [], DEATHMATCH = [], CLASS_COSTS = {}, CLASS_NAMES = {}, PARCOOL_ACTIONS = [], PARCOOL_FILE_DEFAULT = [];
     const ROOMS = [{key:'maxRooms', label:'Матчей одновременно', min:1, max:16, def:2}];
     let rules = {}, defaults = {}, balance = {}, hadLocks, extraLocks, fieldId = 0;
-    let lastApplied, gunRevision = 0, gunOverrides = {}, selectedGun; const renderGun = () => {}; let settingsLoaded = false, settingsRevision = 0, observedSettingsRevision = 0;
+    let lastApplied, gunRevision = 0, gunOverrides = {}, selectedGun; const renderGun = () => {}; let kitCatalog; let settingsLoaded = false, settingsRevision = 0, observedSettingsRevision = 0;
     const number = String, customSelect = () => {}, renderScopes = () => {}, renderBalance = () => {};
     const settingsReceipt = () => 'applied', ago = () => 'только что';
     const api = async () => ({settings:{revision:1, rooms:{maxRooms:2}}, applied:{revision:1}, balance:{}});

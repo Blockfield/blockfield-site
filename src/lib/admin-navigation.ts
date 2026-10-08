@@ -21,6 +21,7 @@ export const NAV_GROUPS: NavGroup[] = [
     tabs: [
       { id: 'settings', perm: 'settings' },
       { id: 'weapons', perm: 'settings' },
+      { id: 'kits', perm: 'settings' },
       { id: 'workshop', perm: 'view' },
       { id: 'stats', perm: 'stats' },
     ],

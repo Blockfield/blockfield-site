@@ -124,8 +124,12 @@ function start() {
   })
   watchResults()
   watchDirectory(settingsDir(), (name) => {
-    if (['settings.json', 'applied.json', 'gun-balance.json'].includes(name))
-      publish({ type: 'settings', ...settingsSnapshot(name === 'gun-balance.json') })
+    if (['settings.json', 'applied.json', 'gun-balance.json', 'kits.json'].includes(name))
+      publish({
+        type: 'settings',
+        ...settingsSnapshot(name === 'gun-balance.json'),
+        ...(name === 'kits.json' ? { kits: true } : {}),
+      })
   })
   roomsTimer = setInterval(() => {
     void currentRooms().then((rooms) => {

@@ -124,7 +124,7 @@ async function setup(options = {}) {
     const gunText = value => JSON.stringify(value) ?? 'null';
     const gunLabel = gun => gun.id; const KIT_GUNS = new Set();
     let rules = {}, defaults = {}, balance = {}, scope = '*', hadLocks, extraLocks = [], fieldId = 0;
-    let settingsLoaded = false, settingsRevision = 0, observedSettingsRevision = 0, lastApplied = null;
+    let kitCatalog; let settingsLoaded = false, settingsRevision = 0, observedSettingsRevision = 0, lastApplied = null;
     let settingsQueue = Promise.resolve(), gunQueue = Promise.resolve(), gunPending = 0, settingsQueueVersion = 0, gunQueueVersion = 0;
     let gunCatalog, selectedGun, gunOverrides = {}, gunRevision = 0;
     const gunReaders = new Map(), settingValues = new Map(), stateTimers = new WeakMap();
@@ -135,7 +135,7 @@ async function setup(options = {}) {
     const scopeDefault = (key, selectedScope = scope) => selectedScope === '*' ? BALANCE_DEFAULTS.room[key] : balance['*']?.[key] ?? BALANCE_DEFAULTS[selectedScope][key];
     const busyControls = new WeakSet(), queuedSettings = new Map();
     const pendingRequests = new Map(), followTokens = new WeakMap(), requestResults = new Map();
-    let savedMessage = '', messageInFlight = false, messageTimer;
+    let savedMessage = ${JSON.stringify(options.message ?? '')}, messageInFlight = false, messageTimer;
     ${functions}
     autosaveKeys($('#settings-form')); autosaveKeys($('#gun-balance-form'));
     $('#settings-form').addEventListener('change', e => commitSetting(e.target));
@@ -643,7 +643,7 @@ test('early request receipts resolve immediately and cache only the last 50 ids'
     for (let i = 0; i < 60; i++) dom.window.requestResult('early-' + i, { ok: true })
     assert.equal(dom.window.receiptCache().length, 50)
     const line = dom.window.document.querySelector('#message-form .form-status')
-    assert.equal(await dom.window.follow(line, 'early-59', 'применено'), true)
+    assert.equal((await dom.window.follow(line, 'early-59', 'применено')).ok, true)
     assert.equal(line.textContent, 'применено')
     assert.equal(dom.window.receiptCache().includes('early-59'), false)
     assert.equal(calls.length, 0)
@@ -793,6 +793,30 @@ test('balance undo detects remote edits while a different scope is displayed', a
     assert.equal(calls.length, 1)
     assert.equal(doc.querySelector('#scope').value, 'c')
     assert.equal(dom.window.toastMessages.at(-1), 'Сила: значение уже изменил кто-то')
+  } finally {
+    dom.window.close()
+  }
+})
+
+test('message undo refuses a newer server message', async () => {
+  const { dom, calls } = await setup({ message: 'Прежнее сообщение' })
+  try {
+    const input = dom.window.document.querySelector('#message')
+    input.value = 'Новое сообщение'
+    const done = dom.window.commitMessage()
+    await Promise.resolve()
+    dom.window.finishMessage({ ok: true })
+    await done
+    assert.equal(
+      dom.window.document.querySelector('.toast span').textContent,
+      'Сообщение мастерской: Прежнее сообщение → Новое сообщение',
+    )
+    dom.window.api = async () => ({ status: { message: 'Чужая правка' } })
+    dom.window.document.querySelector('.toast button').click()
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(calls.length, 1)
+    assert.equal(input.value, 'Новое сообщение')
+    assert.equal(dom.window.toastMessages.at(-1), 'Сообщение уже изменено. Отмена недоступна.')
   } finally {
     dom.window.close()
   }

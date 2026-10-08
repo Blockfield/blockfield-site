@@ -199,6 +199,8 @@ test('file watchers emit settings, catalog invalidation and request results', as
   await until(() =>
     received.some((event) => event.type === 'settings' && event.gunBalance === true),
   )
+  writeFileSync(join(directory, 'kits.json'), '{}')
+  await until(() => received.some((event) => event.type === 'settings' && event.kits === true))
   const id = '12345678-1234-4234-8234-123456789abc'
   writeFileSync(join(directory, 'results', `${id}.json`), '{"ok":true}')
   await until(() => received.some((event) => event.type === 'request' && event.id === id))

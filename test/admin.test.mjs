@@ -1026,19 +1026,53 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
         kind: 'arena',
         mapJson: { id: mapId },
         head: null,
-        versions: [],
+        versions: [
+          {
+            schema: 1,
+            mapId,
+            kind: 'arena',
+            versionDigest: 'a'.repeat(64),
+            parent: null,
+            createdAt: 1,
+            author: { name: 'Bob' },
+            source: 'commit',
+            note: 'Layout update',
+            worldDigest: 'b'.repeat(64),
+            changed: ['world/region/r.0.0.mca'],
+            deleted: [],
+            fileCount: 2,
+          },
+        ],
+        branches: [
+          {
+            schema: 1,
+            mapId,
+            name: 'layout-work',
+            versionDigest: 'a'.repeat(64),
+            generation: 1,
+            workingCopyId: null,
+            createdAt: 1,
+            createdBy: { draslId: OTHER, name: 'Bob' },
+          },
+        ],
       })),
     }),
   )
   writeFileSync(
     join(dirs.BLOCKFIELD_ADMIN_DIR, 'session.json'),
-    JSON.stringify({ schema: 1, id: workingCopyId, maps: ['fields', 'konstaxa'] }),
+    JSON.stringify({
+      schema: 1,
+      id: workingCopyId,
+      maps: ['fields', 'konstaxa'],
+      branches: { fields: 'layout-work', konstaxa: 'layout-work' },
+    }),
   )
   writeFileSync(
     join(dirs.BLOCKFIELD_ADMIN_DIR, 'status.json'),
     JSON.stringify({
       schema: 1,
       phase: 'workshop',
+      gate: 'builders',
       desired: { profile: 'workshop', session: workingCopyId },
     }),
   )
@@ -1079,6 +1113,8 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
     ['candidate', 'fields', 'Bob'],
   )
   assert.equal(request.workingCopyId, workingCopyId)
+  assert.equal(request.branch, 'layout-work')
+  assert.equal(request.expectedBranchHead, 'a'.repeat(64))
   assert.ok(
     (await s.auditLog(5)).some(
       (e) => e.action === 'workshop-candidate' && e.ok && e.target === 'fields',
@@ -1211,13 +1247,13 @@ test('raw console: owner only, one validated line, every call audited including 
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
   await s.setStaff(MOD, 'Moddy', 'moderator', 'seed')
   await s.setStaff(OTHER, 'Bob', 'builder', 'seed')
-  const call = (as, command) => {
+  const call = (as, command, target) => {
     process.env.BLOCKFIELD_ADMIN_DEV_USER = as
     const url = new URL('http://site/api/admin/rcon/raw')
     const request = new Request(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ command }),
+      body: JSON.stringify(target !== undefined ? { command, target } : { command }),
     })
     return handleAdmin({ request, url, cookies: { get: () => undefined } }, 'rcon/raw', s).then(
       (r) => r,
@@ -1229,7 +1265,12 @@ test('raw console: owner only, one validated line, every call audited including 
   assert.equal((await call(`${OWNER}:Nether`, 'say a\nstop')).status, 400)
   const ok = await call(`${OWNER}:Nether`, '/time set day')
   assert.equal(ok.status, 200)
-  assert.deepEqual(await ok.json(), { command: 'time set day', output: 'Done', rejected: false })
+  assert.deepEqual(await ok.json(), {
+    command: 'time set day',
+    output: 'Done',
+    rejected: false,
+    target: 'game',
+  })
   assert.equal((await (await call(`${OWNER}:Nether`, 'bogus')).json()).rejected, true)
   assert.deepEqual(seen, ['time set day', 'bogus'], 'refused and invalid commands never reach RCON')
 
@@ -1245,6 +1286,7 @@ test('raw console: owner only, one validated line, every call audited including 
       ['Adm', 'rcon:raw', 0, null],
     ],
   )
+  assert.equal(JSON.parse(log[1].detail).target, 'game')
   assert.equal(JSON.parse(log[1].detail).output, 'Done')
   const command =
     'data modify storage test:config value set value {"password":"example-short-password","access_token":"short-token"}'
@@ -1268,6 +1310,152 @@ test('raw console: owner only, one validated line, every call audited including 
   ])
     assert.ok(!sanitized.includes(leak), `${leak} must not reach the admin-readable audit`)
   assert.ok(sanitized.includes('[secret]'))
+})
+
+test('raw console target selector: routes to game or workshop, enforces config and rejects unknown enums', async (t) => {
+  const net = await import('node:net')
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+
+  const frame = (id, type, body) => {
+    const text = Buffer.from(body),
+      out = Buffer.alloc(14 + text.length)
+    out.writeInt32LE(10 + text.length, 0)
+    out.writeInt32LE(id, 4)
+    out.writeInt32LE(type, 8)
+    text.copy(out, 12)
+    return out
+  }
+
+  const makeServer = (expectedPassword, replyPrefix) => {
+    const seen = []
+    const server = net.createServer((socket) => {
+      socket.on('error', () => {})
+      socket.on('data', (chunk) => {
+        const id = chunk.readInt32LE(4),
+          type = chunk.readInt32LE(8),
+          body = chunk.subarray(12, chunk.readInt32LE(0) + 2).toString()
+        if (type === 3) socket.write(frame(body === expectedPassword ? id : -1, 2, ''))
+        else if (type === 2) {
+          seen.push(body)
+          socket.write(frame(id, 0, `${replyPrefix}:${body}`))
+        } else socket.write(frame(id, 0, 'Unknown request'))
+      })
+    })
+    return { server, seen }
+  }
+
+  const game = makeServer('game-pass', 'game')
+  const workshop = makeServer('workshop-pass', 'workshop')
+  await new Promise((resolve) => game.server.listen(0, '127.0.0.1', resolve))
+  await new Promise((resolve) => workshop.server.listen(0, '127.0.0.1', resolve))
+  t.after(() => {
+    game.server.close()
+    workshop.server.close()
+  })
+
+  Object.assign(process.env, {
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_RCON_HOST: '127.0.0.1',
+    BLOCKFIELD_RCON_PORT: String(game.server.address().port),
+    BLOCKFIELD_RCON_PASSWORD: 'game-pass',
+    BLOCKFIELD_WORKSHOP_RCON_HOST: '127.0.0.1',
+    BLOCKFIELD_WORKSHOP_RCON_PORT: String(workshop.server.address().port),
+    BLOCKFIELD_WORKSHOP_RCON_PASSWORD: 'workshop-pass',
+  })
+
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(MOD, 'Moddy', 'moderator', 'seed')
+  await s.setStaff(OTHER, 'Bob', 'builder', 'seed')
+
+  const call = (as, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL('http://site/api/admin/rcon/raw')
+    const request = new Request(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, 'rcon/raw', s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+
+  // 1. Target game
+  const gameRes = await call(`${OWNER}:Nether`, { command: 'say hello game', target: 'game' })
+  assert.equal(gameRes.status, 200)
+  assert.deepEqual(await gameRes.json(), {
+    command: 'say hello game',
+    output: 'game:say hello game',
+    rejected: false,
+    target: 'game',
+  })
+  assert.deepEqual(game.seen, ['say hello game'])
+  assert.deepEqual(workshop.seen, [])
+
+  // 2. Target workshop
+  const wsRes = await call(`${OWNER}:Nether`, { command: 'say hello workshop', target: 'workshop' })
+  assert.equal(wsRes.status, 200)
+  assert.deepEqual(await wsRes.json(), {
+    command: 'say hello workshop',
+    output: 'workshop:say hello workshop',
+    rejected: false,
+    target: 'workshop',
+  })
+  assert.deepEqual(workshop.seen, ['say hello workshop'])
+
+  // 3. Target omitted defaults to game
+  const defaultRes = await call(`${OWNER}:Nether`, { command: 'default command' })
+  assert.equal(defaultRes.status, 200)
+  assert.equal((await defaultRes.json()).target, 'game')
+  assert.deepEqual(game.seen, ['say hello game', 'default command'])
+
+  // 4. Unknown target rejected BEFORE network with 400
+  for (const badTarget of ['bogus', 'GAME', 'Workshop', 'hub', '127.0.0.1']) {
+    const res = await call(`${OWNER}:Nether`, { command: 'test', target: badTarget })
+    assert.equal(res.status, 400)
+    assert.equal((await res.json()).error, 'Неизвестная цель консоли.')
+  }
+  // Verify neither server saw any of the bad target commands
+  assert.deepEqual(game.seen, ['say hello game', 'default command'])
+  assert.deepEqual(workshop.seen, ['say hello workshop'])
+
+  // 5. Unconfigured Workshop RCON returns 503 and NEVER falls back to Game
+  delete process.env.BLOCKFIELD_WORKSHOP_RCON_HOST
+  const unconfiguredWs = await call(`${OWNER}:Nether`, { command: 'test', target: 'workshop' })
+  assert.equal(unconfiguredWs.status, 503)
+  assert.equal((await unconfiguredWs.json()).error, 'RCON для Workshop не настроен на сайте.')
+  assert.deepEqual(
+    game.seen,
+    ['say hello game', 'default command'],
+    'no fallback from Workshop to Game',
+  )
+
+  // 6. Unconfigured Game RCON returns 503
+  delete process.env.BLOCKFIELD_RCON_HOST
+  const unconfiguredGame = await call(`${OWNER}:Nether`, { command: 'test', target: 'game' })
+  assert.equal(unconfiguredGame.status, 503)
+  assert.equal((await unconfiguredGame.json()).error, 'RCON не настроен на сайте.')
+
+  // 7. Non-owner roles are denied for both targets unchanged (403)
+  for (const who of [`${ADMIN}:Adm`, `${MOD}:Moddy`, `${OTHER}:Bob`]) {
+    assert.equal((await call(who, { command: 'stop', target: 'workshop' })).status, 403, who)
+    assert.equal((await call(who, { command: 'stop', target: 'game' })).status, 403, who)
+  }
+
+  // 8. Audit log records targets
+  const auditEntries = await s.auditLog()
+  const rawEntries = auditEntries.filter((e) => e.action === 'rcon:raw')
+  const wsAudit = rawEntries.find((e) => e.target === 'say hello workshop')
+  assert.ok(wsAudit, 'workshop command was audited')
+  assert.equal(JSON.parse(wsAudit.detail).target, 'workshop')
+  assert.equal(JSON.parse(wsAudit.detail).output, 'workshop:say hello workshop')
 })
 
 test('diagnostics are admin-only and never report health without data', async (t) => {

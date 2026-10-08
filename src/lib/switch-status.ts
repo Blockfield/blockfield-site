@@ -1,6 +1,6 @@
 /**
- * Pure mapping from the controller's status.json (tools/workshop/controller.py, blockfield-modpack)
- * to what the admin panel shows about an in-progress mode switch. Kept separate from admin.astro's
+ * Pure mapping from blockfield-workshop's status.json to the Workshop lifecycle and independently
+ * observed Game readiness. Kept separate from admin.astro's
  * DOM code so it is unit-testable without a browser.
  *
  * status.json fields used here (all additive; older files may lack error/errorMessage/since/deadline):
@@ -11,12 +11,15 @@
 
 export type ControllerStatus =
   | {
+      schema?: number
       phase?: string
+      gate?: string
       error?: string | null
       errorMessage?: string | null
       since?: number | null
       deadline?: number | null
       desired?: { profile?: string } | null
+      game?: { phase?: string; gate?: string; release?: string | null } | null
     }
   | null
   | undefined
@@ -39,14 +42,14 @@ export type SwitchView = {
 }
 
 const TARGET_LABEL: Record<string, string> = {
-  game: 'игровой режим',
+  game: 'мастерскую',
   workshop: 'мастерскую',
   test: 'тестовый режим',
 }
 const BUSY_STEP: Record<string, string> = {
-  REQUESTED: 'Готовим переключение',
-  DRAINING: 'Ждём конца матчей',
-  SAVING: 'Сохраняем мир',
+  REQUESTED: 'Готовим мастерскую',
+  DRAINING: 'Ожидаем готовности мастерской',
+  SAVING: 'Сохраняем мир мастерской',
 }
 const BUSY_PHASES = new Set(['REQUESTED', 'DRAINING', 'SAVING', 'STARTING'])
 const STABLE_PHASES = new Set(['game', 'workshop', 'test'])
@@ -55,6 +58,17 @@ const CANCELLABLE_PHASES = new Set(['DRAINING', 'STARTING'])
 const ms = (value: unknown): number | null =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
 const text = (value: unknown): string | null => (typeof value === 'string' && value ? value : null)
+
+/** Workshop phase alone never establishes Game readiness. Missing or malformed exports fail closed. */
+export function gameReady(state: ControllerStatus): boolean {
+  return (
+    state?.schema === 1 &&
+    state.game?.phase === 'game' &&
+    state.game.gate === 'public' &&
+    (state.game.release === null ||
+      (typeof state.game.release === 'string' && state.game.release.length > 0))
+  )
+}
 
 export function switchView(state: ControllerStatus): SwitchView {
   const phase = typeof state?.phase === 'string' ? state.phase : null
@@ -67,14 +81,14 @@ export function switchView(state: ControllerStatus): SwitchView {
       ? null
       : phase === 'STARTING'
         ? `Запускаем ${target ?? 'сервер'}`
-        : (BUSY_STEP[phase!] ?? 'Переключаемся'),
+        : (BUSY_STEP[phase!] ?? 'Перезапускаем мастерскую'),
     since: busy ? ms(state?.since) : null,
     deadline: busy ? ms(state?.deadline) : null,
     canCancel: phase !== null && CANCELLABLE_PHASES.has(phase),
     errorMessage: phase === 'ERROR' ? errorMessage : null,
     notice:
       phase !== null && STABLE_PHASES.has(phase) && errorMessage
-        ? `Переключение не состоялось: ${errorMessage}`
+        ? `Мастерская вернулась в прежний режим: ${errorMessage}`
         : null,
   }
 }

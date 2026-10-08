@@ -26,6 +26,7 @@ test('groups cover every section once, nav order is operations first', () => {
     'matches',
     'settings',
     'weapons',
+    'kits',
     'workshop',
     'stats',
     'health',
