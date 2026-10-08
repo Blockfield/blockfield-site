@@ -507,9 +507,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             <header class="stack-head">
               <h3 id="candidates-title">Карты на проверке</h3>
               <p class="muted">
-                Сначала зафиксируйте изменения в ветке, затем отправьте коммит на проверку. Новые
-                правки в мире в эту проверку не входят. Проверенная карта станет доступна новым
-                матчам. Уже начатые бои сохранят свою карту.
+                Сохраните изменения в ветке и отправьте их на проверку. Проверенная карта станет
+                доступна новым матчам. Уже начатые бои сохранят свою карту.
               </p>
             </header>
             <p class="form-status" id="candidates-status" role="status"></p>
@@ -2162,7 +2161,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       return {
         tone: 'warn',
         title: 'Готовность мастерской не подтверждена',
-        detail: 'Дождитесь состояния от управляющей программы.',
+        detail: 'Ждём ответа сервера.',
       }
     }
     function describeGame(state: any, rooms: any): { tone: string; title: string; detail: string } {
@@ -2175,7 +2174,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             state?.game?.phase === 'STARTING'
               ? 'Игра запускается'
               : 'Готовность игры не подтверждена',
-          detail: 'Дождитесь состояния игрового сервера.',
+          detail: 'Ждём ответа сервера.',
         }
       if (rooms.available)
         return {
@@ -2191,6 +2190,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           : 'Игроки сейчас не могут зайти.',
       }
     }
+    let lastWorkshop: ReturnType<typeof describeWorkshop> | undefined
     async function loadOverview() {
       await renderOverview(await api('overview'))
     }
@@ -2204,12 +2204,29 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               (c: any) => c.sha256 === state.desired.candidate,
             ) ?? null)
           : null
-      const workshop = describeWorkshop(state, session, testCandidate)
+      const workshop = (lastWorkshop = describeWorkshop(state, session, testCandidate))
       say(
         $('#editor-state'),
         `${workshop.title}. ${workshop.detail}`,
         workshop.tone === 'bad' ? 'error' : workshop.tone === 'warn' ? 'pending' : 'ok',
       )
+      renderGameOverview(state, rooms, workshop)
+      const message = $<HTMLTextAreaElement>('#message')
+      if (
+        !message.value &&
+        typeof state?.message === 'string' &&
+        document.activeElement !== message
+      )
+        savedMessage = message.value = state.message
+      // The candidates card's «Тест» button depends on the phase just learned above; keep it in sync (cheap local read).
+      if (can('workshop')) loadCandidates().catch(() => {})
+    }
+
+    function renderGameOverview(
+      state: any,
+      rooms: any,
+      workshop = describeWorkshop(state, session, null),
+    ) {
       const view = describeGame(state, rooms)
       $('#lamp').dataset.tone = view.tone
       $('#lamp').textContent = view.title
@@ -2222,19 +2239,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       ]
         .filter(Boolean)
         .join(' · ')
-      const message = $<HTMLTextAreaElement>('#message')
-      if (
-        !message.value &&
-        typeof state?.message === 'string' &&
-        document.activeElement !== message
-      )
-        savedMessage = message.value = state.message
       renderModes(workshop, rooms)
       renderRooms(rooms)
-      // The candidates card's «Тест» button depends on the phase just learned above; keep it in sync (cheap local read).
-      if (can('workshop')) loadCandidates().catch(() => {})
     }
-
     function renderRoomSummary(rooms: any) {
       for (const [selector, value] of [
         ['#s-online', rooms.online],
@@ -2291,7 +2298,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       const box = $('#mode-options')
       const view = switchView(controller)
       renderProgress(view)
-      const ready = gameReady(controller) && !rooms.maintenance
+      const ready = gameReady(controller) && rooms.available && !rooms.maintenance
       const editor = el(
         'div',
         { className: 'option' },
@@ -3316,8 +3323,66 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       kitClassCosts: Record<string, number> = {},
       kitSnapshot = ''
     let kitQueue = Promise.resolve(),
-      kitPending = 0,
-      kitTimer: ReturnType<typeof setTimeout> | undefined
+      kitPending = 0
+    type KitPatch = { path: string[]; value: any }
+    const kitChanges = new Map<HTMLElement, KitPatch[]>(),
+      kitTimers = new Map<HTMLElement, ReturnType<typeof setTimeout>>()
+    let kitEditingControl: HTMLElement | null = null
+    for (const event of ['input', 'change', 'click'])
+      $('#kits-form').addEventListener(
+        event,
+        (event) => {
+          kitEditingControl = event.target as HTMLElement
+        },
+        true,
+      )
+    function kitDiff(before: any, after: any, path: string[] = []): KitPatch[] {
+      if (JSON.stringify(before) === JSON.stringify(after)) return []
+      if (
+        before &&
+        after &&
+        typeof before === 'object' &&
+        typeof after === 'object' &&
+        Array.isArray(before) === Array.isArray(after) &&
+        (!Array.isArray(before) || before.length === after.length)
+      )
+        return [...new Set([...Object.keys(before), ...Object.keys(after)])].flatMap((key) =>
+          kitDiff(before[key], after[key], [...path, key]),
+        )
+      if (before === undefined && after && typeof after === 'object' && !Object.keys(after).length)
+        return []
+      return [{ path, value: after }]
+    }
+    function kitDraftDiff(before: any, after: any) {
+      return kitDiff(
+        { ...before, kits: effectiveKits(kitCatalog!, before.kits, kitClassCosts) },
+        { ...after, kits: effectiveKits(kitCatalog!, after.kits, kitClassCosts) },
+      )
+    }
+    function kitPatch(body: any, { path, value }: KitPatch) {
+      let parent = body
+      for (const key of path.slice(0, -1)) parent = parent[key] ??= {}
+      const key = path.at(-1)!
+      if (value === undefined) delete parent[key]
+      else parent[key] = structuredClone(value)
+    }
+    function kitValue(body: any, path: string[]) {
+      return path.reduce((value, key) => value?.[key], body)
+    }
+    function rememberKitChange(before: any, after: any, path: string[]) {
+      const changes = kitDiff(before, after, path)
+      if (kitEditingControl) {
+        const previous = kitChanges.get(kitEditingControl) ?? []
+        kitChanges.set(kitEditingControl, [
+          ...previous.filter(
+            (old) =>
+              !changes.some((change) => JSON.stringify(change.path) === JSON.stringify(old.path)),
+          ),
+          ...changes,
+        ])
+      }
+      return changes
+    }
     let kitDraftSnapshot = ''
     const kitBody = () => JSON.stringify({ kits: kitOverrides, fixedModeKits: kitBindings })
     function kitMeta() {
@@ -3350,11 +3415,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       $<HTMLButtonElement>('#kit-reset').disabled = !kit
       $<HTMLButtonElement>('#kit-new').disabled =
         Object.keys(definitions).length >= kitCatalog.fields.kits.max
+      let previousDraft = structuredClone(kit)
       $('#kit-fields').replaceChildren(
         ...(kit
           ? [
               renderKitForm(kitCatalog, kit, (draft) => {
-                kitOverrides[draft.id] = draft
+                const changes = rememberKitChange(previousDraft, draft, ['kits', draft.id])
+                previousDraft = structuredClone(draft)
+                const body = { kits: kitOverrides, fixedModeKits: kitBindings }
+                kitOverrides[draft.id] ??= structuredClone(kit)
+                for (const change of changes) kitPatch(body, change)
                 renderKitBindings()
                 kitMeta()
                 scheduleKitSave()
@@ -3390,10 +3460,12 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 ? 'menu'
                 : `kit:${kitBindings[mode.id]}`
             input.addEventListener('change', () => {
+              const before = kitBindings[mode.id]
               if (input.value === 'default') delete kitBindings[mode.id]
               else kitBindings[mode.id] = input.value === 'menu' ? null : input.value.slice(4)
+              rememberKitChange(before, kitBindings[mode.id], ['fixedModeKits', mode.id])
               kitMeta()
-              scheduleKitSave()
+              scheduleKitSave(input)
             })
             return field(ARENA_MODES[mode.id as keyof typeof ARENA_MODES] ?? mode.id, input)
           }),
@@ -3415,12 +3487,23 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         say($('#kits-status'), availability.error, 'error')
         return
       }
+      if (settings.revision < observedSettingsRevision) return
+      if (
+        live &&
+        kitCatalog &&
+        (kitPending ||
+          kitBody() !== kitSnapshot ||
+          $('#kits-form').contains(document.activeElement))
+      )
+        return
       kitCatalog = availability.catalog
       kitOverrides = Object.assign(Object.create(null), structuredClone(settings.kits ?? {}))
       kitBindings = structuredClone(settings.fixedModeKits ?? {})
       kitRevision = settings.revision
       kitClassCosts = structuredClone(settings.classCosts ?? {})
       kitSnapshot = kitDraftSnapshot = kitBody()
+      kitChanges.clear()
+      await loadSettings(0, true, { settings })
       renderKits()
       say(
         $('#kits-status'),
@@ -3481,9 +3564,13 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         }))
       )
         return
+      const control = $('#kit-reset'),
+        before = kitOverrides[selectedKit]
       delete kitOverrides[selectedKit]
+      kitEditingControl = control
+      rememberKitChange(before, undefined, ['kits', selectedKit])
       renderKits()
-      scheduleKitSave()
+      scheduleKitSave(control)
     }
     $('#kits-refresh').onclick = async () => {
       if (
@@ -3498,34 +3585,46 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         return
       run($('#kits-status'), loadKits, $('#kits-form'))
     }
-    function scheduleKitSave() {
-      clearTimeout(kitTimer)
-      const control = document.activeElement instanceof HTMLElement ? document.activeElement : null
-      kitTimer = setTimeout(() => void commitKits(undefined, control), 1200)
+    function scheduleKitSave(control = kitEditingControl) {
+      if (!control) return
+      clearTimeout(kitTimers.get(control))
+      kitTimers.set(
+        control,
+        setTimeout(() => void commitKits(undefined, control), 1200),
+      )
     }
     function commitKits(
-      undo?: { before: any; after: any },
-      control: HTMLElement | null = document.activeElement instanceof HTMLElement
+      undo?: { before: KitPatch[]; after: KitPatch[] },
+      control: HTMLElement | null = document.activeElement instanceof HTMLElement &&
+      $('#kits-form').contains(document.activeElement)
         ? document.activeElement
         : null,
     ) {
-      clearTimeout(kitTimer)
-      const before = undo?.after ?? JSON.parse(kitDraftSnapshot),
-        after = undo?.before ?? JSON.parse(kitBody()),
-        changes = ['kits', 'fixedModeKits'].flatMap((section) =>
-          [...new Set([...Object.keys(before[section]), ...Object.keys(after[section])])]
-            .filter(
-              (id) => JSON.stringify(before[section][id]) !== JSON.stringify(after[section][id]),
-            )
-            .map((id) => ({ section, id, value: after[section][id] })),
-        ),
+      if (control) {
+        clearTimeout(kitTimers.get(control))
+        kitTimers.delete(control)
+      }
+      const draft = JSON.parse(kitBody()),
+        baseline = JSON.parse(kitDraftSnapshot),
+        changes =
+          undo?.before ??
+          (control && kitChanges.get(control)) ??
+          (control ? [] : kitDraftDiff(baseline, draft)),
         line = control?.closest('.field')?.querySelector<HTMLElement>('.state') ?? $('#kits-status')
       if (!changes.length) return kitQueue
-      if (!undo && !$<HTMLFormElement>('#kits-form').checkValidity()) {
+      if (!undo && control instanceof HTMLInputElement && !control.checkValidity()) {
         fieldState(line, 'Исправьте значение.', 'error')
         return kitQueue
       }
-      if (!undo) kitDraftSnapshot = JSON.stringify(after)
+      if (!undo && !control && !$<HTMLFormElement>('#kits-form').checkValidity()) {
+        fieldState(line, 'Исправьте значение.', 'error')
+        return kitQueue
+      }
+      if (!undo) {
+        for (const change of changes) kitPatch(baseline, change)
+        kitDraftSnapshot = JSON.stringify(baseline)
+        if (control) kitChanges.delete(control)
+      }
       kitPending++
       fieldState(line, 'сохраняем…', 'saving')
       kitQueue = kitQueue.then(async () => {
@@ -3536,21 +3635,28 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               body: any = {
                 kits: structuredClone(fresh.settings.kits ?? {}),
                 fixedModeKits: structuredClone(fresh.settings.fixedModeKits ?? {}),
+              },
+              effective = effectiveKits(kitCatalog, body.kits, fresh.settings.classCosts ?? {})
+            for (const { path } of changes)
+              if (path[0] === 'kits' && path.length > 2 && !body.kits[path[1]]) {
+                if (!effective[path[1]] && JSON.parse(kitSnapshot).kits[path[1]])
+                  throw new Error('Набор уже удалён. Обновите каталог.')
+                body.kits[path[1]] = structuredClone(effective[path[1]] ?? draft.kits[path[1]])
               }
             if (
               undo &&
-              changes.some(
-                ({ section, id }) =>
-                  JSON.stringify(body[section][id]) !== JSON.stringify(before[section][id]),
+              undo.after.some(
+                ({ path, value }) => JSON.stringify(kitValue(body, path)) !== JSON.stringify(value),
               )
             ) {
               toast('Наборы уже изменены. Отмена недоступна.')
               return
             }
-            for (const { section, id, value } of changes) {
-              if (value === undefined) delete body[section][id]
-              else body[section][id] = value
-            }
+            const before = changes.map(({ path }) => ({
+              path,
+              value: structuredClone(kitValue(body, path)),
+            }))
+            for (const change of changes) kitPatch(body, change)
             validateKitChanges(
               body.kits,
               body.fixedModeKits,
@@ -3562,15 +3668,34 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 expectedRevision: fresh.settings.revision,
                 ...body,
               })
-              kitRevision = result.settings.revision
-              kitSnapshot = JSON.stringify(body)
-              if (undo || kitBody() === JSON.stringify(after)) {
-                kitOverrides = body.kits
-                kitBindings = body.fixedModeKits
-                kitDraftSnapshot = kitBody()
-                if (undo) renderKits()
+              if (result.settings.revision >= observedSettingsRevision) {
+                const expected = JSON.parse(kitSnapshot),
+                  current = JSON.parse(kitBody())
+                for (const change of changes) {
+                  kitPatch(expected, change)
+                  if (
+                    undo &&
+                    undo.after.some(
+                      (saved) =>
+                        JSON.stringify(saved.path) === JSON.stringify(change.path) &&
+                        JSON.stringify(kitValue(current, saved.path)) ===
+                          JSON.stringify(saved.value),
+                    )
+                  )
+                    kitPatch(current, change)
+                }
+                const local = kitDraftDiff(expected, current)
+                kitRevision = result.settings.revision
+                kitSnapshot = JSON.stringify(body)
+                kitDraftSnapshot = kitSnapshot
+                const merged = structuredClone(body)
+                for (const change of local) kitPatch(merged, change)
+                kitOverrides = merged.kits
+                kitBindings = merged.fixedModeKits
+                if (undo && !local.length && !$('#kits-form').contains(document.activeElement))
+                  renderKits()
+                await loadSettings(0, true, result)
               }
-              await loadSettings(0, true, result)
               kitMeta()
               fieldState(line, 'сохранено', 'saved')
               say(
@@ -3584,7 +3709,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                   'прежние значения',
                   'новые значения',
                   false,
-                  () => void commitKits({ before, after }),
+                  () => void commitKits({ before, after: changes }, control),
                 )
               return
             } catch (error) {
@@ -3595,6 +3720,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           fieldState(line, autosaveError(error), 'error')
           say($('#kits-status'), autosaveError(error), 'error')
           kitDraftSnapshot = kitSnapshot
+          if (control && !kitChanges.has(control)) kitChanges.set(control, changes)
         } finally {
           kitPending--
         }
@@ -4531,6 +4657,42 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       savedSessionsTotal = 0
     const mapNotes = new Map<string, string>()
     const mayEditMap = (id: string) => can('map-edit') && editableMaps.has(id)
+    const mapAvailabilityWaiters = new Set<(data: any) => void>()
+    function waitMapAvailability(revision: number, mapId: string, disabled: boolean) {
+      return new Promise<boolean>((resolve, reject) => {
+        const finish = (data: any) => {
+          if ((data.settings?.revision ?? 0) < revision) return
+          const receipt = settingsReceipt(revision, data.applied)
+          if (receipt === 'rejected' || receipt === 'partial') {
+            cleanup()
+            reject(new Error('Игровой сервер отклонил изменение. Прежняя доступность сохранена.'))
+          } else if (
+            receipt === 'applied' &&
+            Array.isArray(data.applied?.disabledMapIds) &&
+            data.applied.disabledMapIds.includes(mapId) === disabled
+          ) {
+            cleanup()
+            resolve(true)
+          }
+        }
+        const cleanup = () => {
+          clearTimeout(timer)
+          mapAvailabilityWaiters.delete(finish)
+        }
+        const timer = setTimeout(async () => {
+          try {
+            finish(await api('settings'))
+            cleanup()
+            resolve(false)
+          } catch (error) {
+            cleanup()
+            reject(error)
+          }
+        }, 30_000)
+        mapAvailabilityWaiters.add(finish)
+        finish({ settings: { revision: observedSettingsRevision }, applied: lastApplied })
+      })
+    }
     function mapAvailabilityControls(map: MapCatalogEntry, line: HTMLElement) {
       const content = el('div', { className: 'stack' })
       if (map.kind !== 'arena' || !map.head) return content
@@ -4591,33 +4753,21 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                     enabled: disabled,
                     expectedRevision: mapAvailability.revision,
                   })
-                  for (let attempt = 0; attempt < 15; attempt++) {
-                    const { applied } = await api('settings'),
-                      receipt = settingsReceipt(settings.revision, applied)
-                    if (receipt === 'rejected' || receipt === 'partial')
-                      throw new Error(
-                        'Игровой сервер отклонил изменение. Прежняя доступность сохранена.',
-                      )
-                    if (
-                      receipt === 'applied' &&
-                      Array.isArray(applied?.disabledMapIds) &&
-                      applied.disabledMapIds.includes(map.mapId) === !disabled
-                    ) {
-                      say(
-                        line,
-                        disabled
-                          ? 'Карта включена для новых матчей и тренировок.'
-                          : 'Карта отключена для новых матчей и тренировок.',
-                      )
-                      await loadMapHistory()
-                      return
-                    }
+                  say(line, 'Сохранено. Применяем доступность…', 'pending')
+                  const confirmed = await waitMapAvailability(
+                    settings.revision,
+                    map.mapId,
+                    !disabled,
+                  )
+                  if (confirmed) {
                     say(
                       line,
-                      'Сохранено. Ожидаем подтверждения доступности от игрового сервера…',
-                      'pending',
+                      disabled
+                        ? 'Карта включена для новых матчей и тренировок.'
+                        : 'Карта отключена для новых матчей и тренировок.',
                     )
-                    await new Promise((resolve) => setTimeout(resolve, 2000))
+                    await loadMapHistory()
+                    return
                   }
                   say(
                     line,
@@ -4731,7 +4881,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             ? 'Рабочая копия или сохранённая версия недоступна. Сообщите администратору.'
             : /actor|member|scope|permission/i.test(error)
               ? 'Мастерская не подтвердила участника или доступ к карте. Попросите администратора обновить доступ.'
-              : 'Контроллер не выполнил запрос. Обновите состояние и попробуйте снова.'
+              : 'Не удалось выполнить запрос. Обновите состояние и попробуйте снова.'
       say(line, message, 'error')
       return true
     }
@@ -4749,14 +4899,14 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         typeof result.payload !== 'object' ||
         (body.mapId && result.payload.mapId !== body.mapId)
       ) {
-        say(line, 'Контроллер не передал данные результата. Обновите историю карты.', 'error')
+        say(line, 'Результат пока недоступен. Обновите историю карты.', 'error')
         return null
       }
       return result.payload
     }
     function renderMapChanges(outlet: HTMLElement, data: any) {
       if (!Array.isArray(data?.files) || !Array.isArray(data?.config))
-        throw new Error('Контроллер не передал корректное сравнение. Обновите историю.')
+        throw new Error('Не удалось сравнить версии. Обновите историю и попробуйте ещё раз')
       const rows = el('ul', { className: 'rows git-diff' }),
         more = button('Показать ещё изменения', append, 'small')
       const entries = [
@@ -4844,7 +4994,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       )
       if (!data) return
       if (data.before !== before || data.after !== after)
-        throw new Error('Контроллер вернул сравнение других версий. Обновите историю.')
+        throw new Error('Версии для сравнения изменились. Обновите историю и попробуйте ещё раз.')
       renderMapChanges(outlet, data)
     }
     async function openMapBranch(map: MapCatalogEntry, branch: string) {
@@ -5211,7 +5361,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             !Number.isSafeInteger(data.total) ||
             !(data.next === null || Number.isSafeInteger(data.next))
           )
-            throw new Error('Контроллер не передал список черновиков. Попробуйте обновить историю.')
+            throw new Error(
+              'Не удалось загрузить черновики. Обновите историю и попробуйте ещё раз.',
+            )
           const byId = new Map(
             [...savedMapSessions, ...data.sessions].map((saved) => [saved.id, saved]),
           )
@@ -5301,7 +5453,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                   follow(line, id, `Содержимое «${name}» восстановлено новым коммитом.`).then(
                     loadMapHistory,
                   )
-                  return 'Запрос отправлен. Ожидаем подтверждение контроллера…'
+                  return 'применяем…'
                 })
               },
               'small',
@@ -5342,7 +5494,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             map.kind === 'limbo'
               ? el('p', {
                   textContent:
-                    'Подготовка версии доступна в режиме мастерской. Выбор версии требует остановленного прокси и не запускает его автоматически.',
+                    'Подготовьте версию в мастерской. Прокси нужно остановить, иначе версия не сменится.',
                 })
               : null,
             mapAvailabilityControls(map, line),
@@ -5397,7 +5549,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         !Array.isArray(data.unresolved) ||
         !data.changes
       )
-        throw new Error('Контроллер не подтвердил точные версии слияния. Обновите историю.')
+        throw new Error(
+          'Не удалось проверить версии для слияния. Обновите историю и попробуйте ещё раз.',
+        )
       const changes = el('div', {}),
         conflicts = el('div', { className: 'stack git-diff' }),
         fields: HTMLSelectElement[] = []
@@ -6789,6 +6943,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       for (const load of loaders[location.hash.slice(1)] ?? []) load().catch(() => {})
     }
     async function settingsEvent(data: any) {
+      for (const finish of mapAvailabilityWaiters) finish(data)
       if ((data.settings.revision ?? 0) < observedSettingsRevision) return
       const changed = settingsLoaded && data.settings.revision !== observedSettingsRevision
       remoteSettingsName =
@@ -6841,8 +6996,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       )
       events.addEventListener('rooms', (event) => {
         const { rooms } = JSON.parse((event as MessageEvent).data)
-        renderRoomSummary(rooms)
-        renderRooms(rooms)
+        renderGameOverview(controller, rooms, lastWorkshop)
       })
       events.addEventListener(
         'settings',

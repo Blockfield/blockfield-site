@@ -97,7 +97,7 @@ test('live sidebar shows unavailable, empty and scored matches without placehold
       can: () => false,
     })
     dom.window.eval(
-      `const $ = (s) => document.querySelector(s); let controller, session; const PHASES = { VOTING: 'Голосование за карту' }; const describeGame = () => ({ tone: 'bad', title: 'недоступно', detail: '' }); const describeWorkshop = describeGame; const say = () => {}; const ago = () => 'только что'; const renderModes = () => {}; const renderRooms = () => {}; ${functions(['el', 'renderRoomSummary', 'renderOverview', 'loadOverview'])}`,
+      `const $ = (s) => document.querySelector(s); let controller, session, lastWorkshop; const PHASES = { VOTING: 'Голосование за карту' }; const describeGame = () => ({ tone: 'bad', title: 'недоступно', detail: '' }); const describeWorkshop = describeGame; const say = () => {}; const ago = () => 'только что'; const renderModes = () => {}; const renderRooms = () => {}; ${functions(['el', 'renderRoomSummary', 'renderGameOverview', 'renderOverview', 'loadOverview'])}`,
     )
     await dom.window.loadOverview()
     const box = dom.window.document.querySelector('#side-now')
@@ -130,7 +130,7 @@ function liveDom(extra = '') {
     const me = { uuid: 'self', name: 'Nether', permissions: [] };
     const can = () => false;
     ${functions(['el', 'say', 'avatar', 'renderPresence', 'toast', 'controlKey', 'controlValue', 'editingSetting', 'rememberSettingsControls', 'flashSetting', 'replaceSettingsFields'])}
-    const settingValues = new Map(), busyControls = new WeakSet(), queuedSettings = new Map(); let remoteSettingsName = 'Kira';
+    const mapAvailabilityWaiters = new Set(); const settingValues = new Map(), busyControls = new WeakSet(), queuedSettings = new Map(); let remoteSettingsName = 'Kira';
     ${extra}
   `)
   return dom
@@ -336,6 +336,46 @@ test('mode progress carries the step and timing without repeating the option bad
     assert.equal(text.includes('применяем'), false)
     const legend = dom.window.document.querySelector('#role-legend')
     assert.ok(legend.closest('.group'))
+  } finally {
+    dom.window.close()
+  }
+})
+
+test('rooms event renders the real Game headline, lamp, detail and mode readiness without fetching', () => {
+  const dom = new JSDOM(markup, { runScripts: 'outside-only' })
+  try {
+    dom.window.eval(`
+      const $ = s => document.querySelector(s);
+      let controller = { schema:1, phase:'workshop', revision:1, game:{phase:'game',gate:'public'} }, session, lastWorkshop;
+      const can = () => false, ago = () => 'только что';
+      const gameReady = state => state.game.phase === 'game' && state.game.gate === 'public';
+      const switchView = () => ({ busy:false });
+      const describeWorkshop = () => ({title:'Мастерская открыта',detail:'',tone:'ok'});
+      const renderRooms = () => {}, renderProgress = () => {};
+      ${functions(['el', 'describeGame', 'renderRoomSummary', 'renderGameOverview', 'renderModes'])}
+      window.handlers = {};
+      const events = { addEventListener: (name, handler) => window.handlers[name] = handler };
+      ${ts.transpileModule(script.slice(script.indexOf("      events.addEventListener('rooms'"), script.indexOf("      events.addEventListener(\n        'settings'", script.indexOf("      events.addEventListener('rooms'"))), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}
+    `)
+    const send = (rooms) => dom.window.handlers.rooms({ data: JSON.stringify({ rooms }) })
+    send({ available: true, rooms: [], online: 0 })
+    assert.equal(dom.window.document.querySelector('#server-headline').textContent, 'Игра работает')
+    assert.equal(dom.window.document.querySelector('#lamp').dataset.tone, 'ok')
+    assert.match(dom.window.document.querySelector('#mode-options').textContent, /Вход открыт/)
+    send({ available: false, lobby: true })
+    assert.equal(
+      dom.window.document.querySelector('#server-headline').textContent,
+      'Игровой сервер не отвечает',
+    )
+    assert.equal(dom.window.document.querySelector('#lamp').dataset.tone, 'bad')
+    assert.match(
+      dom.window.document.querySelector('#server-detail').textContent,
+      /матчи сейчас недоступны/,
+    )
+    assert.match(
+      dom.window.document.querySelector('#mode-options').textContent,
+      /Готовность не подтверждена/,
+    )
   } finally {
     dom.window.close()
   }

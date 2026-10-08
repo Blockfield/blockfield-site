@@ -52,6 +52,7 @@ const names = [
   'settingsEvent',
   'follow',
   'commitMessage',
+  'waitMapAvailability',
 ]
 const functions = compile(
   source.statements
@@ -124,7 +125,7 @@ async function setup(options = {}) {
     const gunText = value => JSON.stringify(value) ?? 'null';
     const gunLabel = gun => gun.id; const KIT_GUNS = new Set();
     let rules = {}, defaults = {}, balance = {}, scope = '*', hadLocks, extraLocks = [], fieldId = 0;
-    let kitCatalog; let settingsLoaded = false, settingsRevision = 0, observedSettingsRevision = 0, lastApplied = null;
+    const mapAvailabilityWaiters = new Set(); let kitCatalog; let settingsLoaded = false, settingsRevision = 0, observedSettingsRevision = 0, lastApplied = null;
     let settingsQueue = Promise.resolve(), gunQueue = Promise.resolve(), gunPending = 0, settingsQueueVersion = 0, gunQueueVersion = 0;
     let gunCatalog, selectedGun, gunOverrides = {}, gunRevision = 0;
     const gunReaders = new Map(), settingValues = new Map(), stateTimers = new WeakMap();
@@ -817,6 +818,34 @@ test('message undo refuses a newer server message', async () => {
     assert.equal(calls.length, 1)
     assert.equal(input.value, 'Новое сообщение')
     assert.equal(dom.window.toastMessages.at(-1), 'Сообщение уже изменено. Отмена недоступна.')
+  } finally {
+    dom.window.close()
+  }
+})
+
+test('map availability resolves from the settings stream and uses only one deadline recovery GET', async () => {
+  const { dom, calls } = await setup()
+  try {
+    let deadline
+    dom.window.setTimeout = (callback) => {
+      deadline = callback
+      return 1
+    }
+    dom.window.clearTimeout = () => {}
+    const pending = dom.window.waitMapAvailability(4, 'test:map', true)
+    await dom.window.settingsEvent({ settings: { revision: 4 }, applied: { revision: 3 } })
+    assert.equal(calls.length, 0)
+    await dom.window.settingsEvent({
+      settings: { revision: 4 },
+      applied: { revision: 4, errors: [], disabledMapIds: ['test:map'] },
+    })
+    assert.equal(await pending, true)
+    assert.equal(calls.length, 0)
+    const recovery = dom.window.waitMapAvailability(5, 'test:map', false)
+    await deadline()
+    assert.equal(await recovery, false)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].method, 'GET')
   } finally {
     dom.window.close()
   }
