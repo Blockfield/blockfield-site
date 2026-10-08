@@ -102,7 +102,9 @@ export const kitFixture = () => {
       'lrtactical:throwable',
       'test:armor',
       'test:uniform',
-    ].map((id) => ({ id, name: id, kind: id === 'test:armor' ? 'armor' : 'other' })),
+    ]
+      .map((id) => ({ id, name: id, kind: id === 'test:armor' ? 'armor' : 'other' }))
+      .concat({ id: 'superbwarfare:rpg', name: 'РПГ', kind: 'sbwGun' }),
     guns: [{ id: 'test:rifle', name: 'Винтовка' }],
     ammos: [{ id: 'test:round', name: 'Патроны' }],
     attachments: [{ id: 'test:scope', name: 'Прицел' }],

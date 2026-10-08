@@ -165,11 +165,16 @@ export function renderKitForm(
     return field(title, input)
   }
   function itemFields(item: KitItem, accessory: boolean) {
-    const content = node('div', { className: 'stack' })
+    const content = node('div', { className: 'stack' }),
+      sbwGun = catalog.items.find((entry) => entry.id === item.id)?.kind === 'sbwGun'
     content.append(
       choice('Предмет', catalog.items, item.id, (value) => {
         item.id = value!
-        if (item.id === 'tacz:modern_kinetic_gun') item.count = 1
+        if (
+          item.id === 'tacz:modern_kinetic_gun' ||
+          catalog.items.find((entry) => entry.id === item.id)?.kind === 'sbwGun'
+        )
+          item.count = 1
         delete item.data
         const entries = (
           {
@@ -184,7 +189,7 @@ export function renderKitForm(
       }),
       number('Количество', 'count', item.count, (value) => (item.count = value!)),
     )
-    if (item.id === 'tacz:modern_kinetic_gun') {
+    if (item.id === 'tacz:modern_kinetic_gun' || sbwGun) {
       const count = content.querySelector<HTMLInputElement>('input[type="number"]')!
       count.max = '1'
       count.readOnly = true
@@ -233,11 +238,20 @@ export function renderKitForm(
         ),
       )
     const metadata = node('div', { className: 'stack' })
-    for (const key of ['armorPlate', 'color', 'damage'])
+    for (const key of sbwGun ? [] : ['armorPlate', 'color', 'damage'])
       metadata.append(number(labels[key], key, data[key], (value) => setData(key, value), true))
+    if (item.id === 'tacz:modern_kinetic_gun' || sbwGun)
+      metadata.append(
+        number(
+          sbwGun ? 'Боеприпасов в оружии' : labels.gunAmmo,
+          'gunAmmo',
+          data.gunAmmo,
+          (value) => setData('gunAmmo', value),
+          true,
+        ),
+      )
     if (item.id === 'tacz:modern_kinetic_gun') {
       metadata.append(
-        number(labels.gunAmmo, 'gunAmmo', data.gunAmmo, (value) => setData('gunAmmo', value), true),
         choice(
           labels.fireMode,
           catalog.fields.fireModes.map((id: string) => ({ id, name: id })),

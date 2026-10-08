@@ -110,8 +110,9 @@ function item(value: unknown, accessory: boolean, catalog: KitCatalog, path: str
   keys(value, ['id', 'count', 'slot', 'index', 'data'], path)
   requireKit(registered(catalog.items, value.id), path, 'предмет отсутствует в серверном реестре')
   bounded(value.count, 'count', catalog, path + '.count')
+  const sbwGun = catalog.items.find((entry) => entry.id === value.id)?.kind === 'sbwGun'
   requireKit(
-    value.id !== 'tacz:modern_kinetic_gun' || value.count === 1,
+    (value.id !== 'tacz:modern_kinetic_gun' && !sbwGun) || value.count === 1,
     path,
     'оружие выдаётся по одному',
   )
@@ -141,7 +142,7 @@ function item(value: unknown, accessory: boolean, catalog: KitCatalog, path: str
     )
     return
   }
-  keys(value.data, catalog.fields.itemData, path + '.data')
+  keys(value.data, sbwGun ? ['gunAmmo'] : catalog.fields.itemData, path + '.data')
   const data = value.data
   if (typed && value.id !== 'tacz:ammo_box')
     requireKit(typeof data[typed[0]] === 'string', path, 'не задан обязательный тип предмета')
@@ -161,6 +162,7 @@ function item(value: unknown, accessory: boolean, catalog: KitCatalog, path: str
   for (const field of ['gunAmmo', 'fireMode', 'bulletInBarrel', 'attachments'])
     requireKit(
       data[field] === undefined ||
+        (field === 'gunAmmo' && sbwGun) ||
         (value.id === 'tacz:modern_kinetic_gun' && typeof data.gunId === 'string'),
       path,
       'настройки оружия требуют gunId',

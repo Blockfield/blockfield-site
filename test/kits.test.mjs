@@ -234,3 +234,80 @@ test('kit forms keep typed catalog controls, lazy item rendering and training vi
   assert.deepEqual(effectiveKits(catalog, {}).rifle.name, 'Винтовка')
   assert.equal(effectiveKits(catalog, { custom: { ...kit, id: 'custom' } }).custom.id, 'custom')
 })
+
+test('SBW guns keep loaded ammo and reject stacked guns, unsupported metadata and invalid ammo', () => {
+  const catalog = parseKitCatalog(kitFixture()),
+    kit = structuredClone(catalog.kits[0].effective),
+    item = { id: 'superbwarfare:rpg', count: 1, data: { gunAmmo: 1 } }
+  kit.variants[0].items = [item]
+  for (const ammo of [0, 1, 1000]) {
+    item.data = { gunAmmo: ammo }
+    assert.doesNotThrow(() => validateKitChanges({ rifle: kit }, {}, catalog))
+  }
+  for (const invalid of [
+    { ...item, count: 2 },
+    ...[-1, 0.5, 1001].map((gunAmmo) => ({ ...item, data: { gunAmmo } })),
+    ...['gunId', 'fireMode', 'bulletInBarrel', 'attachments', 'armorPlate', 'nbt'].map((field) => ({
+      ...item,
+      data: { gunAmmo: 1, [field]: field === 'gunId' ? 'test:rifle' : 1 },
+    })),
+  ]) {
+    kit.variants[0].items = [invalid]
+    assert.throws(() => validateKitChanges({ rifle: kit }, {}, catalog), /Наборы/)
+  }
+  kit.variants[0].items = [{ id: 'superbwarfare:rpg', count: 1 }]
+  assert.doesNotThrow(() => validateKitChanges({ rifle: kit }, {}, catalog))
+  kit.variants[0].items = [{ id: 'minecraft:stone', count: 1, data: { gunAmmo: 1 } }]
+  assert.throws(() => validateKitChanges({ rifle: kit }, {}, catalog), /Наборы/)
+})
+
+test('SBW ammo editor preserves its loaded value and only exposes supported gun metadata', async (t) => {
+  const dom = new JSDOM('<form></form>', { url: 'http://site' }),
+    previous = { document: globalThis.document, Event: globalThis.Event, Node: globalThis.Node }
+  Object.assign(globalThis, {
+    document: dom.window.document,
+    Event: dom.window.Event,
+    Node: dom.window.Node,
+  })
+  t.after(() => {
+    Object.assign(globalThis, previous)
+    dom.window.close()
+  })
+  const catalog = kitFixture(),
+    kit = structuredClone(catalog.kits[0].effective)
+  kit.variants[0].items = [{ id: 'superbwarfare:rpg', count: 1, data: { gunAmmo: 1 } }]
+  let draft
+  const root = renderKitForm(catalog, kit, (next) => (draft = next))
+  document.querySelector('form').append(root)
+  const parent = [...root.querySelectorAll('details')].find((details) =>
+    details.firstElementChild.textContent.startsWith('Предметы варианта'),
+  )
+  parent.open = true
+  const item = parent.querySelector('details')
+  item.open = true
+  item.dispatchEvent(new dom.window.Event('toggle'))
+  const labels = [...item.querySelectorAll('label')]
+  assert.deepEqual(
+    labels.map((label) => label.textContent),
+    ['Предмет', 'Количество', 'Боеприпасов в оружии'],
+  )
+  const count = document.getElementById(labels[1].htmlFor),
+    ammo = document.getElementById(labels[2].htmlFor)
+  assert.equal(count.value, '1')
+  assert.equal(count.readOnly, true)
+  assert.equal(count.max, '1')
+  assert.equal(ammo.value, '1')
+  assert.equal(ammo.min, '0')
+  assert.equal(ammo.max, '1000')
+  assert.equal(ammo.step, '1')
+  ammo.value = '0'
+  ammo.dispatchEvent(new dom.window.Event('input'))
+  assert.deepEqual(draft.variants[0].items[0].data, { gunAmmo: 0 })
+  ammo.value = ''
+  ammo.dispatchEvent(new dom.window.Event('input'))
+  assert.equal(draft.variants[0].items[0].data, undefined)
+  const select = item.querySelector('select')
+  select.value = 'minecraft:stone'
+  select.dispatchEvent(new dom.window.Event('change'))
+  assert.equal(draft.variants[0].items[0].data, undefined)
+})
