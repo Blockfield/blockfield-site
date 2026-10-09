@@ -1,4 +1,5 @@
 ---
+import LocalTime from '../../components/LocalTime.astro'
 import SectionRule from '../../components/SectionRule.astro'
 import Community from '../../layouts/Community.astro'
 import {
@@ -32,12 +33,6 @@ try {
         : 'Страница сейчас недоступна. История никуда не делась — зайдите чуть позже.'
 }
 const mmrName = seasons().find((s) => s.id === data?.mmrSeason)?.name ?? 'Сезон 1'
-const time = (epoch: number) =>
-  new Intl.DateTimeFormat('ru-RU', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-    timeZone: 'UTC',
-  }).format(epoch)
 const modes: Record<string, string> = {
   room: 'Casual',
   campaign: 'Ranked',
@@ -171,7 +166,9 @@ const stats = data?.totals
                 <tbody>
                   {data.ratingHistory.map((h: any) => (
                     <tr>
-                      <td>{time(h.ratedAt)}</td>
+                      <td>
+                        <LocalTime at={h.ratedAt} format="datetime" />
+                      </td>
                       <td>{h.score === 1 ? 'Победа' : h.score === 0 ? 'Поражение' : 'Ничья'}</td>
                       <td class="num">
                         {h.before} → {h.after} ({h.after - h.before >= 0 ? '+' : ''}
@@ -228,7 +225,6 @@ const stats = data?.totals
 
         <section>
           <h2>История боёв</h2>
-          <p class="muted">Время UTC.</p>
           <div class="table-wrap" tabindex="0" aria-label="История матчей">
             <table>
               <thead>
@@ -244,7 +240,9 @@ const stats = data?.totals
               <tbody>
                 {data.history.map((r: any) => (
                   <tr>
-                    <td>{time(r.endedAt)}</td>
+                    <td>
+                      <LocalTime at={r.endedAt} format="datetime" />
+                    </td>
                     <td>
                       {modes[r.mode] || r.mode} · {r.kind === 'campaign' ? 'вся кампания' : 'бой'}
                     </td>

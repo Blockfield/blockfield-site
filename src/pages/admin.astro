@@ -573,8 +573,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             Статистика
           </h2>
           <p class="muted">
-            Матчи, которые попали в лидерборд. Время UTC. Нечестный или сломанный матч можно убрать
-            из статистики — и вернуть обратно, если передумаете.
+            Матчи, которые попали в лидерборд. Нечестный или сломанный матч можно убрать из
+            статистики — и вернуть обратно, если передумаете.
           </p>
           <div class="scope">
             <label for="result-mode">Показать</label>
@@ -644,7 +644,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           <h2 id="health-title" tabindex="-1">
             Производительность
           </h2>
-          <p class="muted">Фризы, просадки TPS и ошибки за последние сутки. Время UTC.</p>
+          <p class="muted">Фризы, просадки TPS и ошибки за последние сутки.</p>
           <div id="health-card" class="hero" data-tone="wait">
             <span class="dot" aria-hidden="true"></span>
             <div>
@@ -1835,16 +1835,15 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     let me: Me
     const can = (permission: string) => me.permissions.includes(permission)
 
-    // The whole site shows times in UTC (leaderboard and player pages too), always labelled.
+    // Times use the visitor's own time zone, like the server-rendered pages (LocalTime).
     const dateFormat = new Intl.DateTimeFormat('ru-RU', {
       day: 'numeric',
       month: 'long',
       hour: '2-digit',
       minute: '2-digit',
-      timeZone: 'UTC',
     })
     const relative = new Intl.RelativeTimeFormat('ru', { numeric: 'auto' })
-    const date = (ms: number) => `${dateFormat.format(ms)} UTC`
+    const date = (ms: number) => dateFormat.format(ms)
     function ago(ms: number) {
       const seconds = (ms - Date.now()) / 1000
       for (const [unit, size] of [
@@ -6179,6 +6178,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       resultPage++
       loadResults()
     })
+    // Season boundaries are UTC calendar days; local zones would shift them by a day.
     const dayFormat = new Intl.DateTimeFormat('ru-RU', {
       day: 'numeric',
       month: 'long',
@@ -6505,7 +6505,6 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       month: 'short',
       hour: '2-digit',
       minute: '2-digit',
-      timeZone: 'UTC',
     })
     const ms = (n: number) => `${number(Math.round(n))} мс`
     const tps = (n: number) => n.toLocaleString('ru-RU', { maximumFractionDigits: 1 })
@@ -6598,7 +6597,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 ),
                 el('time', {
                   dateTime: new Date(hour).toISOString(),
-                  textContent: `${hourFormat.format(hour)} UTC`,
+                  textContent: hourFormat.format(hour),
                 }),
               )
             })
@@ -6635,7 +6634,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 el('time', {
                   dateTime: new Date(e.at).toISOString(),
                   title: date(e.at),
-                  textContent: `${hourFormat.format(e.at)} UTC`,
+                  textContent: hourFormat.format(e.at),
                 }),
                 el('pre', { className: 'server-text', textContent: e.message }),
               ),
