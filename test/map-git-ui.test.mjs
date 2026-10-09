@@ -90,7 +90,7 @@ test('comparison shows exact field values, region bounds and all bounded pages w
   assert.equal(outlet.querySelectorAll('li').length, 106)
   assert.match(outlet.textContent, /ДоfalseПослеnull/)
   assert.equal(outlet.querySelector('button').hidden, true)
-  assert.throws(() => window.renderMapChanges(outlet, {}), /корректное сравнение/)
+  assert.throws(() => window.renderMapChanges(outlet, {}), /Не удалось сравнить версии/)
 })
 
 test('zero-map form requires a mode and keeps failed drafts; successful creation uses current CAS without a browser session UUID', async (t) => {

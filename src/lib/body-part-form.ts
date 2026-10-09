@@ -10,6 +10,16 @@ const labels = {
   right_leg: 'Правая нога',
 }
 
+export function bodyPartSummary(value: unknown): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    return 'Некорректное сохранённое значение'
+  const coefficients = value as Record<string, unknown>
+  const changed = BODY_PARTS.filter((part) => (coefficients[part] ?? 1) !== 1)
+  return changed.length
+    ? changed.map((part) => `${labels[part]} ×${coefficients[part]}`).join(', ')
+    : 'Все части ×1'
+}
+
 export function renderBodyPartField(
   value: Record<string, GunValue> | null,
   field: GunField,
@@ -19,7 +29,7 @@ export function renderBodyPartField(
   root.className = 'disclosure'
   root.open = enabled
   const summary = document.createElement('summary')
-  summary.textContent = `Урон по частям тела${enabled ? ' · изменено' : ''}`
+  summary.textContent = 'Урон по частям тела'
   const toggle = document.createElement('input')
   toggle.type = 'checkbox'
   toggle.checked = enabled
@@ -53,12 +63,19 @@ export function renderBodyPartField(
     fields.append(group)
     return input
   })
-  toggle.addEventListener('change', () => {
+  const sync = () => {
     for (const input of inputs) input.disabled = !toggle.checked
-  })
+  }
+  toggle.addEventListener('change', sync)
   root.append(summary, edit, hint, fields)
   return {
     node: root,
+    sync,
+    write: (value: Record<string, GunValue> | null, enabled: boolean) => {
+      toggle.checked = enabled
+      inputs.forEach((input, index) => (input.value = String(value?.[BODY_PARTS[index]] ?? '')))
+      sync()
+    },
     read: () => {
       if (!toggle.checked) return undefined
       return Object.fromEntries(

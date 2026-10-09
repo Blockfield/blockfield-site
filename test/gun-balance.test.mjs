@@ -110,6 +110,32 @@ const bodyFixture = () => {
   })
   return catalog
 }
+const throwableFixture = () => {
+  const catalog = bodyFixture()
+  catalog.guns.push({
+    ...structuredClone(catalog.guns[2]),
+    id: 'throwable:lrtactical/smoke_grenade',
+    data: 'throwable:lrtactical/smoke_grenade',
+    sourceId: 'lrtactical:smoke_grenade',
+    weaponKind: 'throwable',
+    name: 'item.lrtactical.smoke_grenade',
+    type: 'throwable',
+  })
+  return catalog
+}
+const meleeFixture = () => {
+  const catalog = throwableFixture()
+  catalog.guns.push({
+    ...structuredClone(catalog.guns[2]),
+    id: 'melee:lrtactical/dagger',
+    data: 'melee:lrtactical/dagger',
+    sourceId: 'lrtactical:dagger',
+    weaponKind: 'melee',
+    name: 'item.lrtactical.dagger',
+    type: 'melee',
+  })
+  return catalog
+}
 const temp = (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'bf-gun-balance-'))
   t.after(() => rmSync(directory, { recursive: true, force: true }))
@@ -207,6 +233,54 @@ test('per-index body coefficients are independent of native aliases; item overri
   )
 })
 
+test('throwable and melee index identities remain body-only and reject native fields or mixed typed IDs', () => {
+  for (const [kind, sourceId, index] of [
+    ['throwable', 'lrtactical:smoke_grenade', 3],
+    ['melee', 'lrtactical:dagger', 4],
+  ]) {
+    const catalog = validateGunCatalog(meleeFixture())
+    const id = `${kind}:${sourceId.replace(':', '/')}`
+    assert.deepEqual(Object.keys(weaponFields(catalog, catalog.guns[index]).fields), [
+      'body_part_multipliers',
+    ])
+    assert.deepEqual(
+      validateGunOverrides({ [id]: { body_part_multipliers: { head: 2, torso: 1 } } }, catalog),
+      {
+        [id]: { body_part_multipliers: { head: 2 } },
+      },
+    )
+    for (const native of [{ rpm: 800 }, { draw_time: 1 }, { script_param: {} }])
+      rejected(() => validateGunOverrides({ [id]: native }, catalog))
+    rejected(() =>
+      validateGunOverrides(
+        { [`${kind}:lrtactical/unknown`]: { body_part_multipliers: { head: 2 } } },
+        catalog,
+      ),
+    )
+    for (const mutate of [
+      (row) => (row.id = `item:${sourceId.replace(':', '/')}`),
+      (row) => (row.data = sourceId),
+      (row) => (row.sourceId = 'lrtactical:other_weapon'),
+      (row) => (row.type = 'item'),
+      (row) => (row.defaults.rpm = 800),
+      (row) => (row.effective.damage = 5),
+    ]) {
+      const invalid = meleeFixture()
+      mutate(invalid.guns[index])
+      rejected(() => validateGunCatalog(invalid))
+    }
+  }
+  const catalog = validateGunCatalog(meleeFixture())
+  for (const unsupported of [
+    'item:lrtactical/melee',
+    'melee:lrtactical/karambit',
+    'melee:lrtactical/baseball_bat',
+  ])
+    rejected(() =>
+      validateGunOverrides({ [unsupported]: { body_part_multipliers: { head: 2 } } }, catalog),
+    )
+})
+
 test('body saves use the existing revision and preserve settings while general saves retain the body overrides', (t) => {
   const directory = temp(t)
   writeCatalog(directory, bodyFixture())
@@ -235,6 +309,24 @@ test('body saves use the existing revision and preserve settings while general s
   assert.deepEqual(general.gunBalance, gunBalance)
   const reset = saveSettings(directory, { expectedRevision: 6, gunBalance: {} }, 'Admin', true)
   assert.equal(Object.hasOwn(reset, 'gunBalance'), false)
+})
+
+test('typed multipliers save through gunBalance and keep every item and index override independent', (t) => {
+  const directory = temp(t)
+  writeCatalog(directory, meleeFixture())
+  writeFileSync(
+    join(directory, 'settings.json'),
+    JSON.stringify({ schema: 1, revision: 4, rooms: { maxRooms: 3 } }),
+  )
+  const gunBalance = {
+    'test:pistol': { body_part_multipliers: { head: 2 } },
+    'item:superbwarfare/ak_47': { body_part_multipliers: { head: 3 } },
+    'throwable:lrtactical/smoke_grenade': { body_part_multipliers: { head: 4 } },
+    'melee:lrtactical/dagger': { body_part_multipliers: { head: 5 } },
+  }
+  const saved = saveSettings(directory, { expectedRevision: 4, gunBalance }, 'Admin', true)
+  assert.deepEqual(saved.gunBalance, gunBalance)
+  assert.deepEqual(saved.rooms, { maxRooms: 3 })
 })
 
 test('recursive fields come from metadata; legacy defaults reset without being rewritten', () => {

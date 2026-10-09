@@ -33,7 +33,7 @@ export type GunDefinition = {
   defaults: Record<string, GunValue>
   effective: Record<string, GunValue>
   warnings: string[]
-  weaponKind?: 'tacz' | 'item'
+  weaponKind?: 'tacz' | 'item' | 'throwable' | 'melee'
   sourceId?: string
 }
 export type GunBalanceCatalog = {
@@ -351,23 +351,23 @@ export function validateGunCatalog(value: unknown): GunBalanceCatalog {
           validId(gun.sourceId) &&
           (gun.weaponKind === 'tacz'
             ? gun.sourceId === gun.id
-            : gun.weaponKind === 'item' &&
-              gun.id === `item:${gun.sourceId.replace(':', '/')}` &&
+            : ['item', 'throwable', 'melee'].includes(gun.weaponKind) &&
+              gun.id === `${gun.weaponKind}:${gun.sourceId.replace(':', '/')}` &&
               gun.data === gun.id &&
-              gun.type === 'item'),
+              gun.type === gun.weaponKind),
         gun.id,
         'неверный вид оружия или исходный ID',
       )
     ids.add(gun.id)
     requireValue(plain(gun.defaults) && plain(gun.effective), gun.id, 'нет defaults/effective')
     const fields = weaponFields(value as GunBalanceCatalog, gun as GunDefinition)
-    if (gun.weaponKind === 'item')
+    if (gun.weaponKind === 'item' || gun.weaponKind === 'throwable' || gun.weaponKind === 'melee')
       requireValue(
         [gun.defaults, gun.effective].every((entry) =>
           Object.keys(entry).every((key) => key === 'body_part_multipliers'),
         ),
         gun.id,
-        'предмет допускает только множители частей тела',
+        'это оружие допускает только множители частей тела',
       )
     checkValue(gun.defaults, fields, `${gun.id}.defaults`, true, false)
     checkValue(gun.effective, fields, `${gun.id}.effective`, true, false)

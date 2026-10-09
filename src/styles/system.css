@@ -1345,3 +1345,251 @@ details.disclosure p {
     transform: scaleX(1);
   }
 }
+
+/* Status lamp: colour plus a word, never colour alone. */
+.lamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.lamp::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+.lamp[data-tone='ok']::before {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px rgb(130 214 107 / 0.18);
+}
+.lamp[data-tone='warn']::before {
+  background: var(--amber);
+}
+.lamp[data-tone='bad']::before {
+  background: var(--danger);
+}
+.lamp[data-tone='live']::before {
+  background: var(--amber);
+  animation: pulse 2.4s var(--ease) infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(245 165 36 / 0.45);
+  }
+  60% {
+    box-shadow: 0 0 0 7px rgb(245 165 36 / 0);
+  }
+}
+
+/* Switch: square track, square knob — zero radius is the system. */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  flex: none;
+}
+.switch input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.switch span {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--line-2);
+  background: var(--bg);
+  transition: background 0.15s ease;
+}
+.switch span::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  background: var(--sand);
+  transition: transform 0.18s var(--ease);
+}
+.switch input:checked + span {
+  background: var(--amber);
+  border-color: var(--amber);
+}
+.switch input:checked + span::after {
+  background: var(--bg);
+  transform: translateX(18px);
+}
+.switch input:focus-visible + span {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+/* Stepper: value in mono between two square buttons. */
+.stepper {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--line-2);
+  height: 36px;
+}
+.stepper button {
+  height: auto;
+  width: 34px;
+  padding: 0;
+  border: 0;
+  font-size: 16px;
+  color: var(--sand);
+}
+.stepper button + button {
+  border-left: 1px solid var(--line-2);
+}
+.stepper output {
+  display: inline-grid;
+  place-items: center;
+  min-width: 56px;
+  padding: 0 8px;
+  border-left: 1px solid var(--line-2);
+  border-right: 1px solid var(--line-2);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  color: var(--cream);
+  background: var(--bg);
+}
+.stepper small {
+  display: inline-grid;
+  place-items: center;
+  padding: 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Save state glyphs next to a field */
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  transition: opacity 0.4s ease;
+}
+.state[data-s='saving'] {
+  color: var(--amber);
+}
+.state[data-s='saved'] {
+  color: var(--ok);
+}
+.state[data-s='other'] {
+  color: var(--amber);
+}
+.state[data-s='error'] {
+  color: var(--danger);
+}
+.state:empty {
+  opacity: 0;
+}
+
+/* Attention flash when a remote change lands */
+@keyframes flash {
+  0% {
+    box-shadow: inset 0 0 0 1px var(--amber);
+    background: rgb(245 165 36 / 0.12);
+  }
+  100% {
+    box-shadow: inset 0 0 0 1px transparent;
+    background: transparent;
+  }
+}
+.flash {
+  animation: flash 1.6s var(--ease) 1;
+}
+
+/* Avatar: a 20px Minecraft face stand-in (two-tone square), initial on top. */
+.av {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  color: var(--sand);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  image-rendering: pixelated;
+}
+.av[data-c='1'] {
+  background: #2f3b26;
+  color: #c6e4b4;
+}
+.av[data-c='2'] {
+  background: #3b2a26;
+  color: #f0c4bf;
+}
+.av[data-c='3'] {
+  background: #263238;
+  color: #bcdcf0;
+}
+.av[data-c='4'] {
+  background: #3a2410;
+  color: var(--amber-hi);
+}
+
+/* Toast stack (bottom right) */
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  display: grid;
+  gap: 8px;
+  width: min(380px, calc(100vw - 32px));
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--shadow-popover);
+  font-size: 14px;
+  animation: rise 0.35s var(--ease);
+}
+.toast .who {
+  color: var(--amber);
+  font-weight: 600;
+}
+.toast button {
+  margin-left: auto;
+}
+@keyframes rise {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lamp::before,
+  .flash,
+  .toast {
+    animation: none;
+  }
+}

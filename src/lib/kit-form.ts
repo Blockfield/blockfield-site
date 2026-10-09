@@ -38,10 +38,10 @@ function field(name: string, input: HTMLElement, hint?: string) {
   if (description) input.setAttribute('aria-describedby', description.id)
   return node(
     'div',
-    { className: 'field' },
-    node('label', { htmlFor: input.id, textContent: name }),
-    input,
-    ...(description ? [description] : []),
+    { className: 'field row' },
+    node('label', { htmlFor: input.id }, name, ...(description ? [description] : [])),
+    node('div', { className: 'ctl' }, input),
+    node('span', { className: 'state', role: 'status' }),
   )
 }
 function action(name: string, run: () => void) {
@@ -193,7 +193,7 @@ export function renderKitForm(
       const count = content.querySelector<HTMLInputElement>('input[type="number"]')!
       count.max = '1'
       count.readOnly = true
-      count.parentElement!.querySelector('small')!.textContent = 'Одно оружие на предмет.'
+      count.closest('.field')!.querySelector('small')!.textContent = 'Одно оружие на предмет.'
     }
     if (accessory)
       content.append(

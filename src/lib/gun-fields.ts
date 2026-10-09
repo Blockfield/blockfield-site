@@ -10,7 +10,7 @@ export const BODY_PARTS = [
 ] as const
 
 export function weaponFields(catalog: GunBalanceCatalog, gun: GunDefinition): GunField {
-  return gun.weaponKind === 'item'
+  return gun.weaponKind === 'item' || gun.weaponKind === 'throwable' || gun.weaponKind === 'melee'
     ? {
         type: 'object',
         nullable: false,

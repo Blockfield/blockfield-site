@@ -87,3 +87,17 @@ test('body control refuses empty and out-of-range drafts before save and remains
   assert.equal(read().head, 10)
   assert.equal(node.closest('form').checkValidity(), true)
 })
+
+test('autosave confirmation and rejection can restore values and disable controls without replacing focused elements', (t) => {
+  const { node, read, write } = form(t, true)
+  const head = node.querySelector('#body-part-head')
+  head.value = '2'
+  write(Object.fromEntries(BODY_PARTS.map((part) => [part, 1])), false)
+  assert.equal(node.querySelector('#body-part-head'), head)
+  assert.equal(head.value, '1')
+  assert.equal(head.disabled, true)
+  assert.equal(read(), undefined)
+  write({ ...Object.fromEntries(BODY_PARTS.map((part) => [part, 1])), head: 3 }, true)
+  assert.equal(head.disabled, false)
+  assert.equal(read().head, 3)
+})
