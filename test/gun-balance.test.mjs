@@ -87,9 +87,10 @@ const fixture = () => {
 const bodyFixture = () => {
   const catalog = fixture()
   catalog.bodyPartsEnabled = false
-  catalog.fields.fields.body_part_multipliers = object(
-    Object.fromEntries(BODY_PARTS.map((part) => [part, number(0, 10)])),
-  )
+  catalog.fields.fields.body_part_multipliers = {
+    ...object(Object.fromEntries(BODY_PARTS.map((part) => [part, number(0, 10)]))),
+    serverOnly: true,
+  }
   const baseline = Object.fromEntries(BODY_PARTS.map((part) => [part, 1]))
   for (const gun of catalog.guns) {
     gun.weaponKind = 'tacz'
@@ -145,6 +146,27 @@ const rejected = (action, code = 400) =>
   assert.throws(action, (error) => error instanceof Response && error.status === code)
 const writeCatalog = (directory, catalog = fixture()) =>
   writeFileSync(join(directory, 'gun-balance.json'), JSON.stringify(catalog))
+
+test('native serverOnly metadata accepts optional booleans and keeps malformed catalogs unavailable', (t) => {
+  const directory = temp(t)
+  for (const flag of [undefined, false, true]) {
+    const catalog = bodyFixture()
+    if (flag === undefined) delete catalog.fields.fields.body_part_multipliers.serverOnly
+    else catalog.fields.fields.body_part_multipliers.serverOnly = flag
+    assert.equal(validateGunCatalog(catalog).fields.fields.body_part_multipliers.serverOnly, flag)
+    writeCatalog(directory, catalog)
+    const availability = readGunBalance(directory)
+    assert.equal(availability.available, true)
+    assert.equal(availability.catalog.fields.fields.body_part_multipliers.serverOnly, flag)
+  }
+  for (const flag of [null, 0, 1, 'true', [], {}]) {
+    const catalog = bodyFixture()
+    catalog.fields.fields.body_part_multipliers.serverOnly = flag
+    rejected(() => validateGunCatalog(catalog))
+    writeCatalog(directory, catalog)
+    assert.equal(readGunBalance(directory).available, false)
+  }
+})
 
 test('body catalog keeps item identities exact and rejects corrupt schemas, native item fields and unsafe coefficients', () => {
   const catalog = validateGunCatalog(bodyFixture())
@@ -586,7 +608,9 @@ test('balance API requires admin/owner, GET never writes, and applied status rem
   for (const id of [owner, admin]) {
     const response = await call(id, 'GET', 'gun-balance')
     assert.equal(response.status, 200)
-    assert.equal((await response.json()).available, true)
+    const availability = await response.json()
+    assert.equal(availability.available, true)
+    assert.equal(availability.catalog.fields.fields.body_part_multipliers.serverOnly, true)
   }
   for (const id of [moderator, builder])
     assert.equal((await call(id, 'GET', 'gun-balance')).status, 403)
@@ -621,6 +645,16 @@ test('balance API requires admin/owner, GET never writes, and applied status rem
     (await call(admin, 'PUT', 'gun-balance', { expectedRevision: 0, gunBalance: {} })).status,
     409,
   )
+  const invalid = bodyFixture()
+  invalid.fields.fields.body_part_multipliers.serverOnly = 'true'
+  writeCatalog(directory, invalid)
+  assert.equal((await (await call(admin, 'GET', 'gun-balance')).json()).available, false)
+  const beforeInvalidWrite = readFileSync(join(directory, 'settings.json'), 'utf8')
+  assert.equal(
+    (await call(admin, 'PUT', 'gun-balance', { expectedRevision: 1, gunBalance: {} })).status,
+    503,
+  )
+  assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), beforeInvalidWrite)
   rmSync(join(directory, 'gun-balance.json'))
   const unavailable = await (await call(admin, 'GET', 'gun-balance')).json()
   assert.equal(unavailable.available, false)

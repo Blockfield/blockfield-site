@@ -24,6 +24,7 @@ export type GunField = {
   values?: string[]
   acceptsBoolean?: boolean
   acceptsInfinite?: boolean
+  serverOnly?: boolean
 }
 export type GunDefinition = {
   id: string
@@ -71,6 +72,7 @@ const fields = new Set([
   'values',
   'acceptsBoolean',
   'acceptsInfinite',
+  'serverOnly',
 ])
 
 function checkField(value: any, depth = 0): asserts value is GunField {
@@ -96,7 +98,7 @@ function checkField(value: any, depth = 0): asserts value is GunField {
     'catalog.fields',
     'неизвестный тип',
   )
-  for (const flag of ['acceptsBoolean', 'acceptsInfinite'])
+  for (const flag of ['acceptsBoolean', 'acceptsInfinite', 'serverOnly'])
     requireValue(
       value[flag] === undefined || typeof value[flag] === 'boolean',
       'catalog.fields',
