@@ -2882,7 +2882,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       $('#gun-about').textContent =
         gun.weaponKind === 'throwable'
           ? `${gunLabel(gun)} · прямое попадание. Взрыв, огонь и область поражения сохраняют обычный урон.`
-          : `${gunLabel(gun)} · ${gun.type}`
+          : gun.weaponKind === 'mounted'
+            ? `${gunLabel(gun)} · орудие техники. Множители меняют только прямое попадание.`
+            : `${gunLabel(gun)} · ${gun.type}`
       $('#gun-warnings').textContent = gun.warnings.join(' ')
       const rows = Object.entries(weaponFields(gunCatalog, gun).fields!).map(([key, field]) => {
         const hasOverride = Object.hasOwn(gunOverrides[gun.id] ?? {}, key)

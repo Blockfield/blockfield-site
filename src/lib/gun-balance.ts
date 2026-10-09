@@ -34,8 +34,10 @@ export type GunDefinition = {
   defaults: Record<string, GunValue>
   effective: Record<string, GunValue>
   warnings: string[]
-  weaponKind?: 'tacz' | 'item' | 'throwable' | 'melee'
+  weaponKind?: 'tacz' | 'item' | 'throwable' | 'melee' | 'mounted'
   sourceId?: string
+  vehicleId?: string
+  weaponName?: string
 }
 export type GunBalanceCatalog = {
   schema: 1
@@ -353,17 +355,52 @@ export function validateGunCatalog(value: unknown): GunBalanceCatalog {
           validId(gun.sourceId) &&
           (gun.weaponKind === 'tacz'
             ? gun.sourceId === gun.id
-            : ['item', 'throwable', 'melee'].includes(gun.weaponKind) &&
+            : ['item', 'throwable', 'melee', 'mounted'].includes(gun.weaponKind) &&
               gun.id === `${gun.weaponKind}:${gun.sourceId.replace(':', '/')}` &&
               gun.data === gun.id &&
               gun.type === gun.weaponKind),
         gun.id,
         'неверный вид оружия или исходный ID',
       )
+    if (gun.weaponKind === 'mounted') {
+      const split = gun.sourceId.lastIndexOf('/')
+      const hex = gun.sourceId.substring(split + 1)
+      let name: string | undefined
+      if (split > gun.sourceId.indexOf(':') + 1 && /^(?:[0-9a-f]{2}){1,128}$/.test(hex)) {
+        try {
+          name = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+            Buffer.from(hex, 'hex'),
+          )
+        } catch {
+          // Invalid UTF-8 must not create a replacement-character alias for a native map key.
+        }
+      }
+      requireValue(
+        validId(gun.vehicleId) &&
+          gun.vehicleId === gun.sourceId.substring(0, split) &&
+          typeof name === 'string' &&
+          name.length > 0 &&
+          name.length <= 128 &&
+          name === gun.weaponName &&
+          Buffer.from(name, 'utf8').toString('hex') === hex,
+        gun.id,
+        'неверная модель техники или точное имя орудия',
+      )
+    } else
+      requireValue(
+        gun.vehicleId === undefined && gun.weaponName === undefined,
+        gun.id,
+        'метаданные орудия допустимы только для mounted',
+      )
     ids.add(gun.id)
     requireValue(plain(gun.defaults) && plain(gun.effective), gun.id, 'нет defaults/effective')
     const fields = weaponFields(value as GunBalanceCatalog, gun as GunDefinition)
-    if (gun.weaponKind === 'item' || gun.weaponKind === 'throwable' || gun.weaponKind === 'melee')
+    if (
+      gun.weaponKind === 'item' ||
+      gun.weaponKind === 'throwable' ||
+      gun.weaponKind === 'melee' ||
+      gun.weaponKind === 'mounted'
+    )
       requireValue(
         [gun.defaults, gun.effective].every((entry) =>
           Object.keys(entry).every((key) => key === 'body_part_multipliers'),

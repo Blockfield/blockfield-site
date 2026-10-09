@@ -137,6 +137,28 @@ const meleeFixture = () => {
   })
   return catalog
 }
+const mountedFixture = () => {
+  const catalog = meleeFixture()
+  for (const [vehicleId, weaponName] of [
+    ['superbwarfare:t_90a', 'Cannon'],
+    ['superbwarfare:lav_150', 'Cannon'],
+  ]) {
+    const sourceId = `${vehicleId}/${Buffer.from(weaponName).toString('hex')}`
+    const id = `mounted:${sourceId.replace(':', '/')}`
+    catalog.guns.push({
+      ...structuredClone(catalog.guns[2]),
+      id,
+      data: id,
+      sourceId,
+      vehicleId,
+      weaponName,
+      weaponKind: 'mounted',
+      type: 'mounted',
+      name: `${vehicleId} / ${weaponName}`,
+    })
+  }
+  return catalog
+}
 const temp = (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'bf-gun-balance-'))
   t.after(() => rmSync(directory, { recursive: true, force: true }))
@@ -331,6 +353,76 @@ test('body saves use the existing revision and preserve settings while general s
   assert.deepEqual(general.gunBalance, gunBalance)
   const reset = saveSettings(directory, { expectedRevision: 6, gunBalance: {} }, 'Admin', true)
   assert.equal(Object.hasOwn(reset, 'gunBalance'), false)
+})
+
+test('mounted tuples are body-only, case-sensitive and independent of the shared vehicle-gun item', (t) => {
+  const catalog = validateGunCatalog(mountedFixture())
+  const first = catalog.guns[5],
+    second = catalog.guns[6]
+  assert.deepEqual(Object.keys(weaponFields(catalog, first).fields), ['body_part_multipliers'])
+  const overrides = {
+    [first.id]: { body_part_multipliers: { head: 0.4 } },
+    [second.id]: { body_part_multipliers: { head: 0.8 } },
+  }
+  assert.deepEqual(validateGunOverrides(overrides, catalog), overrides)
+  for (const id of ['item:superbwarfare/vehicle_gun', 'mounted:superbwarfare/t_90a/4d697373696e67'])
+    rejected(() => validateGunOverrides({ [id]: { body_part_multipliers: { head: 2 } } }, catalog))
+  rejected(() => validateGunOverrides({ [first.id]: { rpm: 80 } }, catalog))
+  for (const mutate of [
+    (row) => (row.weaponName = 'cannon'),
+    (row) => (row.vehicleId = 'superbwarfare:lav_150'),
+    (row) => (row.sourceId = 'superbwarfare:t_90a/43616e6e6f6e00'),
+    (row) => (row.type = 'item'),
+    (row) => (row.defaults.rpm = 80),
+    (row) => delete row.weaponName,
+    (row) => delete row.vehicleId,
+  ]) {
+    const invalid = mountedFixture()
+    mutate(invalid.guns[5])
+    rejected(() => validateGunCatalog(invalid))
+  }
+  const directory = temp(t)
+  writeCatalog(directory, catalog)
+  writeFileSync(join(directory, 'settings.json'), JSON.stringify({ schema: 1, revision: 4 }))
+  const saved = saveSettings(
+    directory,
+    { expectedRevision: 4, gunBalance: overrides },
+    'Admin',
+    true,
+  )
+  assert.deepEqual(saved.gunBalance, overrides)
+  rejected(
+    () => saveSettings(directory, { expectedRevision: 4, gunBalance: {} }, 'Admin', true),
+    409,
+  )
+  assert.deepEqual(readSettings(directory).settings.gunBalance, overrides)
+})
+
+test('mounted native names use canonical fatal UTF8 decoding and the full 256-character ID ceiling', () => {
+  const rowFor = (name, hex = Buffer.from(name).toString('hex')) => {
+    const catalog = mountedFixture(),
+      row = catalog.guns[5]
+    row.weaponName = name
+    row.sourceId = `${row.vehicleId}/${hex}`
+    row.id = row.data = `mounted:${row.sourceId.replace(':', '/')}`
+    return catalog
+  }
+  for (const name of ['Главное орудие', 'Gun/2', '\uFEFFMain', ' ', 'a'.repeat(114)])
+    assert.equal(validateGunCatalog(rowFor(name)).guns[5].weaponName, name)
+  for (const [name, hex] of [
+    ['�', 'ff'],
+    ['/', 'c0af'],
+    ['�', 'eda080'],
+    ['Cannon', '43616E6e6f6e'],
+    ['', ''],
+  ])
+    rejected(() => validateGunCatalog(rowFor(name, hex)))
+  rejected(() => validateGunCatalog(rowFor('a'.repeat(115))))
+  rejected(() => validateGunCatalog(rowFor('я'.repeat(65))))
+  const mixed = mountedFixture()
+  mixed.guns[2].vehicleId = 'superbwarfare:t_90a'
+  mixed.guns[2].weaponName = 'Cannon'
+  rejected(() => validateGunCatalog(mixed))
 })
 
 test('typed multipliers save through gunBalance and keep every item and index override independent', (t) => {
