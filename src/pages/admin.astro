@@ -2884,7 +2884,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           ? `${gunLabel(gun)} · прямое попадание. Взрыв, огонь и область поражения сохраняют обычный урон.`
           : gun.weaponKind === 'mounted'
             ? `${gunLabel(gun)} · орудие техники. Множители меняют только прямое попадание.`
-            : `${gunLabel(gun)} · ${gun.type}`
+            : gun.id === 'item:superbwarfare/taser'
+              ? `${gunLabel(gun)} · множители меняют только урон дротика (1). Электрошок (2 сразу и ещё 4 раза по 2) не меняется, поэтому множитель до 2 при попадании не заметен.`
+              : `${gunLabel(gun)} · ${gun.type}`
       $('#gun-warnings').textContent = gun.warnings.join(' ')
       const rows = Object.entries(weaponFields(gunCatalog, gun).fields!).map(([key, field]) => {
         const hasOverride = Object.hasOwn(gunOverrides[gun.id] ?? {}, key)
