@@ -23,6 +23,7 @@ import { rawCommand, rconTarget, type RconTarget, stripColors } from './console.
 import { parseTickQuery, readDiagnostics, redact } from './diagnostics.ts'
 import { currentRooms, roomId } from './rooms.ts'
 import { readGunBalance, validateGunOverrides, type GunBalanceCatalog } from './gun-balance.ts'
+import { readAiLimits, validateAiAccounts } from './ai-limits.ts'
 import { parseKitCatalog, validateKitChanges } from './kit-schema.ts'
 import {
   resolveNames,
@@ -1285,6 +1286,35 @@ export function saveSettings(
   return settings
 }
 
+export function saveAiLimits(directory: string, body: any) {
+  if (
+    !plain(body) ||
+    Object.keys(body).some(
+      (key) => !['expectedRevision', 'mode', 'sessions', 'builders'].includes(key),
+    ) ||
+    (body.mode !== 'session' && body.mode !== 'builder')
+  )
+    throw bad('Бюджет AI: некорректные настройки.')
+  const current = readAiLimits(directory)
+  if (body.expectedRevision !== current.revision)
+    throw fail(409, 'Бюджет AI уже изменил кто-то другой. Обновите состояние; черновик сохранён.')
+  if (current.revision === Number.MAX_SAFE_INTEGER)
+    throw fail(503, 'Ревизия бюджета AI исчерпана. Сохранение отключено.')
+  const policy = {
+    ...current,
+    revision: current.revision + 1,
+    mode: body.mode,
+    sessions: Object.hasOwn(body, 'sessions')
+      ? validateAiAccounts(body.sessions)
+      : current.sessions,
+    builders: Object.hasOwn(body, 'builders')
+      ? validateAiAccounts(body.builders)
+      : current.builders,
+  }
+  writeAtomic(directory, 'ai-limits.json', policy)
+  return policy
+}
+
 /** Only these command shapes ever reach RCON; every argument is checked, nothing is passed through. */
 function text(value: unknown, required: boolean): string {
   if (value === undefined || value === null || value === '') {
@@ -1744,6 +1774,20 @@ const routes: Record<string, Route> = {
     audit: (body, result) => ({
       action: 'settings',
       target: result?.settings ? `revision ${result.settings.revision}` : null,
+      detail: body,
+    }),
+  },
+  'GET ai-limits': {
+    permission: 'settings',
+    handler: () => ({ policy: readAiLimits(settingsDir()) }),
+  },
+  'PUT ai-limits': {
+    permission: 'settings',
+    maxBody: 65_536,
+    handler: ({ body }) => ({ policy: saveAiLimits(settingsDir(), body) }),
+    audit: (body, result) => ({
+      action: 'ai-limits',
+      target: result?.policy ? `revision ${result.policy.revision}` : null,
       detail: body,
     }),
   },

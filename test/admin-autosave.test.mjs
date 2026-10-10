@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs'
 import { JSDOM } from 'jsdom'
 import ts from 'typescript'
 import { settingsBody, settingsReceipt } from '../src/lib/settings-form.ts'
+import { weaponFields, BODY_PARTS } from '../src/lib/gun-fields.ts'
+import { bodyPartSummary, renderBodyPartField } from '../src/lib/body-part-form.ts'
 
 const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
 const script = page.split('<script>')[1].split('</script>')[0]
@@ -82,6 +84,17 @@ async function setup(options = {}) {
     settingsBody,
     settingsReceipt,
     structuredClone,
+    weaponFields,
+    bodyPartSummary,
+    renderBodyPartField: (...args) => {
+      const previous = globalThis.document
+      globalThis.document = dom.window.document
+      try {
+        return renderBodyPartField(...args)
+      } finally {
+        globalThis.document = previous
+      }
+    },
     fetch: async (url, init) => {
       const path = url.split('/api/admin/')[1],
         body = init.body && JSON.parse(init.body)
@@ -142,6 +155,16 @@ async function setup(options = {}) {
     $('#settings-form').addEventListener('change', e => commitSetting(e.target));
     ${messageHandlers}
     window.gunSetup = () => { gunCatalog = {fields:{fields:{damage:{type:'number',min:0,max:100,nullable:false},nested:{type:'object',nullable:false,fields:{rate:{type:'integer',nullable:false,min:1,max:10}}}}}}; selectedGun = {id:'bf:test',data:'bf:test',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Test'}; gunCatalog.guns = [selectedGun]; renderGun(); };
+    window.bodySetup = (kind) => {
+      window.gunSetup();
+      const defaults = ${JSON.stringify(Object.fromEntries(BODY_PARTS.map((part) => [part, 1])))};
+      gunCatalog.bodyPartsEnabled = false;
+      gunCatalog.fields.fields.body_part_multipliers = ${JSON.stringify({ type: 'object', nullable: false, fields: Object.fromEntries(BODY_PARTS.map((part) => [part, { type: 'number', nullable: false, min: 0, max: 10 }])) })};
+      const path = kind === 'melee' ? 'dagger' : 'test';
+      selectedGun = {id:kind+':lrtactical/'+path,data:kind+':lrtactical/'+path,sourceId:'lrtactical:'+path,weaponKind:kind,type:kind,defaults:{body_part_multipliers:defaults},warnings:[],name:'Test'};
+      gunCatalog.guns = [selectedGun];
+      renderGun();
+    };
     window.currentGunCatalog = () => gunCatalog;
     $('#scope').addEventListener('change', e => {scope=e.target.value;renderScopes();renderBalance();rememberSettingsControls('#balance-fields')});
     window.flush = () => Promise.all([settingsQueue, gunQueue]);
@@ -361,6 +384,107 @@ test('weapons validate JSON in their row and commit valid JSON compactly', async
     assert.deepEqual(calls[0].body.gunBalance['bf:test'].nested, { rate: 3 })
     assert.equal(doc.querySelector('.toast span').textContent, 'nested: {"rate":2} → {"rate":3}')
     assert.equal(row.querySelector('.state').textContent, 'сохранено')
+  } finally {
+    dom.window.close()
+  }
+})
+
+test('item, throwable and melee controls join weapon autosave, reset and undo without exposing native fields', async () => {
+  for (const kind of ['item', 'throwable', 'melee']) {
+    const { dom, calls, change } = await setup()
+    try {
+      dom.window.bodySetup(kind)
+      const doc = dom.window.document
+      const head = doc.querySelector('#body-part-head')
+      const row = head.closest('.body-part-row')
+      const toggle = row.querySelector('[type=checkbox]')
+      assert.equal(doc.querySelector('#gun-field-damage'), null)
+      assert.equal(doc.querySelector('#gun-fields textarea'), null)
+      assert.equal(row.querySelectorAll('[type=number]').length, 6)
+      toggle.checked = true
+      toggle.dispatchEvent(new dom.window.Event('change', { bubbles: true }))
+      await dom.window.flush()
+      assert.equal(calls.length, 0)
+      assert.equal(doc.activeElement, head)
+      change(head, '2')
+      await dom.window.flush()
+      const saved = calls.find((call) => call.method === 'PUT')
+      assert.equal(saved.path, 'gun-balance')
+      assert.equal(saved.body.expectedRevision, 3)
+      assert.deepEqual(
+        saved.body.gunBalance[`${kind}:lrtactical/${kind === 'melee' ? 'dagger' : 'test'}`],
+        { body_part_multipliers: { head: 2 } },
+      )
+      assert.equal(row.querySelector('.state').textContent, 'сохранено')
+      assert.equal(doc.querySelector('#body-part-head'), head)
+      assert.equal(row.querySelector('.gun-badge').hidden, false)
+      assert.equal(
+        doc.querySelector('.toast span').textContent,
+        'Урон по частям тела: Все части ×1 → Голова ×2',
+      )
+      doc.querySelector('.toast button').click()
+      await dom.window.flush()
+      const writes = calls.filter((call) => call.method === 'PUT')
+      assert.deepEqual(writes[1].body.gunBalance, {})
+      assert.equal(doc.querySelector('#body-part-head').disabled, true)
+      assert.equal(doc.activeElement.id, 'gun-field-body_part_multipliers')
+    } finally {
+      dom.window.close()
+    }
+  }
+})
+
+test('invalid body drafts survive live refresh without a write and API refusal restores the confirmed coefficient', async () => {
+  const { dom, calls, change } = await setup({
+    handle: ({ method, path }) =>
+      method === 'PUT' && path === 'gun-balance'
+        ? { status: 403, data: { error: 'Нет доступа' } }
+        : null,
+  })
+  try {
+    dom.window.bodySetup('throwable')
+    const doc = dom.window.document
+    const head = doc.querySelector('#body-part-head')
+    const row = head.closest('.body-part-row')
+    const toggle = row.querySelector('[type=checkbox]')
+    toggle.checked = true
+    toggle.dispatchEvent(new dom.window.Event('change', { bubbles: true }))
+    change(head, '')
+    assert.equal(calls.length, 0)
+    assert.equal(row.querySelector('.state').dataset.s, 'error')
+    dom.window.renderGun(true)
+    assert.equal(doc.querySelector('#body-part-head'), head)
+    assert.equal(head.value, '')
+    change(head, '2')
+    await dom.window.flush()
+    assert.equal(row.querySelector('.state').dataset.s, 'error')
+    assert.equal(head.value, '1')
+    assert.equal(head.disabled, true)
+    assert.equal(toggle.checked, false)
+  } finally {
+    dom.window.close()
+  }
+})
+
+test('changing the last body override back to one removes it and leaves all numeric controls disabled after the save lock releases', async () => {
+  const { dom, calls, change } = await setup()
+  try {
+    dom.window.bodySetup('item')
+    const head = dom.window.document.querySelector('#body-part-head')
+    const row = head.closest('.body-part-row')
+    const toggle = row.querySelector('[type=checkbox]')
+    toggle.checked = true
+    toggle.dispatchEvent(new dom.window.Event('change', { bubbles: true }))
+    change(head, '2')
+    await dom.window.flush()
+    change(head, '1')
+    await dom.window.flush()
+    assert.deepEqual(calls.filter((call) => call.method === 'PUT').at(-1).body.gunBalance, {})
+    assert.equal(toggle.checked, false)
+    assert.equal(
+      [...row.querySelectorAll('[type=number]')].every((input) => input.disabled),
+      true,
+    )
   } finally {
     dom.window.close()
   }

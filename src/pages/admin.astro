@@ -491,6 +491,20 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             Кто какие карты правит. Модераторы и администраторы правят все карты, строителям доступ
             выдаётся по картам. В игре строители переходят между картами планшетом (M).
           </p>
+          <details class="disclosure" data-perm="settings">
+            <summary>Бюджет AI</summary>
+            <p class="muted">
+              Общий бюджет текущего сеанса или отдельный для участника. Настраивают только
+              администраторы сайта; владение картой или сеансом не даёт дополнительных прав.
+            </p>
+            <p id="ai-budget-status" class="form-status" role="status">
+              Получаем политику бюджета…
+            </p>
+            <div id="ai-budget-form"></div>
+            <button id="ai-budget-refresh" type="button" class="small">
+              Обновить состояние бюджета
+            </button>
+          </details>
           <p id="editor-state" class="form-status" role="status">
             Проверяем состояние мастерской…
           </p>
@@ -870,6 +884,22 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     }
     .admin-main #gun-fields .disclosure {
       margin-bottom: 12px;
+    }
+    .admin-main #gun-fields .body-part-row {
+      display: block;
+      grid-column: 1 / -1;
+    }
+    .admin-main #gun-fields .body-part-row .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+      gap: 12px 16px;
+    }
+    .admin-main #gun-fields .body-part-row .form-grid .field,
+    .admin-main #ai-budget-form .field {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 6px;
+      padding: 0;
+      border: 0;
     }
     .admin-main #gun-fields input:not([type='checkbox']),
     .admin-main #gun-fields select,
@@ -1784,6 +1814,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       TEAM_NAMES,
     } from '../lib/game-names'
     import { settingsBody, settingsReceipt } from '../lib/settings-form'
+    import { bodyPartSummary, renderBodyPartField } from '../lib/body-part-form'
+    import { renderAiBudgetForm, type BudgetTarget } from '../lib/ai-budget-form'
+    import { canonicalBudgetUuid } from '../lib/ai-budget'
+    import { weaponFields } from '../lib/gun-fields'
     import { effectiveKits, renderKitForm } from '../lib/kit-form'
     import { validateKitChanges, type KitCatalog, type KitDefinition } from '../lib/kit-schema'
     import { customSelect, customCombo } from '../lib/custom-select'
@@ -2844,13 +2878,104 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         $('#gun-fields').replaceChildren()
         return
       }
-      $('#gun-about').textContent = `${gunLabel(gun)} · ${gun.type}`
+      $('#gun-about').textContent =
+        gun.weaponKind === 'throwable'
+          ? `${gunLabel(gun)} · прямое попадание. Взрыв, огонь и область поражения сохраняют обычный урон.`
+          : gun.weaponKind === 'mounted'
+            ? `${gunLabel(gun)} · орудие техники. Множители меняют только прямое попадание.`
+            : gun.id === 'item:superbwarfare/taser'
+              ? `${gunLabel(gun)} · множители меняют только урон дротика (1). Электрошок (2 сразу и ещё 4 раза по 2) не меняется, поэтому множитель до 2 при попадании не заметен.`
+              : `${gunLabel(gun)} · ${gun.type}`
       $('#gun-warnings').textContent = gun.warnings.join(' ')
-      const rows = Object.entries(gunCatalog.fields.fields!).map(([key, field]) => {
+      const rows = Object.entries(weaponFields(gunCatalog, gun).fields!).map(([key, field]) => {
         const hasOverride = Object.hasOwn(gunOverrides[gun.id] ?? {}, key)
         const value = hasOverride
           ? gunValues(gun.defaults[key], gunOverrides[gun.id][key])
           : gun.defaults[key]
+        if (key === 'body_part_multipliers') {
+          const body = renderBodyPartField(value as Record<string, any>, field, hasOverride)
+          const state = el('span', { className: 'state', role: 'status' })
+          const badge = el('span', {
+            className: 'gun-badge',
+            hidden: !hasOverride,
+            textContent: 'изменено',
+          })
+          const row = el(
+            'div',
+            { className: 'field row body-part-row', title: key },
+            body.node,
+            state,
+          )
+          const summary = body.node.querySelector('summary')!
+          summary.id = `gun-field-${key}`
+          summary.append(badge)
+          gunReaders.set(key, body.read)
+          const confirmed = () => {
+            const enabled = Object.hasOwn(gunOverrides[gun.id] ?? {}, key)
+            body.write(
+              (enabled
+                ? gunValues(gun.defaults[key], gunOverrides[gun.id][key])
+                : gun.defaults[key]) as Record<string, any>,
+              enabled,
+            )
+            row.toggleAttribute('data-override', enabled)
+            badge.hidden = !enabled
+            row.dataset.saved = gunRowValue(row)
+          }
+          body.node.addEventListener('change', (event) => {
+            const control = event.target
+            if (!(control instanceof HTMLInputElement)) return
+            if (control.type === 'checkbox' && control.checked) {
+              fieldState(state, '', '')
+              body.node.querySelector<HTMLInputElement>('[type=number]')!.focus()
+              return
+            }
+            let next: Record<string, number> | undefined
+            try {
+              const values = body.read()
+              next =
+                values &&
+                Object.fromEntries(Object.entries(values).filter(([, value]) => value !== 1))
+              if (next && !Object.keys(next).length) next = undefined
+            } catch (error) {
+              fieldState(state, (error as Error).message, 'error')
+              return
+            }
+            void commitGun(
+              control,
+              state,
+              gun.id,
+              key,
+              next,
+              () => {
+                row.toggleAttribute('data-override', Object.hasOwn(gunOverrides[gun.id] ?? {}, key))
+                badge.hidden = !row.hasAttribute('data-override')
+                if (next === undefined) confirmed()
+                row.dataset.saved = gunRowValue(row)
+              },
+              confirmed,
+              'Урон по частям тела',
+            ).then(body.sync)
+          })
+          row.toggleAttribute('data-override', hasOverride)
+          row.dataset.saved = gunRowValue(row)
+          const old = oldRows.find((row) => row.getAttribute('title') === key) as
+            | HTMLElement
+            | undefined
+          if (
+            live &&
+            old &&
+            (gunPending ||
+              old.contains(document.activeElement) ||
+              gunRowValue(old) !== old.dataset.saved)
+          ) {
+            old.toggleAttribute('data-override', hasOverride)
+            old.querySelector<HTMLElement>('.gun-badge')!.hidden = !hasOverride
+            gunReaders.set(key, oldReaders.get(key)!)
+            return old
+          }
+          return row
+        }
         const id = `gun-field-${key}`
         const edit = el('input', {
           type: 'checkbox',
@@ -3080,7 +3205,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       const plural = new Intl.PluralRules('ru').select(count)
       say(
         $('#gun-balance-status'),
-        `${count} ${plural === 'one' ? 'оружие' : plural === 'few' ? 'оружия' : 'оружий'} в каталоге`,
+        `${count} ${plural === 'one' ? 'оружие' : plural === 'few' ? 'оружия' : 'оружий'} в каталоге${gunCatalog!.bodyPartsEnabled === false ? '. Урон по частям тела пока выключен на сервере; множители можно подготовить заранее.' : ''}`,
       )
     }
     $<HTMLInputElement>('#gun-search').oninput = () => {
@@ -3189,6 +3314,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             ? defaults?.[key]
             : gunValues(defaults?.[key], old)
           : (old ?? defaults)
+        const feedback = key === 'body_part_multipliers' ? bodyPartSummary : gunText
         fieldState(line, 'сохраняем…', 'saving')
         const release = lockControl(control)
         let rejected = false
@@ -3231,10 +3357,12 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               fieldState(line, 'сохранено', 'saved')
               changeToast(
                 label,
-                gunText(oldValue),
+                feedback(oldValue),
                 value === undefined
-                  ? 'как в ганпаке'
-                  : gunText(key ? gunValues(defaults?.[key], value) : value),
+                  ? key === 'body_part_multipliers'
+                    ? bodyPartSummary(defaults?.[key])
+                    : 'как в ганпаке'
+                  : feedback(key ? gunValues(defaults?.[key], value) : value),
                 false,
                 () => {
                   const current = key ? gunOverrides[id]?.[key] : gunOverrides[id]
@@ -4408,6 +4536,58 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     })
 
     // ---------- Team ----------
+    async function loadAiBudget() {
+      const [{ policy }, catalog, staff] = await Promise.all([
+        api('ai-limits'),
+        api('maps'),
+        api('staff'),
+      ])
+      const members = new Map<string, BudgetTarget>()
+      for (const member of [...staff.owners, ...staff.staff]) {
+        const id = canonicalBudgetUuid(member.uuid)
+        if (id) members.set(id, { id, name: member.name })
+      }
+      const id =
+        catalog.available && catalog.session ? canonicalBudgetUuid(catalog.session.id) : null
+      const control = renderAiBudgetForm(policy, {
+        session: id
+          ? {
+              id,
+              name: `Текущий сеанс${catalog.session.startedAt ? ` · ${date(catalog.session.startedAt)}` : ''}`,
+            }
+          : undefined,
+        builders: [...members.values()].sort((a, b) => a.name.localeCompare(b.name, 'ru')),
+      })
+      $('#ai-budget-form').replaceChildren(control.node)
+      control.node.querySelectorAll<HTMLSelectElement>('select').forEach(customSelect)
+      say(
+        $('#ai-budget-status'),
+        `Политика сохранена в ревизии ${policy.revision}. Применение сервером и расход здесь пока не подтверждаются.`,
+      )
+      control.node.onsubmit = (event) => {
+        event.preventDefault()
+        run(
+          $('#ai-budget-status'),
+          async () => {
+            const body = control.read()
+            const { policy: saved } = await api('ai-limits', 'PUT', body)
+            control.saved(saved.revision)
+            return `Бюджет сохранён, ревизия ${saved.revision}. Подтверждение применения и расход появятся отдельно.`
+          },
+          control.node,
+        )
+      }
+    }
+    $('#ai-budget-refresh').onclick = async () => {
+      if (
+        await ask({
+          title: 'Обновить бюджет AI?',
+          text: 'Несохранённые изменения бюджета будут заменены сохранённой политикой.',
+          ok: 'Обновить',
+        })
+      )
+        run($('#ai-budget-status'), loadAiBudget)
+    }
     const assignable = () =>
       can('roles-admin') ? ['builder', 'moderator', 'admin'] : ['builder', 'moderator']
     async function loadTeam() {
@@ -7277,6 +7457,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           ['settings', () => loadSettings(), 'Настройки'],
           ['settings', loadGunBalance, 'Баланс оружия'],
           ['settings', loadKits, 'Наборы'],
+          ['settings', loadAiBudget, 'Бюджет AI'],
           ['roles', loadTeam, 'Команда'],
           ['view', loadCandidates, 'Кандидаты'],
           ['view', loadMapHistory, 'Архив карт'],

@@ -1,6 +1,7 @@
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs'
 import { join } from 'node:path'
 import { fail } from './account.ts'
+import { BODY_PARTS, weaponFields } from './gun-fields.ts'
 
 export type GunValue = null | boolean | number | string | GunValue[] | { [key: string]: GunValue }
 export type GunField = {
@@ -23,6 +24,7 @@ export type GunField = {
   values?: string[]
   acceptsBoolean?: boolean
   acceptsInfinite?: boolean
+  serverOnly?: boolean
 }
 export type GunDefinition = {
   id: string
@@ -32,12 +34,17 @@ export type GunDefinition = {
   defaults: Record<string, GunValue>
   effective: Record<string, GunValue>
   warnings: string[]
+  weaponKind?: 'tacz' | 'item' | 'throwable' | 'melee' | 'mounted'
+  sourceId?: string
+  vehicleId?: string
+  weaponName?: string
 }
 export type GunBalanceCatalog = {
   schema: 1
   revision: number
   fields: GunField
   guns: GunDefinition[]
+  bodyPartsEnabled?: boolean
 }
 export type GunBalanceAvailability =
   | { available: true; catalog: GunBalanceCatalog }
@@ -50,6 +57,7 @@ const resource = /^(?:[a-z0-9_.-]+:)?[a-z0-9/._-]+$/
 const canonicalId = /^[a-z0-9_.-]+:[a-z0-9/._-]+$/
 const validId = (value: unknown): value is string =>
   typeof value === 'string' && value.length <= 256 && canonicalId.test(value)
+
 function requireValue(condition: unknown, path: string, message: string): asserts condition {
   if (!condition) throw fail(400, `Баланс оружия: ${path}: ${message}.`)
 }
@@ -66,6 +74,7 @@ const fields = new Set([
   'values',
   'acceptsBoolean',
   'acceptsInfinite',
+  'serverOnly',
 ])
 
 function checkField(value: any, depth = 0): asserts value is GunField {
@@ -91,7 +100,7 @@ function checkField(value: any, depth = 0): asserts value is GunField {
     'catalog.fields',
     'неизвестный тип',
   )
-  for (const flag of ['acceptsBoolean', 'acceptsInfinite'])
+  for (const flag of ['acceptsBoolean', 'acceptsInfinite', 'serverOnly'])
     requireValue(
       value[flag] === undefined || typeof value[flag] === 'boolean',
       'catalog.fields',
@@ -291,6 +300,11 @@ export function validateGunCatalog(value: unknown): GunBalanceCatalog {
     'catalog',
     'неверная schema/revision',
   )
+  requireValue(
+    value.bodyPartsEnabled === undefined || typeof value.bodyPartsEnabled === 'boolean',
+    'catalog.bodyPartsEnabled',
+    'неверное состояние системы попаданий',
+  )
   checkField(value.fields)
   requireValue(
     value.fields.type === 'object' && Object.keys(value.fields.fields!).length > 0,
@@ -302,6 +316,27 @@ export function validateGunCatalog(value: unknown): GunBalanceCatalog {
     'catalog',
     'неверный список оружия',
   )
+  const parts = value.fields.fields!.body_part_multipliers
+  if (parts) {
+    requireValue(
+      parts.type === 'object' &&
+        !parts.nullable &&
+        !parts.acceptsBoolean &&
+        Object.keys(parts.fields ?? {}).length === BODY_PARTS.length &&
+        BODY_PARTS.every((part) => {
+          const field = parts.fields?.[part]
+          return (
+            field?.type === 'number' &&
+            !field.nullable &&
+            !field.acceptsInfinite &&
+            field.min === 0 &&
+            field.max === 10
+          )
+        }),
+      'catalog.fields.body_part_multipliers',
+      'неверная схема множителей частей тела',
+    )
+  }
   const ids = new Set()
   for (const gun of value.guns) {
     requireValue(
@@ -314,10 +349,86 @@ export function validateGunCatalog(value: unknown): GunBalanceCatalog {
       'catalog.guns',
       'неверные ID/название/тип',
     )
+    if (gun.weaponKind !== undefined || gun.sourceId !== undefined)
+      requireValue(
+        parts &&
+          validId(gun.sourceId) &&
+          (gun.weaponKind === 'tacz'
+            ? gun.sourceId === gun.id
+            : ['item', 'throwable', 'melee', 'mounted'].includes(gun.weaponKind) &&
+              gun.id === `${gun.weaponKind}:${gun.sourceId.replace(':', '/')}` &&
+              gun.data === gun.id &&
+              gun.type === gun.weaponKind),
+        gun.id,
+        'неверный вид оружия или исходный ID',
+      )
+    if (gun.weaponKind === 'mounted') {
+      const split = gun.sourceId.lastIndexOf('/')
+      const hex = gun.sourceId.substring(split + 1)
+      let name: string | undefined
+      if (split > gun.sourceId.indexOf(':') + 1 && /^(?:[0-9a-f]{2}){1,128}$/.test(hex)) {
+        try {
+          name = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+            Buffer.from(hex, 'hex'),
+          )
+        } catch {
+          // Invalid UTF-8 must not create a replacement-character alias for a native map key.
+        }
+      }
+      requireValue(
+        validId(gun.vehicleId) &&
+          gun.vehicleId === gun.sourceId.substring(0, split) &&
+          typeof name === 'string' &&
+          name.length > 0 &&
+          name.length <= 128 &&
+          name === gun.weaponName &&
+          Buffer.from(name, 'utf8').toString('hex') === hex,
+        gun.id,
+        'неверная модель техники или точное имя орудия',
+      )
+    } else
+      requireValue(
+        gun.vehicleId === undefined && gun.weaponName === undefined,
+        gun.id,
+        'метаданные орудия допустимы только для mounted',
+      )
     ids.add(gun.id)
     requireValue(plain(gun.defaults) && plain(gun.effective), gun.id, 'нет defaults/effective')
-    checkValue(gun.defaults, value.fields, `${gun.id}.defaults`, true, false)
-    checkValue(gun.effective, value.fields, `${gun.id}.effective`, true, false)
+    const fields = weaponFields(value as GunBalanceCatalog, gun as GunDefinition)
+    if (
+      gun.weaponKind === 'item' ||
+      gun.weaponKind === 'throwable' ||
+      gun.weaponKind === 'melee' ||
+      gun.weaponKind === 'mounted'
+    )
+      requireValue(
+        [gun.defaults, gun.effective].every((entry) =>
+          Object.keys(entry).every((key) => key === 'body_part_multipliers'),
+        ),
+        gun.id,
+        'это оружие допускает только множители частей тела',
+      )
+    checkValue(gun.defaults, fields, `${gun.id}.defaults`, true, false)
+    checkValue(gun.effective, fields, `${gun.id}.effective`, true, false)
+    if (parts) {
+      checkValue(
+        gun.defaults.body_part_multipliers,
+        parts,
+        `${gun.id}.defaults.body_part_multipliers`,
+        true,
+      )
+      checkValue(
+        gun.effective.body_part_multipliers,
+        parts,
+        `${gun.id}.effective.body_part_multipliers`,
+        true,
+      )
+      requireValue(
+        BODY_PARTS.every((part) => gun.defaults.body_part_multipliers[part] === 1),
+        gun.id,
+        'исходные относительные множители должны равняться 1',
+      )
+    }
     requireValue(
       Array.isArray(gun.warnings) &&
         gun.warnings.length <= 64 &&
@@ -435,14 +546,25 @@ export function validateGunOverrides(value: unknown, catalog: GunBalanceCatalog)
   for (const [id, override] of Object.entries(value)) {
     const gun = guns.get(id)
     requireValue(gun && plain(override), id, 'неизвестный индекс оружия или неверные поля')
-    const changed = changedValues(override, catalog.fields, gun!.defaults, id) ?? {}
+    if (Object.hasOwn(override, 'body_part_multipliers')) {
+      const parts = catalog.fields.fields!.body_part_multipliers
+      requireValue(parts, id, 'сервер не поддерживает множители частей тела')
+      checkValue(override.body_part_multipliers, parts, `${id}.body_part_multipliers`, false)
+    }
+    const changed = changedValues(override, weaponFields(catalog, gun!), gun!.defaults, id) ?? {}
     const effective = mergeGunValues(gun!.defaults, changed)
-    requireValue(
-      !aliases.has(gun!.data) || equal(aliases.get(gun!.data), effective),
-      id,
-      'два индекса задают разный баланс общих данных',
+    // Body coefficients belong to an index; only native TaCZ data is shared by aliases.
+    const native = Object.fromEntries(
+      Object.entries(effective).filter(([key]) => key !== 'body_part_multipliers'),
     )
-    aliases.set(gun!.data, effective)
+    if (Object.keys(override).some((key) => key !== 'body_part_multipliers')) {
+      requireValue(
+        !aliases.has(gun!.data) || equal(aliases.get(gun!.data), native),
+        id,
+        'два индекса задают разный баланс общих данных',
+      )
+      aliases.set(gun!.data, native)
+    }
     if (Object.keys(changed).length) result.push([id, changed])
   }
   const overrides = Object.fromEntries(result)
