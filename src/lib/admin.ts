@@ -2650,6 +2650,7 @@ export async function handleWorkshopAccess(
     target: Awaited<ReturnType<StatsStore['staff']>>[number] | undefined,
     error: string | null = null,
     result: any = null
+  const outer = { actor, role }
   try {
     // The read and the write bracket awaits, so concurrent grants queue on one chain (see
     // withStaffMapsLock) instead of overwriting each other from the same snapshot.
@@ -2665,6 +2666,9 @@ export async function handleWorkshopAccess(
           'Владелец',
         role,
       }
+      // A refused grant is audited too: record who tried before any permission check throws.
+      outer.actor = actor
+      outer.role = role
       const target = staff.find((s) => s.uuid === targetId)
       if (!role || !can(role, 'roles')) throw fail(403, 'Менять права может только администратор.')
       if (target?.role !== 'builder') throw fail(400, 'Права по картам задаются только строителям.')
@@ -2685,6 +2689,7 @@ export async function handleWorkshopAccess(
     result = { mapId, name: edit.target.name, maps: edit.maps, sync }
     return result instanceof Response ? result : Response.json(result, { headers: noStore })
   } catch (thrown) {
+    ;({ actor, role } = outer)
     error =
       thrown instanceof Response
         ? await thrown
