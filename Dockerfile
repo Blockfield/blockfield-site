@@ -21,7 +21,7 @@ EXPOSE 4321
 HEALTHCHECK --interval=15s --timeout=5s --retries=3 CMD wget -q -O /dev/null http://127.0.0.1:4321/ || exit 1
 CMD ["node", "./dist/server/entry.mjs"]
 
-# CI consumes the Astro output built and checked on the self-hosted runner.
+# CI consumes the Astro output built and checked in the same job.
 FROM runtime-base AS ci
 COPY dist/ ./dist/
 
