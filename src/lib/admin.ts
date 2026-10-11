@@ -24,6 +24,12 @@ import { parseTickQuery, readDiagnostics, redact } from './diagnostics.ts'
 import { currentRooms, roomId } from './rooms.ts'
 import { readGunBalance, validateGunOverrides, type GunBalanceCatalog } from './gun-balance.ts'
 import { readAiLimits, validateAiAccounts } from './ai-limits.ts'
+import {
+  readWorkshopAiKeyStatus,
+  readWorkshopAiSettings,
+  validateWorkshopAiKey,
+  validateWorkshopAiSettings,
+} from './workshop-ai-policy.ts'
 import { parseKitCatalog, validateKitChanges } from './kit-schema.ts'
 import {
   resolveNames,
@@ -605,13 +611,13 @@ function workshopMapIds() {
   return catalog.available ? new Set(['hub', ...catalog.maps.map((entry) => entry.mapId)]) : MAP_IDS
 }
 /** Readers (controller, game server) must never see a half-written file: write a dot-file in the same directory, then rename. */
-export function writeAtomic(directory: string, name: string, value: unknown) {
+export function writeAtomic(directory: string, name: string, value: unknown, mode?: number) {
   const contents = JSON.stringify(value, null, 2) + '\n'
   if (name === 'settings.json' && Buffer.byteLength(contents) > 1_048_576)
     throw fail(413, 'Настройки превышают доступный размер. Уменьшите наборы перед сохранением.')
   const temp = join(directory, `.${name}.${randomUUID()}.tmp`)
   try {
-    writeFileSync(temp, contents, { flag: 'wx' })
+    writeFileSync(temp, contents, { flag: 'wx', mode })
     renameSync(temp, join(directory, name))
   } catch (error) {
     try {
@@ -945,8 +951,14 @@ export function writeRequest(
         ? { resolutions: resolutions(body.resolutions) }
         : {}),
     }
+  } else if (body?.kind === 'ai-key') {
+    // The OpenRouter key is write-only: it travels to the controller inbox and never
+    // lands in settings, the DB, logs or responses. Validation errors never echo it.
+    if (!plain(body) || !Object.hasOwn(body, 'key')) throw bad('Укажите ключ или его удаление.')
+    request = { ...base, key: validateWorkshopAiKey(body.key) }
   } else throw bad('Неизвестный тип запроса.')
-  writeAtomic(directory, `${base.id}.json`, request)
+  // The site and the controller's reader share UID 1000; a key request is readable by them only.
+  writeAtomic(directory, `${base.id}.json`, request, request.kind === 'ai-key' ? 0o600 : undefined)
   return base.id
 }
 
@@ -1315,6 +1327,57 @@ export function saveAiLimits(directory: string, body: any) {
   return policy
 }
 
+export function saveWorkshopAiSettings(directory: string, body: any, keySet: boolean) {
+  if (
+    !plain(body) ||
+    Object.keys(body).some(
+      (key) =>
+        ![
+          'expectedRevision',
+          'enabled',
+          'generationModel',
+          'guardModel',
+          'transcriptionModel',
+        ].includes(key),
+    )
+  )
+    throw bad('AI мастерской: некорректные настройки.')
+  const current = readWorkshopAiSettings(directory)
+  if (body.expectedRevision !== current.revision)
+    throw fail(409, 'Настройки AI мастерской уже изменил кто-то другой. Обновите страницу.')
+  if (current.revision === Number.MAX_SAFE_INTEGER)
+    throw fail(503, 'Ревизия настроек AI исчерпана. Сохранение отключено.')
+  const settings = validateWorkshopAiSettings({
+    schema: 1,
+    revision: current.revision + 1,
+    enabled: body.enabled,
+    generationModel: body.generationModel,
+    guardModel: body.guardModel,
+    transcriptionModel: body.transcriptionModel,
+  })
+  // Workshop refuses to start an enabled AI without its key; say so here instead of silently.
+  if (settings.enabled && !keySet)
+    throw fail(400, 'Сначала сохраните ключ OpenRouter и дождитесь статуса «Ключ задан».')
+  writeAtomic(directory, 'workshop-ai-settings.json', settings)
+  return settings
+}
+
+/** One controller answer, validated the same way for status polling and the request view. */
+function readRequestResult(id: string) {
+  if (!UUID.test(id)) throw bad('Некорректный запрос.')
+  const result = readFile(join(adminDir(), 'results', `${id}.json`), 8 * 1024 * 1024)
+  if (
+    result !== null &&
+    (!plain(result) ||
+      result.schema !== 1 ||
+      result.id !== id ||
+      typeof result.ok !== 'boolean' ||
+      !mapJsonSafe(result))
+  )
+    throw fail(503, 'Ответ контроллера повреждён. Обновите состояние позже.')
+  return result
+}
+
 /** Only these command shapes ever reach RCON; every argument is checked, nothing is passed through. */
 function text(value: unknown, required: boolean): string {
   if (value === undefined || value === null || value === '') {
@@ -1570,21 +1633,9 @@ const routes: Record<string, Route> = {
   },
   'GET request': {
     permission: 'view',
-    handler: ({ context }) => {
-      const id = context.url.searchParams.get('id') ?? ''
-      if (!UUID.test(id)) throw bad('Некорректный запрос.')
-      const result = readFile(join(adminDir(), 'results', `${id}.json`), 8 * 1024 * 1024)
-      if (
-        result !== null &&
-        (!plain(result) ||
-          result.schema !== 1 ||
-          result.id !== id ||
-          typeof result.ok !== 'boolean' ||
-          !mapJsonSafe(result))
-      )
-        throw fail(503, 'Ответ контроллера повреждён. Обновите состояние позже.')
-      return { result }
-    },
+    handler: ({ context }) => ({
+      result: readRequestResult(context.url.searchParams.get('id') ?? ''),
+    }),
   },
   'POST mode': {
     permission: 'mode',
@@ -1790,6 +1841,45 @@ const routes: Record<string, Route> = {
       target: result?.policy ? `revision ${result.policy.revision}` : null,
       detail: body,
     }),
+  },
+  'GET workshop-ai-settings': {
+    permission: 'settings',
+    handler: () => ({ settings: readWorkshopAiSettings(settingsDir()) }),
+  },
+  'PUT workshop-ai-settings': {
+    permission: 'settings',
+    maxBody: 4096,
+    handler: ({ body }) => ({
+      settings: saveWorkshopAiSettings(
+        settingsDir(),
+        body,
+        readWorkshopAiKeyStatus(adminDir()).set,
+      ),
+    }),
+    audit: (body, result) => ({
+      action: 'workshop-ai-settings',
+      target: result?.settings ? `revision ${result.settings.revision}` : null,
+      detail: body,
+    }),
+  },
+  'GET workshop-ai-key': {
+    permission: 'settings',
+    handler: ({ context }) => {
+      const id = context.url.searchParams.get('id')
+      return {
+        status: readWorkshopAiKeyStatus(adminDir()),
+        result: id === null || id === '' ? null : readRequestResult(id),
+      }
+    },
+  },
+  'POST workshop-ai-key': {
+    permission: 'settings',
+    maxBody: 4096,
+    handler: ({ actor, body }) => ({
+      id: writeRequest(inboxDir(), actor, { kind: 'ai-key', key: body?.key }),
+    }),
+    // The key itself never reaches the audit log: only whether it is set or removed.
+    audit: (body) => ({ action: 'workshop-ai-key', detail: { remove: body?.key == null } }),
   },
   'GET gun-balance': {
     permission: 'settings',

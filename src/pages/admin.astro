@@ -505,6 +505,83 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               Обновить состояние бюджета
             </button>
           </details>
+          <details class="disclosure" data-perm="settings">
+            <summary>AI мастерской</summary>
+            <p class="muted">
+              Включение AI, модели генерации, сторожа и расшифровки, а также ключ OpenRouter. Ключ
+              хранится только в мастерской и после сохранения никогда не показывается.
+            </p>
+            <p id="workshop-ai-status" class="form-status" role="status">
+              Получаем настройки…
+            </p>
+            <form id="workshop-ai-form" class="form-stack">
+              <label class="check" for="workshop-ai-enabled">
+                <input type="checkbox" id="workshop-ai-enabled" />
+                AI включён
+              </label>
+              <label for="workshop-ai-generation">Модель генерации</label>
+              <input
+                id="workshop-ai-generation"
+                autocomplete="off"
+                spellcheck="false"
+                maxlength="128"
+                placeholder="meta/muse-spark-1.3-contributor"
+              />
+              <label for="workshop-ai-guard">Сторожевая модель</label>
+              <input
+                id="workshop-ai-guard"
+                autocomplete="off"
+                spellcheck="false"
+                maxlength="128"
+                placeholder="typesafe/jev-1.13"
+                aria-describedby="workshop-ai-guard-hint"
+              />
+              <small id="workshop-ai-guard-hint" class="muted">
+                Только typesafe/jev-…: сторож ходит в Typesafe API.
+              </small>
+              <label for="workshop-ai-transcription">Модель расшифровки</label>
+              <select id="workshop-ai-transcription">
+                <option value="elevenlabs/scribe-v2">elevenlabs/scribe-v2</option>
+                <option value="openai/whisper-1">openai/whisper-1</option>
+              </select>
+              <div class="actions">
+                <button class="primary" type="submit">
+                  Сохранить AI мастерской
+                </button>
+              </div>
+            </form>
+            <div class="group" aria-labelledby="workshop-ai-key-title">
+              <header class="stack-head">
+                <h3 id="workshop-ai-key-title">Ключ OpenRouter</h3>
+              </header>
+              <p class="muted">
+                Ключ виден только сейчас: после сохранения поле очищается и значение не
+                подставляется.
+              </p>
+              <label for="workshop-ai-key">Новый ключ</label>
+              <input
+                id="workshop-ai-key"
+                type="password"
+                autocomplete="new-password"
+                spellcheck="false"
+                maxlength="2048"
+              />
+              <div class="actions">
+                <button id="workshop-ai-key-save" type="button" class="primary">
+                  Сохранить ключ
+                </button>
+                <button id="workshop-ai-key-delete" type="button" class="small danger">
+                  Удалить ключ
+                </button>
+              </div>
+              <p id="workshop-ai-key-status" class="form-status" role="status">
+                Проверяем ключ…
+              </p>
+            </div>
+            <button id="workshop-ai-refresh" type="button" class="small">
+              Обновить состояние AI
+            </button>
+          </details>
           <p id="editor-state" class="form-status" role="status">
             Проверяем состояние мастерской…
           </p>
@@ -1816,6 +1893,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     import { settingsBody, settingsReceipt } from '../lib/settings-form'
     import { bodyPartSummary, renderBodyPartField } from '../lib/body-part-form'
     import { renderAiBudgetForm, type BudgetTarget } from '../lib/ai-budget-form'
+    import { isWorkshopAiGuardModel, workshopAiKeyLine } from '../lib/workshop-ai'
     import { canonicalBudgetUuid } from '../lib/ai-budget'
     import { weaponFields } from '../lib/gun-fields'
     import { effectiveKits, renderKitForm } from '../lib/kit-form'
@@ -4587,6 +4665,132 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         })
       )
         run($('#ai-budget-status'), loadAiBudget)
+    }
+
+    // ---------- Workshop AI ----------
+    let workshopAiRevision = 0
+    function sayWorkshopAiKey(status: any, result: any, waiting: boolean) {
+      const error =
+        result && !result.ok
+          ? typeof result.error === 'string' && result.error
+            ? result.error
+            : 'контроллер отклонил запрос.'
+          : null
+      say(
+        $('#workshop-ai-key-status'),
+        workshopAiKeyLine(status ?? { set: false }, { waiting, error }, date),
+        error ? 'error' : waiting ? 'pending' : 'ok',
+      )
+    }
+    function checkWorkshopAiGuard() {
+      const hint = $('#workshop-ai-guard-hint')
+      const value = $<HTMLInputElement>('#workshop-ai-guard').value.trim()
+      const valid = !value || isWorkshopAiGuardModel(value)
+      hint.textContent = valid
+        ? 'Только typesafe/jev-…: сторож ходит в Typesafe API.'
+        : 'Сторожевая модель: только typesafe/jev-…'
+      hint.classList.toggle('error', !valid)
+      return valid
+    }
+    async function loadWorkshopAi() {
+      const [{ settings }, key] = await Promise.all([
+        api('workshop-ai-settings'),
+        api('workshop-ai-key'),
+      ])
+      workshopAiRevision = settings.revision
+      $<HTMLInputElement>('#workshop-ai-enabled').checked = settings.enabled
+      $<HTMLInputElement>('#workshop-ai-generation').value = settings.generationModel
+      $<HTMLInputElement>('#workshop-ai-guard').value = settings.guardModel
+      $<HTMLSelectElement>('#workshop-ai-transcription').value = settings.transcriptionModel
+      checkWorkshopAiGuard()
+      say($('#workshop-ai-status'), `Настройки сохранены в ревизии ${settings.revision}.`)
+      sayWorkshopAiKey(key.status, null, false)
+    }
+    async function pollWorkshopAiKey(id: string) {
+      const line = $('#workshop-ai-key-status')
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 3000))
+        try {
+          const key = await api(`workshop-ai-key?id=${id}`)
+          if (!key.result) {
+            say(line, workshopAiKeyLine(key.status, { waiting: true }, date), 'pending')
+            continue
+          }
+          if (key.result.ok) await loadWorkshopAi()
+          else sayWorkshopAiKey(key.status, key.result, false)
+          return
+        } catch {
+          // One failed poll must not hide the pending state; the next attempt retries.
+        }
+      }
+      say(line, 'Ключ применяется… Обновите состояние AI позже.', 'pending')
+    }
+    $<HTMLInputElement>('#workshop-ai-guard').addEventListener('input', checkWorkshopAiGuard)
+    $('#workshop-ai-form').onsubmit = (event) => {
+      event.preventDefault()
+      run($('#workshop-ai-status'), async () => {
+        const body = {
+          expectedRevision: workshopAiRevision,
+          enabled: $<HTMLInputElement>('#workshop-ai-enabled').checked,
+          generationModel: $<HTMLInputElement>('#workshop-ai-generation').value.trim(),
+          guardModel: $<HTMLInputElement>('#workshop-ai-guard').value.trim(),
+          transcriptionModel: $<HTMLSelectElement>('#workshop-ai-transcription').value,
+        }
+        try {
+          const { settings } = await api('workshop-ai-settings', 'PUT', body)
+          workshopAiRevision = settings.revision
+          return `Настройки сохранены, ревизия ${settings.revision}.`
+        } catch (error) {
+          if ((error as Error & { status?: number }).status === 409) {
+            await loadWorkshopAi()
+            throw new Error('Настройки уже изменил кто-то другой. Показаны сохранённые значения.', {
+              cause: error,
+            })
+          }
+          throw error
+        }
+      })
+    }
+    $('#workshop-ai-key-save').onclick = () => {
+      const field = $<HTMLInputElement>('#workshop-ai-key')
+      const key = field.value
+      if (!key) {
+        say($('#workshop-ai-key-status'), 'Вставьте ключ в поле «Новый ключ».', 'error')
+        return
+      }
+      run($('#workshop-ai-key-status'), async () => {
+        const { id } = await api('workshop-ai-key', 'POST', { key })
+        field.value = ''
+        say($('#workshop-ai-key-status'), 'Ключ применяется…', 'pending')
+        await pollWorkshopAiKey(id)
+      })
+    }
+    $('#workshop-ai-key-delete').onclick = async () => {
+      if (
+        !(await ask({
+          title: 'Удалить ключ OpenRouter?',
+          text: 'Мастерская потеряет доступ к AI, пока не сохраните новый ключ.',
+          ok: 'Удалить',
+          danger: true,
+        }))
+      )
+        return
+      run($('#workshop-ai-key-status'), async () => {
+        const { id } = await api('workshop-ai-key', 'POST', { key: null })
+        $<HTMLInputElement>('#workshop-ai-key').value = ''
+        say($('#workshop-ai-key-status'), 'Ключ применяется…', 'pending')
+        await pollWorkshopAiKey(id)
+      })
+    }
+    $('#workshop-ai-refresh').onclick = async () => {
+      if (
+        await ask({
+          title: 'Обновить AI мастерской?',
+          text: 'Несохранённые изменения настроек будут заменены сохранёнными.',
+          ok: 'Обновить',
+        })
+      )
+        run($('#workshop-ai-status'), loadWorkshopAi)
     }
     const assignable = () =>
       can('roles-admin') ? ['builder', 'moderator', 'admin'] : ['builder', 'moderator']
@@ -7458,6 +7662,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           ['settings', loadGunBalance, 'Баланс оружия'],
           ['settings', loadKits, 'Наборы'],
           ['settings', loadAiBudget, 'Бюджет AI'],
+          ['settings', loadWorkshopAi, 'AI мастерской'],
           ['roles', loadTeam, 'Команда'],
           ['view', loadCandidates, 'Кандидаты'],
           ['view', loadMapHistory, 'Архив карт'],
