@@ -157,7 +157,8 @@ test('status rendering: sleeping shows «Мастерская спит», STARTI
   assert.deepEqual(describeWorkshop({ schema: 1, phase: 'sleeping' }, null, null), {
     tone: 'warn',
     title: 'Мастерская спит',
-    detail: 'Никого нет: мастерская остановлена. Запустите её в карточке «Игра и мастерская».',
+    detail:
+      'Никого нет, мастерская спит и не занимает память. Она проснётся, когда строитель зайдёт, или по кнопке ниже.',
   })
   const starting = describeWorkshop(
     { schema: 1, phase: 'STARTING', desired: { profile: 'workshop' } },
