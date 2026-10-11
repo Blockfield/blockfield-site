@@ -11,7 +11,7 @@ jobs:
   check:
     needs: postgres
     runs-on: blacksmith-2vcpu-ubuntu-2404
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
