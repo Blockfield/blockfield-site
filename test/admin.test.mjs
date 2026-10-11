@@ -540,6 +540,57 @@ test('API: role gate, audit of success and refusal, members request on role chan
   assert.equal(JSON.parse(log[4].detail).role, 'moderator')
 })
 
+test('POST rcon/raw audit: a body that never named a target is logged as unknown, not game', async (t) => {
+  const dirs = {
+    BLOCKFIELD_ADMIN_DIR: temp(t),
+    BLOCKFIELD_INBOX_DIR: temp(t),
+    BLOCKFIELD_SETTINGS_DIR: temp(t),
+  }
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, dirs, {
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_ADMIN_DEV_USER: `${OWNER}:Nether`,
+  })
+  const s = await store(t)
+  const raw = (text) => {
+    const url = new URL('http://site/api/admin/rcon/raw')
+    const request = new Request(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: text,
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, 'rcon/raw', s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  // All three fail validation (no command), but only the object body implies the game target.
+  assert.equal((await raw('null')).status, 400)
+  assert.equal((await raw('"oops"')).status, 400)
+  assert.equal((await raw('{}')).status, 400)
+  const url = new URL('http://site/api/admin/audit')
+  const log = await (
+    await handleAdmin(
+      {
+        request: new Request(url, { headers: { 'content-type': 'application/json' } }),
+        url,
+        cookies: { get: () => undefined },
+      },
+      'audit',
+      s,
+    )
+  ).json()
+  const targets = log.entries
+    .filter((e) => e.action === 'rcon:raw')
+    .map((e) => JSON.parse(e.detail).target)
+  assert.deepEqual(targets, ['game', 'unknown', 'unknown'])
+})
+
 test('review: range goes through /bf, Brigadier rejections are detected', () => {
   assert.deepEqual(rconCommand({ action: 'range', op: 'close' }).commands, ['bf range close'])
   for (const reply of [
@@ -997,6 +1048,92 @@ test("POST /api/workshop/access: key, then the in-game actor's own site role; hu
     log.some((e) => e.action === 'workshop-map-access' && !e.ok),
     'refusals are journaled too',
   )
+})
+
+test('concurrent tablet and web map grants for one builder keep both grants', async (t) => {
+  const dirs = {
+    BLOCKFIELD_ADMIN_DIR: temp(t),
+    BLOCKFIELD_INBOX_DIR: temp(t),
+    BLOCKFIELD_SETTINGS_DIR: temp(t),
+  }
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, dirs, {
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_ADMIN_DEV_USER: `${OWNER}:Nether`,
+  })
+  const s = await store(t)
+  await s.setStaff(OTHER, 'Bob', 'builder', 'seed')
+  await s.setStaffMaps(OTHER, ['fields'])
+  const realFetch = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+  globalThis.fetch = async () => new Response('', { status: 404 })
+  const KEY = 'k'.repeat(40)
+  // Both requests must snapshot before either writes to lose a grant. The gate releases on the
+  // second staff() read; the timeout releases it for the serialized path, where the second
+  // request never reaches its read until the first one is done.
+  let calls = 0,
+    release = () => {}
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  const timer = setTimeout(release, 100)
+  t.after(() => clearTimeout(timer))
+  const gated = new Proxy(s, {
+    get: (target, prop) => {
+      if (prop === 'staff')
+        return async (...args) => {
+          calls++
+          if (calls >= 2) release()
+          await gate
+          return target.staff(...args)
+        }
+      const value = target[prop]
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+  const tablet = handleWorkshopAccess(
+    new Request('http://site/api/workshop/access', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` },
+      body: JSON.stringify({ actor: OWNER, target: OTHER, mapId: 'hub', allowed: true }),
+    }),
+    { BLOCKFIELD_WORKSHOP_KEY: KEY },
+    gated,
+  ).then(
+    (r) => r,
+    (e) => e,
+  )
+  const web = (() => {
+    const url = new URL('http://site/api/admin/staff/map-access')
+    return handleAdmin(
+      {
+        request: new Request(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mapId: 'konstaxa', uuids: [OTHER] }),
+        }),
+        url,
+        cookies: { get: () => undefined },
+      },
+      'staff/map-access',
+      gated,
+    ).then(
+      (r) => r,
+      (e) => e,
+    )
+  })()
+  const [tabletReply, webReply] = await Promise.all([tablet, web])
+  assert.equal(tabletReply.status, 200)
+  assert.equal(webReply.status, 200)
+  const maps = (await s.staff()).find((row) => row.uuid === OTHER).maps
+  assert.deepEqual([...maps].sort(), ['fields', 'hub', 'konstaxa'])
 })
 
 test('POST /api/workshop/submit: a builder only for maps they build on; writes a candidate request; journaled', async (t) => {

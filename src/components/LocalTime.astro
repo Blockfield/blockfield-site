@@ -1,5 +1,6 @@
 ---
-// The server cannot know the visitor's time zone: UTC text is the no-script fallback, the script localizes it.
+// The server cannot know the visitor's time zone: UTC text is the no-script fallback, the script
+// localizes it and keeps the zone abbreviation so the time is never ambiguous.
 interface Props {
   at: number | string
   format: 'date' | 'datetime'
@@ -15,9 +16,17 @@ const options: Intl.DateTimeFormatOptions =
 </time>
 
 <script>
+  // dateStyle/timeStyle cannot mix with timeZoneName on some runtimes, so the zone is added
+  // with explicit fields instead; the no-script markup above keeps the UTC fallback shape.
   const formats: Record<string, Intl.DateTimeFormatOptions> = {
-    date: { dateStyle: 'long' },
-    datetime: { dateStyle: 'medium', timeStyle: 'short' },
+    date: { day: 'numeric', month: 'long', year: 'numeric', timeZoneName: 'short' },
+    datetime: {
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    },
   }
   for (const el of document.querySelectorAll<HTMLTimeElement>('time[data-local]')) {
     const options = formats[el.dataset.local ?? '']

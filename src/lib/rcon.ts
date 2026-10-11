@@ -37,7 +37,6 @@ export function rcon(
       step = 0,
       currentChunks: Buffer[] = [],
       currentBytes = 0,
-      totalBytes = 0,
       authed = false,
       sentinel = false
     const finish = (error?: Error) => {
@@ -80,9 +79,10 @@ export function rcon(
         }
         if (id === 10 + step * 2) {
           currentBytes += bodyBuffer.length
-          totalBytes += bodyBuffer.length
-          if (currentBytes > MAX_RESPONSE_BYTES || totalBytes > MAX_RESPONSE_BYTES)
-            return finish(new Error('RCON response too large'))
+          // Per-command cap: every command gets its own megabyte. The outputs array holds
+          // one entry per command by contract, so a connection-wide total would reject a
+          // second large reply while each reply on its own is fine.
+          if (currentBytes > MAX_RESPONSE_BYTES) return finish(new Error('RCON response too large'))
           currentChunks.push(Buffer.from(bodyBuffer))
           if (!sentinel) {
             sentinel = true
