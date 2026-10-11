@@ -79,7 +79,8 @@ export function readWorkshopAiSettings(directory: string): WorkshopAiSettings {
   }
 }
 
-const HEX4 = /^[0-9a-f]{4}$/
+// The key's last characters are printable ASCII; an empty tail means no key.
+const LAST4 = /^[\x21-\x7e]{0,4}$/
 const HEX8 = /^[0-9a-f]{8}$/
 
 /**
@@ -100,8 +101,8 @@ export function readWorkshopAiKeyStatus(directory: string): WorkshopAiKeyStatus 
     if (!plain(value) || typeof value.set !== 'boolean' || !value.set) return { set: false }
     const status: WorkshopAiKeyStatus = { set: true }
     if (value.last4 !== undefined) {
-      if (typeof value.last4 !== 'string' || !HEX4.test(value.last4)) return { set: false }
-      status.last4 = value.last4
+      if (typeof value.last4 !== 'string' || !LAST4.test(value.last4)) return { set: false }
+      if (value.last4) status.last4 = value.last4
     }
     if (value.sha256Prefix !== undefined) {
       if (typeof value.sha256Prefix !== 'string' || !HEX8.test(value.sha256Prefix))

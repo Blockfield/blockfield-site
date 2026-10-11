@@ -201,6 +201,11 @@ test('key status tolerates the controller file; missing or malformed means unset
     JSON.stringify({ set: true, last4: 'ab12', ok: true, kind: 'ai-key', next: 1 }),
   )
   assert.deepEqual(readWorkshopAiKeyStatus(directory), { set: true, last4: 'ab12' })
+  writeFileSync(
+    join(directory, 'ai-key.json'),
+    JSON.stringify({ schema: 1, set: true, last4: 'X-y_' }),
+  )
+  assert.deepEqual(readWorkshopAiKeyStatus(directory), { set: true, last4: 'X-y_' })
   for (const bytes of [
     '{broken',
     JSON.stringify({ set: false }),
