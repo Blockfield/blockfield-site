@@ -114,17 +114,19 @@ test('RCON joins segmented multi-packet UTF-8 output without replacement charact
   assert.ok(!outputs[0].includes('�'), 'no replacement character from split UTF-8 bytes')
 })
 
-test('RCON cumulative response limit rejects many segmented packets exceeding 1 MiB', async (t) => {
+test('RCON response cap is per command: many small replies in one batch all succeed', async (t) => {
   const { port } = await fakeServer(t)
-  await assert.rejects(
-    rcon(['segmented-oversized'], {
-      host: '127.0.0.1',
-      port,
-      password: 'secret',
-      timeout: 1000,
-    }),
-    /response too large/,
-  )
+  // 150 replies of 9000 bytes: ~1.3 MiB in total, every reply far below the cap.
+  // A connection-wide total would reject the batch around the 117th command.
+  const commands = Array(150).fill('big')
+  const outputs = await rcon(commands, {
+    host: 'localhost',
+    port,
+    password: 'secret',
+    timeout: 15000,
+  })
+  assert.equal(outputs.length, 150)
+  assert.ok(outputs.every((output) => output.length === 9000))
 })
 
 test('RCON wrong password fails without running commands', async (t) => {
@@ -141,5 +143,17 @@ test('RCON silent server times out', async (t) => {
   await assert.rejects(
     rcon(['list'], { host: '127.0.0.1', port, password: 'secret', timeout: 200 }),
     /timeout/,
+  )
+})
+test('RCON cumulative response limit rejects many segmented packets exceeding 1 MiB', async (t) => {
+  const { port } = await fakeServer(t)
+  await assert.rejects(
+    rcon(['segmented-oversized'], {
+      host: '127.0.0.1',
+      port,
+      password: 'secret',
+      timeout: 1000,
+    }),
+    /response too large/,
   )
 })

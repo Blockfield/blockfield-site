@@ -64,8 +64,9 @@ holds.
   tabs), `/terms`, `/privacy`. API under `/api/{account,admin,stats,rooms}`.
 - **Language:** every interface string is Russian. Latin appears only in proper nouns (Blockfield,
   Minecraft, Fabric, Casual / Ranked / Deathmatch, MMR), file formats and the mono HUD codes.
-- **Time:** all timestamps are UTC and always labelled as such — the game server, the ingest payload
-  and the site agree on one clock.
+- **Time:** the game server, the ingest payload and the server logs agree on UTC. Player and
+  admin pages show the visitor's local time with the zone always labelled; the leaderboard and
+  season boundaries stay UTC and labelled as such.
 - **Rendering:** Astro SSR on Node; no client framework. Everything must work with JavaScript
   disabled except the parts that are genuinely live (room list, account forms, admin panel).
 - **Sessions:** `bf_session` httpOnly cookie holding a Drasl token. `/admin` and `/account` are

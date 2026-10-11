@@ -331,6 +331,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           <p id="gun-balance-status" class="form-status" role="status">
             загрузка…
           </p>
+          <p id="gun-orphans" class="form-status" role="status" hidden></p>
           <form id="gun-balance-form" class="form-stack" hidden>
             <section class="group settings-group gun-group" aria-labelledby="gun-group-title">
               <header>
@@ -664,8 +665,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             Статистика
           </h2>
           <p class="muted">
-            Матчи, которые попали в лидерборд. Нечестный или сломанный матч можно убрать из
-            статистики — и вернуть обратно, если передумаете.
+            Матчи, которые попали в лидерборд. Время местное. Нечестный или сломанный матч можно
+            убрать из статистики — и вернуть обратно, если передумаете.
           </p>
           <div class="scope">
             <label for="result-mode">Показать</label>
@@ -735,7 +736,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           <h2 id="health-title" tabindex="-1">
             Производительность
           </h2>
-          <p class="muted">Фризы, просадки TPS и ошибки за последние сутки.</p>
+          <p class="muted">Фризы, просадки TPS и ошибки за последние сутки. Время местное.</p>
           <div id="health-card" class="hero" data-tone="wait">
             <span class="dot" aria-hidden="true"></span>
             <div>
@@ -1947,12 +1948,15 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     let me: Me
     const can = (permission: string) => me.permissions.includes(permission)
 
-    // Times use the visitor's own time zone, like the server-rendered pages (LocalTime).
+    // Times use the visitor's own time zone, like the player pages (LocalTime); every timestamp
+    // carries its zone abbreviation so it is never confused with UTC server logs. The leaderboard
+    // and season boundaries stay UTC and say so.
     const dateFormat = new Intl.DateTimeFormat('ru-RU', {
       day: 'numeric',
       month: 'long',
       hour: '2-digit',
       minute: '2-digit',
+      timeZoneName: 'short',
     })
     const relative = new Intl.RelativeTimeFormat('ru', { numeric: 'auto' })
     const date = (ms: number) => dateFormat.format(ms)
@@ -2900,6 +2904,65 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     let gunCatalog: GunBalanceCatalog | undefined,
       gunOverrides: GunOverrides = {},
       gunRevision = 0
+    // Overrides for guns missing from the catalog (a mod renamed or removed the weapon). The API
+    // rejects unknown IDs, so one orphan would fail every save: they stay out of PUT payloads and
+    // are shown for removal instead of silently blocking valid edits.
+    function gunOrphanIds() {
+      return !gunCatalog
+        ? []
+        : Object.keys(gunOverrides).filter((id) => !gunCatalog!.guns.some((gun) => gun.id === id))
+    }
+    function renderOrphans() {
+      const box = $('#gun-orphans')
+      const orphans = gunOrphanIds()
+      box.replaceChildren()
+      box.hidden = !orphans.length
+      if (!orphans.length) return
+      const count = orphans.length
+      const plural = new Intl.PluralRules('ru').select(count)
+      box.append(
+        el('span', {
+          textContent: `${count} ${plural === 'one' ? 'запись' : plural === 'few' ? 'записи' : 'записей'} для оружия, которого нет в каталоге (${orphans.join(', ')}). Они не отправляются и пропадут из сохранённых настроек при следующем сохранении. `,
+        }),
+        // button() is a const helper the extracted-function tests cannot see; el() builds the same node.
+        el('button', {
+          type: 'button',
+          className: 'small',
+          textContent: 'Удалить сейчас',
+          onclick: () => void removeOrphans(),
+        }),
+      )
+    }
+    async function removeOrphans() {
+      if (!gunOrphanIds().length || !gunCatalog) return
+      const status = $('#gun-balance-status')
+      say(status, 'удаляем…', 'pending')
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const overrides = structuredClone(gunOverrides)
+        for (const id of Object.keys(overrides))
+          if (!gunCatalog!.guns.some((gun) => gun.id === id)) delete overrides[id]
+        try {
+          const result = await api('gun-balance', 'PUT', {
+            expectedRevision: settingsRevision,
+            gunBalance: overrides,
+          })
+          settingsRevision = Math.max(settingsRevision, result.settings.revision)
+          gunRevision = settingsRevision
+          gunOverrides = structuredClone(result.settings.gunBalance ?? {})
+          await loadSettings(0, true, result)
+          filterGuns(true)
+          say(status, 'осиротевшие записи удалены', 'ok')
+          return
+        } catch (error) {
+          if (attempt || (error as Error & { status?: number }).status !== 409) {
+            say(status, autosaveError(error), 'error')
+            return
+          }
+          const fresh = await api('settings')
+          await loadSettings(0, false, fresh)
+        }
+      }
+    }
     let selectedGun: GunDefinition | undefined
     const gunReaders = new Map<string, () => unknown>()
     const gunText = (value: unknown) => JSON.stringify(value) ?? 'null'
@@ -2964,6 +3027,14 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             : gun.id === 'item:superbwarfare/taser'
               ? `${gunLabel(gun)} · множители меняют только урон дротика (1). Электрошок (2 сразу и ещё 4 раза по 2) не меняется, поэтому множитель до 2 при попадании не заметен.`
               : `${gunLabel(gun)} · ${gun.type}`
+      // Aliases share native TaCZ data: the row shows this index's own defaults, but the game
+      // runs the shared values. Only body multipliers are per-index.
+      const sharers = gunCatalog.guns
+        .filter((other) => other.id !== gun.id && other.data === gun.data)
+        .map((other) => other.id)
+      if (sharers.length)
+        $('#gun-about').textContent +=
+          ` Общие данные с ${sharers.join(', ')}: всё, кроме урона по частям тела, действует и для ${sharers.length === 1 ? 'него' : 'них'}.`
       $('#gun-warnings').textContent = gun.warnings.join(' ')
       const rows = Object.entries(weaponFields(gunCatalog, gun).fields!).map(([key, field]) => {
         const hasOverride = Object.hasOwn(gunOverrides[gun.id] ?? {}, key)
@@ -3263,6 +3334,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       selectedGun = gunCatalog.guns.find((gun) => gun.id === select.value)
       customSelect(select)
       renderGun(live)
+      renderOrphans()
       if (!guns.length) $('#gun-about').textContent = 'Оружие не найдено. Измените запрос.'
     }
     async function loadGunBalance() {
@@ -3412,6 +3484,11 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               else gun[key] = value as GunOverrides[string][string]
               if (!Object.keys(gun).length) delete overrides[id]
             }
+            // Orphaned entries (guns missing from the catalog) would fail the whole save
+            // with 400: they stay out of the payload and are offered for removal instead.
+            if (gunCatalog)
+              for (const entry of Object.keys(overrides))
+                if (!gunCatalog.guns.some((gun) => gun.id === entry)) delete overrides[entry]
             try {
               const result = await api('gun-balance', 'PUT', {
                 expectedRevision: settingsRevision,
@@ -3431,6 +3508,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               }
               customSelect(select)
               await loadSettings(0, true, result)
+              renderOrphans()
               settingsMeta()
               fieldState(line, 'сохранено', 'saved')
               changeToast(
@@ -6563,11 +6641,13 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       loadResults()
     })
     // Season boundaries are UTC calendar days; local zones would shift them by a day.
+    // They stay UTC and carry the UTC label, unlike the local match times beside them.
     const dayFormat = new Intl.DateTimeFormat('ru-RU', {
       day: 'numeric',
       month: 'long',
       year: 'numeric',
       timeZone: 'UTC',
+      timeZoneName: 'short',
     })
     async function loadSeasons() {
       const { seasons } = await api('seasons')
@@ -6889,6 +6969,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       month: 'short',
       hour: '2-digit',
       minute: '2-digit',
+      timeZoneName: 'short',
     })
     const ms = (n: number) => `${number(Math.round(n))} мс`
     const tps = (n: number) => n.toLocaleString('ru-RU', { maximumFractionDigits: 1 })
@@ -7157,7 +7238,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         dangerousCommand(command) &&
         !(await ask({
           title: 'Выполнить опасную команду?',
-          text: `«${command}» может остановить сервер, изменить доступ или необратимо изменить мир и игроков.`,
+          text: `«${command}» на ${TARGET_LABELS[target] ?? target} может остановить сервер, изменить доступ или необратимо изменить мир и игроков.`,
           ok: 'Выполнить',
           danger: true,
         }))

@@ -43,6 +43,9 @@ const names = [
   'autosaveKeys',
   'checkGunField',
   'commitGun',
+  'gunOrphanIds',
+  'renderOrphans',
+  'removeOrphans',
   'gunText',
   'gunValues',
   'gunShape',
@@ -154,7 +157,8 @@ async function setup(options = {}) {
     autosaveKeys($('#settings-form')); autosaveKeys($('#gun-balance-form'));
     $('#settings-form').addEventListener('change', e => commitSetting(e.target));
     ${messageHandlers}
-    window.gunSetup = () => { gunCatalog = {fields:{fields:{damage:{type:'number',min:0,max:100,nullable:false},nested:{type:'object',nullable:false,fields:{rate:{type:'integer',nullable:false,min:1,max:10}}}}}}; selectedGun = {id:'bf:test',data:'bf:test',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Test'}; gunCatalog.guns = [selectedGun]; renderGun(); };
+    window.gunSetup = () => { gunCatalog = {fields:{fields:{damage:{type:'number',min:0,max:100,nullable:false},nested:{type:'object',nullable:false,fields:{rate:{type:'integer',nullable:false,min:1,max:10}}}}}}; selectedGun = {id:'bf:test',data:'bf:test',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Test'}; gunCatalog.guns = [selectedGun, {id:'bf:other',data:'bf:other',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Other'}]; renderGun(); };
+    window.gunAliasSetup = () => { gunCatalog.guns.push({id:'bf:test_alias',data:'bf:test',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Alias'}); renderGun(); };
     window.bodySetup = (kind) => {
       window.gunSetup();
       const defaults = ${JSON.stringify(Object.fromEntries(BODY_PARTS.map((part) => [part, 1])))};
@@ -656,7 +660,7 @@ test('live weapon catalog refresh keeps a focused draft and refetches both sourc
         ['settings', 'GET'],
       ],
     )
-    assert.equal(doc.querySelector('#gun-balance-status').textContent, '1 оружие в каталоге')
+    assert.equal(doc.querySelector('#gun-balance-status').textContent, '2 оружия в каталоге')
   } finally {
     dom.window.close()
   }
@@ -871,6 +875,46 @@ test('weapon reset undo compares the entire saved gun object', async () => {
     doc.querySelector('.toast button').click()
     await dom.window.flush()
     assert.equal(calls.length, 1)
+  } finally {
+    dom.window.close()
+  }
+})
+
+test('orphaned gun overrides are bannered, kept out of saves and removable', async () => {
+  const { dom, calls, change } = await setup({
+    settings: { gunBalance: { 'bf:ghost': { damage: 5 } } },
+  })
+  try {
+    dom.window.gunSetup()
+    const doc = dom.window.document
+    await dom.window.loadGunBalance()
+    const box = doc.querySelector('#gun-orphans')
+    assert.equal(box.hidden, false)
+    assert.ok(box.textContent.includes('bf:ghost'))
+    // A normal save succeeds without the orphan and drops it from the stored map.
+    const enable = doc.querySelector('#gun-fields input[type=checkbox]')
+    enable.checked = true
+    enable.dispatchEvent(new dom.window.Event('change'))
+    change(doc.querySelector('#gun-field-damage'), '15')
+    await dom.window.flush()
+    const put = calls.find((c) => c.method === 'PUT' && c.path === 'gun-balance')
+    assert.ok(put)
+    assert.deepEqual(Object.keys(put.body.gunBalance), ['bf:test'])
+    assert.equal(box.hidden, true)
+    // A re-seeded orphan is removed explicitly through its button.
+    await dom.window.loadSettings(0, false, {
+      settings: { revision: 9, gunBalance: { 'bf:ghost': { damage: 5 } } },
+    })
+    dom.window.filterGuns(true)
+    assert.equal(box.hidden, false)
+    doc.querySelector('#gun-orphans button').click()
+    for (let i = 0; i < 100 && !box.hidden; i++) await new Promise((r) => setTimeout(r, 10))
+    assert.equal(box.hidden, true)
+    const puts = calls.filter((c) => c.method === 'PUT' && c.path === 'gun-balance')
+    assert.deepEqual(Object.keys(puts.at(-1).body.gunBalance), [])
+    // An index sharing native data names the alias it runs with.
+    dom.window.gunAliasSetup()
+    assert.ok(doc.querySelector('#gun-about').textContent.includes('bf:test_alias'))
   } finally {
     dom.window.close()
   }

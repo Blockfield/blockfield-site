@@ -641,6 +641,18 @@ export function withMapAccess(
   if (allowed) return maps === null || maps.includes(mapId) ? maps : [...maps, mapId]
   return (maps ?? [...knownMaps]).filter((id) => id !== mapId)
 }
+// Staff map edits are read-modify-write across awaits: a tablet grant and a web grant for one
+// builder can read the same snapshot, and the second write then loses the first grant.
+// Every such edit queues on one chain per process instead.
+let staffMapsQueue: Promise<unknown> = Promise.resolve()
+function withStaffMapsLock<T>(work: () => Promise<T>): Promise<T> {
+  const next = staffMapsQueue.then(work, work)
+  staffMapsQueue = next.then(
+    () => {},
+    () => {},
+  )
+  return next
+}
 export type WorkshopMember = {
   draslId: string
   name: string
@@ -1756,10 +1768,15 @@ const routes: Record<string, Route> = {
     audit: (body, result) => {
       let target: string | null = null
       if (body !== undefined) {
-        try {
-          target = rconTarget(body?.target)
-        } catch {
-          target = typeof body?.target === 'string' ? redact(body.target).slice(0, 32) : 'unknown'
+        // rconTarget defaults a missing target to 'game' — but only a real request object
+        // can carry that default. A null/array/string body never named a target.
+        if (typeof body !== 'object' || body === null || Array.isArray(body)) target = 'unknown'
+        else {
+          try {
+            target = rconTarget(body.target)
+          } catch {
+            target = typeof body.target === 'string' ? redact(body.target).slice(0, 32) : 'unknown'
+          }
         }
       }
       return {
@@ -2363,20 +2380,24 @@ const routes: Record<string, Route> = {
   'POST staff/maps': {
     permission: 'roles',
     handler: async ({ actor, store, body }) => {
-      const uuid = playerId(body?.uuid),
-        row = uuid ? (await store.staff()).find((s) => s.uuid === uuid) : undefined
-      if (!row) throw fail(404, 'Участник не найден.')
-      if (row.role !== 'builder') throw bad('Список карт задаётся только строителям.')
-      // null = every map, including ones added later; [] = the builder gets a workshop account but nothing to edit.
-      const maps = body?.maps
-      if (
-        maps !== null &&
-        (!Array.isArray(maps) ||
-          new Set(maps).size !== maps.length ||
-          !maps.every((id: unknown) => typeof id === 'string' && workshopMapIds().has(id)))
-      )
-        throw bad('Некорректный список карт.')
-      await store.setStaffMaps(uuid!, maps)
+      const uuid = playerId(body?.uuid)
+      // A full-list write racing a grant must not slip between them: same chain as the grants.
+      const row = await withStaffMapsLock(async () => {
+        const row = uuid ? (await store.staff()).find((s) => s.uuid === uuid) : undefined
+        if (!row) throw fail(404, 'Участник не найден.')
+        if (row.role !== 'builder') throw bad('Список карт задаётся только строителям.')
+        // null = every map, including ones added later; [] = the builder gets a workshop account but nothing to edit.
+        const maps = body?.maps
+        if (
+          maps !== null &&
+          (!Array.isArray(maps) ||
+            new Set(maps).size !== maps.length ||
+            !maps.every((id: unknown) => typeof id === 'string' && workshopMapIds().has(id)))
+        )
+          throw bad('Некорректный список карт.')
+        await store.setStaffMaps(uuid!, maps)
+        return row
+      })
       const sync = await syncWorkshop(store, actor).then(
         ({ id }) => ({ id }),
         (error: unknown) => ({
@@ -2386,7 +2407,7 @@ const routes: Record<string, Route> = {
               : String((error as Error).message),
         }),
       )
-      return { uuid, name: row.name, maps, sync }
+      return { uuid, name: row.name, maps: body?.maps, sync }
     },
     audit: (body, result) => ({
       action: 'workshop-maps',
@@ -2401,21 +2422,26 @@ const routes: Record<string, Route> = {
       const mapId = body?.mapId,
         uuids = body?.uuids
       if (typeof mapId !== 'string' || !workshopMapIds().has(mapId)) throw bad('Неизвестная карта.')
-      const builders = (await store.staff()).filter((s) => s.role === 'builder')
-      const ids = Array.isArray(uuids) ? uuids.map(playerId) : null
-      if (
-        !ids ||
-        ids.some((id) => !id || !builders.some((b) => b.uuid === id)) ||
-        new Set(ids).size !== ids.length
-      )
-        throw bad('Некорректный список строителей.')
-      const changed = []
-      for (const b of builders) {
-        const maps = withMapAccess(b.maps ?? null, mapId, ids.includes(b.uuid), workshopMapIds())
-        if (JSON.stringify(maps) === JSON.stringify(b.maps ?? null)) continue
-        await store.setStaffMaps(b.uuid, maps)
-        changed.push(b.name)
-      }
+      // Same chain as the tablet grants: the snapshot, the per-builder writes and the
+      // change list are one atomic step, the workshop sync after it stays outside the lock.
+      const changed = await withStaffMapsLock(async () => {
+        const builders = (await store.staff()).filter((s) => s.role === 'builder')
+        const ids = Array.isArray(uuids) ? uuids.map(playerId) : null
+        if (
+          !ids ||
+          ids.some((id) => !id || !builders.some((b) => b.uuid === id)) ||
+          new Set(ids).size !== ids.length
+        )
+          throw bad('Некорректный список строителей.')
+        const changed = []
+        for (const b of builders) {
+          const maps = withMapAccess(b.maps ?? null, mapId, ids.includes(b.uuid), workshopMapIds())
+          if (JSON.stringify(maps) === JSON.stringify(b.maps ?? null)) continue
+          await store.setStaffMaps(b.uuid, maps)
+          changed.push(b.name)
+        }
+        return changed
+      })
       const sync = changed.length
         ? await syncWorkshop(store, actor).then(
             ({ id }) => ({ id }),
@@ -2616,28 +2642,41 @@ export async function handleWorkshopAccess(
   )
     return fail(400, 'Некорректный запрос.')
   const store = storage ?? (await statsStore())
-  const staff = await store.staff(),
-    role = await roleOf(actorId, store)
   // The workshop server knows the in-game nickname; the site's own record wins when it has one.
   const claimed =
     typeof body?.actorName === 'string' && nickname.test(body.actorName) ? body.actorName : null
-  const actor: Actor = {
-    uuid: actorId,
-    name:
-      staff.find((s) => s.uuid === actorId)?.name ??
-      (await knownName(store, actorId)) ??
-      claimed ??
-      'Владелец',
-    role,
-  }
-  const target = staff.find((s) => s.uuid === targetId)
-  let error: string | null = null,
+  let actor: Actor = { uuid: actorId, name: claimed ?? 'Владелец', role: null },
+    role: Role | null = null,
+    target: Awaited<ReturnType<StatsStore['staff']>>[number] | undefined,
+    error: string | null = null,
     result: any = null
+  const outer = { actor, role }
   try {
-    if (!role || !can(role, 'roles')) throw fail(403, 'Менять права может только администратор.')
-    if (target?.role !== 'builder') throw fail(400, 'Права по картам задаются только строителям.')
-    const maps = withMapAccess(target.maps ?? null, mapId, body.allowed)
-    await store.setStaffMaps(targetId, maps)
+    // The read and the write bracket awaits, so concurrent grants queue on one chain (see
+    // withStaffMapsLock) instead of overwriting each other from the same snapshot.
+    const edit = await withStaffMapsLock(async () => {
+      const staff = await store.staff(),
+        role = await roleOf(actorId, store)
+      const actor: Actor = {
+        uuid: actorId,
+        name:
+          staff.find((s) => s.uuid === actorId)?.name ??
+          (await knownName(store, actorId)) ??
+          claimed ??
+          'Владелец',
+        role,
+      }
+      // A refused grant is audited too: record who tried before any permission check throws.
+      outer.actor = actor
+      outer.role = role
+      const target = staff.find((s) => s.uuid === targetId)
+      if (!role || !can(role, 'roles')) throw fail(403, 'Менять права может только администратор.')
+      if (target?.role !== 'builder') throw fail(400, 'Права по картам задаются только строителям.')
+      const maps = withMapAccess(target.maps ?? null, mapId, body.allowed)
+      await store.setStaffMaps(targetId, maps)
+      return { actor, role, target, maps }
+    })
+    ;({ actor, role, target } = edit)
     const sync = await syncWorkshop(store, actor).then(
       ({ id }) => ({ id }),
       (e: unknown) => ({
@@ -2647,9 +2686,10 @@ export async function handleWorkshopAccess(
             : String((e as Error).message),
       }),
     )
-    result = { mapId, name: target.name, maps, sync }
+    result = { mapId, name: edit.target.name, maps: edit.maps, sync }
     return result instanceof Response ? result : Response.json(result, { headers: noStore })
   } catch (thrown) {
+    ;({ actor, role } = outer)
     error =
       thrown instanceof Response
         ? await thrown
