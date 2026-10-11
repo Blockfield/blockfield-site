@@ -2259,6 +2259,13 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             title: view.step ?? 'Мастерская перезапускается',
             detail: when || 'Вход в мастерскую временно закрыт.',
           }
+        case 'sleeping':
+          return {
+            tone: 'warn',
+            title: 'Мастерская спит',
+            detail:
+              'Никого нет, мастерская спит и не занимает память. Она проснётся, когда строитель зайдёт, или по кнопке ниже.',
+          }
         case 'ERROR':
           return {
             tone: 'bad',
@@ -2438,14 +2445,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         controller?.schema === 1 &&
         Number.isSafeInteger(controller.revision) &&
         controller.revision >= 0
-      if (actionable && can('mode')) {
-        if (view.busy && view.canCancel)
+      if (actionable && (can('mode') || controller?.phase === 'sleeping')) {
+        if (view.busy && view.canCancel && can('mode'))
           editor.append(button('Отменить смену режима', cancelSwitch, 'small danger'))
         else if (controller.phase === 'ERROR' && can('recover'))
           editor.append(button('Восстановить мастерскую', recoverWorkshop, 'small primary'))
-        else if (controller.phase === 'test')
+        else if (controller.phase === 'test' && can('mode'))
           editor.append(button('Вернуться в мастерскую', resumeWorkshop, 'small'))
-        else if (!view.busy && controller.phase !== 'ERROR')
+        else if (controller.phase === 'sleeping' && can('view'))
+          editor.append(button('Запустить мастерскую', wakeWorkshop, 'small primary'))
+        else if (!view.busy && controller.phase !== 'ERROR' && can('mode'))
           editor.append(button('Выбрать сеанс и карты', startWorkshop, 'small'))
       }
       box.replaceChildren(
@@ -2464,6 +2473,20 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           el('p', { textContent: 'Игроки продолжают матчи, пока команда работает в мастерской.' }),
         ),
         editor,
+      )
+    }
+    // Waking needs no confirmation: it only starts the stored Workshop goal, and a
+    // still-unanswered wake request is reused. STARTING progress arrives over events.
+    async function wakeWorkshop() {
+      const line = $('#mode-status')
+      run(
+        line,
+        async () => {
+          const { id } = await api('wake', 'POST', {})
+          follow(line, id, 'Мастерская запускается')
+          return 'применяем…'
+        },
+        $('#mode-options'),
       )
     }
     async function cancelSwitch() {

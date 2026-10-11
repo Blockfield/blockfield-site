@@ -7,6 +7,7 @@ import {
   readSync,
   readFileSync,
   closeSync,
+  readdirSync,
   renameSync,
   writeFileSync,
   unlinkSync,
@@ -817,6 +818,9 @@ export function writeRequest(
     request = { ...base, message }
   } else if (body?.kind === 'cancel') {
     request = { ...base }
+  } else if (body?.kind === 'wake') {
+    // Waking a sleeping Workshop carries no parameters: the controller starts the stored goal.
+    request = { ...base }
   } else if (body?.kind === 'members') {
     // `maps` absent/null: every map, including ones added later. `maps: []`: no map (the builder still gets a workshop account, just nothing to edit).
     const validMaps = (m: any) =>
@@ -972,6 +976,27 @@ export function writeRequest(
   // The site and the controller's reader share UID 1000; a key request is readable by them only.
   writeAtomic(directory, `${base.id}.json`, request, request.kind === 'ai-key' ? 0o600 : undefined)
   return base.id
+}
+
+/**
+ * A `wake` request already waiting in the inbox: its id, so callers reuse it instead of
+ * queueing another. Answered (a result file exists) and malformed files do not count.
+ */
+export function pendingWakeId(inboxDirectory: string, resultsDirectory: string): string | null {
+  let names: string[]
+  try {
+    names = readdirSync(inboxDirectory)
+  } catch {
+    return null
+  }
+  for (const name of names.filter((n) => n.endsWith('.json') && !n.startsWith('.')).sort()) {
+    const id = name.slice(0, -'.json'.length)
+    const request = readFile(join(inboxDirectory, name), 4096)
+    if (!request || request.schema !== 1 || request.kind !== 'wake' || request.id !== id) continue
+    if (readFile(join(resultsDirectory, `${id}.json`)) !== null) continue
+    return id
+  }
+  return null
 }
 
 const range = (min: number, max: number) => (v: unknown) =>
@@ -1713,6 +1738,18 @@ const routes: Record<string, Route> = {
     permission: 'mode',
     handler: ({ actor }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'cancel' }) }),
     audit: () => ({ action: 'cancel' }),
+  },
+  // Waking is idempotent: a still-unanswered `wake` request is reused, never duplicated.
+  // Every staff member is a Workshop member (the site derives the controller ACL from staff
+  // roles), so this is open to all roles; POST maps/sessions sets the view-gated precedent.
+  'POST wake': {
+    permission: 'view',
+    handler: ({ actor }) => ({
+      id:
+        pendingWakeId(inboxDir(), join(adminDir(), 'results')) ??
+        writeRequest(inboxDir(), actor, { kind: 'wake' }),
+    }),
+    audit: () => ({ action: 'workshop-wake' }),
   },
   'POST rcon': {
     permission: 'moderate',
