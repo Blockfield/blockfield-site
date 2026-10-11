@@ -20,12 +20,22 @@ export type WorkshopAiSettings = {
   transcriptionModel: string
 }
 
-export const WORKSHOP_AI_MODEL = /^[a-zA-Z0-9._/:-]{1,128}$/
+// Same shape as the server's check: vendor/name with an optional :variant such as :free.
+export const WORKSHOP_AI_MODEL = /^[a-zA-Z0-9._-]{1,64}\/[a-zA-Z0-9._/:-]{1,126}$/
+// Voice reserves a per-second tariff; the server bills only these two models that way.
+export const WORKSHOP_AI_TRANSCRIPTION_MODELS = [
+  'elevenlabs/scribe-v2',
+  'openai/whisper-1',
+] as const
 export const WORKSHOP_AI_GUARD_MODEL = /^typesafe\/jev-[a-zA-Z0-9._-]{1,64}$/
 export const WORKSHOP_AI_KEY = /^[\x21-\x7e]{20,2048}$/
 
 export const isWorkshopAiModel = (value: unknown): value is string =>
-  typeof value === 'string' && WORKSHOP_AI_MODEL.test(value) && value.includes('/')
+  typeof value === 'string' && value.length <= 128 && WORKSHOP_AI_MODEL.test(value)
+
+export const isWorkshopAiTranscriptionModel = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  (WORKSHOP_AI_TRANSCRIPTION_MODELS as readonly string[]).includes(value)
 
 export const isWorkshopAiGuardModel = (value: unknown): value is string =>
   typeof value === 'string' && WORKSHOP_AI_GUARD_MODEL.test(value)

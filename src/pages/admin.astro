@@ -540,13 +540,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 Только typesafe/jev-…: сторож ходит в Typesafe API.
               </small>
               <label for="workshop-ai-transcription">Модель расшифровки</label>
-              <input
-                id="workshop-ai-transcription"
-                autocomplete="off"
-                spellcheck="false"
-                maxlength="128"
-                placeholder="elevenlabs/scribe-v2"
-              />
+              <select id="workshop-ai-transcription">
+                <option value="elevenlabs/scribe-v2">elevenlabs/scribe-v2</option>
+                <option value="openai/whisper-1">openai/whisper-1</option>
+              </select>
               <div class="actions">
                 <button class="primary" type="submit">
                   Сохранить AI мастерской
@@ -4704,7 +4701,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       $<HTMLInputElement>('#workshop-ai-enabled').checked = settings.enabled
       $<HTMLInputElement>('#workshop-ai-generation').value = settings.generationModel
       $<HTMLInputElement>('#workshop-ai-guard').value = settings.guardModel
-      $<HTMLInputElement>('#workshop-ai-transcription').value = settings.transcriptionModel
+      $<HTMLSelectElement>('#workshop-ai-transcription').value = settings.transcriptionModel
       checkWorkshopAiGuard()
       say($('#workshop-ai-status'), `Настройки сохранены в ревизии ${settings.revision}.`)
       sayWorkshopAiKey(key.status, null, false)
@@ -4737,7 +4734,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           enabled: $<HTMLInputElement>('#workshop-ai-enabled').checked,
           generationModel: $<HTMLInputElement>('#workshop-ai-generation').value.trim(),
           guardModel: $<HTMLInputElement>('#workshop-ai-guard').value.trim(),
-          transcriptionModel: $<HTMLInputElement>('#workshop-ai-transcription').value.trim(),
+          transcriptionModel: $<HTMLSelectElement>('#workshop-ai-transcription').value,
         }
         try {
           const { settings } = await api('workshop-ai-settings', 'PUT', body)

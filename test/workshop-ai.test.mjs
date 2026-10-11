@@ -1,6 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -59,6 +67,8 @@ test('settings validate a closed schema with per-field model rules', () => {
     (value) => (value.guardModel = `typesafe/jev-${'x'.repeat(65)}`),
     (value) => (value.transcriptionModel = ''),
     (value) => (value.transcriptionModel = 42),
+    (value) => (value.transcriptionModel = 'provider/stt'),
+    (value) => (value.generationModel = 'vendor:x/model'),
   ]) {
     const invalid = settings()
     mutate(invalid)
@@ -85,13 +95,17 @@ test('missing file returns defaults with revision 0; corrupt or oversized files 
     rejected(() => readWorkshopAiSettings(directory), 503)
     rejected(
       () =>
-        saveWorkshopAiSettings(directory, {
-          expectedRevision: 0,
-          enabled: false,
-          generationModel: 'a/b',
-          guardModel: 'typesafe/jev-1',
-          transcriptionModel: 'c/d',
-        }),
+        saveWorkshopAiSettings(
+          directory,
+          {
+            expectedRevision: 0,
+            enabled: false,
+            generationModel: 'a/b',
+            guardModel: 'typesafe/jev-1',
+            transcriptionModel: 'openai/whisper-1',
+          },
+          false,
+        ),
       503,
     )
     assert.equal(readFileSync(join(directory, 'workshop-ai-settings.json'), 'utf8'), bytes)
@@ -105,18 +119,25 @@ test('settings save uses optimistic revision and rejects unknown keys', (t) => {
     enabled: true,
     generationModel: 'provider/gen-model',
     guardModel: 'typesafe/jev-2',
-    transcriptionModel: 'provider/stt-model',
+    transcriptionModel: 'openai/whisper-1',
   }
-  const saved = saveWorkshopAiSettings(directory, body)
+  rejected(() => saveWorkshopAiSettings(directory, body, false), 400)
+  const saved = saveWorkshopAiSettings(directory, body, true)
   assert.equal(saved.revision, 1)
   assert.equal(saved.enabled, true)
   assert.deepEqual(JSON.parse(readFileSync(join(directory, 'workshop-ai-settings.json'), 'utf8')), {
     ...saved,
   })
-  rejected(() => saveWorkshopAiSettings(directory, { ...body, expectedRevision: 0 }), 409)
-  rejected(() => saveWorkshopAiSettings(directory, { ...body, expectedRevision: 1, extra: 1 }))
+  rejected(() => saveWorkshopAiSettings(directory, { ...body, expectedRevision: 0 }, true), 409)
   rejected(() =>
-    saveWorkshopAiSettings(directory, { ...body, expectedRevision: 1, guardModel: 'other/model' }),
+    saveWorkshopAiSettings(directory, { ...body, expectedRevision: 1, extra: 1 }, true),
+  )
+  rejected(() =>
+    saveWorkshopAiSettings(
+      directory,
+      { ...body, expectedRevision: 1, guardModel: 'other/model' },
+      true,
+    ),
   )
   assert.equal(
     JSON.parse(readFileSync(join(directory, 'workshop-ai-settings.json'), 'utf8')).revision,
@@ -293,12 +314,21 @@ test('admin routes: staff-only access, no key in files, responses, errors or aud
     guardModel: 'typesafe/jev-1.13',
     transcriptionModel: 'elevenlabs/scribe-v2',
   })
-  const saved = await call(admin, 'PUT', 'workshop-ai-settings', {
+  const keyless = await call(admin, 'PUT', 'workshop-ai-settings', {
     expectedRevision: 0,
     enabled: true,
     generationModel: 'provider/gen',
     guardModel: 'typesafe/jev-2',
-    transcriptionModel: 'provider/stt',
+    transcriptionModel: 'openai/whisper-1',
+  })
+  assert.equal(keyless.status, 400)
+  assert.match((await keyless.json()).error, /ключ OpenRouter/)
+  const saved = await call(admin, 'PUT', 'workshop-ai-settings', {
+    expectedRevision: 0,
+    enabled: false,
+    generationModel: 'provider/gen',
+    guardModel: 'typesafe/jev-2',
+    transcriptionModel: 'openai/whisper-1',
   })
   assert.equal(saved.status, 200)
   assert.equal((await saved.json()).settings.revision, 1)
@@ -341,5 +371,22 @@ test('admin routes: staff-only access, no key in files, responses, errors or aud
   for (const entry of await store.auditLog(50)) assert.ok(LEAK(entry))
   const keyAudit = (await store.auditLog(50)).filter((entry) => entry.action === 'workshop-ai-key')
   assert.ok(keyAudit.length >= 1)
-  assert.ok(keyAudit.every((entry) => entry.ok || entry.action === 'workshop-ai-key'))
+  const accepted = keyAudit.filter((entry) => entry.ok)
+  assert.ok(accepted.length >= 1)
+  // Audit keeps only whether the key was removed, never the key or its tail.
+  for (const entry of accepted) assert.deepEqual(JSON.parse(entry.detail), { remove: false })
+  const inboxFile = readdirSync(inbox).find((name) => name.endsWith('.json'))
+  assert.equal(statSync(join(inbox, inboxFile)).mode & 0o777, 0o600)
+  writeFileSync(
+    join(adminDir, 'ai-key.json'),
+    JSON.stringify({ schema: 1, set: true, last4: 'ab12' }),
+  )
+  const enabled = await call(admin, 'PUT', 'workshop-ai-settings', {
+    expectedRevision: 1,
+    enabled: true,
+    generationModel: 'provider/gen',
+    guardModel: 'typesafe/jev-2',
+    transcriptionModel: 'openai/whisper-1',
+  })
+  assert.equal(enabled.status, 200)
 })

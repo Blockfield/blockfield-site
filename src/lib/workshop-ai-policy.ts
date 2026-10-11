@@ -6,6 +6,7 @@ import {
   isWorkshopAiGuardModel,
   isWorkshopAiKey,
   isWorkshopAiModel,
+  isWorkshopAiTranscriptionModel,
   type WorkshopAiKeyStatus,
   type WorkshopAiSettings,
 } from './workshop-ai.ts'
@@ -37,8 +38,8 @@ export function validateWorkshopAiSettings(value: unknown): WorkshopAiSettings {
     throw fail(400, 'Модель генерации: 1–128 знаков (латиница, цифры, . _ / : -) и «/» в имени.')
   if (!isWorkshopAiGuardModel(value.guardModel))
     throw fail(400, 'Сторожевая модель: только typesafe/jev-…')
-  if (!isWorkshopAiModel(value.transcriptionModel))
-    throw fail(400, 'Модель расшифровки: 1–128 знаков (латиница, цифры, . _ / : -) и «/» в имени.')
+  if (!isWorkshopAiTranscriptionModel(value.transcriptionModel))
+    throw fail(400, 'Модель расшифровки: elevenlabs/scribe-v2 или openai/whisper-1.')
   return {
     schema: 1,
     revision: value.revision,

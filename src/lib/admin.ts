@@ -611,13 +611,13 @@ function workshopMapIds() {
   return catalog.available ? new Set(['hub', ...catalog.maps.map((entry) => entry.mapId)]) : MAP_IDS
 }
 /** Readers (controller, game server) must never see a half-written file: write a dot-file in the same directory, then rename. */
-export function writeAtomic(directory: string, name: string, value: unknown) {
+export function writeAtomic(directory: string, name: string, value: unknown, mode?: number) {
   const contents = JSON.stringify(value, null, 2) + '\n'
   if (name === 'settings.json' && Buffer.byteLength(contents) > 1_048_576)
     throw fail(413, 'Настройки превышают доступный размер. Уменьшите наборы перед сохранением.')
   const temp = join(directory, `.${name}.${randomUUID()}.tmp`)
   try {
-    writeFileSync(temp, contents, { flag: 'wx' })
+    writeFileSync(temp, contents, { flag: 'wx', mode })
     renameSync(temp, join(directory, name))
   } catch (error) {
     try {
@@ -957,7 +957,8 @@ export function writeRequest(
     if (!plain(body) || !Object.hasOwn(body, 'key')) throw bad('Укажите ключ или его удаление.')
     request = { ...base, key: validateWorkshopAiKey(body.key) }
   } else throw bad('Неизвестный тип запроса.')
-  writeAtomic(directory, `${base.id}.json`, request)
+  // The site and the controller's reader share UID 1000; a key request is readable by them only.
+  writeAtomic(directory, `${base.id}.json`, request, request.kind === 'ai-key' ? 0o600 : undefined)
   return base.id
 }
 
@@ -1326,7 +1327,7 @@ export function saveAiLimits(directory: string, body: any) {
   return policy
 }
 
-export function saveWorkshopAiSettings(directory: string, body: any) {
+export function saveWorkshopAiSettings(directory: string, body: any, keySet: boolean) {
   if (
     !plain(body) ||
     Object.keys(body).some(
@@ -1354,6 +1355,9 @@ export function saveWorkshopAiSettings(directory: string, body: any) {
     guardModel: body.guardModel,
     transcriptionModel: body.transcriptionModel,
   })
+  // Workshop refuses to start an enabled AI without its key; say so here instead of silently.
+  if (settings.enabled && !keySet)
+    throw fail(400, 'Сначала сохраните ключ OpenRouter и дождитесь статуса «Ключ задан».')
   writeAtomic(directory, 'workshop-ai-settings.json', settings)
   return settings
 }
@@ -1845,7 +1849,13 @@ const routes: Record<string, Route> = {
   'PUT workshop-ai-settings': {
     permission: 'settings',
     maxBody: 4096,
-    handler: ({ body }) => ({ settings: saveWorkshopAiSettings(settingsDir(), body) }),
+    handler: ({ body }) => ({
+      settings: saveWorkshopAiSettings(
+        settingsDir(),
+        body,
+        readWorkshopAiKeyStatus(adminDir()).set,
+      ),
+    }),
     audit: (body, result) => ({
       action: 'workshop-ai-settings',
       target: result?.settings ? `revision ${result.settings.revision}` : null,
