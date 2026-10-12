@@ -55,6 +55,7 @@ const workshopHelpers = source.statements
         'describeGame',
         'describeWorkshop',
         'renderModes',
+        'workshopActions',
         'renderProgress',
       ].includes(node.name?.text),
   )
@@ -76,7 +77,13 @@ test('real admin cards keep Game available during Workshop restart/error/test an
     window.ago = () => 'только что'
     window.MAP_NAMES = {}
     window.WORKSHOP_PLACES = {}
-    for (const action of ['cancelSwitch', 'recoverWorkshop', 'resumeWorkshop', 'startWorkshop'])
+    for (const action of [
+      'cancelSwitch',
+      'recoverWorkshop',
+      'resumeWorkshop',
+      'startWorkshop',
+      'wakeWorkshop',
+    ])
       window[action] = () => {}
     window.eval(workshopCode)
     window.button = (label, action, className) =>
@@ -105,7 +112,7 @@ test('real admin cards keep Game available during Workshop restart/error/test an
           assert.deepEqual(labels, role === 'moderator' ? [] : ['Восстановить мастерскую'])
         else if (phase === 'test') assert.deepEqual(labels, ['Вернуться в мастерскую'])
         else if (phase === 'STARTING') assert.deepEqual(labels, ['Отменить смену режима'])
-        else assert.deepEqual(labels, ['Выбрать сеанс и карты'])
+        else assert.deepEqual(labels, ['Сменить сеанс или карты'])
         assert.equal(window.document.body.textContent.includes('Вернуть игровой режим'), false)
       }
     }

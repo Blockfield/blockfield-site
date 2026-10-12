@@ -97,7 +97,7 @@ test('live sidebar shows unavailable, empty and scored matches without placehold
       can: () => false,
     })
     dom.window.eval(
-      `const $ = (s) => document.querySelector(s); let controller, session, lastWorkshop; const PHASES = { VOTING: 'Голосование за карту' }; const describeGame = () => ({ tone: 'bad', title: 'недоступно', detail: '' }); const describeWorkshop = describeGame; const say = () => {}; const ago = () => 'только что'; const renderModes = () => {}; const renderRooms = () => {}; ${functions(['el', 'renderRoomSummary', 'renderGameOverview', 'renderOverview', 'loadOverview'])}`,
+      `const $ = (s) => document.querySelector(s); let controller, session, lastWorkshop; const PHASES = { VOTING: 'Голосование за карту' }; const describeGame = () => ({ tone: 'bad', title: 'недоступно', detail: '' }); const describeWorkshop = describeGame; const say = () => {}; const ago = () => 'только что'; const renderModes = () => {}; const renderRooms = () => {}; const renderWorkshopCard = () => {}; ${functions(['el', 'renderRoomSummary', 'renderGameOverview', 'renderOverview', 'loadOverview'])}`,
     )
     await dom.window.loadOverview()
     const box = dom.window.document.querySelector('#side-now')
@@ -352,7 +352,7 @@ test('rooms event renders the real Game headline, lamp, detail and mode readines
       const switchView = () => ({ busy:false });
       const describeWorkshop = () => ({title:'Мастерская открыта',detail:'',tone:'ok'});
       const renderRooms = () => {}, renderProgress = () => {};
-      ${functions(['el', 'describeGame', 'renderRoomSummary', 'renderGameOverview', 'renderModes'])}
+      ${functions(['el', 'describeGame', 'renderRoomSummary', 'renderGameOverview', 'renderModes', 'workshopActions'])}
       window.handlers = {};
       const events = { addEventListener: (name, handler) => window.handlers[name] = handler };
       ${ts.transpileModule(script.slice(script.indexOf("      events.addEventListener('rooms'"), script.indexOf("      events.addEventListener(\n        'settings'", script.indexOf("      events.addEventListener('rooms'"))), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}
