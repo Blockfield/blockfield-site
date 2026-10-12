@@ -12,8 +12,13 @@ const source = ts.createSourceFile('admin.ts', script, ts.ScriptTarget.Latest, t
 const names = [
   'el',
   'field',
+  'mapPathLabel',
   'renderMapChanges',
-  'mapGitControls',
+  'branchLabel',
+  'draftPanel',
+  'branchesPanel',
+  'requestReview',
+  'commitMap',
   'renderSavedMapSessions',
   'previewMapReview',
   'newMapControls',
@@ -38,6 +43,7 @@ const map = {
   branches: [
     { name: 'main', versionDigest: FIRST },
     { name: 'layout', versionDigest: SECOND },
+    { name: 'redo', versionDigest: FIRST },
   ],
   versions: [FIRST, SECOND].map((versionDigest) => ({ versionDigest, createdAt: 1 })),
 }
@@ -61,6 +67,12 @@ function dom(t) {
   window.openMapBranch = () => {}
   window.submitMap = () => {}
   window.mapNotes = new Map()
+  window.busyMaps = new Set()
+  window.kept = (key, make) => make()
+  window.mapLine = () => window.document.createElement('p')
+  window.versionLabel = () => '8 октября 2026'
+  window.candidateList = []
+  window.savedMapSessions = []
   window.mapSession = { id: COPY, branches: { fields: 'layout' } }
   window.mapCatalog = [map]
   window.ARENA_MODES = ARENA_MODES
@@ -161,11 +173,13 @@ test('private first review previews an empty base and rejects stale publication 
   const candidate = { id: 'review', mapId: 'fields', versionDigest: SECOND, targetHead: null }
   await window.previewMapReview(candidate, outlet, line)
   assert.equal(requested.expectedHead, null)
-  assert.match(outlet.textContent, /Первая публикация/)
-  assert.match(outlet.textContent, /main ещё нет/)
+  assert.match(outlet.textContent, /Карты ещё нет в игре: эта версия станет первой/)
   assert.match(outlet.textContent, /Отсутствует/)
   window.mapCatalog = [map]
-  await assert.rejects(() => window.previewMapReview(candidate, outlet, line), /Main изменилась/)
+  await assert.rejects(
+    () => window.previewMapReview(candidate, outlet, line),
+    /Версию в игре сменили/,
+  )
 })
 
 test('test modal sends selected frozen supported mode and never invents modes', async (t) => {
@@ -229,17 +243,29 @@ test('availability displays observed state, marks pending changes and reserves o
   assert.equal(window.mapAvailabilityControls({ ...map, head: null }, line).textContent, '')
 })
 
-test('all roles get scoped work-branch actions; only moderator and reviewers activate saved copies', (t) => {
+test('all roles get scoped draft and branch actions; only moderator and reviewers activate saved copies', (t) => {
   const window = dom(t),
-    line = window.document.createElement('p')
+    branch = map.branches[1]
   for (const role of ['builder', 'moderator', 'admin', 'owner']) {
     window.can = (permission) => permissions(role).includes(permission)
     window.mayEditMap = () => true
-    const controls = window.mapGitControls(map, line)
-    assert.match(controls.textContent, /Зафиксировать изменения/)
-    assert.match(controls.textContent, /Отправить коммит на проверку/)
-    assert.match(controls.textContent, /Незакоммиченные изменения/)
-    assert.equal(controls.textContent.includes('Открыть ветку'), role !== 'builder')
+    window.controller = { revision: 3 }
+    const draft = window.draftPanel(map, branch)
+    assert.match(draft.textContent, /Сохранить и отправить на проверку/)
+    assert.match(draft.textContent, /Только сохранить версию/)
+    assert.match(draft.textContent, /ещё не отправлена на проверку/)
+    assert.equal(draft.textContent.includes('Переименовать карту'), role !== 'builder')
+    const branches = window.branchesPanel(map, false)
+    // The open branch has no «open» action; another one does, for session-switching roles only.
+    assert.equal(branches.textContent.includes('Открыть в мастерской'), role !== 'builder')
+    assert.match(branches.textContent, /Открыта в мастерской/)
+    window.candidateList = [{ status: 'pending', mapId: 'fields', versionDigest: SECOND }]
+    assert.match(window.draftPanel(map, branch).textContent, /уже на проверке/)
+    assert.equal(
+      window.draftPanel(map, branch).textContent.includes('Отправить последнюю версию'),
+      false,
+    )
+    window.candidateList = []
     window.savedMapSessions = [
       {
         id: 'old-copy',
@@ -257,9 +283,67 @@ test('all roles get scoped work-branch actions; only moderator and reviewers act
       role !== 'builder',
     )
     assert.equal(window.$('#map-drafts-more').hidden, false)
+    window.savedMapSessions = []
+    // A re-render during a running save must not hand out enabled save/send buttons.
+    window.busyMaps.add('fields')
+    assert.ok(
+      [...window.draftPanel(map, branch).querySelectorAll('form button')].every((b) => b.disabled),
+    )
+    window.busyMaps.clear()
     window.mayEditMap = () => false
-    assert.equal(window.mapGitControls(map, line).querySelectorAll('form').length, 0)
+    assert.equal(window.draftPanel(map, branch).querySelectorAll('form').length, 0)
+    assert.equal(window.branchesPanel(map, false).querySelectorAll('form').length, 0)
   }
+})
+
+test('«save and send» commits the exact copy, then reviews the re-read branch head', async (t) => {
+  const window = dom(t),
+    line = window.document.createElement('p'),
+    THIRD = 'c'.repeat(64),
+    calls = []
+  window.mapRequest = async (path, body) => {
+    calls.push([path, body])
+    return { mapId: body.mapId }
+  }
+  window.loadMapHistory = async () => {
+    window.mapCatalog = [
+      { ...map, branches: [map.branches[0], { name: 'layout', versionDigest: THIRD }] },
+    ]
+  }
+  window.api = async (path, method, body) => {
+    calls.push([path, body])
+    return { id: 'review-task' }
+  }
+  window.follow = async () => ({ ok: true })
+  window.loadCandidates = async () => {}
+  window.mapRequestError = () => true
+  await window.commitMap(map, map.branches[1], 'Новые укрытия', line, true)
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    [
+      'maps/commit',
+      {
+        mapId: 'fields',
+        branch: 'layout',
+        workingCopyId: COPY,
+        expectedBranchHead: SECOND,
+        note: 'Новые укрытия',
+      },
+    ],
+    ['candidates/create', { mapId: 'fields', branch: 'layout', expectedBranchHead: THIRD }],
+  ])
+  // A branch that ends up equal to the game has nothing to review.
+  calls.length = 0
+  window.loadMapHistory = async () => {
+    window.mapCatalog = [
+      { ...map, branches: [map.branches[0], { name: 'layout', versionDigest: FIRST }] },
+    ]
+  }
+  await window.commitMap(map, map.branches[1], 'Ничего', line, true)
+  assert.deepEqual(
+    calls.map(([path]) => path),
+    ['maps/commit'],
+  )
+  assert.match(line.textContent, /отправлять нечего/)
 })
 
 test('merge stays disabled until exact conflict choices have been recomputed; a changed choice invalidates approval', async (t) => {
@@ -286,7 +370,7 @@ test('merge stays disabled until exact conflict choices have been recomputed; a 
   })
   await window.previewMapReview(candidate, outlet, line)
   assert.equal(
-    [...outlet.querySelectorAll('button')].find((button) => button.textContent === 'Слить в main')
+    [...outlet.querySelectorAll('button')].find((button) => button.textContent === 'Принять в игру')
       .disabled,
     true,
   )
@@ -308,7 +392,7 @@ test('merge stays disabled until exact conflict choices have been recomputed; a 
   })
   await window.previewMapReview(candidate, outlet, line, { 'world/region/r.0.0.mca': 'ours' })
   const merge = [...outlet.querySelectorAll('button')].find(
-      (button) => button.textContent === 'Слить в main',
+      (button) => button.textContent === 'Принять в игру',
     ),
     select = outlet.querySelector('select')
   assert.equal(merge.disabled, false)
@@ -317,5 +401,8 @@ test('merge stays disabled until exact conflict choices have been recomputed; a 
   select.dispatchEvent(new window.Event('change'))
   assert.equal(merge.disabled, true)
   window.mapCatalog = [{ ...map, head: { versionDigest: SECOND } }]
-  await assert.rejects(() => window.previewMapReview(candidate, outlet, line), /Main изменилась/)
+  await assert.rejects(
+    () => window.previewMapReview(candidate, outlet, line),
+    /Версию в игре сменили/,
+  )
 })

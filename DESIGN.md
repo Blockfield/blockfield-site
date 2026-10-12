@@ -334,10 +334,13 @@ square controls, with a compact identity header and a 1320px workspace.
 
 - One permission-filtered navigation list groups «Операции», «Игра и карты», and «Управление».
   Desktop navigation stays at the top while scrolling; below 600px the same groups wrap into rows.
-  Builder opens the read-only Workshop, moderator opens Players, admin and owner open Overview.
+  Builder opens the Workshop, moderator opens Players, admin and owner open Overview.
   A forbidden or unknown hash returns to the role's permitted default. Console is owner-only.
 - Operational sections use stacked rows separated by 1px seams. Status, mode changes, messages,
   moderation and map history retain their own permissions and action feedback.
+- Workshop is one workflow: status card with its switch, pending decisions, then one disclosure
+  per map whose summary already names the version in the game and its builders. Rows inside a
+  map plate drop their own plate and become seam-divided lines; no card sits inside a card.
 - Game settings use native disclosure groups. Weapon balance has its own section and save action;
   both forms retain the shared server revision. The settings save bar exposes the revision,
   unsaved changes and actual server application receipt. Reloading a draft requires confirmation.
