@@ -168,6 +168,13 @@ test('map catalog validates immutable history and binds selected copy to stable 
     COPY,
     'Game outage does not replace the editor copy',
   )
+  write(directory, 'status', {
+    schema: 1,
+    phase: 'sleeping',
+    gate: 'sleeping',
+    desired: { profile: 'workshop', session: COPY },
+  })
+  assert.equal(readMapCatalog(directory).session.id, COPY, 'a sleeping editor can still commit')
   for (const maps of [['unknown'], ['custom_arena', 'custom_arena'], []]) {
     write(directory, 'session', { schema: 1, id: COPY, maps })
     assert.equal(Object.hasOwn(readMapCatalog(directory), 'session'), false)

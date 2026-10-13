@@ -518,8 +518,8 @@ export function readMapCatalog(directory: string): MapCatalogAvailability {
     session !== null &&
     plain(status) &&
     status.schema === 1 &&
-    status.phase === 'workshop' &&
-    status.gate === 'builders' &&
+    // Asleep the editor is saved and stopped, and the controller commits its copy from disk.
+    ((status.phase === 'workshop' && status.gate === 'builders') || status.phase === 'sleeping') &&
     plain(status.desired) &&
     status.desired.profile === 'workshop' &&
     status.desired.session === session.id
