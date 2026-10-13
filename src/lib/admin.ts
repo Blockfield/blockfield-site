@@ -2202,8 +2202,10 @@ const routes: Record<string, Route> = {
       const { catalog, entry } = await editableMap(actor, store, body?.mapId),
         { copy, branch } = selectedMapBranch(catalog, entry)
       if (
-        (body.branch !== undefined && body.branch !== branch.name) ||
-        (body.expectedBranchHead !== undefined && body.expectedBranchHead !== branch.versionDigest)
+        ((body.commit === true || body.branch !== undefined) && body.branch !== branch.name) ||
+        ((body.commit === true || body.expectedBranchHead !== undefined) &&
+          body.expectedBranchHead !== branch.versionDigest) ||
+        (body.commit === true && body.workingCopyId !== copy.id)
       )
         throw fail(409, 'Ветка уже изменилась. Обновите историю перед отправкой на проверку.')
       if (body.commit !== true && branch.versionDigest === entry.head?.versionDigest)

@@ -1326,7 +1326,12 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
       s,
     ).catch((error) => error)
   }
-  const draft = { mapId: 'fields', branch: 'layout-work', expectedBranchHead: 'a'.repeat(64) }
+  const draft = {
+    mapId: 'fields',
+    branch: 'layout-work',
+    workingCopyId,
+    expectedBranchHead: 'a'.repeat(64),
+  }
   assert.equal((await web(draft)).status, 409, 'review-only still requires a saved change')
   assert.equal((await web({ ...draft, commit: true, note: '' })).status, 400)
   assert.equal(
@@ -1334,6 +1339,8 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
       .status,
     409,
   )
+  for (const workingCopyId of [undefined, '00000000-0000-0000-0000-000000000000'])
+    assert.equal((await web({ ...draft, workingCopyId, commit: true, note: 'Update' })).status, 409)
   const combined = await web({ ...draft, commit: true, note: ' Layout update ' })
   assert.equal(combined.status, 200)
   const combinedId = (await combined.json()).id
