@@ -930,6 +930,21 @@ export function writeRequest(
           throw bad('Проверка требует выбранную ветку, её текущую версию и рабочую копию.')
         Object.assign(request, { branch: body.branch, expectedBranchHead: body.expectedBranchHead })
       }
+      if (body.commit !== undefined && typeof body.commit !== 'boolean')
+        throw bad('Некорректный запрос сохранения перед проверкой.')
+      if (body.commit === true) {
+        if (
+          body.branch === undefined ||
+          typeof body.note !== 'string' ||
+          !body.note.trim() ||
+          body.note.length > 200 ||
+          /\p{Cc}/u.test(body.note)
+        )
+          throw bad(
+            'Сохранение перед проверкой требует ветку и описание изменений до 200 символов.',
+          )
+        Object.assign(request, { commit: true, note: body.note.trim() })
+      }
     } else {
       if (
         !digest(body.versionDigest) ||
@@ -1406,7 +1421,7 @@ function readRequestResult(id: string) {
   if (
     result !== null &&
     (!plain(result) ||
-      result.schema !== 1 ||
+      (result.schema !== undefined && result.schema !== 1) ||
       result.id !== id ||
       typeof result.ok !== 'boolean' ||
       !mapJsonSafe(result))
@@ -2191,7 +2206,7 @@ const routes: Record<string, Route> = {
         (body.expectedBranchHead !== undefined && body.expectedBranchHead !== branch.versionDigest)
       )
         throw fail(409, 'Ветка уже изменилась. Обновите историю перед отправкой на проверку.')
-      if (branch.versionDigest === entry.head?.versionDigest)
+      if (body.commit !== true && branch.versionDigest === entry.head?.versionDigest)
         throw fail(409, 'Сначала зафиксируйте изменения в ветке: её коммит совпадает с main.')
       return {
         id: writeRequest(
@@ -2203,6 +2218,8 @@ const routes: Record<string, Route> = {
             workingCopyId: copy.id,
             branch: branch.name,
             expectedBranchHead: branch.versionDigest,
+            commit: body.commit,
+            note: body.note,
           },
           new Set(catalog.maps.map((map) => map.mapId)),
         ),
@@ -2576,8 +2593,9 @@ routes['POST candidates/rollback'] = routes['POST maps/rollback']
 function workshopKeyError(
   request: Request,
   env: Record<string, string | undefined>,
+  methods = ['POST'],
 ): Response | null {
-  if (request.method !== 'POST') return fail(405, 'POST only.')
+  if (!methods.includes(request.method)) return fail(405, `${methods.join('/')} only.`)
   const key = env.BLOCKFIELD_WORKSHOP_KEY || readText(join(adminDir(), 'workshop.key'))?.trim()
   if (!key || key.length < 32) return fail(503, 'Запись из мастерской не настроена.')
   const digest = (value: string) => createHash('sha256').update(value).digest()
@@ -2588,15 +2606,21 @@ function workshopKeyError(
 
 /**
  * `POST /api/workshop/submit {actor, actorName, mapId, workingCopyId}`: «Отправить на проверку» from the tablet. The actor must be
- * able to build on that map by the site's own records; the controller then snapshots it (inbox kind `candidate`).
+ * able to build on that map by the site's own records; the controller commits and reviews without restarting.
+ * `GET /api/workshop/submit?id=<receipt>` reads the controller's answer with the same shared key.
  */
 export async function handleWorkshopSubmit(
   request: Request,
   env: Record<string, string | undefined> = process.env,
   storage?: StatsStore,
 ): Promise<Response> {
-  const refused = workshopKeyError(request, env)
+  const refused = workshopKeyError(request, env, ['POST', 'GET'])
   if (refused) return refused
+  if (request.method === 'GET')
+    return Response.json(
+      { result: readRequestResult(new URL(request.url).searchParams.get('id') ?? '') },
+      { headers: noStore },
+    )
   const body = await readJson(request, 4096)
   const actorId = playerId(body?.actor),
     mapId = body?.mapId
@@ -2620,9 +2644,6 @@ export async function handleWorkshopSubmit(
       { copy, branch } = selectedMapBranch(catalog, entry)
     if (body.workingCopyId !== copy.id)
       throw fail(409, 'Рабочая копия карты уже изменилась. Вернитесь в действующую мастерскую.')
-    // The controller refuses this too, but only after the tablet has already reported success.
-    if (branch.versionDigest === entry.head?.versionDigest)
-      throw fail(409, 'сначала зафиксируйте изменения на сайте: коммит ветки совпадает с main.')
     id = writeRequest(
       inboxDir(),
       actor,
@@ -2632,6 +2653,11 @@ export async function handleWorkshopSubmit(
         workingCopyId: copy.id,
         branch: branch.name,
         expectedBranchHead: branch.versionDigest,
+        commit: true,
+        note: `С планшета: ${actor.name}`
+          .replace(/\p{Cc}/gu, ' ')
+          .trim()
+          .slice(0, 200),
       },
       new Set(catalog.maps.map((entry) => entry.mapId)),
     )

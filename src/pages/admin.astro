@@ -5435,15 +5435,17 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     }
     $('#map-create-controls').append(newMapControls())
     function mapRequestError(line: HTMLElement, error: string) {
-      const message = /stale|head|revision|target.*changed|branch.*changed/i.test(error)
-        ? 'Ветка или версия в игре успели измениться. Обновите список карт и попробуйте снова.'
-        : /conflict|resolution|merge/i.test(error)
-          ? 'Для каждого конфликта нужно выбрать вариант. Пересчитайте проверку с вашим выбором.'
-          : /missing|corrupt|unsafe|behind/i.test(error)
-            ? 'Рабочая копия или сохранённая версия недоступна. Сообщите администратору.'
-            : /actor|member|scope|permission/i.test(error)
-              ? 'Мастерская не подтвердила участника или доступ к карте. Попросите администратора обновить доступ.'
-              : 'Не удалось выполнить запрос. Обновите состояние и попробуйте снова.'
+      const message = /no changes|nothing to commit/i.test(error)
+        ? 'Нет изменений для сохранения. Постройте или измените разметку перед отправкой.'
+        : /stale|head|revision|target.*changed|branch.*changed/i.test(error)
+          ? 'Ветка или версия в игре успели измениться. Обновите список карт и попробуйте снова.'
+          : /conflict|resolution|merge/i.test(error)
+            ? 'Для каждого конфликта нужно выбрать вариант. Пересчитайте проверку с вашим выбором.'
+            : /missing|corrupt|unsafe|behind/i.test(error)
+              ? 'Рабочая копия или сохранённая версия недоступна. Сообщите администратору.'
+              : /actor|member|scope|permission/i.test(error)
+                ? 'Мастерская не подтвердила участника или доступ к карте. Попросите администратора обновить доступ.'
+                : 'Не удалось выполнить запрос. Обновите состояние и попробуйте снова.'
       say(line, message, 'error')
       return true
     }
@@ -5698,30 +5700,24 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       review: boolean,
     ) {
       const payload = await mapRequest(
-        'maps/commit',
+        review ? 'candidates/create' : 'maps/commit',
         {
           mapId: map.mapId,
           branch: branch.name,
           workingCopyId: mapSession!.id,
           expectedBranchHead: branch.versionDigest,
           note,
+          ...(review ? { commit: true } : {}),
         },
         line,
         review
-          ? 'Версия сохранена. Отправляем на проверку…'
+          ? 'Версия сохранена и отправлена на проверку. Можно строить дальше.'
           : 'Версия сохранена. Отправьте её на проверку, когда будете готовы.',
       )
       if (!payload) return
       if (mapNotes.get(map.mapId) === note) mapNotes.delete(map.mapId)
       await loadMapHistory()
-      if (!review) return
-      const fresh = mapCatalog?.find((entry) => entry.mapId === map.mapId),
-        head = fresh?.branches?.find((ref) => ref.name === branch.name)
-      if (!head || head.versionDigest === fresh?.head?.versionDigest) {
-        say(line, 'Версия совпадает с той, что в игре, — отправлять нечего.', 'error')
-        return
-      }
-      await requestReview(map.mapId, head, line)
+      if (review) await loadCandidates()
     }
     function draftPanel(
       map: MapCatalogEntry,
