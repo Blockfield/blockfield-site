@@ -1268,13 +1268,6 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
     'stale working copy',
   )
   writeMaps(true)
-  assert.equal(
-    (await call({ actor: OTHER, actorName: 'Bob', mapId: 'fields', workingCopyId })).status,
-    409,
-    'branch still equals main: nothing committed to review',
-  )
-  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 0)
-  writeMaps(false)
   const ok = await call({ actor: OTHER, actorName: 'Bob', mapId: 'fields', workingCopyId })
   assert.equal(ok.status, 200)
   const files = readdirSync(dirs.BLOCKFIELD_INBOX_DIR).filter((f) => f.endsWith('.json'))
@@ -1287,6 +1280,78 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
   assert.equal(request.workingCopyId, workingCopyId)
   assert.equal(request.branch, 'layout-work')
   assert.equal(request.expectedBranchHead, 'a'.repeat(64))
+  assert.equal(request.commit, true)
+  assert.equal(request.note, 'С планшета: Bob')
+  const { id } = await ok.json()
+  const poll = (receipt = id, key = KEY) =>
+    handleWorkshopSubmit(
+      new Request(`http://site/api/workshop/submit?id=${receipt}`, {
+        headers: { authorization: `Bearer ${key}` },
+      }),
+      {},
+      s,
+    ).catch((error) => error)
+  assert.deepEqual(await (await poll()).json(), { result: null })
+  assert.equal((await poll(id, 'wrong-key')).status, 401)
+  assert.equal((await poll('../bad')).status, 400)
+  mkdirSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'results'))
+  const result = { id, ok: false, error: 'no changes on the branch', doneAt: Date.now() }
+  writeFileSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'results', `${id}.json`), JSON.stringify(result))
+  assert.deepEqual(await (await poll()).json(), { result }, 'controller refusal reaches the tablet')
+  result.ok = true
+  result.error = null
+  result.payload = { mapId: 'fields' }
+  writeFileSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'results', `${id}.json`), JSON.stringify(result))
+  assert.deepEqual(await (await poll()).json(), { result })
+  writeFileSync(
+    join(dirs.BLOCKFIELD_ADMIN_DIR, 'results', `${id}.json`),
+    JSON.stringify({ ...result, schema: 2 }),
+  )
+  assert.equal((await poll()).status, 503, 'unknown result schema is refused')
+
+  process.env.BLOCKFIELD_ADMIN_DEV_USER = `${OTHER}:Bob`
+  const web = (body) => {
+    const url = new URL('http://site/api/admin/candidates/create')
+    return handleAdmin(
+      {
+        url,
+        request: new Request(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+        cookies: { get: () => undefined },
+      },
+      'candidates/create',
+      s,
+    ).catch((error) => error)
+  }
+  const draft = {
+    mapId: 'fields',
+    branch: 'layout-work',
+    workingCopyId,
+    expectedBranchHead: 'a'.repeat(64),
+  }
+  assert.equal((await web(draft)).status, 409, 'review-only still requires a saved change')
+  assert.equal((await web({ ...draft, commit: true, note: '' })).status, 400)
+  assert.equal(
+    (await web({ ...draft, expectedBranchHead: 'b'.repeat(64), commit: true, note: 'Update' }))
+      .status,
+    409,
+  )
+  for (const workingCopyId of [undefined, '00000000-0000-0000-0000-000000000000'])
+    assert.equal((await web({ ...draft, workingCopyId, commit: true, note: 'Update' })).status, 409)
+  const combined = await web({ ...draft, commit: true, note: ' Layout update ' })
+  assert.equal(combined.status, 200)
+  const combinedId = (await combined.json()).id
+  const combinedRequest = JSON.parse(
+    readFileSync(join(dirs.BLOCKFIELD_INBOX_DIR, `${combinedId}.json`), 'utf8'),
+  )
+  assert.equal(combinedRequest.kind, 'candidate')
+  assert.equal(combinedRequest.commit, true)
+  assert.equal(combinedRequest.note, 'Layout update')
+  assert.equal(combinedRequest.workingCopyId, workingCopyId)
+  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 2, 'one request per submission')
   assert.ok(
     (await s.auditLog(5)).some(
       (e) => e.action === 'workshop-candidate' && e.ok && e.target === 'fields',
@@ -1298,6 +1363,24 @@ test('writeRequest: candidate/rollback take a real map, publish/reject a candida
   const dir = temp(t),
     actor = { uuid: OWNER, name: 'Nether', role: 'owner' }
   assert.ok(writeRequest(dir, actor, { kind: 'candidate', mapId: 'konstaxa' }))
+  const combined = {
+    kind: 'candidate',
+    mapId: 'konstaxa',
+    branch: 'layout',
+    workingCopyId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    expectedBranchHead: 'a'.repeat(64),
+    commit: true,
+    note: 'Update',
+  }
+  assert.ok(writeRequest(dir, actor, combined))
+  for (const overrides of [
+    { note: '' },
+    { note: 'a'.repeat(201) },
+    { note: 'line\nbreak' },
+    { branch: undefined },
+    { commit: 'true' },
+  ])
+    assert.throws(() => writeRequest(dir, actor, { ...combined, ...overrides }))
   assert.ok(writeRequest(dir, actor, { kind: 'publish', candidateId: 'a'.repeat(32) }))
   assert.throws(() => writeRequest(dir, actor, { kind: 'rollback', mapId: 'hub' }))
   assert.throws(() => writeRequest(dir, actor, { kind: 'reject', candidateId: '../x' }))

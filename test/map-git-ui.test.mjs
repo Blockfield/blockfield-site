@@ -19,6 +19,7 @@ const names = [
   'branchesPanel',
   'requestReview',
   'commitMap',
+  'mapRequestError',
   'renderSavedMapSessions',
   'previewMapReview',
   'newMapControls',
@@ -296,54 +297,61 @@ test('all roles get scoped draft and branch actions; only moderator and reviewer
   }
 })
 
-test('«save and send» commits the exact copy, then reviews the re-read branch head', async (t) => {
+test('«save and send» commits and reviews in one request; refusal preserves the note', async (t) => {
   const window = dom(t),
     line = window.document.createElement('p'),
-    THIRD = 'c'.repeat(64),
     calls = []
+  let histories = 0,
+    candidates = 0,
+    refused = false
   window.mapRequest = async (path, body) => {
     calls.push([path, body])
+    if (refused) {
+      window.mapRequestError(line, 'no changes on the branch')
+      return null
+    }
     return { mapId: body.mapId }
   }
   window.loadMapHistory = async () => {
-    window.mapCatalog = [
-      { ...map, branches: [map.branches[0], { name: 'layout', versionDigest: THIRD }] },
-    ]
+    histories++
   }
-  window.api = async (path, method, body) => {
-    calls.push([path, body])
-    return { id: 'review-task' }
+  window.loadCandidates = async () => {
+    candidates++
   }
-  window.follow = async () => ({ ok: true })
-  window.loadCandidates = async () => {}
-  window.mapRequestError = () => true
+  window.api = async () => {
+    throw new Error('a second request is forbidden')
+  }
+  window.mapNotes.set('fields', 'Новые укрытия')
   await window.commitMap(map, map.branches[1], 'Новые укрытия', line, true)
   assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
     [
-      'maps/commit',
+      'candidates/create',
       {
         mapId: 'fields',
         branch: 'layout',
         workingCopyId: COPY,
         expectedBranchHead: SECOND,
         note: 'Новые укрытия',
+        commit: true,
       },
     ],
-    ['candidates/create', { mapId: 'fields', branch: 'layout', expectedBranchHead: THIRD }],
   ])
-  // A branch that ends up equal to the game has nothing to review.
-  calls.length = 0
-  window.loadMapHistory = async () => {
-    window.mapCatalog = [
-      { ...map, branches: [map.branches[0], { name: 'layout', versionDigest: FIRST }] },
-    ]
-  }
+  assert.equal(histories, 1)
+  assert.equal(candidates, 1)
+  assert.equal(window.mapNotes.has('fields'), false)
+  refused = true
+  window.mapNotes.set('fields', 'Ничего')
   await window.commitMap(map, map.branches[1], 'Ничего', line, true)
-  assert.deepEqual(
-    calls.map(([path]) => path),
-    ['maps/commit'],
-  )
-  assert.match(line.textContent, /отправлять нечего/)
+  assert.equal(window.mapNotes.get('fields'), 'Ничего')
+  assert.equal(histories, 1)
+  assert.equal(candidates, 1)
+  assert.match(line.textContent, /Нет изменений для сохранения/)
+  refused = false
+  calls.length = 0
+  await window.commitMap(map, map.branches[1], 'Только сохранить', line, false)
+  assert.equal(calls[0][0], 'maps/commit')
+  assert.equal(calls[0][1].commit, undefined)
+  assert.equal(candidates, 1)
 })
 
 test('merge stays disabled until exact conflict choices have been recomputed; a changed choice invalidates approval', async (t) => {
