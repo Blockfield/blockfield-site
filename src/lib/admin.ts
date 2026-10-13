@@ -2620,6 +2620,9 @@ export async function handleWorkshopSubmit(
       { copy, branch } = selectedMapBranch(catalog, entry)
     if (body.workingCopyId !== copy.id)
       throw fail(409, 'Рабочая копия карты уже изменилась. Вернитесь в действующую мастерскую.')
+    // The controller refuses this too, but only after the tablet has already reported success.
+    if (branch.versionDigest === entry.head?.versionDigest)
+      throw fail(409, 'сначала зафиксируйте изменения на сайте: коммит ветки совпадает с main.')
     id = writeRequest(
       inboxDir(),
       actor,
