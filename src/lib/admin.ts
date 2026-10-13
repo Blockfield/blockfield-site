@@ -518,8 +518,8 @@ export function readMapCatalog(directory: string): MapCatalogAvailability {
     session !== null &&
     plain(status) &&
     status.schema === 1 &&
-    status.phase === 'workshop' &&
-    status.gate === 'builders' &&
+    // Asleep the editor is saved and stopped, and the controller commits its copy from disk.
+    ((status.phase === 'workshop' && status.gate === 'builders') || status.phase === 'sleeping') &&
     plain(status.desired) &&
     status.desired.profile === 'workshop' &&
     status.desired.session === session.id
@@ -2620,6 +2620,9 @@ export async function handleWorkshopSubmit(
       { copy, branch } = selectedMapBranch(catalog, entry)
     if (body.workingCopyId !== copy.id)
       throw fail(409, 'Рабочая копия карты уже изменилась. Вернитесь в действующую мастерскую.')
+    // The controller refuses this too, but only after the tablet has already reported success.
+    if (branch.versionDigest === entry.head?.versionDigest)
+      throw fail(409, 'сначала зафиксируйте изменения на сайте: коммит ветки совпадает с main.')
     id = writeRequest(
       inboxDir(),
       actor,

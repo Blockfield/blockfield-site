@@ -1154,47 +1154,74 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
   const KEY = 'k'.repeat(40)
   writeFileSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'workshop.key'), KEY)
   const workingCopyId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
-  writeFileSync(
-    join(dirs.BLOCKFIELD_ADMIN_DIR, 'maps.json'),
-    JSON.stringify({
-      schema: 1,
-      maps: ['fields', 'konstaxa'].map((mapId) => ({
-        mapId,
-        kind: 'arena',
-        mapJson: { id: mapId },
-        head: null,
-        versions: [
-          {
-            schema: 1,
-            mapId,
-            kind: 'arena',
-            versionDigest: 'a'.repeat(64),
-            parent: null,
-            createdAt: 1,
-            author: { name: 'Bob' },
-            source: 'commit',
-            note: 'Layout update',
-            worldDigest: 'b'.repeat(64),
-            changed: ['world/region/r.0.0.mca'],
-            deleted: [],
-            fileCount: 2,
-          },
-        ],
-        branches: [
-          {
-            schema: 1,
-            mapId,
-            name: 'layout-work',
-            versionDigest: 'a'.repeat(64),
-            generation: 1,
-            workingCopyId: null,
-            createdAt: 1,
-            createdBy: { draslId: OTHER, name: 'Bob' },
-          },
-        ],
-      })),
-    }),
-  )
+  const writeMaps = (merged) =>
+    writeFileSync(
+      join(dirs.BLOCKFIELD_ADMIN_DIR, 'maps.json'),
+      JSON.stringify({
+        schema: 1,
+        maps: ['fields', 'konstaxa'].map((mapId) => ({
+          mapId,
+          kind: 'arena',
+          mapJson: { id: mapId },
+          head: merged
+            ? {
+                schema: 1,
+                mapId,
+                kind: 'arena',
+                versionDigest: 'a'.repeat(64),
+                generation: 1,
+                bundle: 'bundle',
+                activatedAt: 1,
+                activatedBy: { name: 'Bob' },
+              }
+            : null,
+          versions: [
+            {
+              schema: 1,
+              mapId,
+              kind: 'arena',
+              versionDigest: 'a'.repeat(64),
+              parent: null,
+              createdAt: 1,
+              author: { name: 'Bob' },
+              source: 'commit',
+              note: 'Layout update',
+              worldDigest: 'b'.repeat(64),
+              changed: ['world/region/r.0.0.mca'],
+              deleted: [],
+              fileCount: 2,
+            },
+          ],
+          branches: [
+            ...(merged
+              ? [
+                  {
+                    schema: 1,
+                    mapId,
+                    name: 'main',
+                    versionDigest: 'a'.repeat(64),
+                    generation: 1,
+                    workingCopyId: null,
+                    createdAt: 1,
+                    createdBy: { name: 'Bob' },
+                  },
+                ]
+              : []),
+            {
+              schema: 1,
+              mapId,
+              name: 'layout-work',
+              versionDigest: 'a'.repeat(64),
+              generation: 1,
+              workingCopyId: null,
+              createdAt: 1,
+              createdBy: { draslId: OTHER, name: 'Bob' },
+            },
+          ],
+        })),
+      }),
+    )
+  writeMaps(false)
   writeFileSync(
     join(dirs.BLOCKFIELD_ADMIN_DIR, 'session.json'),
     JSON.stringify({
@@ -1240,6 +1267,14 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
     409,
     'stale working copy',
   )
+  writeMaps(true)
+  assert.equal(
+    (await call({ actor: OTHER, actorName: 'Bob', mapId: 'fields', workingCopyId })).status,
+    409,
+    'branch still equals main: nothing committed to review',
+  )
+  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 0)
+  writeMaps(false)
   const ok = await call({ actor: OTHER, actorName: 'Bob', mapId: 'fields', workingCopyId })
   assert.equal(ok.status, 200)
   const files = readdirSync(dirs.BLOCKFIELD_INBOX_DIR).filter((f) => f.endsWith('.json'))
