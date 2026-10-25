@@ -827,8 +827,10 @@ const features = [
         grid-template-columns: minmax(0, 1fr);
       }
 
+      /* Safari рисует позиционированные блоки в порядке разметки, а не order: без z-index плашка закрывала картинку. */
       .hero__art {
         position: relative;
+        z-index: 1;
         inset: auto;
         height: 46vw;
         min-height: 220px;
