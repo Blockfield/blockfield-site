@@ -1,5 +1,7 @@
 name: Build and deploy the landing page
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 concurrency:
   group: blockfield-site
