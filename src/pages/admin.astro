@@ -1,5 +1,9 @@
 ---
 import Site from '../layouts/Site.astro'
+import { siteIdentity } from '../lib/admin'
+// Оболочку панели видят только участники команды; права на данные отдельно проверяет /api/admin.
+const identity = await siteIdentity(Astro.cookies).catch(() => null)
+if (!identity?.hasAdminAccess) return Astro.redirect(identity ? '/' : '/account', 302)
 Astro.response.headers.set('Cache-Control', 'no-store')
 ---
 
