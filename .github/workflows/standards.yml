@@ -19,8 +19,8 @@ jobs:
       - name: Fail on CRLF in the Git index
         shell: bash
         run: |
-          git ls-files --eol | awk '$1=="i/crlf"||$1=="i/mixed"{print $NF; bad=1} END{exit bad}' \
-            || { echo "CRLF in the Git index; fix with: git add --renormalize ."; exit 1; }
+          git ls-files --eol | awk '$3=="attr/-text"{next} $1=="i/crlf"||$1=="i/mixed"{print $NF; bad=1} tolower($NF)~/\.(bat|cmd)$/{print $NF": missing -text"; bad=1} END{exit bad}' \
+            || { echo "CRLF in the Git index or .bat/.cmd without -text; fix with: git add --renormalize ."; exit 1; }
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11.18.0
