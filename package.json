@@ -11,7 +11,7 @@
     "test:postgres": "node --experimental-strip-types --test test/stats*.test.mjs test/diagnostics.test.mjs test/admin.test.mjs test/names.test.mjs test/storage.test.mjs",
     "lint": "eslint .",
     "format": "prettier --write \"src/**/*.{ts,astro,css}\" \"{scripts,test}/**/*.mjs\" \"*.{mjs,json}\" package.json \"*.md\" \"docs/**/*.md\" \".github/**/*.{yml,yaml}\" \"pnpm-lock.yaml\" \"pnpm-workspace.yaml\"",
-    "format:check": "prettier --check \"src/**/*.{ts,astro,css}\" \"{scripts,test}/**/*.mjs\" \"*.{mjs,json}\" package.json \"*.md\" \"docs/**/*.md\" \".github/**/*.{yml,yaml}\" \"pnpm-lock.yaml\" \"pnpm-workspace.yaml\"",
+    "format:check": "git ls-files --eol | awk '$1==\"i/crlf\"||$1==\"i/mixed\"{print $NF; bad=1} END{exit bad}' || { echo \"CRLF in the Git index; fix with: git add --renormalize .\"; exit 1; } && prettier --check \"src/**/*.{ts,astro,css}\" \"{scripts,test}/**/*.mjs\" \"*.{mjs,json}\" package.json \"*.md\" \"docs/**/*.md\" \".github/**/*.{yml,yaml}\" \"pnpm-lock.yaml\" \"pnpm-workspace.yaml\"",
     "check": "pnpm lint && pnpm stylelint && pnpm typecheck && pnpm format:check && pnpm test",
     "stylelint": "stylelint \"src/**/*.{css,astro}\"",
     "typecheck": "astro check"
