@@ -994,81 +994,131 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     .admin-main textarea {
       min-height: 88px;
     }
-    .admin-main #gun-fields .disclosure {
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .disclosure {
       margin-bottom: 12px;
     }
-    .admin-main #gun-fields .body-part-row {
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .body-part-row {
       display: block;
       grid-column: 1 / -1;
     }
-    .admin-main #gun-fields .body-part-row .form-grid {
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .body-part-row .form-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
       gap: 12px 16px;
     }
-    .admin-main #gun-fields .body-part-row .form-grid .field,
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .body-part-row .form-grid .field,
     .admin-main #ai-budget-form .field {
       grid-template-columns: minmax(0, 1fr);
       gap: 6px;
       padding: 0;
       border: 0;
     }
-    .admin-main #gun-fields input:not([type='checkbox']),
-    .admin-main #gun-fields select {
+    .admin-main :is(#gun-fields, #gun-advanced-fields) input:not([type='checkbox']),
+    .admin-main :is(#gun-fields, #gun-advanced-fields) select {
       width: 100%;
       margin-block: 8px;
     }
-    .admin-main #gun-fields .gun-sub {
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-sub {
       display: grid;
       gap: 6px;
       width: 100%;
     }
-    .admin-main #gun-fields .gun-sub fieldset {
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-sub fieldset {
       border: 0;
       padding: 0;
       margin: 0;
       display: grid;
       gap: 6px;
     }
-    .admin-main #gun-fields .gun-sub-row {
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-sub-row {
       display: grid;
       grid-template-columns: minmax(120px, 200px) minmax(0, 1fr);
       gap: 4px 12px;
       align-items: center;
     }
-    .admin-main #gun-fields .gun-list {
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-list {
       display: grid;
       gap: 6px;
     }
-    .admin-main #gun-fields .gun-list-row {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 4px 8px;
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-list-row {
+      display: flex;
+      flex-wrap: nowrap;
       align-items: center;
+      gap: 8px;
     }
-    .admin-main #gun-fields .gun-mini {
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-list-row > .gun-mini {
+      flex: none;
+      width: auto;
+    }
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-list-row > [data-gunkey] {
+      flex: 0 1 130px;
+      min-width: 0;
+    }
+    .admin-main
+      :is(#gun-fields, #gun-advanced-fields)
+      .gun-list-row
+      > :not(.gun-mini):not([data-gunkey]) {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-list-row input,
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-list-row select {
+      min-width: 0;
+    }
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: center;
+      gap: 6px;
+    }
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band .gun-band-lab {
+      flex: none;
+      font-size: 13px;
+      color: var(--sand);
+    }
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band input[type='text'],
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band input[type='number'] {
+      flex: none;
+      width: 72px;
+      margin-block: 8px;
+    }
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band .gun-dmg-wrap {
+      display: flex;
+      flex: none;
+      flex-wrap: nowrap;
+      align-items: center;
+      gap: 6px;
+    }
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band .gun-band-final {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-mini {
       flex: none;
       padding: 2px 10px;
       font-size: 15px;
       line-height: 1.5;
       cursor: pointer;
     }
-    .admin-main #gun-fields .gun-null > .check {
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-null > .check {
       margin-bottom: 4px;
     }
-    .admin-main #gun-fields .gun-dmg {
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-dmg {
       position: relative;
       display: inline-block;
       flex: none;
     }
-    .admin-main #gun-fields .gun-dmg-btn {
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-dmg-btn {
+      width: auto;
       padding: 2px 9px;
       border-radius: 50%;
       cursor: help;
       font-size: 13px;
       line-height: 1.5;
     }
-    .admin-main #gun-fields .gun-dmg-pop {
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-dmg-pop {
       position: absolute;
       z-index: 5;
       right: 0;
@@ -1083,11 +1133,11 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       line-height: 1.6;
       white-space: normal;
     }
-    .admin-main #gun-fields .gun-dmg-pop[hidden] {
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-dmg-pop[hidden] {
       display: none;
     }
-    .admin-main #gun-fields pre,
-    .admin-main #gun-fields small,
+    .admin-main :is(#gun-fields, #gun-advanced-fields) pre,
+    .admin-main :is(#gun-fields, #gun-advanced-fields) small,
     .admin-main #map-history small,
     .admin-main #map-drafts small,
     .admin-main .git-diff pre,
@@ -1348,14 +1398,15 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     .admin-main .gun-group .ctl {
       flex-wrap: wrap;
     }
-    .admin-main .gun-group .ctl > :is(input, .cselect) {
-      flex: 1;
+    .admin-main .gun-group .ctl > :is(input:not([type='checkbox']):not([type='radio']), .cselect) {
+      flex: 1 1 0;
       width: 100%;
       max-width: none;
       min-width: 0;
     }
     .admin-main .gun-group .gun-reset {
       flex: none;
+      width: auto;
       padding: 2px 8px;
       font-size: 14px;
       line-height: 1.5;
@@ -3219,8 +3270,19 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         ...Object.entries(overrides).map(([key, value]) => [key, gunValues(base[key], value)]),
       ])
     }
+    // Человеческое имя из ID: «elitex:ak47» → «AK47», «item:superbwarfare/ak_47» → «Ak 47».
+    const gunPretty = (id: string) =>
+      id
+        .split(':')
+        .at(-1)!
+        .split(/[_/-]+/)
+        .filter(Boolean)
+        .map((part) =>
+          /\d/.test(part) ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1),
+        )
+        .join(' ')
     const gunLabel = (gun: GunDefinition) =>
-      gun.name.endsWith('.name') ? gun.id : `${gun.name} · ${gun.id}`
+      gun.name.endsWith('.name') ? `${gunPretty(gun.id)} · ${gun.id}` : `${gun.name} · ${gun.id}`
     function gunShape(field: GunField): string {
       if (field.type === 'object')
         return Object.entries(field.fields ?? {})
@@ -3293,8 +3355,39 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         'damage',
         'armor_ignore',
         'head_shot',
+        'reload',
       ])
-      const GUN_FLAT_PARENTS = new Set(['bullet', 'reload', 'inaccuracy'])
+      // Порядок «Основного»: сначала урон и магазин, затем остальное в порядке каталога.
+      const GUN_MAIN_ORDER = [
+        'bullet-damage',
+        'bullet-extra_damage-damage_adjust',
+        'bullet-extra_damage-armor_ignore',
+        'bullet-extra_damage-head_shot_multiplier',
+        'body_part_multipliers',
+        'rpm',
+        'ammo_amount',
+        'extended_mag_ammo_amount',
+        'reload',
+        'ammo',
+      ]
+      const GUN_FLAT_PARENTS = new Set(['bullet', 'inaccuracy'])
+      // Физика пули (жизнь, скорость, падение…) — не для «Основного»: уходит в «Дополнительно».
+      const GUN_BULLET_PHYSICS = new Set([
+        'life',
+        'speed',
+        'gravity',
+        'knockback',
+        'friction',
+        'ignite_entity_time',
+        'tracer_count_interval',
+      ])
+      const GUN_NULL_LABELS: Record<string, string> = {
+        extra_damage: 'Не использовать доп. урон',
+        extended_mag_ammo_amount: 'Без расширенного магазина',
+        explosion: 'Без взрыва',
+      }
+      const gunNullLabel = (rk: string) =>
+        (GUN_NULL_LABELS[rk.split('-').at(-1)!] ?? 'Не задано (как в ганпаке)') as string
       const GUN_CHILD_LABELS: Record<string, string> = {
         damage: 'Урон',
         armor_ignore: 'Бронепробитие',
@@ -3326,6 +3419,36 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         value: 'Значение',
         stand: 'Стоя',
         aim: 'В прицеле',
+        move: 'В движении',
+        sneak: 'Крадучись',
+        lie: 'Лёжа',
+        life: 'Время жизни пули',
+        bullet_amount: 'Дробин за выстрел',
+        speed: 'Скорость пули',
+        gravity: 'Падение пули',
+        knockback: 'Отбрасывание',
+        friction: 'Трение пули',
+        pierce: 'Пробивает целей',
+        entity: 'Сущность',
+        block: 'Блок',
+        ignite_entity_time: 'Время поджога',
+        tracer_count_interval: 'Трассировка',
+        explode: 'Взрыв',
+        radius: 'Радиус',
+        destroy_block: 'Разрушение блоков',
+        delay: 'Задержка',
+        type: 'Тип',
+        infinite: 'Бесконечная',
+        fire_multiplier: 'Без глушителя',
+        silence_multiplier: 'С глушителем',
+        base: 'Обычная',
+        continuous_shoot: 'Непрерывная',
+        count: 'Выстрелов в очереди',
+        bpm: 'Темп очереди',
+        min_interval: 'Пауза',
+        max: 'Максимум',
+        per_shot: 'За выстрел',
+        cooling_multiplier: 'Скорость остывания',
       }
       const GUN_HINTS: Record<string, string> = {
         rpm: 'Сколько выстрелов в минуту делает оружие.',
@@ -3342,9 +3465,23 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         armor_ignore:
           'Какая доля урона проходит сквозь броню: 0 — вся режется бронёй, 1 — броня не мешает.',
         head_shot: 'Во сколько раз больше урона при попадании в голову.',
+        head_shot_multiplier: 'Во сколько раз больше урона при попадании в голову.',
         reload: 'Сколько секунд занимает перезарядка.',
         inaccuracy: 'Разброс при стрельбе: больше число — кучность хуже.',
         bullet: 'Пуля и её урон.',
+        bullet_amount: 'Сколько дробин вылетает за один выстрел.',
+        pierce: 'Сколько целей пробивает пуля подряд.',
+        life: 'Сколько секунд живёт пуля.',
+        speed: 'Начальная скорость пули.',
+        gravity: 'Как сильно пуля падает в полёте.',
+        knockback: 'Как сильно попадание отбрасывает.',
+        friction: 'Как быстро пуля теряет скорость.',
+        ignite: 'Поджигает ли пуля.',
+        ignite_entity_time: 'Сколько секунд горит подожжённый.',
+        tracer_count_interval: 'Каждая какая пуля трассирующая (0 — все).',
+        explosion: 'Взрыв при попадании.',
+        extra_damage: 'Доп. правила урона: броня, голова, дистанции.',
+        damage_adjust: 'Урон по дистанциям: чем дальше, тем меньше.',
       }
       const gunIsComplex = (field: GunField) =>
         ['object', 'array', 'map', 'json'].includes(field.type) || !!field.acceptsInfinite
@@ -3355,7 +3492,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         if (!GUN_FLAT_PARENTS.has(top) || field.nullable) return null
         if (field.type === 'object')
           return Object.entries(field.fields ?? {}).filter(
-            ([, child]) => !gunIsComplex(child) && !child.nullable,
+            ([name, child]) =>
+              !gunIsComplex(child) &&
+              !child.nullable &&
+              (top !== 'bullet' || !GUN_BULLET_PHYSICS.has(name)),
           )
         if (field.type === 'map' && field.items && !gunIsComplex(field.items)) {
           const names = field.keys?.values ?? Object.keys((gun.defaults[top] ?? {}) as object)
@@ -3493,10 +3633,14 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               : undefined
             : parentEffective
           const overridden = !gunSame(value, defaultValue)
-          // Nullable: пустое поле — «по умолчанию», явный null — тумблер «Выключено».
+          // Nullable: пустое поле — «по умолчанию», явный null — тумблер с понятной подписью.
           const off =
             !childKey && field.nullable
-              ? el('input', { type: 'checkbox', checked: value === null, ariaLabel: 'Выключено' })
+              ? el('input', {
+                  type: 'checkbox',
+                  checked: value === null,
+                  ariaLabel: gunNullLabel(rk),
+                })
               : null
           const options =
             sub.values && !sub.values.includes(String(value ?? ''))
@@ -3595,6 +3739,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 refreshMark()
                 if (next === undefined) writeEffective()
                 row.dataset.saved = gunRowValue(row)
+                refreshBandFinals()
                 if (shared) renderGun(true)
               },
               () => {
@@ -3656,7 +3801,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               { className: 'ctl' },
               input,
               reset,
-              off ? el('label', { className: 'check' }, off, 'Выключено') : null,
+              off ? el('label', { className: 'check' }, off, gunNullLabel(rk)) : null,
             ),
             state,
           )
@@ -3849,12 +3994,169 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           path[path.length - 1] === 'damage' &&
           (path.length === 1 || path.includes('damage_adjust'))
         type GunCtl = { node: HTMLElement; read: () => unknown; write: (value: unknown) => void }
+        const gunBandFinal = (damage: number) => {
+          const { armorIgnore, headMult } = gunDamageKit()
+          const parts = gunDamageParts()
+          const fmt = (x: number) => String(Math.round(x * 10) / 10)
+          const head = fmt(
+            finalDamageVsMatchKit({
+              damage,
+              armorIgnore,
+              headMult,
+              bodyMult: parts.head,
+              part: 'head',
+            }),
+          )
+          const torso = fmt(
+            finalDamageVsMatchKit({
+              damage,
+              armorIgnore,
+              headMult,
+              bodyMult: parts.torso,
+              part: 'torso',
+            }),
+          )
+          return `голова ${head} · тело ${torso}`
+        }
+        const refreshBandFinals = (root: ParentNode = document) => {
+          for (const span of root.querySelectorAll('.gun-band-final')) {
+            const row = (span as HTMLElement).closest('.gun-list-row')
+            const input = row?.querySelector('input[type=number]') as HTMLInputElement | null
+            const damage = Number(input?.value)
+            span.textContent =
+              input && Number.isFinite(damage) ? `итог: ${gunBandFinal(damage)}` : 'итог: —'
+          }
+        }
+        // Компактная таблица «Урон по дистанциям»: одна строка на диапазон, итог сразу виден.
+        const gunBandControl = (
+          top: string,
+          path: string[],
+          field: GunField,
+          onChange: (control: HTMLElement) => void,
+        ): GunCtl => {
+          const distField = field.items!.fields!.distance
+          const dmgField = field.items!.fields!.damage
+          const list = el('div', { className: 'gun-list' })
+          const syncBandLabel = (row: HTMLElement) => {
+            const raw = (row.querySelector('input[type=text]') as HTMLInputElement).value.trim()
+            const infinite = raw === '∞' || raw.toLowerCase() === 'infinite'
+            row.querySelector('.gun-band-lab')!.textContent = infinite ? 'дальше' : 'до'
+            row.querySelector('.gun-band-unit')!.textContent = infinite ? '· урон' : 'м · урон'
+          }
+          const readBand = (row: HTMLElement) => {
+            const distInput = row.querySelector('input[type=text]') as HTMLInputElement
+            const dmgInput = row.querySelector('input[type=number]') as HTMLInputElement
+            const rawDist = distInput.value.trim()
+            if (!rawDist) throw new Error('Укажите дистанцию или удалите строку.')
+            const distance =
+              rawDist === '∞' || rawDist.toLowerCase() === 'infinite' ? 'infinite' : Number(rawDist)
+            if (distance !== 'infinite' && !Number.isFinite(distance))
+              throw new Error('Дистанция — число или ∞.')
+            checkGunField(distance, distField)
+            const rawDmg = dmgInput.value.trim()
+            if (!rawDmg) throw new Error('Заполните все строки или удалите пустые.')
+            const damage = Number(rawDmg)
+            if (!Number.isFinite(damage)) throw new Error('Введите число.')
+            checkGunField(damage, dmgField)
+            return { distance, damage }
+          }
+          const appendBand = (distance: unknown, damage: unknown) => {
+            const row = el('div', { className: 'gun-list-row' })
+            const dist = el('input', {
+              type: 'text',
+              maxLength: 256,
+              value: distance === 'infinite' ? '∞' : (distance ?? ''),
+              title: 'Дистанция в метрах или ∞ для дальнейшей',
+            })
+            const dmgWrap = el('span', { className: 'gun-dmg-wrap' })
+            const dmg = el('input', {
+              type: 'number',
+              step: 'any',
+              value: typeof damage === 'number' ? String(damage) : (damage ?? ''),
+              title: 'Урон на этой дистанции',
+            })
+            dmgWrap.append(dmg)
+            gunDamageHint(dmgWrap, () => {
+              const parsed = Number(dmg.value.trim())
+              if (!Number.isFinite(parsed)) throw new Error('Введите число.')
+              return parsed
+            })
+            const final = el('span', { className: 'gun-band-final' })
+            const band = el(
+              'span',
+              { className: 'gun-band' },
+              el('span', { className: 'gun-band-lab', textContent: 'до' }),
+              dist,
+              el('span', { className: 'gun-band-lab gun-band-unit', textContent: 'м · урон' }),
+              dmgWrap,
+              final,
+            )
+            const del = el('button', {
+              type: 'button',
+              className: 'gun-mini',
+              textContent: '×',
+              title: 'Удалить',
+              ariaLabel: 'Удалить',
+              onclick: () => {
+                row.remove()
+                onChange(del)
+              },
+            })
+            dist.onchange = () => onChange(dist)
+            dmg.onchange = () => onChange(dmg)
+            row.append(band, del)
+            list.append(row)
+            syncBandLabel(row)
+            return row
+          }
+          list.addEventListener('input', (event) => {
+            const row = (event.target as HTMLElement).closest?.(
+              '.gun-list-row',
+            ) as HTMLElement | null
+            if (row) syncBandLabel(row)
+            refreshBandFinals()
+          })
+          const add = el('button', {
+            type: 'button',
+            className: 'small',
+            textContent: '+ Добавить дистанцию',
+            title: 'Добавить',
+            ariaLabel: 'Добавить дистанцию',
+            onclick: () => {
+              const row = appendBand('', '')
+              row.querySelector('input')!.focus()
+              onChange(add)
+            },
+          })
+          const box = el('div', { className: 'gun-sub' }, list, add)
+          const ctl: GunCtl = {
+            node: box,
+            read: () => [...list.children].map((row) => readBand(row as HTMLElement)),
+            write: (value) => {
+              list.replaceChildren()
+              for (const item of Array.isArray(value) ? value : []) {
+                const band = (item ?? {}) as Record<string, unknown>
+                appendBand(band.distance, band.damage)
+              }
+              refreshBandFinals(box)
+            },
+          }
+          return ctl
+        }
         const gunControl = (
           top: string,
           path: string[],
           field: GunField,
           onChange: (control: HTMLElement) => void,
         ): GunCtl => {
+          // Урон по дистанциям — компактная таблица с итогом, а не generic-список объектов.
+          if (
+            top === 'bullet' &&
+            path.length === 2 &&
+            path[0] === 'extra_damage' &&
+            path[1] === 'damage_adjust'
+          )
+            return gunBandControl(top, path, field, onChange)
           const rk = [top, ...path].join('-')
           const id = `gun-field-${rk}`
           const current = () => gunPathGet(gunCurrentTop(top).effective, path)
@@ -4312,9 +4614,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           field: GunField,
           inner: GunCtl,
           onChange: (control: HTMLElement) => void,
+          nullLabel = 'Не задано (как в ганпаке)',
         ): GunCtl => {
           if (!field.nullable) return inner
-          const off = el('input', { type: 'checkbox', ariaLabel: 'Выключено' })
+          const off = el('input', { type: 'checkbox', ariaLabel: nullLabel })
           off.onchange = () => {
             inner.node.toggleAttribute('inert', off.checked)
             onChange(off)
@@ -4322,7 +4625,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           const box = el(
             'div',
             { className: 'gun-null' },
-            el('label', { className: 'check' }, off, 'Выключено'),
+            el('label', { className: 'check' }, off, nullLabel),
             inner.node,
           )
           return {
@@ -4342,6 +4645,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           field: GunField,
           main = false,
           shared = false,
+          shortLabel = '',
         ) => {
           const rk = [top, ...path].join('-')
           const id = `gun-field-${rk}`
@@ -4361,15 +4665,24 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             hidden: !overridden,
             textContent: 'изменено',
           })
-          const label = (
-            path.length
-              ? `${GUN_LABELS[top] ?? top} · ${path.map(gunKidLabel).join(' · ')}`
-              : (GUN_LABELS[top] ?? top)
-          ) as string
+          const segs = [top, ...path]
+          const segKnown = (s: string, i: number) =>
+            i
+              ? GUN_CHILD_LABELS[s] !== undefined || GUN_LABELS[s] !== undefined
+              : GUN_LABELS[s] !== undefined
+          const segName = (s: string, i: number) => (i ? gunKidLabel(s) : (GUN_LABELS[s] ?? s))
+          // Сырой ключ в конце — не главная подпись: показываем русскую группу,
+          // а ключ уходит в мелкий вторичный текст.
+          const label = (shortLabel ||
+            (segKnown(segs.at(-1)!, segs.length - 1)
+              ? segs.map(segName).join(' · ')
+              : segs.slice(0, -1).map(segName).join(' · ') || 'Параметр')) as string
+          const rawKeys = segs.filter((s, i) => !segKnown(s, i))
           const ctl = gunNullWrap(
             field,
             gunControl(top, path, field, (c) => commit(c)),
             (c) => commit(c),
+            gunNullLabel(rk),
           )
           ctl.write(readLeaf() === undefined ? defaultValue : readLeaf())
           const writeEffective = () =>
@@ -4398,6 +4711,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 refreshMark()
                 if (next === undefined) writeEffective()
                 row.dataset.saved = gunRowValue(row)
+                refreshBandFinals()
                 if (shared) renderGun(true)
               },
               () => {
@@ -4425,14 +4739,19 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               commit(reset as HTMLButtonElement)
             },
           })
-          const hint =
-            field.type === 'array'
-              ? 'Список: «+» добавляет строку, «×» удаляет.'
-              : field.type === 'map'
-                ? 'Записи по ключам; строка с пустым ключом пропускается.'
-                : field.type === 'object'
-                  ? 'Пустые поля — «по умолчанию».'
-                  : `${gunShape(field)}${field.min === undefined ? '' : ` · от ${field.min} до ${field.max}`}`
+          const leafHint = GUN_HINTS[path.at(-1) ?? top] ?? GUN_HINTS[top]
+          const hintBase =
+            leafHint && field.type !== 'map'
+              ? leafHint
+              : field.type === 'array'
+                ? 'Список: «+» добавляет строку, «×» удаляет.'
+                : field.type === 'map'
+                  ? 'Записи по ключам; строка с пустым ключом пропускается.'
+                  : (leafHint ??
+                    (field.type === 'object'
+                      ? 'Пустые поля — «по умолчанию».'
+                      : `${gunShape(field)}${field.min === undefined ? '' : ` · от ${field.min} до ${field.max}`}`))
+          const hint = rawKeys.length ? `${hintBase} · ключ: ${rawKeys.join(' · ')}` : hintBase
           const row = el(
             'div',
             { className: 'field row', title: rk },
@@ -4462,6 +4781,120 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           }
           return { rk, node: row, main }
         }
+        // Тумблер «не использовать» для nullable-группы без дублирования её редактора.
+        const buildNullToggleRow = (top: string, path: string[], legend: string, main = false) => {
+          const toggleRk = [top, ...path, 'off'].join('-')
+          const toggleId = `gun-field-${toggleRk}`
+          const toggleParentDefault = gun.defaults[top]
+          const toggleDefault = gunPathGet(toggleParentDefault, path)
+          const toggleRead = () =>
+            gunPathGet(
+              gunIsObject(gunOverrides[gun.id]?.[top])
+                ? gunValues(toggleParentDefault, gunOverrides[gun.id][top])
+                : toggleParentDefault,
+              path,
+            )
+          const toggleOverridden = !gunSame(toggleRead(), toggleDefault)
+          const toggleState = el('span', { className: 'state', role: 'status' })
+          const toggleBadge = el('span', {
+            className: 'gun-badge',
+            hidden: !toggleOverridden,
+            textContent: 'изменено',
+          })
+          const toggleOff = el('input', {
+            id: toggleId,
+            type: 'checkbox',
+            checked: toggleRead() === null,
+          })
+          const toggleDefaultRepr = gunText(toggleDefault) ?? 'null'
+          const toggleReset = el('button', {
+            type: 'button',
+            className: 'gun-reset',
+            hidden: !toggleOverridden,
+            title: `Вернуть значение ганпака (${toggleDefaultRepr.length > 120 ? `${toggleDefaultRepr.slice(0, 117)}…` : toggleDefaultRepr})`,
+            ariaLabel: 'Вернуть значение ганпака',
+            textContent: '↺',
+            onclick: () => {
+              toggleOff.checked = toggleDefault === null
+              toggleCommit(toggleReset as HTMLButtonElement)
+            },
+          })
+          const toggleWrite = () => {
+            toggleOff.checked = toggleRead() === null
+          }
+          const toggleMark = () =>
+            gunMark(toggleRow, !gunSame(toggleRead(), toggleDefault), toggleReset)
+          const toggleCommit = (control: HTMLInputElement | HTMLButtonElement) => {
+            const next = gunPathTop(top, path, toggleOff.checked ? null : undefined)
+            const fixed =
+              next !== undefined && gunSame(next, toggleParentDefault) ? undefined : next
+            void commitGun(
+              control,
+              toggleState,
+              gun.id,
+              top,
+              fixed,
+              () => {
+                toggleMark()
+                if (fixed === undefined) toggleWrite()
+                toggleRow.dataset.saved = gunRowValue(toggleRow)
+                renderGun(true)
+              },
+              () => {
+                toggleWrite()
+                toggleMark()
+              },
+              legend,
+              undefined,
+              {
+                before: gunText(toggleRead()) ?? 'null',
+                after: gunText(fixed === undefined ? toggleDefault : null) ?? 'null',
+              },
+            )
+          }
+          toggleOff.onchange = () => toggleCommit(toggleOff)
+          const toggleRow = el(
+            'div',
+            { className: 'field row', title: toggleRk },
+            el(
+              'label',
+              { htmlFor: toggleId },
+              legend,
+              el('small', {
+                textContent:
+                  toggleDefault === null
+                    ? 'По умолчанию не используется.'
+                    : 'По умолчанию используется.',
+              }),
+              toggleBadge,
+            ),
+            el('div', { className: 'ctl' }, toggleOff, toggleReset),
+            toggleState,
+          )
+          toggleRow.dataset.rk = toggleRk
+          toggleRow.toggleAttribute('data-override', toggleOverridden)
+          toggleRow.dataset.saved = gunRowValue(toggleRow)
+          gunReaders.set(toggleRk, () =>
+            gunPathTop(top, path, toggleOff.checked ? null : undefined),
+          )
+          const toggleOld = oldRows.find((row) => row.dataset.rk === toggleRk)
+          if (
+            live &&
+            toggleOld &&
+            (gunPending ||
+              toggleOld.contains(document.activeElement) ||
+              gunRowValue(toggleOld) !== toggleOld.dataset.saved)
+          ) {
+            gunMark(
+              toggleOld,
+              !gunSame(toggleRead(), toggleDefault),
+              toggleOld.querySelector<HTMLElement>('.gun-reset'),
+            )
+            gunReaders.set(toggleRk, oldReaders.get(toggleRk)!)
+            return { rk: toggleRk, node: toggleOld, main }
+          }
+          return { rk: toggleRk, node: toggleRow, main }
+        }
         const kids = gunFlatKids(key, field) ?? []
         const kidNames = new Set(kids.map(([childKey]) => childKey))
         const leftovers =
@@ -4472,6 +4905,51 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         // структурными редакторами; полного JSON-дубликата больше нет.
         for (const [childKey, childField] of kids)
           built.push(buildRow(key, field, childKey, childField, true, leftovers.length > 0))
+        // Доп. урон пули — наверх «Основного» теми же значениями, без дублирующего редактора.
+        let extraSurfaced = false
+        if (key === 'bullet' && field.type === 'object') {
+          const extra = field.fields?.extra_damage
+          if (extra?.type === 'object' && extra.fields) {
+            extraSurfaced = true
+            if (extra.fields.armor_ignore)
+              built.push(
+                buildStructuredRow(
+                  key,
+                  ['extra_damage', 'armor_ignore'],
+                  extra.fields.armor_ignore,
+                  true,
+                  false,
+                  'Бронепробитие',
+                ),
+              )
+            if (extra.fields.head_shot_multiplier)
+              built.push(
+                buildStructuredRow(
+                  key,
+                  ['extra_damage', 'head_shot_multiplier'],
+                  extra.fields.head_shot_multiplier,
+                  true,
+                  false,
+                  'Множитель урона в голову',
+                ),
+              )
+            if (extra.fields.damage_adjust)
+              built.push(
+                buildStructuredRow(
+                  key,
+                  ['extra_damage', 'damage_adjust'],
+                  extra.fields.damage_adjust,
+                  true,
+                  false,
+                  'Урон по дистанциям',
+                ),
+              )
+            if (extra.nullable)
+              built.push(
+                buildNullToggleRow(key, ['extra_damage'], GUN_NULL_LABELS.extra_damage, false),
+              )
+          }
+        }
         if (!kids.length) {
           if (
             ['number', 'integer', 'boolean', 'string', 'resource'].includes(field.type) &&
@@ -4487,12 +4965,27 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 false,
               ),
             )
-          else built.push(buildStructuredRow(key, [], field, false))
+          else built.push(buildStructuredRow(key, [], field, GUN_MAIN_TOP.has(key)))
         }
-        for (const [childKey, childField] of leftovers)
+        for (const [childKey, childField] of leftovers) {
+          if (extraSurfaced && childKey === 'extra_damage') continue
           built.push(buildStructuredRow(key, [childKey], childField, false, kids.length > 0))
+        }
       }
       const mainRows = built.filter((row) => row.main)
+      // Порядок «Основного»: урон и магазин сверху, остальное в порядке каталога.
+      mainRows
+        .map((row, index) => ({ row, index }))
+        .sort(
+          (a, b) =>
+            (GUN_MAIN_ORDER.indexOf(a.row.rk) === -1
+              ? GUN_MAIN_ORDER.length
+              : GUN_MAIN_ORDER.indexOf(a.row.rk)) -
+              (GUN_MAIN_ORDER.indexOf(b.row.rk) === -1
+                ? GUN_MAIN_ORDER.length
+                : GUN_MAIN_ORDER.indexOf(b.row.rk)) || a.index - b.index,
+        )
+        .forEach(({ row }, at) => (mainRows[at] = row))
       const advRows = built.filter((row) => !row.main)
       const syncRows = (container: Element, list: { rk: string; node: HTMLElement }[]) => {
         if (!live) {
@@ -4516,7 +5009,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       if (!gunCatalog) return
       const query = $<HTMLInputElement>('#gun-search').value.toLowerCase().trim()
       const guns = gunCatalog.guns
-        .filter((gun) => `${gun.name} ${gun.id} ${gun.type}`.toLowerCase().includes(query))
+        .filter((gun) =>
+          `${gun.name} ${gun.id} ${gun.type} ${gunPretty(gun.id)}`.toLowerCase().includes(query),
+        )
         .sort(
           (a, b) =>
             Number(KIT_GUNS.has(b.id)) - Number(KIT_GUNS.has(a.id)) ||

@@ -141,6 +141,7 @@ async function setup(options = {}) {
     const ROOMS = [{key:'maxRooms', label:'Матчей одновременно', min:1, max:16, def:2}, {key:'idleCloseSeconds', label:'Закрывать пустую комнату через', min:30, max:3600, def:600}];
     const SETTING_LABELS = {}, GUN_LABELS = {};
     const gunText = value => JSON.stringify(value) ?? 'null';
+    const gunPretty = (id) => id.split(':').at(-1).split(/[_/-]+/).filter(Boolean).map((part) => (/\\d/.test(part) ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1))).join(' ');
     const gunLabel = gun => gun.id; const KIT_GUNS = new Set();
     let rules = {}, defaults = {}, balance = {}, scope = '*', hadLocks, extraLocks = [], fieldId = 0;
     const mapAvailabilityWaiters = new Set(); let kitCatalog; let settingsLoaded = false, settingsRevision = 0, observedSettingsRevision = 0, lastApplied = null;
@@ -417,7 +418,7 @@ test('complex weapon fields render as structured controls without any JSON texta
     change(rate, '3')
     await dom.window.flush()
     assert.deepEqual(calls[0].body.gunBalance['bf:test'].nested, { rate: 3 })
-    assert.equal(doc.querySelector('.toast span').textContent, 'nested: {"rate":2} → {"rate":3}')
+    assert.equal(doc.querySelector('.toast span').textContent, 'Параметр: {"rate":2} → {"rate":3}')
     assert.equal(row.querySelector('.state').textContent, 'сохранено')
   } finally {
     dom.window.close()
@@ -1133,16 +1134,32 @@ test('arrays, maps, nullable objects and json render without textareas; damage p
     assert.ok(pop.textContent.includes('в голову 13.5 → 5.5'), pop.textContent)
     assert.ok(pop.textContent.includes('в тело 9 → 3.7'), pop.textContent)
     assert.ok(pop.textContent.includes('грудь: первые 30 урона забирает бронеплита'))
-    // Массив enum: две строки и добавление. (GUN_LABELS в тестах пуст — ищем по ключу.)
-    const modes = [...doc.querySelectorAll('#gun-advanced-fields .field')].find((row) =>
-      row.querySelector('label')?.textContent.startsWith('fire_mode'),
+    // Доп. урон поднят в «Основные»: броня, голова и таблица дистанций отдельными строками.
+    const armor = doc.querySelector('#gun-field-bullet-extra_damage-armor_ignore')
+    assert.ok(armor)
+    assert.equal(armor.closest('.field').parentElement.id, 'gun-fields')
+    assert.ok(armor.closest('.field').querySelector('label').textContent.includes('Бронепробитие'))
+    const bands = doc.querySelectorAll('#gun-fields .gun-band')
+    assert.equal(bands.length, 1)
+    assert.ok(bands[0].querySelector('.gun-band-final').textContent.includes('итог:'))
+    const extraOff = doc.querySelector('#gun-field-bullet-extra_damage-off')
+    assert.ok(extraOff)
+    assert.ok(
+      extraOff
+        .closest('.field')
+        .querySelector('label')
+        .textContent.includes('Не использовать доп. урон'),
+    )
+    // Массив enum: две строки и добавление. (GUN_LABELS в тестах пуст — ищем по title-ключу.)
+    const modes = [...doc.querySelectorAll('#gun-advanced-fields .field')].find(
+      (row) => row.title === 'fire_mode',
     )
     assert.equal(modes.querySelectorAll('select').length, 2)
     modes.querySelector('.gun-mini[aria-label=Добавить]').click()
     assert.equal(modes.querySelectorAll('select').length, 3)
     // Nullable-карта: выключение пишет явный null.
-    const spread = [...doc.querySelectorAll('#gun-advanced-fields .field')].find((row) =>
-      row.querySelector('label')?.textContent.startsWith('inaccuracy'),
+    const spread = [...doc.querySelectorAll('#gun-advanced-fields .field')].find(
+      (row) => row.title === 'inaccuracy',
     )
     const off = spread.querySelector('.gun-null input[type=checkbox]')
     assert.equal(off.checked, false)
