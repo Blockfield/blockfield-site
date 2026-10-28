@@ -5,6 +5,7 @@ import { JSDOM } from 'jsdom'
 import ts from 'typescript'
 import { settingsBody, settingsReceipt } from '../src/lib/settings-form.ts'
 import { weaponFields, BODY_PARTS } from '../src/lib/gun-fields.ts'
+import { finalDamageVsMatchKit } from '../src/lib/gun-damage.ts'
 import { bodyPartSummary, renderBodyPartField } from '../src/lib/body-part-form.ts'
 
 const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
@@ -88,6 +89,7 @@ async function setup(options = {}) {
     settingsReceipt,
     structuredClone,
     weaponFields,
+    finalDamageVsMatchKit,
     bodyPartSummary,
     renderBodyPartField: (...args) => {
       const previous = globalThis.document
@@ -160,6 +162,7 @@ async function setup(options = {}) {
     window.gunSetup = () => { gunCatalog = {fields:{fields:{damage:{type:'number',min:0,max:100,nullable:false},nested:{type:'object',nullable:false,fields:{rate:{type:'integer',nullable:false,min:1,max:10}}}}}}; selectedGun = {id:'bf:test',data:'bf:test',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Test'}; gunCatalog.guns = [selectedGun, {id:'bf:other',data:'bf:other',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Other'}]; renderGun(); };
     window.gunAliasSetup = () => { gunCatalog.guns.push({id:'bf:test_alias',data:'bf:test',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Alias'}); renderGun(); };
     window.gunBulletSetup = () => { gunCatalog = {fields:{fields:{bullet:{type:'object',nullable:false,fields:{damage:{type:'number',nullable:false,min:0,max:100},penetrating:{type:'boolean',nullable:false}}},rpm:{type:'integer',nullable:false,min:1,max:1200}}}}; selectedGun = {id:'bf:test',data:'bf:test',type:'rifle',defaults:{bullet:{damage:8,penetrating:false},rpm:600},warnings:[],name:'Test'}; gunCatalog.guns = [selectedGun]; renderGun(); };
+    window.gunComplexSetup = (schemaJson, defaultsJson) => { gunCatalog = {fields:JSON.parse(schemaJson)}; const defaults = JSON.parse(defaultsJson); selectedGun = {id:'tacz:ak47',data:'tacz:ak47_data',type:'rifle',weaponKind:'tacz',sourceId:'tacz:ak47',defaults,warnings:[],name:'Test'}; selectedGun.effective = structuredClone(defaults); gunCatalog.guns = [selectedGun]; renderGun(); };
     window.bodySetup = (kind) => {
       window.gunSetup();
       const defaults = ${JSON.stringify(Object.fromEntries(BODY_PARTS.map((part) => [part, 1])))};
@@ -384,7 +387,7 @@ test('bullet scalars render as plain main rows while the full JSON editor stays 
       bullet: { damage: 9, penetrating: false },
     })
     assert.equal(doc.querySelector('.toast span').textContent, 'Урон: 8 → 9')
-    assert.equal(doc.querySelector('#gun-field-bullet-penetrating').value, 'false')
+    assert.equal(doc.querySelector('#gun-field-bullet-penetrating').checked, false)
     change(doc.querySelector('#gun-field-bullet-damage'), '8')
     await dom.window.flush()
     assert.deepEqual(calls[1].body.gunBalance, {})
@@ -393,20 +396,25 @@ test('bullet scalars render as plain main rows while the full JSON editor stays 
   }
 })
 
-test('weapons validate JSON in their row and commit valid JSON compactly', async () => {
+test('complex weapon fields render as structured controls without any JSON textarea', async () => {
   const { dom, calls, change } = await setup()
   try {
     dom.window.gunSetup()
     const doc = dom.window.document
-    const textarea = doc.querySelector('#gun-field-nested'),
-      row = textarea.closest('.field')
-    change(textarea, '{"rate":50}')
+    assert.equal(doc.querySelector('#gun-fields textarea'), null)
+    assert.equal(doc.querySelector('#gun-advanced-fields textarea'), null)
+    const rate = doc.querySelector('#gun-field-nested-rate')
+    assert.ok(rate)
+    assert.equal(rate.value, '2')
+    assert.equal(rate.min, '1')
+    assert.equal(rate.max, '10')
+    assert.equal(doc.querySelector('#gun-advanced').hidden, false)
+    change(rate, '50')
     assert.equal(calls.length, 0)
+    const row = rate.closest('.field')
     assert.equal(row.querySelector('.state').dataset.s, 'error')
-    assert.equal(row.querySelector('.state').textContent, 'Исправьте JSON.')
-    change(textarea, '{broken')
-    assert.equal(calls.length, 0)
-    change(textarea, '{"rate":3}')
+    assert.equal(row.querySelector('.state').textContent, 'от 1 до 10')
+    change(rate, '3')
     await dom.window.flush()
     assert.deepEqual(calls[0].body.gunBalance['bf:test'].nested, { rate: 3 })
     assert.equal(doc.querySelector('.toast span').textContent, 'nested: {"rate":2} → {"rate":3}')
@@ -689,16 +697,16 @@ test('remote weapon overrides survive the next weapon commit and dirty catalog r
   try {
     dom.window.gunSetup()
     const doc = dom.window.document
-    const draft = doc.querySelector('#gun-field-nested')
-    draft.value = '{broken'
+    const draft = doc.querySelector('#gun-field-nested-rate')
+    draft.value = '50'
     await dom.window.settingsEvent({
       settings: {
         revision: 7,
         gunBalance: { 'bf:other': { damage: 5 }, 'bf:test': { damage: 12 } },
       },
     })
-    assert.equal(doc.querySelector('#gun-field-nested'), draft)
-    assert.equal(draft.value, '{broken')
+    assert.equal(doc.querySelector('#gun-field-nested-rate'), draft)
+    assert.equal(draft.value, '50')
     assert.equal(
       doc.querySelector('#gun-field-damage').closest('.field').hasAttribute('data-override'),
       true,
@@ -708,7 +716,7 @@ test('remote weapon overrides survive the next weapon commit and dirty catalog r
     assert.equal(calls[0].body.expectedRevision, 7)
     assert.equal(calls[0].body.gunBalance['bf:other'].damage, 5)
     await dom.window.loadGunBalance()
-    assert.equal(doc.querySelector('#gun-field-nested'), draft)
+    assert.equal(doc.querySelector('#gun-field-nested-rate'), draft)
   } finally {
     dom.window.close()
   }
@@ -1025,6 +1033,138 @@ test('map availability resolves from the settings stream and uses only one deadl
     assert.equal(await recovery, false)
     assert.equal(calls.length, 1)
     assert.equal(calls[0].method, 'GET')
+  } finally {
+    dom.window.close()
+  }
+})
+
+test('arrays, maps, nullable objects and json render without textareas; damage popover shows the AK math', async () => {
+  const { dom, calls } = await setup()
+  try {
+    const schema = {
+      fields: {
+        bullet: {
+          type: 'object',
+          nullable: false,
+          fields: {
+            damage: { type: 'number', nullable: false, min: 0, max: 10000 },
+            extra_damage: {
+              type: 'object',
+              nullable: true,
+              fields: {
+                armor_ignore: { type: 'number', nullable: false, min: 0, max: 1 },
+                head_shot_multiplier: { type: 'number', nullable: false, min: 0, max: 10000 },
+                damage_adjust: {
+                  type: 'array',
+                  nullable: false,
+                  items: {
+                    type: 'object',
+                    nullable: false,
+                    fields: {
+                      distance: {
+                        type: 'number',
+                        nullable: false,
+                        min: 0,
+                        max: 10000,
+                        acceptsInfinite: true,
+                      },
+                      damage: { type: 'number', nullable: false, min: 0, max: 10000 },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        fire_mode: {
+          type: 'array',
+          nullable: false,
+          items: { type: 'string', nullable: false, values: ['auto', 'semi', 'burst'] },
+        },
+        inaccuracy: {
+          type: 'map',
+          nullable: true,
+          keys: { type: 'string', nullable: false, values: ['stand', 'aim'] },
+          items: { type: 'number', nullable: false, min: 0, max: 10000 },
+        },
+        heat: {
+          type: 'object',
+          nullable: true,
+          fields: { max: { type: 'number', nullable: false, min: 0.001, max: 100000 } },
+        },
+        script_param: {
+          type: 'map',
+          nullable: true,
+          keys: { type: 'string', nullable: false },
+          items: { type: 'json', nullable: true },
+        },
+      },
+    }
+    const defaults = {
+      bullet: {
+        damage: 9,
+        extra_damage: {
+          armor_ignore: 0.3,
+          head_shot_multiplier: 1.5,
+          damage_adjust: [{ distance: 15, damage: 7 }],
+        },
+      },
+      fire_mode: ['semi', 'auto'],
+      inaccuracy: { stand: 4.5, aim: 4 },
+      heat: null,
+      script_param: { reload_feed: 1.55 },
+    }
+    dom.window.gunComplexSetup(JSON.stringify(schema), JSON.stringify(defaults))
+    const doc = dom.window.document
+    assert.equal(doc.querySelector('#gun-fields textarea'), null)
+    assert.equal(doc.querySelector('#gun-advanced-fields textarea'), null)
+    // Урон — плоская строка с подсказкой.
+    const damage = doc.querySelector('#gun-field-bullet-damage')
+    assert.equal(damage.placeholder, '9')
+    const dmgBtn = damage.closest('.ctl').querySelector('.gun-dmg-btn')
+    assert.ok(dmgBtn)
+    assert.equal(
+      dmgBtn.getAttribute('aria-describedby'),
+      dmgBtn.parentElement.querySelector('.gun-dmg-pop').id,
+    )
+    dmgBtn.dispatchEvent(new dom.window.Event('mouseenter', { bubbles: true }))
+    const pop = dmgBtn.parentElement.querySelector('.gun-dmg-pop')
+    assert.equal(pop.hidden, false)
+    assert.ok(pop.textContent.includes('в голову 13.5 → 5.5'), pop.textContent)
+    assert.ok(pop.textContent.includes('в тело 9 → 3.7'), pop.textContent)
+    assert.ok(pop.textContent.includes('грудь: первые 30 урона забирает бронеплита'))
+    // Массив enum: две строки и добавление. (GUN_LABELS в тестах пуст — ищем по ключу.)
+    const modes = [...doc.querySelectorAll('#gun-advanced-fields .field')].find((row) =>
+      row.querySelector('label')?.textContent.startsWith('fire_mode'),
+    )
+    assert.equal(modes.querySelectorAll('select').length, 2)
+    modes.querySelector('.gun-mini[aria-label=Добавить]').click()
+    assert.equal(modes.querySelectorAll('select').length, 3)
+    // Nullable-карта: выключение пишет явный null.
+    const spread = [...doc.querySelectorAll('#gun-advanced-fields .field')].find((row) =>
+      row.querySelector('label')?.textContent.startsWith('inaccuracy'),
+    )
+    const off = spread.querySelector('.gun-null input[type=checkbox]')
+    assert.equal(off.checked, false)
+    const stand = [...spread.querySelectorAll('.gun-list-row')]
+      .find((row) => row.querySelector('[data-gunkey]').value === 'stand')
+      .querySelector('input:not([type=checkbox])')
+    stand.value = '5'
+    stand.dispatchEvent(new dom.window.Event('change', { bubbles: true }))
+    await dom.window.flush()
+    assert.deepEqual(calls.at(-1).body.gunBalance['tacz:ak47'].inaccuracy, {
+      stand: 5,
+      aim: 4,
+    })
+    off.checked = true
+    off.dispatchEvent(new dom.window.Event('change', { bubbles: true }))
+    await dom.window.flush()
+    assert.deepEqual(calls.at(-1).body.gunBalance['tacz:ak47'].inaccuracy, null)
+    // Удаление добавленной строки из массива возвращает исходное значение.
+    const added = [...modes.querySelectorAll('.gun-list-row')].at(-1)
+    added.querySelector('.gun-mini[aria-label=Удалить]').click()
+    await dom.window.flush()
+    assert.deepEqual(calls.at(-1).body.gunBalance['tacz:ak47'], { inaccuracy: null })
   } finally {
     dom.window.close()
   }

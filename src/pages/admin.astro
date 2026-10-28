@@ -1014,10 +1014,77 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       border: 0;
     }
     .admin-main #gun-fields input:not([type='checkbox']),
-    .admin-main #gun-fields select,
-    .admin-main #gun-fields textarea {
+    .admin-main #gun-fields select {
       width: 100%;
       margin-block: 8px;
+    }
+    .admin-main #gun-fields .gun-sub {
+      display: grid;
+      gap: 6px;
+      width: 100%;
+    }
+    .admin-main #gun-fields .gun-sub fieldset {
+      border: 0;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 6px;
+    }
+    .admin-main #gun-fields .gun-sub-row {
+      display: grid;
+      grid-template-columns: minmax(120px, 200px) minmax(0, 1fr);
+      gap: 4px 12px;
+      align-items: center;
+    }
+    .admin-main #gun-fields .gun-list {
+      display: grid;
+      gap: 6px;
+    }
+    .admin-main #gun-fields .gun-list-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 4px 8px;
+      align-items: center;
+    }
+    .admin-main #gun-fields .gun-mini {
+      flex: none;
+      padding: 2px 10px;
+      font-size: 15px;
+      line-height: 1.5;
+      cursor: pointer;
+    }
+    .admin-main #gun-fields .gun-null > .check {
+      margin-bottom: 4px;
+    }
+    .admin-main #gun-fields .gun-dmg {
+      position: relative;
+      display: inline-block;
+      flex: none;
+    }
+    .admin-main #gun-fields .gun-dmg-btn {
+      padding: 2px 9px;
+      border-radius: 50%;
+      cursor: help;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .admin-main #gun-fields .gun-dmg-pop {
+      position: absolute;
+      z-index: 5;
+      right: 0;
+      top: calc(100% + 6px);
+      min-width: min(320px, 70vw);
+      padding: 10px 12px;
+      background: var(--panel);
+      border: 1px solid var(--line-2);
+      border-radius: 8px;
+      color: var(--cream);
+      font-size: 13px;
+      line-height: 1.6;
+      white-space: normal;
+    }
+    .admin-main #gun-fields .gun-dmg-pop[hidden] {
+      display: none;
     }
     .admin-main #gun-fields pre,
     .admin-main #gun-fields small,
@@ -1287,11 +1354,6 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       max-width: none;
       min-width: 0;
     }
-    .admin-main .gun-group .ctl > textarea {
-      width: 100%;
-      min-width: 0;
-      font-family: var(--mono);
-    }
     .admin-main .gun-group .gun-reset {
       flex: none;
       padding: 2px 8px;
@@ -1310,6 +1372,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       display: block;
       color: var(--amber);
       font-size: 12px;
+    }
+    .admin-main .gun-badge[hidden] {
+      display: none;
     }
     @media (max-width: 600px) {
       .admin-main #kit-fields .ctl {
@@ -2007,6 +2072,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     import { isWorkshopAiGuardModel, workshopAiKeyLine } from '../lib/workshop-ai'
     import { canonicalBudgetUuid } from '../lib/ai-budget'
     import { weaponFields } from '../lib/gun-fields'
+    import { finalDamageVsMatchKit } from '../lib/gun-damage'
     import { effectiveKits, renderKitForm } from '../lib/kit-form'
     import { validateKitChanges, type KitCatalog, type KitDefinition } from '../lib/kit-schema'
     import { customSelect, customCombo } from '../lib/custom-select'
@@ -3175,11 +3241,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     }
     function gunRowValue(row: Element) {
       return JSON.stringify(
-        [
-          ...row.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
-            'input, select, textarea',
-          ),
-        ].map((c) => (c.type === 'checkbox' ? (c as HTMLInputElement).checked : c.value)),
+        [...row.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input, select')].map((c) =>
+          c.type === 'checkbox' ? (c as HTMLInputElement).checked : c.value,
+        ),
       )
     }
     function renderGun(live = false) {
@@ -3236,6 +3300,30 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         armor_ignore: 'Бронепробитие',
         head_shot: 'Множитель урона в голову',
         distance: 'Дистанция',
+        head_shot_multiplier: 'Множитель урона в голову',
+        damage_adjust: 'Урон по дистанциям',
+        extra_damage: 'Доп. урон',
+        explosion: 'Взрыв',
+        ignite: 'Поджог',
+        feed: 'Досылка',
+        cooldown: 'Дозарядка',
+        empty: 'Пустой',
+        tactical: 'Тактическая',
+        heat: 'Нагрев',
+        charging: 'Зарядка',
+        fire_mode_adjust: 'Правки режимов огня',
+        exclusive_attachments: 'Разрешённые обвесы',
+        builtin_attachments: 'Встроенные обвесы',
+        movement_speed: 'Скорость движения',
+        burst_data: 'Очередь',
+        fire_sound: 'Звук выстрела',
+        script_param: 'Параметры скрипта',
+        melee: 'Ближний бой',
+        default: 'Обычный удар',
+        pitch: 'Вверх',
+        yaw: 'Вбок',
+        time: 'Время',
+        value: 'Значение',
         stand: 'Стоя',
         aim: 'В прицеле',
       }
@@ -3405,51 +3493,41 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               : undefined
             : parentEffective
           const overridden = !gunSame(value, defaultValue)
-          const complex = gunIsComplex(sub)
-          const nullable =
+          // Nullable: пустое поле — «по умолчанию», явный null — тумблер «Выключено».
+          const off =
             !childKey && field.nullable
-              ? el('input', { type: 'checkbox', checked: value === null, ariaLabel: 'null' })
+              ? el('input', { type: 'checkbox', checked: value === null, ariaLabel: 'Выключено' })
               : null
-          const input = complex
-            ? el('textarea', {
-                id,
-                className: 'mono',
-                rows: 5,
-                value: gunText(value),
-                spellcheck: false,
-              })
-            : sub.type === 'boolean' || sub.values
-              ? el(
-                  'select',
-                  { id },
-                  ...(sub.values ?? ['true', 'false']).map((v) =>
-                    el('option', { value: v, textContent: v }),
-                  ),
-                )
-              : el('input', {
-                  id,
-                  type: ['integer', 'number'].includes(sub.type) ? 'number' : 'text',
-                  value: value === null || value === undefined ? '' : String(value),
-                  placeholder:
-                    defaultValue === null || defaultValue === undefined ? '' : String(defaultValue),
-                  step: sub.type === 'integer' ? '1' : 'any',
-                  ...(sub.min === undefined ? {} : { min: sub.min, max: sub.max }),
-                  maxLength: 256,
-                })
+          const options =
+            sub.values && !sub.values.includes(String(value ?? ''))
+              ? [...sub.values, String(value ?? '')]
+              : sub.values
+          const input =
+            sub.type === 'boolean'
+              ? el('input', { id, type: 'checkbox', checked: value === true })
+              : options
+                ? el(
+                    'select',
+                    { id },
+                    ...options.map((v) => el('option', { value: v, textContent: v })),
+                  )
+                : el('input', {
+                    id,
+                    type: ['integer', 'number'].includes(sub.type) ? 'number' : 'text',
+                    value: value === null || value === undefined ? '' : String(value),
+                    placeholder:
+                      defaultValue === null || defaultValue === undefined
+                        ? ''
+                        : String(defaultValue),
+                    step: sub.type === 'integer' ? '1' : 'any',
+                    ...(sub.min === undefined ? {} : { min: sub.min, max: sub.max }),
+                    maxLength: 256,
+                  })
           if (input instanceof HTMLSelectElement) input.value = String(value ?? '')
           gunReaders.set(rk, () => {
-            if (nullable?.checked) return null
-            if (complex) {
-              if (!input.value.trim()) return undefined
-              try {
-                const parsed = JSON.parse(input.value)
-                checkGunField(parsed, field)
-                return parsed
-              } catch {
-                throw new Error('Исправьте JSON.')
-              }
-            }
-            if (sub.type === 'boolean') return input.value === 'true'
+            if (off?.checked) return null
+            if (sub.type === 'boolean') return (input as HTMLInputElement).checked
+            if (input instanceof HTMLSelectElement) return input.value
             if (['integer', 'number'].includes(sub.type)) {
               if (!input.value.trim()) return childKey ? structuredClone(defaultValue) : undefined
               if (!Number.isFinite(Number(input.value))) throw new Error('Введите число.')
@@ -3457,8 +3535,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               checkGunField(parsed, sub)
               return parsed
             }
-            if (!input.value.trim() && !nullable)
-              return childKey ? structuredClone(defaultValue) : undefined
+            if (!input.value.trim()) return childKey ? structuredClone(defaultValue) : undefined
             return input.value
           })
           const state = el('span', { className: 'state', role: 'status' })
@@ -3476,10 +3553,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 ? effective[childKey]
                 : undefined
               : effective
-            if (complex) input.value = gunText(shown)
-            else if (input instanceof HTMLSelectElement) input.value = String(shown ?? '')
+            if (input instanceof HTMLSelectElement) input.value = String(shown ?? '')
+            else if (input.type === 'checkbox') input.checked = shown === true
             else input.value = shown === null || shown === undefined ? '' : String(shown)
-            if (nullable) nullable.checked = shown === null
+            if (off) off.checked = shown === null
             if (input instanceof HTMLSelectElement && input.isConnected) customSelect(input)
           }
           const refreshMark = () => {
@@ -3491,9 +3568,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               : effective
             gunMark(row, !gunSame(shown, defaultValue), reset)
           }
-          const commit = (
-            control: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement,
-          ) => {
+          const commit = (control: HTMLInputElement | HTMLSelectElement | HTMLButtonElement) => {
             let next: unknown, childNext: unknown
             try {
               next = gunReaders.get(rk)!()
@@ -3550,17 +3625,17 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             ariaLabel: 'Вернуть значение ганпака',
             textContent: '↺',
             onclick: () => {
-              if (complex) input.value = gunText(defaultValue)
-              else if (input instanceof HTMLSelectElement) input.value = String(defaultValue ?? '')
+              if (input instanceof HTMLSelectElement) input.value = String(defaultValue ?? '')
+              else if (input.type === 'checkbox') input.checked = defaultValue === true
               else
                 input.value =
                   defaultValue === null || defaultValue === undefined ? '' : String(defaultValue)
-              if (nullable) nullable.checked = defaultValue === null
+              if (off) off.checked = defaultValue === null
               commit(reset as HTMLButtonElement)
             },
           })
           input.onchange = () => commit(input)
-          if (nullable) nullable.onchange = () => commit(nullable)
+          if (off) off.onchange = () => commit(off)
           const hintText = main ? (GUN_HINTS[childKey ?? top] ?? GUN_HINTS[top]) : undefined
           const row = el(
             'div',
@@ -3581,10 +3656,22 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               { className: 'ctl' },
               input,
               reset,
-              nullable ? el('label', { className: 'check' }, nullable, 'null') : null,
+              off ? el('label', { className: 'check' }, off, 'Выключено') : null,
             ),
             state,
           )
+          if (rk === 'bullet-damage')
+            gunDamageHint(row.querySelector('.ctl') as HTMLElement, () => {
+              try {
+                const value = gunReaders.get(rk)!()
+                if (typeof value === 'number' && Number.isFinite(value)) return value
+              } catch {
+                // Черновик не числом — считаем от подтверждённого значения.
+              }
+              const eff = gunPathGet(gunCurrentTop(top).effective, childKey ? [childKey] : [])
+              if (typeof eff === 'number') return eff
+              throw new Error('Введите число.')
+            })
           row.dataset.rk = rk
           row.toggleAttribute('data-override', overridden)
           row.dataset.saved = gunRowValue(row)
@@ -3612,26 +3699,798 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           }
           return { rk, node: row, main }
         }
-        const kids = gunFlatKids(key, field) ?? []
-        const full =
-          !kids.length ||
-          (field.type === 'object' &&
-            Object.values(field.fields ?? {}).some(
-              (child) => gunIsComplex(child) || child.nullable,
-            ))
-        for (const [childKey, childField] of kids)
-          built.push(buildRow(key, field, childKey, childField, true, full))
-        if (full)
-          built.push(
-            buildRow(
-              key,
-              field,
-              undefined,
-              undefined,
-              !kids.length && GUN_MAIN_TOP.has(key) && !gunIsComplex(field) && !field.nullable,
-              kids.length > 0,
+        // ---- Структурный редактор: каждое поле рисуется по своему типу, без JSON. ----
+        const gunKidLabel = (name: string) => GUN_CHILD_LABELS[name] ?? GUN_LABELS[name] ?? name
+        const gunPathGet = (base: unknown, path: string[]): unknown => {
+          let node = base
+          for (const key of path) {
+            if (!gunIsObject(node)) return undefined
+            node = node[key] as unknown
+          }
+          return node
+        }
+        // Собирает значение всего top-поля из подтверждённого effective с правкой по пути.
+        // undefined на месте листа удаляет ключ (с чисткой пустых объектов), null пишет явный null.
+        const gunPathTop = (top: string, path: string[], leaf: unknown): unknown => {
+          if (!path.length) return leaf
+          const { effective } = gunCurrentTop(top)
+          const base = (gunIsObject(effective) ? structuredClone(effective) : {}) as Record<
+            string,
+            unknown
+          >
+          const nodes: Record<string, unknown>[] = [base]
+          let node = base
+          for (const key of path.slice(0, -1)) {
+            const child = gunIsObject(node[key])
+              ? { ...(node[key] as Record<string, unknown>) }
+              : {}
+            node[key] = child
+            node = child
+            nodes.push(node)
+          }
+          const last = path[path.length - 1]
+          if (leaf === undefined) delete node[last]
+          else node[last] = leaf
+          for (let depth = nodes.length - 1; depth > 0; depth--) {
+            const parent = nodes[depth - 1],
+              key = path[depth - 1]
+            if (gunIsObject(parent[key]) && !Object.keys(parent[key] as object).length)
+              delete parent[key]
+            else break
+          }
+          if (!Object.keys(base).length && gunIsObject(gun.defaults[top])) return undefined
+          return base
+        }
+        const gunDamageParts = () => {
+          const over = gunOverrides[gun.id]?.body_part_multipliers
+          const base = gun.defaults.body_part_multipliers
+          const merged = (over ? gunValues(base, over) : base) as Record<string, number> | undefined
+          const part = (name: string) =>
+            typeof merged?.[name] === 'number' ? (merged as Record<string, number>)[name] : 1
+          return {
+            head: part('head'),
+            torso: part('torso'),
+            limbs: [part('left_arm'), part('right_arm'), part('left_leg'), part('right_leg')],
+          }
+        }
+        const gunDamageKit = () => {
+          const over = gunIsObject(gunOverrides[gun.id]?.bullet)
+            ? (gunOverrides[gun.id].bullet as Record<string, unknown>)
+            : undefined
+          const base = gunIsObject(gun.defaults.bullet)
+            ? (gun.defaults.bullet as Record<string, unknown>)
+            : {}
+          const extra = (key: string, fallback: number) => {
+            const fromOver = gunIsObject(over?.extra_damage)
+              ? (over.extra_damage as Record<string, unknown>)[key]
+              : undefined
+            if (typeof fromOver === 'number') return fromOver
+            const fromBase = gunIsObject(base.extra_damage)
+              ? (base.extra_damage as Record<string, unknown>)[key]
+              : undefined
+            return typeof fromBase === 'number' ? fromBase : fallback
+          }
+          const num = (rk: string, fallback: number) => {
+            try {
+              const value = gunReaders.get(rk)?.()
+              return typeof value === 'number' ? value : fallback
+            } catch {
+              return fallback
+            }
+          }
+          return {
+            armorIgnore: num('bullet-extra_damage-armor_ignore', extra('armor_ignore', 0)),
+            headMult: num(
+              'bullet-extra_damage-head_shot_multiplier',
+              extra('head_shot_multiplier', 1),
             ),
+          }
+        }
+        const gunDamageText = (damage: number) => {
+          const { armorIgnore, headMult } = gunDamageKit()
+          const parts = gunDamageParts()
+          const fmt = (x: number) => String(Math.round(x * 10) / 10)
+          const final = (part: 'head' | 'torso' | 'limbs', bodyMult: number) =>
+            fmt(
+              finalDamageVsMatchKit({
+                damage,
+                armorIgnore,
+                headMult,
+                bodyMult,
+                part,
+              }),
+            )
+          const limbValues = parts.limbs.map((mult) => ({
+            raw: damage * mult,
+            final: final('limbs', mult),
+          }))
+          const lo = Math.min(...parts.limbs),
+            hi = Math.max(...parts.limbs)
+          const limbText =
+            lo === hi
+              ? `${fmt(damage * lo)} → ${limbValues[0].final}`
+              : `${fmt(damage * lo)}–${fmt(damage * hi)} → ${limbValues[0].final}–${limbValues[3].final}`
+          return `По игроку в броне: в голову ${fmt(damage * headMult * parts.head)} → ${final('head', parts.head)} · в тело ${fmt(damage * parts.torso)} → ${final('torso', parts.torso)} · руки/ноги ${limbText} · грудь: первые 30 урона забирает бронеплита`
+        }
+        const gunDamageHint = (box: HTMLElement, getDamage: () => number) => {
+          const id = `gun-dmg-${Math.random().toString(36).slice(2)}`
+          const pop = el('span', {
+            className: 'gun-dmg-pop',
+            id,
+            role: 'note',
+            hidden: true,
+          })
+          const paint = () => {
+            try {
+              pop.textContent = gunDamageText(getDamage())
+            } catch {
+              pop.textContent = 'Введите урон числом — здесь будет итог по игроку в броне.'
+            }
+          }
+          const btn = el('button', {
+            type: 'button',
+            className: 'gun-dmg-btn',
+            ariaDescribedby: id,
+            title: 'Сколько урона дойдёт до игрока в броне',
+            textContent: '?',
+          })
+          const show = () => {
+            paint()
+            pop.hidden = false
+          }
+          btn.addEventListener('mouseenter', show)
+          btn.addEventListener('focus', show)
+          btn.addEventListener('mouseleave', () => (pop.hidden = true))
+          btn.addEventListener('blur', () => (pop.hidden = true))
+          box.append(el('span', { className: 'gun-dmg' }, btn, pop))
+        }
+        const isGunDamagePath = (top: string, path: string[]) =>
+          top === 'bullet' &&
+          path[path.length - 1] === 'damage' &&
+          (path.length === 1 || path.includes('damage_adjust'))
+        type GunCtl = { node: HTMLElement; read: () => unknown; write: (value: unknown) => void }
+        const gunControl = (
+          top: string,
+          path: string[],
+          field: GunField,
+          onChange: (control: HTMLElement) => void,
+        ): GunCtl => {
+          const rk = [top, ...path].join('-')
+          const id = `gun-field-${rk}`
+          const current = () => gunPathGet(gunCurrentTop(top).effective, path)
+          const readNumber = (input: HTMLInputElement, blank: unknown) => {
+            if (!input.value.trim()) return blank
+            if (!Number.isFinite(Number(input.value))) throw new Error('Введите число.')
+            const parsed = Number(input.value)
+            checkGunField(parsed, field)
+            return parsed
+          }
+          const checkout = (input: HTMLInputElement) => {
+            input.onchange = () => onChange(input)
+            return input
+          }
+          const selectout = (select: HTMLSelectElement) => {
+            select.onchange = () => onChange(select)
+            return select
+          }
+          const leaf = (
+            node: HTMLElement,
+            read: () => unknown,
+            write: (value: unknown) => void,
+          ) => ({
+            node,
+            read,
+            write,
+          })
+          // Скаляры и enum: пустое поле — «по умолчанию».
+          if (
+            ['integer', 'number'].includes(field.type) &&
+            !field.acceptsInfinite &&
+            !field.values
+          ) {
+            const input = el('input', {
+              id,
+              type: 'number',
+              step: field.type === 'integer' ? '1' : 'any',
+              ...(field.min === undefined ? {} : { min: field.min, max: field.max }),
+            })
+            checkout(input)
+            const ctl = leaf(
+              input,
+              () => readNumber(input, undefined),
+              (value) => {
+                input.value = typeof value === 'number' ? String(value) : ''
+              },
+            )
+            if (isGunDamagePath(top, path)) {
+              const box = el('span', { className: 'gun-dmg-wrap' }, input)
+              gunDamageHint(box, () => {
+                const value = readNumber(input, undefined)
+                if (typeof value === 'number' && Number.isFinite(value)) return value
+                const eff = current()
+                if (typeof eff === 'number') return eff
+                throw new Error('Введите число.')
+              })
+              return { ...ctl, node: box }
+            }
+            return ctl
+          }
+          if (field.type === 'boolean' && !field.values) {
+            const input = checkout(el('input', { id, type: 'checkbox' }))
+            return leaf(
+              input,
+              () => input.checked,
+              (value) => {
+                input.checked = value === true
+              },
+            )
+          }
+          if (field.values || field.type === 'string' || field.type === 'resource') {
+            if (field.values) {
+              const opts = [...field.values]
+              const select = selectout(el('select', { id }))
+              const paint = (value: unknown) => {
+                select.replaceChildren(
+                  ...opts.map((v) => el('option', { value: v, textContent: v })),
+                  typeof value === 'string' && !opts.includes(value) && value !== ''
+                    ? el('option', { value: value, textContent: `${value} (устаревшее)` })
+                    : null,
+                  value === null
+                    ? el('option', {
+                        value: '',
+                        textContent: 'устаревшее — выберите значение',
+                        disabled: true,
+                      })
+                    : null,
+                )
+                if (value === null) select.selectedIndex = opts.length
+                else select.value = typeof value === 'string' ? value : (opts[0] ?? '')
+              }
+              return leaf(
+                select,
+                () => {
+                  if (select.selectedOptions[0]?.disabled) return null
+                  if (!select.value) return undefined
+                  if (!opts.includes(select.value)) throw new Error('Выберите допустимое значение')
+                  checkGunField(select.value, field)
+                  return select.value
+                },
+                (value) => {
+                  paint(value)
+                  if (select.isConnected) customSelect(select)
+                },
+              )
+            }
+            const input = checkout(
+              el('input', { id, type: 'text', maxLength: 256, placeholder: 'текст' }),
+            )
+            return leaf(
+              input,
+              () => {
+                if (!input.value.trim()) return undefined
+                checkGunField(input.value, field)
+                return input.value
+              },
+              (value) => {
+                input.value = typeof value === 'string' ? value : ''
+              },
+            )
+          }
+          if (field.acceptsInfinite) {
+            const input = checkout(
+              el('input', { id, type: 'text', maxLength: 256, placeholder: 'число или infinite' }),
+            )
+            return leaf(
+              input,
+              () => {
+                if (!input.value.trim()) return undefined
+                const parsed = input.value.trim() === 'infinite' ? 'infinite' : Number(input.value)
+                checkGunField(parsed, field)
+                return parsed
+              },
+              (value) => {
+                input.value = value === null || value === undefined ? '' : String(value)
+              },
+            )
+          }
+          if (field.type === 'json') {
+            // Свободный JSON без текстового редактора: тип опредем по текущему значению.
+            const kinds = ['число', 'текст', 'да/нет', 'список', 'объект'] as const
+            const box = el('div', { className: 'gun-sub' })
+            const kind = el('select', { ariaLabel: 'Тип значения' })
+            let inner: GunCtl | null = null
+            const infer = (value: unknown): (typeof kinds)[number] =>
+              typeof value === 'number'
+                ? 'число'
+                : typeof value === 'boolean'
+                  ? 'да/нет'
+                  : Array.isArray(value)
+                    ? 'список'
+                    : gunIsObject(value)
+                      ? 'объект'
+                      : 'текст'
+            const pseudo = (value: unknown): GunField =>
+              typeof value === 'number'
+                ? { type: 'number', nullable: true, min: -1_000_000_000, max: 1_000_000_000 }
+                : typeof value === 'boolean'
+                  ? { type: 'boolean', nullable: true }
+                  : Array.isArray(value)
+                    ? { type: 'array', nullable: true, items: pseudo(value[0]) }
+                    : gunIsObject(value)
+                      ? {
+                          type: 'object',
+                          nullable: true,
+                          fields: Object.fromEntries(
+                            Object.entries(value).map(([k, v]) => [k, pseudo(v)]),
+                          ),
+                        }
+                      : { type: 'string', nullable: true }
+            const rebuild = (k: (typeof kinds)[number], value: unknown) => {
+              const seed =
+                k === 'число'
+                  ? typeof value === 'number'
+                    ? value
+                    : 0
+                  : k === 'да/нет'
+                    ? value === true
+                    : k === 'список'
+                      ? Array.isArray(value)
+                        ? value
+                        : []
+                      : k === 'объект'
+                        ? gunIsObject(value)
+                          ? value
+                          : {}
+                        : typeof value === 'string'
+                          ? value
+                          : ''
+              inner = gunControl(top, [...path, ''], pseudo(seed), onChange)
+              inner.write(seed)
+              box.replaceChildren(kind, inner.node)
+              if (kind.isConnected) customSelect(kind)
+            }
+            kind.replaceChildren(...kinds.map((k) => el('option', { value: k, textContent: k })))
+            kind.onchange = () => {
+              rebuild(kind.value as (typeof kinds)[number], null)
+              onChange(kind)
+            }
+            return leaf(
+              box,
+              () => inner?.read(),
+              (value) => {
+                kind.value = infer(value)
+                rebuild(kind.value as (typeof kinds)[number], value)
+              },
+            )
+          }
+          if (field.type === 'object') {
+            const wrap = el('div', { className: 'gun-sub' })
+            if (field.acceptsBoolean) {
+              // TaCZ принимает и простое да/нет, и подробный объект (ignite).
+              const mode = selectout(el('select', { ariaLabel: 'Режим значения' }))
+              const holder = el('div')
+              let kids: GunCtl[] = []
+              const paintKids = (value: unknown) => {
+                holder.replaceChildren()
+                kids = Object.entries(field.fields ?? {}).map(([name, sub]) => {
+                  const ctl = gunControl(top, [...path, name], sub, onChange)
+                  const row = el('div', { className: 'gun-sub-row' })
+                  const lab = el('label', {
+                    htmlFor: `gun-field-${[top, ...path, name].join('-')}`,
+                  })
+                  lab.textContent = gunKidLabel(name)
+                  row.append(lab, ctl.node)
+                  holder.append(row)
+                  return ctl
+                })
+                const obj = gunIsObject(value) ? value : {}
+                kids.forEach((ctl, i) =>
+                  ctl.write((obj as Record<string, unknown>)[Object.keys(field.fields ?? {})[i]]),
+                )
+                if (holder.isConnected)
+                  holder.querySelectorAll('select').forEach((s) => customSelect(s))
+              }
+              const paintMode = (value: unknown) => {
+                mode.replaceChildren(
+                  el('option', { value: 'object', textContent: 'подробно' }),
+                  el('option', { value: 'true', textContent: 'да' }),
+                  el('option', { value: 'false', textContent: 'нет' }),
+                )
+                mode.value = typeof value === 'boolean' ? String(value) : 'object'
+                holder.hidden = mode.value !== 'object'
+                if (mode.value === 'object') paintKids(value)
+              }
+              mode.onchange = () => {
+                paintMode(mode.value === 'object' ? {} : mode.value === 'true')
+                onChange(mode)
+              }
+              wrap.append(mode, holder)
+              return leaf(
+                wrap,
+                () => {
+                  if (mode.value !== 'object') return mode.value === 'true'
+                  const out: Record<string, unknown> = {}
+                  for (const [name] of Object.entries(field.fields ?? {})) {
+                    const v = kids[Object.keys(field.fields ?? {}).indexOf(name)].read()
+                    if (v !== undefined) out[name] = v
+                  }
+                  return Object.keys(out).length ? out : undefined
+                },
+                paintMode,
+              )
+            }
+            const rows = Object.entries(field.fields ?? {}).map(([name, sub]) => {
+              const ctl = gunControl(top, [...path, name], sub, onChange)
+              const row = el('div', { className: 'gun-sub-row' })
+              const lab = el('label', { htmlFor: `gun-field-${[top, ...path, name].join('-')}` })
+              lab.textContent = gunKidLabel(name)
+              row.append(lab, ctl.node)
+              return { name, ctl, row }
+            })
+            wrap.append(...rows.map((r) => r.row))
+            const ctl = leaf(
+              wrap,
+              () => {
+                const out: Record<string, unknown> = {}
+                for (const { name, ctl } of rows) {
+                  const v = ctl.read()
+                  if (v !== undefined) out[name] = v
+                }
+                return Object.keys(out).length ? out : undefined
+              },
+              (value) => {
+                const obj = gunIsObject(value) ? (value as Record<string, unknown>) : {}
+                for (const { name, ctl } of rows) ctl.write(obj[name])
+              },
+            )
+            return ctl
+          }
+          if (field.type === 'array') {
+            const list = el('div', { className: 'gun-list' })
+            const itemReads = new Map<HTMLElement, () => unknown>()
+            let itemSeq = 0
+            const blank = (): unknown => {
+              const items = field.items!
+              if (items.values?.length) return items.values[0]
+              if (items.type === 'boolean') return false
+              if (['integer', 'number'].includes(items.type)) return items.min ?? 0
+              if (items.type === 'object' || items.type === 'map') return {}
+              if (items.type === 'array') return []
+              if (items.type === 'json') return 0
+              return ''
+            }
+            const appendRow = (value: unknown) => {
+              const items = field.items!
+              const ctl = gunControl(top, [...path, `i${itemSeq++}`], items, onChange)
+              const row = el('div', { className: 'gun-list-row' })
+              const del = el('button', {
+                type: 'button',
+                className: 'gun-mini',
+                textContent: '×',
+                title: 'Удалить',
+                ariaLabel: 'Удалить',
+                onclick: () => {
+                  itemReads.delete(row)
+                  row.remove()
+                  onChange(del)
+                },
+              })
+              row.append(ctl.node, del)
+              list.append(row)
+              itemReads.set(row, ctl.read)
+              ctl.write(value)
+              const select = ctl.node.querySelector('select')
+              if (select && select.isConnected) customSelect(select)
+            }
+            const add = el('button', {
+              type: 'button',
+              className: 'gun-mini',
+              textContent: '+',
+              title: 'Добавить',
+              ariaLabel: 'Добавить',
+              onclick: () => {
+                // Строка добавляется пустой; сохранение — при её изменении.
+                appendRow(blank())
+              },
+            })
+            const box = el('div', { className: 'gun-sub' }, list, add)
+            return leaf(
+              box,
+              () => {
+                const out: unknown[] = []
+                for (const read of itemReads.values()) {
+                  const v = read()
+                  if (v === undefined) throw new Error('Заполните все строки или удалите пустые.')
+                  out.push(v)
+                }
+                return out
+              },
+              (value) => {
+                list.replaceChildren()
+                itemReads.clear()
+                for (const item of Array.isArray(value) ? value : []) appendRow(item)
+              },
+            )
+          }
+          // map — по ключам; пустой ключ пропускается, дубли отвергаются чтением.
+          const entries = el('div', { className: 'gun-list' })
+          const unusedKeys = () =>
+            (field.keys?.values ?? []).filter(
+              (k) =>
+                ![...entries.children].some(
+                  (row) =>
+                    (row.querySelector('[data-gunkey]') as HTMLInputElement | HTMLSelectElement)
+                      ?.value === k,
+                ),
+            )
+          const addEntry = el('button', {
+            type: 'button',
+            className: 'gun-mini',
+            textContent: '+',
+            title: 'Добавить',
+            ariaLabel: 'Добавить',
+            onclick: () => {
+              const keys = field.keys
+              appendEntry(keys?.values ? (unusedKeys()[0] ?? '') : '')
+              onChange(addEntry)
+            },
+          })
+          const readEntries = () => {
+            const out: Record<string, unknown> = {}
+            for (const row of entries.children) {
+              const key = (
+                row.querySelector('[data-gunkey]') as HTMLInputElement | HTMLSelectElement
+              ).value.trim()
+              if (!key) continue
+              if (Object.hasOwn(out, key)) throw new Error(`Ключ «${key}» уже есть.`)
+              if (field.keys) checkGunField(key, field.keys)
+              const ctl = entryControls.get(row as HTMLElement)
+              const v = ctl?.()
+              if (v !== undefined) out[key] = v
+            }
+            return out
+          }
+          const entryControls = new Map<HTMLElement, () => unknown>()
+          let entrySeq = 0
+          const appendEntry = (key: string, value?: unknown, values?: GunField) => {
+            void values
+            const row = el('div', { className: 'gun-list-row' })
+            const keyCtl = field.keys?.values
+              ? selectout(
+                  el(
+                    'select',
+                    { dataGunkey: '' },
+                    ...(field.keys.values.map((v) =>
+                      el('option', { value: v, textContent: v }),
+                    ) as HTMLOptionElement[]),
+                  ),
+                )
+              : checkout(el('input', { type: 'text', maxLength: 256, dataGunkey: '' }))
+            if (keyCtl instanceof HTMLSelectElement) {
+              if (key && field.keys?.values?.includes(key)) keyCtl.value = key
+            } else keyCtl.value = key
+            const val = gunControl(top, [...path, `e${entrySeq++}`], field.items!, onChange)
+            entryControls.set(row, val.read)
+            const del = el('button', {
+              type: 'button',
+              className: 'gun-mini',
+              textContent: '×',
+              title: 'Удалить',
+              ariaLabel: 'Удалить',
+              onclick: () => {
+                entryControls.delete(row)
+                row.remove()
+                onChange(del)
+              },
+            })
+            row.append(keyCtl, val.node, del)
+            entries.append(row)
+            val.write(value)
+            if (keyCtl instanceof HTMLSelectElement && keyCtl.isConnected) customSelect(keyCtl)
+            const select = val.node.querySelector('select')
+            if (select && select.isConnected) customSelect(select)
+          }
+          const mapBox = el('div', { className: 'gun-sub' }, entries, addEntry)
+          const mapCtl = leaf(
+            mapBox,
+            () => {
+              const out = readEntries()
+              return Object.keys(out).length ? out : undefined
+            },
+            (value) => {
+              entries.replaceChildren()
+              entryControls.clear()
+              for (const [k, v] of Object.entries(
+                gunIsObject(value) ? (value as Record<string, unknown>) : {},
+              ))
+                appendEntry(k, v)
+            },
           )
+          return mapCtl
+        }
+        const gunNullWrap = (
+          field: GunField,
+          inner: GunCtl,
+          onChange: (control: HTMLElement) => void,
+        ): GunCtl => {
+          if (!field.nullable) return inner
+          const off = el('input', { type: 'checkbox', ariaLabel: 'Выключено' })
+          off.onchange = () => {
+            inner.node.toggleAttribute('inert', off.checked)
+            onChange(off)
+          }
+          const box = el(
+            'div',
+            { className: 'gun-null' },
+            el('label', { className: 'check' }, off, 'Выключено'),
+            inner.node,
+          )
+          return {
+            node: box,
+            read: () => (off.checked ? null : inner.read()),
+            write: (value) => {
+              off.checked = value === null
+              inner.node.toggleAttribute('inert', off.checked)
+              if (value !== null) inner.write(value)
+              else inner.write(undefined)
+            },
+          }
+        }
+        const buildStructuredRow = (
+          top: string,
+          path: string[],
+          field: GunField,
+          main = false,
+          shared = false,
+        ) => {
+          const rk = [top, ...path].join('-')
+          const id = `gun-field-${rk}`
+          const parentDefault = gun.defaults[top]
+          const defaultValue = gunPathGet(parentDefault, path)
+          const readLeaf = () =>
+            gunPathGet(
+              gunIsObject(gunOverrides[gun.id]?.[top])
+                ? gunValues(parentDefault, gunOverrides[gun.id][top])
+                : parentDefault,
+              path,
+            )
+          const overridden = !gunSame(readLeaf(), defaultValue)
+          const state = el('span', { className: 'state', role: 'status' })
+          const badge = el('span', {
+            className: 'gun-badge',
+            hidden: !overridden,
+            textContent: 'изменено',
+          })
+          const label = (
+            path.length
+              ? `${GUN_LABELS[top] ?? top} · ${path.map(gunKidLabel).join(' · ')}`
+              : (GUN_LABELS[top] ?? top)
+          ) as string
+          const ctl = gunNullWrap(
+            field,
+            gunControl(top, path, field, (c) => commit(c)),
+            (c) => commit(c),
+          )
+          ctl.write(readLeaf() === undefined ? defaultValue : readLeaf())
+          const writeEffective = () =>
+            ctl.write(readLeaf() === undefined ? defaultValue : readLeaf())
+          const refreshMark = () => gunMark(row, !gunSame(readLeaf(), defaultValue), reset)
+          const commit = (control: HTMLElement) => {
+            let next: unknown
+            try {
+              const leaf = ctl.read()
+              // Проверяем только правку: в effective могут лежать устаревшие
+              // неизвестные схеме ключи — их трогает только серверный дифф.
+              if (leaf !== undefined) checkGunField(leaf, field)
+              next = gunPathTop(top, path, leaf)
+              if (next !== undefined && gunSame(next, parentDefault)) next = undefined
+            } catch (error) {
+              fieldState(state, (error as Error).message, 'error')
+              return
+            }
+            void commitGun(
+              control as HTMLInputElement | HTMLSelectElement | HTMLButtonElement,
+              state,
+              gun.id,
+              top,
+              next,
+              () => {
+                refreshMark()
+                if (next === undefined) writeEffective()
+                row.dataset.saved = gunRowValue(row)
+                if (shared) renderGun(true)
+              },
+              () => {
+                writeEffective()
+                refreshMark()
+              },
+              label,
+              undefined,
+              {
+                before: gunText(readLeaf()) ?? 'null',
+                after: gunText(next === undefined ? defaultValue : ctl.read()) ?? 'null',
+              },
+            )
+          }
+          const defaultRepr = gunText(defaultValue) ?? 'null'
+          const reset = el('button', {
+            type: 'button',
+            className: 'gun-reset',
+            hidden: !overridden,
+            title: `Вернуть значение ганпака (${defaultRepr.length > 120 ? `${defaultRepr.slice(0, 117)}…` : defaultRepr})`,
+            ariaLabel: 'Вернуть значение ганпака',
+            textContent: '↺',
+            onclick: () => {
+              ctl.write(defaultValue)
+              commit(reset as HTMLButtonElement)
+            },
+          })
+          const hint =
+            field.type === 'array'
+              ? 'Список: «+» добавляет строку, «×» удаляет.'
+              : field.type === 'map'
+                ? 'Записи по ключам; строка с пустым ключом пропускается.'
+                : field.type === 'object'
+                  ? 'Пустые поля — «по умолчанию».'
+                  : `${gunShape(field)}${field.min === undefined ? '' : ` · от ${field.min} до ${field.max}`}`
+          const row = el(
+            'div',
+            { className: 'field row', title: rk },
+            el('label', { htmlFor: id }, label, el('small', { textContent: hint }), badge),
+            el('div', { className: 'ctl' }, ctl.node, reset),
+            state,
+          )
+          row.dataset.rk = rk
+          row.toggleAttribute('data-override', overridden)
+          row.dataset.saved = gunRowValue(row)
+          gunReaders.set(rk, () => gunPathTop(top, path, ctl.read()))
+          const old = oldRows.find((row) => row.dataset.rk === rk)
+          if (
+            live &&
+            old &&
+            (gunPending ||
+              old.contains(document.activeElement) ||
+              gunRowValue(old) !== old.dataset.saved)
+          ) {
+            gunMark(
+              old,
+              !gunSame(readLeaf(), defaultValue),
+              old.querySelector<HTMLElement>('.gun-reset'),
+            )
+            gunReaders.set(rk, oldReaders.get(rk)!)
+            return { rk, node: old, main }
+          }
+          return { rk, node: row, main }
+        }
+        const kids = gunFlatKids(key, field) ?? []
+        const kidNames = new Set(kids.map(([childKey]) => childKey))
+        const leftovers =
+          field.type === 'object' && kids.length
+            ? Object.entries(field.fields ?? {}).filter(([childKey]) => !kidNames.has(childKey))
+            : []
+        // Каждое значение правится ровно один раз: простые дети — строками, остальное —
+        // структурными редакторами; полного JSON-дубликата больше нет.
+        for (const [childKey, childField] of kids)
+          built.push(buildRow(key, field, childKey, childField, true, leftovers.length > 0))
+        if (!kids.length) {
+          if (
+            ['number', 'integer', 'boolean', 'string', 'resource'].includes(field.type) &&
+            !field.acceptsInfinite
+          )
+            built.push(
+              buildRow(
+                key,
+                field,
+                undefined,
+                undefined,
+                GUN_MAIN_TOP.has(key) && !field.nullable,
+                false,
+              ),
+            )
+          else built.push(buildStructuredRow(key, [], field, false))
+        }
+        for (const [childKey, childField] of leftovers)
+          built.push(buildStructuredRow(key, [childKey], childField, false, kids.length > 0))
       }
       const mainRows = built.filter((row) => row.main)
       const advRows = built.filter((row) => !row.main)
@@ -3730,8 +4589,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         throw new Error(text)
       }
       if (value === null) fail('Значение null недоступно')
-      if (depth > (field.type === 'json' ? 8 : 16))
-        fail('Слишком много вложенных полей. Сократите JSON')
+      if (depth > (field.type === 'json' ? 8 : 16)) fail('Слишком много вложенных полей')
       if (typeof value === 'object' && Object.keys(value).length > 256)
         fail('Слишком много элементов. Сократите JSON')
       if (field.type === 'json') {
@@ -3739,9 +4597,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           typeof value === 'number' &&
           (!Number.isFinite(value) || Math.abs(value) > 1_000_000_000)
         )
-          fail('Проверьте число в JSON')
-        if (typeof value === 'string' && value.length > 4096)
-          fail('Слишком длинный текст. Сократите JSON')
+          fail('Проверьте число')
+        if (typeof value === 'string' && value.length > 4096) fail('Слишком длинный текст')
         if (typeof value === 'object')
           Object.values(value).forEach((child) => checkGunField(child, field, depth + 1))
         return
@@ -3761,15 +4618,15 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       } else if (field.type === 'boolean') {
         if (typeof value !== 'boolean') fail('Выберите значение')
       } else if (field.type === 'array') {
-        if (!Array.isArray(value)) fail('Нужен массив. Исправьте JSON')
+        if (!Array.isArray(value)) fail('Нужен список значений')
         value.forEach((v: unknown) => checkGunField(v, field.items!, depth + 1))
       } else if (field.type === 'object' || field.type === 'map') {
         if (!value || typeof value !== 'object' || Array.isArray(value))
-          fail('Нужен объект. Исправьте JSON')
+          fail('Нужна группа значений')
         for (const [key, child] of Object.entries(value)) {
           if (field.type === 'map') checkGunField(key, field.keys!)
           const rule = field.type === 'map' ? field.items : field.fields?.[key]
-          if (!rule) fail('Неизвестное поле. Исправьте JSON')
+          if (!rule) fail('Неизвестное поле')
           checkGunField(child, rule!, depth + 1)
         }
       } else {
