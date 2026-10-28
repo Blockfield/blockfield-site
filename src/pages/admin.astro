@@ -367,9 +367,17 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             <section class="group settings-group gun-group" aria-labelledby="gun-parameters-title">
               <header>
                 <h2 id="gun-parameters-title">Параметры</h2>
-                <span class="hint">Снятая отметка возвращает значение ганпака.</span>
+                <span class="hint">
+                  Значения ганпака уже подставлены. Измените поле — сохранится; верните как было или
+                  очистите — снова будет значение ганпака.
+                </span>
               </header>
               <div id="gun-fields" class="fields"></div>
+              <details id="gun-advanced" class="gun-advanced" hidden>
+                <summary>Дополнительно</summary>
+                <p class="muted">Редкие и сложные настройки, обычному оружию не нужны.</p>
+                <div id="gun-advanced-fields" class="fields"></div>
+              </details>
             </section>
             <div class="savebar">
               <button id="gun-reset" type="button">
@@ -1284,13 +1292,19 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       min-width: 0;
       font-family: var(--mono);
     }
-    .admin-main .gun-group .ctl > details {
-      width: 100%;
-      min-width: 0;
+    .admin-main .gun-group .gun-reset {
+      flex: none;
+      padding: 2px 8px;
+      font-size: 14px;
+      line-height: 1.5;
+      cursor: pointer;
     }
-    .admin-main .gun-group pre {
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
+    .admin-main .gun-group .gun-advanced {
+      margin: 4px 0 0;
+    }
+    .admin-main .gun-group .gun-advanced > summary {
+      cursor: pointer;
+      padding: 8px 0;
     }
     .admin-main .gun-badge {
       display: block;
@@ -3023,7 +3037,11 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     const GUN_LABELS: Record<string, string> = {
       ammo: 'Боеприпас',
       ammo_amount: 'Вместимость магазина',
-      extended_mag_ammo_amount: 'Расширенные магазины',
+      extended_mag_ammo_amount: 'Вместимость расширенного магазина',
+      damage: 'Урон',
+      armor_ignore: 'Бронепробитие',
+      head_shot: 'Множитель урона в голову',
+      body_part_multipliers: 'Урон по частям тела',
       can_crawl: 'Стрельба ползком',
       can_slide: 'Стрельба в подкате',
       bolt: 'Затвор',
@@ -3167,10 +3185,15 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     function renderGun(live = false) {
       const gun = selectedGun
       const oldReaders = new Map(gunReaders)
-      const oldRows = [...$('#gun-fields').children]
+      const oldRows = [
+        ...$('#gun-fields').children,
+        ...$('#gun-advanced-fields').children,
+      ] as HTMLElement[]
       gunReaders.clear()
       if (!gun || !gunCatalog) {
         $('#gun-fields').replaceChildren()
+        $('#gun-advanced-fields').replaceChildren()
+        $('#gun-advanced').hidden = true
         return
       }
       $('#gun-about').textContent =
@@ -3190,7 +3213,85 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         $('#gun-about').textContent +=
           ` Общие данные с ${sharers.join(', ')}: всё, кроме урона по частям тела, действует и для ${sharers.length === 1 ? 'него' : 'них'}.`
       $('#gun-warnings').textContent = gun.warnings.join(' ')
-      const rows = Object.entries(weaponFields(gunCatalog, gun).fields!).map(([key, field]) => {
+      // «Основные» — то, что крутит обычный админ; остальное — в «Дополнительно».
+      // Всё это живёт внутри renderGun: тесты извлекают её целиком и не знают новых имён.
+      const GUN_MAIN_TOP = new Set([
+        'rpm',
+        'ammo',
+        'ammo_amount',
+        'extended_mag_ammo_amount',
+        'draw_time',
+        'put_away_time',
+        'sprint_time',
+        'aim_time',
+        'bolt_action_time',
+        'bolt_feed_time',
+        'damage',
+        'armor_ignore',
+        'head_shot',
+      ])
+      const GUN_FLAT_PARENTS = new Set(['bullet', 'reload', 'inaccuracy'])
+      const GUN_CHILD_LABELS: Record<string, string> = {
+        damage: 'Урон',
+        armor_ignore: 'Бронепробитие',
+        head_shot: 'Множитель урона в голову',
+        distance: 'Дистанция',
+        stand: 'Стоя',
+        aim: 'В прицеле',
+      }
+      const GUN_HINTS: Record<string, string> = {
+        rpm: 'Сколько выстрелов в минуту делает оружие.',
+        ammo: 'Какие патроны использует оружие.',
+        ammo_amount: 'Сколько патронов в полном магазине.',
+        extended_mag_ammo_amount: 'Сколько патронов с увеличенным магазином.',
+        draw_time: 'Сколько секунд доставать оружие.',
+        put_away_time: 'Сколько секунд убирать оружие.',
+        sprint_time: 'Сколько секунд выходить из спринта.',
+        aim_time: 'Сколько секунд целиться.',
+        bolt_action_time: 'Сколько секунд передёргивать затвор.',
+        bolt_feed_time: 'Сколько секунд подавать патрон.',
+        damage: 'Урон одного попадания.',
+        armor_ignore:
+          'Какая доля урона проходит сквозь броню: 0 — вся режется бронёй, 1 — броня не мешает.',
+        head_shot: 'Во сколько раз больше урона при попадании в голову.',
+        reload: 'Сколько секунд занимает перезарядка.',
+        inaccuracy: 'Разброс при стрельбе: больше число — кучность хуже.',
+        bullet: 'Пуля и её урон.',
+      }
+      const gunIsComplex = (field: GunField) =>
+        ['object', 'array', 'map', 'json'].includes(field.type) || !!field.acceptsInfinite
+      const gunIsObject = (value: unknown): value is Record<string, unknown> =>
+        !!value && typeof value === 'object' && !Array.isArray(value)
+      // Простые значения внутри bullet/reload/inaccuracy — отдельными полями в «Основных».
+      const gunFlatKids = (top: string, field: GunField): [string, GunField][] | null => {
+        if (!GUN_FLAT_PARENTS.has(top) || field.nullable) return null
+        if (field.type === 'object')
+          return Object.entries(field.fields ?? {}).filter(
+            ([, child]) => !gunIsComplex(child) && !child.nullable,
+          )
+        if (field.type === 'map' && field.items && !gunIsComplex(field.items)) {
+          const names = field.keys?.values ?? Object.keys((gun.defaults[top] ?? {}) as object)
+          return names.map((name) => [name, field.items!])
+        }
+        return null
+      }
+      const gunSame = (a: unknown, b: unknown) => gunText(a) === gunText(b)
+      const gunMark = (node: HTMLElement, overridden: boolean, reset: HTMLElement | null) => {
+        node.toggleAttribute('data-override', overridden)
+        node.querySelector<HTMLElement>('.gun-badge')!.hidden = !overridden
+        if (reset) reset.hidden = !overridden
+      }
+      const gunCurrentTop = (top: string) => {
+        const over = Object.hasOwn(gunOverrides[gun.id] ?? {}, top)
+        return {
+          over,
+          effective: over
+            ? gunValues(gun.defaults[top], gunOverrides[gun.id][top])
+            : gun.defaults[top],
+        }
+      }
+      const built: { rk: string; node: HTMLElement; main: boolean }[] = []
+      for (const [key, field] of Object.entries(weaponFields(gunCatalog, gun).fields!)) {
         const hasOverride = Object.hasOwn(gunOverrides[gun.id] ?? {}, key)
         const value = hasOverride
           ? gunValues(gun.defaults[key], gunOverrides[gun.id][key])
@@ -3209,6 +3310,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             body.node,
             state,
           )
+          row.dataset.rk = key
           const summary = body.node.querySelector('summary')!
           summary.id = `gun-field-${key}`
           summary.append(badge)
@@ -3262,9 +3364,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           })
           row.toggleAttribute('data-override', hasOverride)
           row.dataset.saved = gunRowValue(row)
-          const old = oldRows.find((row) => row.getAttribute('title') === key) as
-            | HTMLElement
-            | undefined
+          const old = oldRows.find((row) => row.dataset.rk === key)
           if (
             live &&
             old &&
@@ -3275,191 +3375,283 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             old.toggleAttribute('data-override', hasOverride)
             old.querySelector<HTMLElement>('.gun-badge')!.hidden = !hasOverride
             gunReaders.set(key, oldReaders.get(key)!)
-            return old
+            built.push({ rk: key, node: old, main: true })
+            continue
           }
-          return row
+          built.push({ rk: key, node: row, main: true })
+          continue
         }
-        const id = `gun-field-${key}`
-        const edit = el('input', {
-          type: 'checkbox',
-          checked: hasOverride,
-          ariaLabel: 'Изменить',
-        })
-        const nullable = field.nullable
-          ? el('input', { type: 'checkbox', checked: value === null, ariaLabel: 'null' })
-          : null
-        const complex =
-          ['object', 'array', 'map', 'json'].includes(field.type) || field.acceptsInfinite
-        const input = complex
-          ? el('textarea', {
-              id,
-              className: 'mono',
-              rows: 5,
-              value: gunText(value),
-              spellcheck: false,
-            })
-          : field.type === 'boolean' || field.values
-            ? el(
-                'select',
-                { id },
-                ...(field.values ?? ['true', 'false']).map((v) =>
-                  el('option', { value: v, textContent: v }),
-                ),
-              )
-            : el('input', {
+        const buildRow = (
+          top: string,
+          field: GunField,
+          childKey?: string,
+          childField?: GunField,
+          main = false,
+          shared = false,
+        ) => {
+          const sub = childField ?? field
+          const rk = childKey ? `${top}-${childKey}` : top
+          const id = `gun-field-${rk}`
+          const { effective: parentEffective } = gunCurrentTop(top)
+          const parentDefault = gun.defaults[top]
+          const defaultValue = childKey
+            ? gunIsObject(parentDefault)
+              ? parentDefault[childKey]
+              : undefined
+            : parentDefault
+          const value = childKey
+            ? gunIsObject(parentEffective)
+              ? parentEffective[childKey]
+              : undefined
+            : parentEffective
+          const overridden = !gunSame(value, defaultValue)
+          const complex = gunIsComplex(sub)
+          const nullable =
+            !childKey && field.nullable
+              ? el('input', { type: 'checkbox', checked: value === null, ariaLabel: 'null' })
+              : null
+          const input = complex
+            ? el('textarea', {
                 id,
-                type: ['integer', 'number'].includes(field.type) ? 'number' : 'text',
-                value: value === null ? '' : String(value ?? ''),
-                placeholder: gun.defaults[key] === null ? '' : String(gun.defaults[key] ?? ''),
-                step: field.type === 'integer' ? '1' : 'any',
-                ...(field.min === undefined ? {} : { min: field.min, max: field.max }),
-                maxLength: 256,
+                className: 'mono',
+                rows: 5,
+                value: gunText(value),
+                spellcheck: false,
               })
-        if (input instanceof HTMLSelectElement) input.value = String(value)
-        const sync = () => {
-          input.disabled = !edit.checked || !!nullable?.checked
-          if (nullable) nullable.disabled = !edit.checked
-          if (input instanceof HTMLSelectElement && input.isConnected) customSelect(input)
-        }
-        sync()
-        gunReaders.set(key, () => {
-          if (!edit.checked) return undefined
-          if (nullable?.checked) return null
-          if (complex) {
-            try {
-              const parsed = JSON.parse(input.value)
-              checkGunField(parsed, field)
-              return parsed
-            } catch {
-              throw new Error('Исправьте JSON.')
-            }
-          }
-          if (field.type === 'boolean') return input.value === 'true'
-          if (['integer', 'number'].includes(field.type)) {
-            if (!input.value.trim() || !Number.isFinite(Number(input.value)))
-              throw new Error('Введите число.')
-            const parsed = Number(input.value)
-            checkGunField(parsed, field)
-            return parsed
-          }
-          return input.value
-        })
-        const state = el('span', { className: 'state', role: 'status' })
-        const commit = (control: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement) => {
-          sync()
-          let next: ReturnType<() => unknown>
-          try {
-            next = gunReaders.get(key)!()
-            if (next !== undefined) checkGunField(next, field)
-          } catch (error) {
-            fieldState(state, (error as Error).message, 'error')
-            return
-          }
-          void commitGun(
-            control,
-            state,
-            gun.id,
-            key,
-            next,
-            () => {
-              row.toggleAttribute('data-override', Object.hasOwn(gunOverrides[gun.id] ?? {}, key))
-              badge.hidden = !row.hasAttribute('data-override')
-              if (next === undefined) {
-                input.value = complex ? gunText(gun.defaults[key]) : String(gun.defaults[key] ?? '')
-                if (nullable) nullable.checked = gun.defaults[key] === null
-              }
-              sync()
-              row.dataset.saved = gunRowValue(row)
-            },
-            () => {
-              edit.checked = Object.hasOwn(gunOverrides[gun.id] ?? {}, key)
-              const confirmed = edit.checked
-                ? gunValues(gun.defaults[key], gunOverrides[gun.id][key])
-                : gun.defaults[key]
-              input.value = complex
-                ? gunText(confirmed)
-                : confirmed === null
-                  ? ''
-                  : String(confirmed)
-              if (nullable) nullable.checked = confirmed === null
-              sync()
-            },
-            GUN_LABELS[key] ?? key,
-          )
-        }
-        edit.onchange = () => {
-          sync()
-          if (edit.checked) {
-            fieldState(state, '', '')
-            if (input instanceof HTMLSelectElement) document.getElementById(`${id}-btn`)?.focus()
-            else input.focus()
-          } else commit(edit)
-        }
-        input.onchange = () => commit(input)
-        if (nullable) nullable.onchange = () => commit(nullable)
-        const badge = el('span', {
-          className: 'gun-badge',
-          hidden: !hasOverride,
-          textContent: 'изменено',
-        })
-        const row = el(
-          'div',
-          { className: 'field row', title: key },
-          el(
-            'label',
-            { htmlFor: id },
-            GUN_LABELS[key] ?? key,
-            el('small', {
-              textContent: `${gunShape(field)}${field.min === undefined ? '' : ` · от ${field.min} до ${field.max}`}`,
-            }),
-            badge,
-          ),
-          el(
-            'div',
-            { className: 'ctl' },
-            el('label', { className: 'switch' }, edit, el('span', { ariaHidden: 'true' })),
-            input,
-            nullable ? el('label', { className: 'check' }, nullable, 'null') : null,
-            complex
+            : sub.type === 'boolean' || sub.values
               ? el(
-                  'details',
-                  {},
-                  el('summary', { textContent: 'Значение ганпака' }),
-                  el('pre', { textContent: gunText(gun.defaults[key]) }),
+                  'select',
+                  { id },
+                  ...(sub.values ?? ['true', 'false']).map((v) =>
+                    el('option', { value: v, textContent: v }),
+                  ),
                 )
-              : null,
-          ),
-          state,
-        )
-        row.toggleAttribute('data-override', hasOverride)
-        row.dataset.saved = gunRowValue(row)
-        const old = oldRows.find((row) => row.getAttribute('title') === key) as
-          | HTMLElement
-          | undefined
-        if (
-          live &&
-          old &&
-          (gunPending ||
-            old.contains(document.activeElement) ||
-            gunRowValue(old) !== old.dataset.saved)
-        ) {
-          old.toggleAttribute('data-override', hasOverride)
-          old.querySelector<HTMLElement>('.gun-badge')!.hidden = !hasOverride
-          gunReaders.set(key, oldReaders.get(key)!)
-          return old
+              : el('input', {
+                  id,
+                  type: ['integer', 'number'].includes(sub.type) ? 'number' : 'text',
+                  value: value === null || value === undefined ? '' : String(value),
+                  placeholder:
+                    defaultValue === null || defaultValue === undefined ? '' : String(defaultValue),
+                  step: sub.type === 'integer' ? '1' : 'any',
+                  ...(sub.min === undefined ? {} : { min: sub.min, max: sub.max }),
+                  maxLength: 256,
+                })
+          if (input instanceof HTMLSelectElement) input.value = String(value ?? '')
+          gunReaders.set(rk, () => {
+            if (nullable?.checked) return null
+            if (complex) {
+              if (!input.value.trim()) return undefined
+              try {
+                const parsed = JSON.parse(input.value)
+                checkGunField(parsed, field)
+                return parsed
+              } catch {
+                throw new Error('Исправьте JSON.')
+              }
+            }
+            if (sub.type === 'boolean') return input.value === 'true'
+            if (['integer', 'number'].includes(sub.type)) {
+              if (!input.value.trim()) return childKey ? structuredClone(defaultValue) : undefined
+              if (!Number.isFinite(Number(input.value))) throw new Error('Введите число.')
+              const parsed = Number(input.value)
+              checkGunField(parsed, sub)
+              return parsed
+            }
+            if (!input.value.trim() && !nullable)
+              return childKey ? structuredClone(defaultValue) : undefined
+            return input.value
+          })
+          const state = el('span', { className: 'state', role: 'status' })
+          const bare =
+            top === 'bullet' && ['damage', 'armor_ignore', 'head_shot'].includes(childKey ?? '')
+          const label = childKey
+            ? bare
+              ? (GUN_CHILD_LABELS[childKey] ?? GUN_LABELS[childKey] ?? childKey)
+              : `${GUN_LABELS[top] ?? top} · ${GUN_CHILD_LABELS[childKey] ?? GUN_LABELS[childKey] ?? childKey}`
+            : (GUN_LABELS[top] ?? top)
+          const writeEffective = () => {
+            const { effective } = gunCurrentTop(top)
+            const shown = childKey
+              ? gunIsObject(effective)
+                ? effective[childKey]
+                : undefined
+              : effective
+            if (complex) input.value = gunText(shown)
+            else if (input instanceof HTMLSelectElement) input.value = String(shown ?? '')
+            else input.value = shown === null || shown === undefined ? '' : String(shown)
+            if (nullable) nullable.checked = shown === null
+            if (input instanceof HTMLSelectElement && input.isConnected) customSelect(input)
+          }
+          const refreshMark = () => {
+            const { effective } = gunCurrentTop(top)
+            const shown = childKey
+              ? gunIsObject(effective)
+                ? effective[childKey]
+                : undefined
+              : effective
+            gunMark(row, !gunSame(shown, defaultValue), reset)
+          }
+          const commit = (
+            control: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement,
+          ) => {
+            let next: unknown, childNext: unknown
+            try {
+              next = gunReaders.get(rk)!()
+              if (childKey) {
+                childNext = next
+                if (next !== undefined)
+                  next = {
+                    ...(gunIsObject(parentEffective) ? parentEffective : {}),
+                    [childKey]: next,
+                  }
+              } else if (next !== undefined && next !== null) checkGunField(next, field)
+              if (next !== undefined && gunSame(next, parentDefault)) next = undefined
+            } catch (error) {
+              fieldState(state, (error as Error).message, 'error')
+              return
+            }
+            void commitGun(
+              control,
+              state,
+              gun.id,
+              top,
+              next,
+              () => {
+                refreshMark()
+                if (next === undefined) writeEffective()
+                row.dataset.saved = gunRowValue(row)
+                if (shared) renderGun(true)
+              },
+              () => {
+                writeEffective()
+                refreshMark()
+              },
+              label,
+              undefined,
+              childKey
+                ? {
+                    before: gunText(value) ?? 'null',
+                    after: gunText(next === undefined ? defaultValue : childNext) ?? 'null',
+                  }
+                : undefined,
+            )
+          }
+          const badge = el('span', {
+            className: 'gun-badge',
+            hidden: !overridden,
+            textContent: 'изменено',
+          })
+          const defaultRepr = gunText(defaultValue) ?? 'null'
+          const reset = el('button', {
+            type: 'button',
+            className: 'gun-reset',
+            hidden: !overridden,
+            title: `Вернуть значение ганпака (${defaultRepr.length > 120 ? `${defaultRepr.slice(0, 117)}…` : defaultRepr})`,
+            ariaLabel: 'Вернуть значение ганпака',
+            textContent: '↺',
+            onclick: () => {
+              if (complex) input.value = gunText(defaultValue)
+              else if (input instanceof HTMLSelectElement) input.value = String(defaultValue ?? '')
+              else
+                input.value =
+                  defaultValue === null || defaultValue === undefined ? '' : String(defaultValue)
+              if (nullable) nullable.checked = defaultValue === null
+              commit(reset as HTMLButtonElement)
+            },
+          })
+          input.onchange = () => commit(input)
+          if (nullable) nullable.onchange = () => commit(nullable)
+          const hintText = main ? (GUN_HINTS[childKey ?? top] ?? GUN_HINTS[top]) : undefined
+          const row = el(
+            'div',
+            { className: 'field row', title: top },
+            el(
+              'label',
+              { htmlFor: id },
+              label,
+              el('small', {
+                textContent:
+                  hintText ??
+                  `${gunShape(sub)}${sub.min === undefined ? '' : ` · от ${sub.min} до ${sub.max}`}`,
+              }),
+              badge,
+            ),
+            el(
+              'div',
+              { className: 'ctl' },
+              input,
+              reset,
+              nullable ? el('label', { className: 'check' }, nullable, 'null') : null,
+            ),
+            state,
+          )
+          row.dataset.rk = rk
+          row.toggleAttribute('data-override', overridden)
+          row.dataset.saved = gunRowValue(row)
+          const old = oldRows.find((row) => row.dataset.rk === rk)
+          if (
+            live &&
+            old &&
+            (gunPending ||
+              old.contains(document.activeElement) ||
+              gunRowValue(old) !== old.dataset.saved)
+          ) {
+            const { effective } = gunCurrentTop(top)
+            const shown = childKey
+              ? gunIsObject(effective)
+                ? effective[childKey]
+                : undefined
+              : effective
+            gunMark(
+              old,
+              !gunSame(shown, defaultValue),
+              old.querySelector<HTMLElement>('.gun-reset'),
+            )
+            gunReaders.set(rk, oldReaders.get(rk)!)
+            return { rk, node: old, main }
+          }
+          return { rk, node: row, main }
         }
-        return row
-      })
-      const container = $('#gun-fields')
-      if (live) {
-        rows.forEach((row, index) => {
+        const kids = gunFlatKids(key, field) ?? []
+        const full =
+          !kids.length ||
+          (field.type === 'object' &&
+            Object.values(field.fields ?? {}).some(
+              (child) => gunIsComplex(child) || child.nullable,
+            ))
+        for (const [childKey, childField] of kids)
+          built.push(buildRow(key, field, childKey, childField, true, full))
+        if (full)
+          built.push(
+            buildRow(
+              key,
+              field,
+              undefined,
+              undefined,
+              !kids.length && GUN_MAIN_TOP.has(key) && !gunIsComplex(field) && !field.nullable,
+              kids.length > 0,
+            ),
+          )
+      }
+      const mainRows = built.filter((row) => row.main)
+      const advRows = built.filter((row) => !row.main)
+      const syncRows = (container: Element, list: { rk: string; node: HTMLElement }[]) => {
+        if (!live) {
+          container.replaceChildren(...list.map((row) => row.node))
+          return
+        }
+        list.forEach((row, index) => {
           const old = container.children[index]
-          if (!old) container.append(row)
-          else if (old !== row) old.replaceWith(row)
+          if (!old) container.append(row.node)
+          else if (old !== row.node) old.replaceWith(row.node)
         })
-        while (container.children.length > rows.length) container.lastElementChild!.remove()
-      } else container.replaceChildren(...rows)
-      $('#gun-fields').querySelectorAll('select').forEach(customSelect)
+        while (container.children.length > list.length) container.lastElementChild!.remove()
+      }
+      syncRows($('#gun-fields'), mainRows)
+      syncRows($('#gun-advanced-fields'), advRows)
+      $('#gun-advanced').hidden = !advRows.length
+      for (const box of ['#gun-fields', '#gun-advanced-fields'])
+        $(box).querySelectorAll('select').forEach(customSelect)
     }
     function filterGuns(live = false) {
       if (!gunCatalog) return
@@ -3602,6 +3794,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       restore: () => void,
       label: string,
       canUndo?: () => boolean,
+      summary?: { before: string; after: string },
     ) {
       const queueVersion = gunQueueVersion
       gunPending++
@@ -3667,12 +3860,13 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               fieldState(line, 'сохранено', 'saved')
               changeToast(
                 label,
-                feedback(oldValue),
-                value === undefined
-                  ? key === 'body_part_multipliers'
-                    ? bodyPartSummary(defaults?.[key])
-                    : 'как в ганпаке'
-                  : feedback(key ? gunValues(defaults?.[key], value) : value),
+                summary?.before ?? feedback(oldValue),
+                summary?.after ??
+                  (value === undefined
+                    ? key === 'body_part_multipliers'
+                      ? bodyPartSummary(defaults?.[key])
+                      : 'как в ганпаке'
+                    : feedback(key ? gunValues(defaults?.[key], value) : value)),
                 false,
                 () => {
                   const current = key ? gunOverrides[id]?.[key] : gunOverrides[id]
@@ -3690,13 +3884,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                       if (selectedGun?.id === id) {
                         renderGun()
                         let target = key
-                          ? document.getElementById(`gun-field-${key}`)
+                          ? (document.getElementById(`gun-field-${key}`) ??
+                            document.querySelector(`[id^="gun-field-${key}-"]`))
                           : $('#gun-reset')
                         if (target && 'disabled' in target && target.disabled)
                           target =
                             target
                               .closest('.field')
-                              ?.querySelector<HTMLInputElement>('.switch input') ?? target
+                              ?.querySelector<HTMLInputElement>(
+                                'input, select, textarea, button',
+                              ) ?? target
                         if (target instanceof HTMLSelectElement)
                           document.getElementById(`${target.id}-btn`)?.focus()
                         else (target as HTMLElement | null)?.focus()

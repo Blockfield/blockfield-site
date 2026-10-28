@@ -159,6 +159,7 @@ async function setup(options = {}) {
     ${messageHandlers}
     window.gunSetup = () => { gunCatalog = {fields:{fields:{damage:{type:'number',min:0,max:100,nullable:false},nested:{type:'object',nullable:false,fields:{rate:{type:'integer',nullable:false,min:1,max:10}}}}}}; selectedGun = {id:'bf:test',data:'bf:test',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Test'}; gunCatalog.guns = [selectedGun, {id:'bf:other',data:'bf:other',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Other'}]; renderGun(); };
     window.gunAliasSetup = () => { gunCatalog.guns.push({id:'bf:test_alias',data:'bf:test',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Alias'}); renderGun(); };
+    window.gunBulletSetup = () => { gunCatalog = {fields:{fields:{bullet:{type:'object',nullable:false,fields:{damage:{type:'number',nullable:false,min:0,max:100},penetrating:{type:'boolean',nullable:false}}},rpm:{type:'integer',nullable:false,min:1,max:1200}}}}; selectedGun = {id:'bf:test',data:'bf:test',type:'rifle',defaults:{bullet:{damage:8,penetrating:false},rpm:600},warnings:[],name:'Test'}; gunCatalog.guns = [selectedGun]; renderGun(); };
     window.bodySetup = (kind) => {
       window.gunSetup();
       const defaults = ${JSON.stringify(Object.fromEntries(BODY_PARTS.map((part) => [part, 1])))};
@@ -315,21 +316,14 @@ test('queued changes use the next revision and exclude another invalid edit', as
   }
 })
 
-test('weapons unlock without saving, commit values with revision, undo and remove overrides', async () => {
+test('weapon inputs always show the effective value; editing back to default or reset removes the override', async () => {
   const { dom, calls, change } = await setup()
   try {
     dom.window.gunSetup()
     const doc = dom.window.document
     let input = doc.querySelector('#gun-field-damage')
     let row = input.closest('.field')
-    let enable = row.querySelector('input[type=checkbox]')
-    enable.checked = true
-    enable.dispatchEvent(new dom.window.Event('change'))
-    await dom.window.flush()
-    assert.equal(calls.length, 0)
     assert.equal(input.disabled, false)
-    assert.equal(doc.activeElement, input)
-    assert.equal(row.querySelector('.state').textContent, '')
     change(input, '20')
     await dom.window.flush()
     assert.equal(calls[0].path, 'gun-balance')
@@ -338,30 +332,62 @@ test('weapons unlock without saving, commit values with revision, undo and remov
     assert.equal(calls[0].body.gunBalance['bf:test'].damage, 20)
     assert.equal(row.hasAttribute('data-override'), true)
     assert.equal(row.querySelector('.gun-badge').hidden, false)
+    assert.equal(row.querySelector('.gun-reset').hidden, false)
     assert.equal(doc.querySelector('.toast span').textContent, 'damage: 10 → 20')
     doc.querySelector('.toast button').click()
     await dom.window.flush()
     assert.deepEqual(calls[1].body.gunBalance, {})
     input = doc.querySelector('#gun-field-damage')
     row = input.closest('.field')
-    enable = row.querySelector('input[type=checkbox]')
-    enable.checked = true
-    enable.dispatchEvent(new dom.window.Event('change'))
     change(input, '25')
     await dom.window.flush()
-    enable.checked = false
-    enable.dispatchEvent(new dom.window.Event('change'))
+    change(input, '10')
     await dom.window.flush()
     assert.deepEqual(calls[3].body.gunBalance, {})
     assert.equal(calls[3].body.expectedRevision, 6)
     assert.equal(row.hasAttribute('data-override'), false)
     assert.equal(row.querySelector('.gun-badge').hidden, true)
+    assert.equal(row.querySelector('.gun-reset').hidden, true)
     assert.equal(input.value, '10')
     assert.equal(input.placeholder, '10')
     assert.equal(
       [...doc.querySelectorAll('.toast span')].at(-1).textContent,
       'damage: 25 → как в ганпаке',
     )
+    change(input, '30')
+    await dom.window.flush()
+    assert.equal(
+      doc.querySelector('#gun-field-damage').closest('.field').hasAttribute('data-override'),
+      true,
+    )
+    doc.querySelector('#gun-field-damage').closest('.field').querySelector('.gun-reset').click()
+    await dom.window.flush()
+    assert.deepEqual(calls.at(-1).body.gunBalance, {})
+    assert.equal(doc.querySelector('#gun-field-damage').value, '10')
+  } finally {
+    dom.window.close()
+  }
+})
+
+test('bullet scalars render as plain main rows while the full JSON editor stays out of the way', async () => {
+  const { dom, calls, change } = await setup()
+  try {
+    dom.window.gunBulletSetup()
+    const doc = dom.window.document
+    const damage = doc.querySelector('#gun-field-bullet-damage')
+    assert.equal(damage.value, '8')
+    assert.ok(damage.closest('.field').querySelector('label').textContent.includes('Урон'))
+    assert.equal(doc.querySelector('#gun-advanced').hidden, true)
+    change(damage, '9')
+    await dom.window.flush()
+    assert.deepEqual(calls[0].body.gunBalance['bf:test'], {
+      bullet: { damage: 9, penetrating: false },
+    })
+    assert.equal(doc.querySelector('.toast span').textContent, 'Урон: 8 → 9')
+    assert.equal(doc.querySelector('#gun-field-bullet-penetrating').value, 'false')
+    change(doc.querySelector('#gun-field-bullet-damage'), '8')
+    await dom.window.flush()
+    assert.deepEqual(calls[1].body.gunBalance, {})
   } finally {
     dom.window.close()
   }
@@ -374,9 +400,6 @@ test('weapons validate JSON in their row and commit valid JSON compactly', async
     const doc = dom.window.document
     const textarea = doc.querySelector('#gun-field-nested'),
       row = textarea.closest('.field')
-    const enable = row.querySelector('input[type=checkbox]')
-    enable.checked = true
-    enable.dispatchEvent(new dom.window.Event('change'))
     change(textarea, '{"rate":50}')
     assert.equal(calls.length, 0)
     assert.equal(row.querySelector('.state').dataset.s, 'error')
@@ -616,9 +639,6 @@ test('weapon conflict retries with the fresh revision and preserves other weapon
   try {
     dom.window.gunSetup()
     const doc = dom.window.document
-    const enable = doc.querySelector('#gun-fields input[type=checkbox]')
-    enable.checked = true
-    enable.dispatchEvent(new dom.window.Event('change'))
     change(doc.querySelector('#gun-field-damage'), '15')
     await dom.window.flush()
     assert.deepEqual(
@@ -641,9 +661,7 @@ test('live weapon catalog refresh keeps a focused draft and refetches both sourc
     dom.window.gunSetup()
     const doc = dom.window.document,
       input = doc.querySelector('#gun-field-damage')
-    const enable = input.closest('.field').querySelector('.switch input')
-    enable.checked = true
-    enable.dispatchEvent(new dom.window.Event('change'))
+    input.focus()
     input.value = '17'
     await dom.window.settingsEvent({
       settings: { revision: 4, rooms: { maxRooms: 4 }, updatedBy: { name: 'Kira' } },
@@ -672,7 +690,6 @@ test('remote weapon overrides survive the next weapon commit and dirty catalog r
     dom.window.gunSetup()
     const doc = dom.window.document
     const draft = doc.querySelector('#gun-field-nested')
-    draft.disabled = false
     draft.value = '{broken'
     await dom.window.settingsEvent({
       settings: {
@@ -825,9 +842,6 @@ test('delayed weapon response preserves newer overrides for the following save',
     dom.window.gunSetup()
     const doc = dom.window.document
     const input = doc.querySelector('#gun-field-damage')
-    const enable = input.closest('.field').querySelector('.switch input')
-    enable.checked = true
-    enable.dispatchEvent(new dom.window.Event('change'))
     change(input, '20')
     await Promise.resolve()
     await dom.window.settingsEvent({
@@ -892,9 +906,6 @@ test('orphaned gun overrides are bannered, kept out of saves and removable', asy
     assert.equal(box.hidden, false)
     assert.ok(box.textContent.includes('bf:ghost'))
     // A normal save succeeds without the orphan and drops it from the stored map.
-    const enable = doc.querySelector('#gun-fields input[type=checkbox]')
-    enable.checked = true
-    enable.dispatchEvent(new dom.window.Event('change'))
     change(doc.querySelector('#gun-field-damage'), '15')
     await dom.window.flush()
     const put = calls.find((c) => c.method === 'PUT' && c.path === 'gun-balance')

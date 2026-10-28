@@ -481,6 +481,11 @@ test('recursive fields come from metadata; legacy defaults reset without being r
   })
   assert.deepEqual(catalog, before)
   assert.deepEqual(validateGunOverrides({ 'test:pistol': catalog.guns[0].defaults }, catalog), {})
+  // Значения, совпадающие с ганпаком, не создают оверрайдов: правка «вернуть как было» чистит запись.
+  assert.deepEqual(
+    validateGunOverrides({ 'test:pistol': { draw_time: 0.32, rpm: 800 } }, catalog),
+    { 'test:pistol': { rpm: 800 } },
+  )
   assert.deepEqual(validateGunOverrides({}, catalog), {})
   assert.deepEqual(validateGunOverrides({ 'test:pistol': { inaccuracy: null } }, catalog), {
     'test:pistol': { inaccuracy: null },
