@@ -1265,6 +1265,7 @@ async function realSetup(options = {}) {
   const requests = []
   harness = await setup({
     settings: current,
+    realSelect: options.realSelect,
     handle: async ({ path, method, body }) => {
       if (!harness) return
       if (options.handle) {
@@ -1738,6 +1739,11 @@ for (const nextKind of ['текст', 'объект'])
         'choosing a new type with no value entered must not erase the saved entry',
       )
       assert.equal(selected?.value, nextKind, 'type draft must survive while user enters its value')
+      assert.equal(
+        selected.nextElementSibling?.querySelector('.cselect-btn')?.textContent,
+        nextKind,
+        'the painted type picker must stay attached and usable',
+      )
     } finally {
       h.dom.window.close()
     }
@@ -2049,6 +2055,522 @@ test('review round 6: control: renaming a populated map entry preserves its valu
       renamed: 2,
       custom_other: 3,
     })
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+// Round 7 preservation probes: the production controls and real server normalizer.
+const puts = (h) => h.calls.filter((c) => c.method === 'PUT').map((c) => c.body)
+const initialBalance = () => ({
+  'tacz:ak47': { script_param: { custom_rate: 2, custom_other: 3 } },
+})
+const draftRate = (h, kind) => {
+  const field = row(h.doc, 'script_param')
+  h.change(kindControl(entry(field, 'custom_rate')), kind)
+  return field
+}
+for (const nextKind of ['текст', 'объект']) {
+  for (const operation of ['sibling', 'rename']) {
+    test(`R7 own successful save then ${nextKind} draft and ${operation} must retain latest own value`, async () => {
+      const h = await realSetup({ realSelect: true, initial: { gunBalance: initialBalance() } })
+      try {
+        const field = row(h.doc, 'script_param')
+        h.change(scalarControl(entry(field, 'custom_rate')), '7')
+        await h.dom.window.flush()
+        assert.equal(h.stored().gunBalance['tacz:ak47'].script_param.custom_rate, 7)
+        assert.equal(row(h.doc, 'script_param'), field, 'production retains the old row after save')
+        draftRate(h, nextKind)
+        await h.dom.window.flush()
+        assert.equal(h.requests.length, 1, 'type selection must not write')
+        if (operation === 'sibling') h.change(scalarControl(entry(field, 'custom_other')), '4')
+        else h.change(entry(field, 'custom_rate').querySelector('[data-gunkey]'), 'renamed')
+        await h.dom.window.flush()
+        assert.equal(
+          h.stored().gunBalance['tacz:ak47'].script_param[
+            operation === 'sibling' ? 'custom_rate' : 'renamed'
+          ],
+          7,
+        )
+      } finally {
+        h.dom.window.close()
+      }
+    })
+  }
+  for (const external of ['change', 'delete']) {
+    test(`R7 ${nextKind} draft must preserve externally ${external}d value after live refresh`, async () => {
+      const h = await realSetup({
+        realSelect: true,
+        initial: { gunBalance: initialBalance() },
+        handle: ({ method, body, current }) => {
+          if (method === 'PUT' && body.expectedRevision !== current.revision)
+            return { status: 409, data: { error: 'stale' } }
+        },
+      })
+      try {
+        const field = draftRate(h, nextKind)
+        await h.dom.window.flush()
+        const fresh = {
+          revision: 4,
+          updatedBy: { name: 'Other' },
+          gunBalance: {
+            'tacz:ak47': {
+              script_param: {
+                ...(external === 'change' ? { custom_rate: 7 } : {}),
+                custom_other: 3,
+              },
+            },
+          },
+        }
+        Object.assign(h.stored(), structuredClone(fresh))
+        await h.dom.window.reviewApply(structuredClone(fresh))
+        assert.equal(row(h.doc, 'script_param'), field)
+        assert.equal(kindControl(entry(field, 'custom_rate')).value, nextKind)
+        h.change(scalarControl(entry(field, 'custom_other')), '4')
+        await h.dom.window.flush()
+        assert.equal(puts(h)[0].expectedRevision, 4, 'save uses the current revision')
+        assert.equal(
+          h.stored().gunBalance['tacz:ak47'].script_param.custom_rate,
+          external === 'change' ? 7 : undefined,
+        )
+      } finally {
+        h.dom.window.close()
+      }
+    })
+    test(`R7 ${nextKind} draft must preserve externally ${external}d value on 409 retry`, async () => {
+      let first = true
+      const h = await realSetup({
+        realSelect: true,
+        initial: { gunBalance: initialBalance() },
+        handle: ({ method, body, current }) => {
+          if (method === 'PUT') {
+            if (first) {
+              first = false
+              Object.assign(current, {
+                revision: 4,
+                updatedBy: { name: 'Other' },
+                gunBalance: {
+                  'tacz:ak47': {
+                    script_param: {
+                      ...(external === 'change' ? { custom_rate: 7 } : {}),
+                      custom_other: 3,
+                    },
+                  },
+                },
+              })
+            }
+            if (body.expectedRevision !== current.revision)
+              return { status: 409, data: { error: 'stale' } }
+          }
+        },
+      })
+      try {
+        const field = draftRate(h, nextKind)
+        await h.dom.window.flush()
+        h.change(scalarControl(entry(field, 'custom_other')), '4')
+        await h.dom.window.flush()
+        assert.deepEqual(
+          puts(h).map((p) => p.expectedRevision),
+          [3, 4],
+        )
+        assert.equal(
+          h.stored().gunBalance['tacz:ak47'].script_param.custom_rate,
+          external === 'change' ? 7 : undefined,
+        )
+      } finally {
+        h.dom.window.close()
+      }
+    })
+  }
+}
+test('R5 completing then blanking text intentionally removes its own entry and preserves sibling', async () => {
+  const initial = { 'tacz:ak47': { script_param: { custom_rate: 2, custom_other: 3 } } }
+  const h = await realSetup({ realSelect: true, initial: { gunBalance: initial } })
+  try {
+    let field = row(h.doc, 'script_param')
+    h.change(
+      entry(field, 'custom_rate').querySelector('select[aria-label="Тип значения"]'),
+      'текст',
+    )
+    const text = entry(field, 'custom_rate').querySelector('input[type=text]:not([data-gunkey])')
+    h.change(text, 'fast')
+    await h.dom.window.flush()
+    assert.equal(h.stored().gunBalance['tacz:ak47'].script_param.custom_rate, 'fast')
+    field = row(h.doc, 'script_param')
+    h.change(entry(field, 'custom_rate').querySelector('input[type=text]:not([data-gunkey])'), '')
+    await h.dom.window.flush()
+    assert.equal(
+      Object.hasOwn(h.stored().gunBalance['tacz:ak47'].script_param, 'custom_rate'),
+      false,
+    )
+    assert.equal(h.stored().gunBalance['tacz:ak47'].script_param.custom_other, 3)
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+for (const operation of ['delete', 'reset'])
+  test(`R5 explicit ${operation} removes an entry/map during unfinished type draft`, async () => {
+    const initial = { 'tacz:ak47': { script_param: { custom_rate: 2, custom_other: 3 } } }
+    const h = await realSetup({ realSelect: true, initial: { gunBalance: initial } })
+    try {
+      const field = row(h.doc, 'script_param')
+      h.change(
+        entry(field, 'custom_rate').querySelector('select[aria-label="Тип значения"]'),
+        'текст',
+      )
+      await h.dom.window.flush()
+      if (operation === 'delete')
+        entry(field, 'custom_rate').querySelector('button[aria-label="Удалить"]').click()
+      else field.querySelector('.gun-reset').click()
+      await h.dom.window.flush()
+      if (operation === 'delete')
+        assert.deepEqual(h.stored().gunBalance, {
+          'tacz:ak47': { script_param: { custom_other: 3 } },
+        })
+      else assert.deepEqual(h.stored().gunBalance, {})
+    } finally {
+      h.dom.window.close()
+    }
+  })
+
+test('R5 map type draft uses the latest live-confirmed value for the real key', async () => {
+  const initial = { 'tacz:ak47': { script_param: { custom_rate: 2, custom_other: 3 } } }
+  const h = await realSetup({ realSelect: true, initial: { gunBalance: initial } })
+  try {
+    const field = row(h.doc, 'script_param')
+    h.change(
+      entry(field, 'custom_rate').querySelector('select[aria-label="Тип значения"]'),
+      'текст',
+    )
+    await h.dom.window.flush()
+    await h.dom.window.reviewApply({
+      revision: 4,
+      gunBalance: { 'tacz:ak47': { script_param: { custom_rate: 7, custom_other: 3 } } },
+    })
+    assert.equal(
+      entry(field, 'custom_rate').querySelector('select[aria-label="Тип значения"]').value,
+      'текст',
+    )
+    h.change(entry(field, 'custom_other').querySelector('input[type=number]'), '4')
+    await h.dom.window.flush()
+    assert.equal(h.stored().gunBalance['tacz:ak47'].script_param.custom_rate, 7)
+    assert.equal(h.stored().gunBalance['tacz:ak47'].script_param.custom_other, 4)
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('R5 free-form array rejects empty draft items without writing', async () => {
+  const initial = { 'tacz:ak47': { tuning: ['one', 'two'] } }
+  const h = await realSetup({ realSelect: true, initial: { gunBalance: initial } })
+  try {
+    const schema = {
+      type: 'object',
+      nullable: false,
+      fields: {
+        tuning: { type: 'array', nullable: false, items: { type: 'json', nullable: false } },
+      },
+    }
+    h.dom.window.gunComplexSetup(JSON.stringify(schema), JSON.stringify({ tuning: [] }))
+    assert.deepEqual(validateGunOverrides(initial, h.dom.window.currentGunCatalog()), initial)
+    const field = row(h.doc, 'tuning')
+    h.change(field.querySelector('input[type=text]'), '')
+    await h.dom.window.flush()
+    assert.equal(h.requests.length, 0)
+    assert.deepEqual(h.stored().gunBalance, initial)
+    assert.match(field.querySelector('.state').textContent, /Заполните все строки/)
+  } finally {
+    h.dom.window.close()
+  }
+})
+test('R4 type draft survives clean live refresh then valid text saves without intermediate deletion', async () => {
+  const initial = { 'tacz:ak47': { script_param: { custom_rate: 2 } } }
+  const h = await realSetup({ realSelect: true, initial: { gunBalance: initial } })
+  try {
+    h.change(row(h.doc, 'script_param').querySelector('select[aria-label="Тип значения"]'), 'текст')
+    await h.dom.window.flush()
+    await h.dom.window.reviewApply({ revision: 4, gunBalance: initial })
+    assert.equal(
+      row(h.doc, 'script_param').querySelector('select[aria-label="Тип значения"]').value,
+      'текст',
+    )
+    const text = row(h.doc, 'script_param').querySelector('input[type=text]:not([data-gunkey])')
+    h.change(text, 'fast')
+    await h.dom.window.flush()
+    assert.equal(h.requests.length, 1)
+    assert.equal(h.stored().gunBalance['tacz:ak47'].script_param.custom_rate, 'fast')
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+for (const kind of ['число', 'текст', 'да/нет', 'список', 'объект']) {
+  test(`R8 choosing ${kind} never writes a seeded replacement`, async () => {
+    const h = await realSetup({ realSelect: true, initial: { gunBalance: initialBalance() } })
+    try {
+      const field = draftRate(h, kind)
+      await h.dom.window.flush()
+      assert.equal(puts(h).length, 0)
+      h.change(scalarControl(entry(field, 'custom_other')), '4')
+      await h.dom.window.flush()
+      assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, {
+        custom_rate: 2,
+        custom_other: 4,
+      })
+    } finally {
+      h.dom.window.close()
+    }
+  })
+}
+
+test('R8 queued nested edits capture their own leaves before requests run', async () => {
+  const h = await withSchema(
+    {
+      type: 'object',
+      nullable: false,
+      fields: {
+        tuning: {
+          type: 'map',
+          nullable: false,
+          keys: { type: 'string', nullable: false },
+          items: { type: 'object', nullable: false, fields: { a: numField, b: numField } },
+        },
+      },
+    },
+    { tuning: {} },
+    { tuning: { outer: { a: 2, b: 3 } } },
+  )
+  try {
+    const field = entry(row(h.doc, 'tuning'), 'outer')
+    const a = field.querySelector('input[id$="-a"]')
+    h.change(a, '7')
+    h.change(field.querySelector('input[id$="-b"]'), '8')
+    h.change(a, '9')
+    await h.dom.window.flush()
+    assert.deepEqual(
+      puts(h).map((p) => p.gunBalance['tacz:ak47'].tuning.outer),
+      [
+        { a: 7, b: 3 },
+        { a: 7, b: 8 },
+        { a: 9, b: 8 },
+      ],
+    )
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('R8 clean retained controls adopt server values after a live refresh', async () => {
+  const h = await realSetup({ realSelect: true, initial: { gunBalance: initialBalance() } })
+  try {
+    const field = draftRate(h, 'текст')
+    const fresh = {
+      revision: 4,
+      gunBalance: {
+        'tacz:ak47': { script_param: { custom_rate: 7, custom_other: 8, new_rate: 9 } },
+      },
+    }
+    Object.assign(h.stored(), structuredClone(fresh))
+    await h.dom.window.reviewApply(fresh)
+    assert.equal(kindControl(entry(field, 'custom_rate')).value, 'текст')
+    assert.equal(scalarControl(entry(field, 'custom_other')).value, '8')
+    assert.equal(scalarControl(entry(field, 'new_rate')).value, '9')
+    h.change(entry(field, 'custom_rate').querySelector('[data-gunkey]'), 'renamed')
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, {
+      renamed: 7,
+      custom_other: 8,
+      new_rate: 9,
+    })
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('R8 a new object type is saved atomically when its first entry is entered', async () => {
+  const h = await realSetup({ realSelect: true, initial: { gunBalance: initialBalance() } })
+  try {
+    const field = draftRate(h, 'объект')
+    const draft = entry(field, 'custom_rate')
+    const object = draft.querySelector(':scope > .gun-sub > .gun-sub')
+    object.querySelector('button[aria-label="Добавить"]').click()
+    const key = object.querySelector('[data-gunkey]')
+    h.change(key, 'rate')
+    const number = draft.querySelector('input[type=number]')
+    // A new free-form entry starts as text; selecting a number is also local.
+    const kind = [...draft.querySelectorAll('select[aria-label="Тип значения"]')].at(-1)
+    h.change(kind, 'число')
+    await h.dom.window.flush()
+    assert.equal(puts(h).length, 0, JSON.stringify(puts(h)))
+    h.change(draft.querySelector('input[type=number]') ?? number, '5')
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, {
+      custom_rate: { rate: 5 },
+      custom_other: 3,
+    })
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('R8 a nested replacement draft never becomes a new entry during a key edit', async () => {
+  const h = await realSetup({ realSelect: true, initial: { gunBalance: initialBalance() } })
+  try {
+    const field = draftRate(h, 'объект')
+    const object = entry(field, 'custom_rate').querySelector(':scope > .gun-sub > .gun-sub')
+    object.querySelector('button[aria-label="Добавить"]').click()
+    const kind = object.querySelector('select[aria-label="Тип значения"]')
+    h.change(kind, 'число')
+    h.change(object.querySelector('[data-gunkey]'), 'rate')
+    await h.dom.window.flush()
+    assert.equal(puts(h).length, 0)
+    assert.deepEqual(h.stored().gunBalance, initialBalance())
+    h.change(object.querySelector('input[type=number]'), '5')
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, {
+      custom_rate: { rate: 5 },
+      custom_other: 3,
+    })
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+for (const external of ['change', 'delete']) {
+  test(`R8 nested JSON object keeps an externally ${external}d sibling on 409`, async () => {
+    let first = true
+    const initial = {
+      'tacz:ak47': { script_param: { custom_rate: { a: 2, b: 3 }, custom_other: 3 } },
+    }
+    const h = await realSetup({
+      realSelect: true,
+      initial: { gunBalance: initial },
+      handle: ({ method, body, current }) => {
+        if (method === 'PUT' && first) {
+          first = false
+          current.revision = 4
+          current.gunBalance['tacz:ak47'].script_param.custom_rate =
+            external === 'change' ? { a: 7, b: 3 } : { b: 3 }
+        }
+        if (method === 'PUT' && body.expectedRevision !== current.revision)
+          return { status: 409, data: { error: 'stale' } }
+      },
+    })
+    try {
+      const outer = entry(row(h.doc, 'script_param'), 'custom_rate')
+      h.change(kindControl(entry(outer, 'a')), 'текст')
+      h.change(scalarControl(entry(outer, 'b')), '4')
+      await h.dom.window.flush()
+      assert.deepEqual(
+        puts(h).map((p) => p.expectedRevision),
+        [3, 4],
+      )
+      assert.deepEqual(
+        h.stored().gunBalance['tacz:ak47'].script_param.custom_rate,
+        external === 'change' ? { a: 7, b: 4 } : { b: 4 },
+      )
+    } finally {
+      h.dom.window.close()
+    }
+  })
+}
+
+test('R8 distance table conflicts refuse a stale whole-list retry', async () => {
+  let first = true
+  const h = await realSetup({
+    handle: ({ method, current }) => {
+      if (method === 'PUT' && first) {
+        first = false
+        current.revision = 4
+        current.gunBalance = {
+          'tacz:ak47': {
+            bullet: { extra_damage: { damage_adjust: [{ distance: 'infinite', damage: 15 }] } },
+          },
+        }
+        return { status: 409, data: { error: 'stale' } }
+      }
+    },
+  })
+  try {
+    h.change(
+      row(h.doc, 'bullet-extra_damage-damage_adjust').querySelector('input[type=number]'),
+      '10',
+    )
+    await h.dom.window.flush()
+    assert.equal(puts(h).length, 1, 'conflicting list must never be resent with a fresh revision')
+    assert.equal(h.stored().gunBalance['tacz:ak47'].bullet.extra_damage.damage_adjust[0].damage, 15)
+    assert.match(
+      row(h.doc, 'bullet-extra_damage-damage_adjust').querySelector('.state').textContent,
+      /Список изменился/,
+    )
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('R8 body coefficient retry preserves a concurrently changed coefficient', async () => {
+  let first = true
+  const h = await realSetup({
+    handle: ({ method, current }) => {
+      if (method === 'PUT' && first) {
+        first = false
+        current.revision = 4
+        current.gunBalance = { 'tacz:ak47': { body_part_multipliers: { torso: 3 } } }
+        return { status: 409, data: { error: 'stale' } }
+      }
+    },
+  })
+  try {
+    const toggle = row(h.doc, 'body_part_multipliers').querySelector('input[type=checkbox]')
+    toggle.checked = true
+    toggle.dispatchEvent(new h.dom.window.Event('change', { bubbles: true }))
+    h.change(h.doc.querySelector('#body-part-head'), '2')
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].body_part_multipliers, {
+      head: 2,
+      torso: 3,
+    })
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('R8 a sibling acknowledgement cannot mark an unfinished replacement as saved', async () => {
+  const h = await realSetup({ realSelect: true, initial: { gunBalance: initialBalance() } })
+  try {
+    const field = draftRate(h, 'текст')
+    h.change(scalarControl(entry(field, 'custom_other')), '4')
+    await h.dom.window.flush()
+    await h.dom.window.reviewApply(structuredClone(h.stored()))
+    assert.equal(row(h.doc, 'script_param'), field)
+    assert.equal(kindControl(entry(field, 'custom_rate')).value, 'текст')
+    h.change(entry(field, 'custom_rate').querySelector('[data-gunkey]'), 'renamed')
+    await h.dom.window.flush()
+    await h.dom.window.reviewApply(structuredClone(h.stored()))
+    assert.equal(kindControl(entry(field, 'renamed')).value, 'текст')
+    h.change(entry(field, 'renamed').querySelector('input[type=text]:not([data-gunkey])'), 'fast')
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, {
+      renamed: 'fast',
+      custom_other: 4,
+    })
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('R8 invalid replacement numbers show validation and leave the saved leaf untouched', async () => {
+  const h = await realSetup({ realSelect: true, initial: { gunBalance: initialBalance() } })
+  try {
+    const field = draftRate(h, 'число')
+    const input = scalarControl(entry(field, 'custom_rate'))
+    Object.defineProperty(input, 'validity', { configurable: true, value: { badInput: true } })
+    h.change(input, '')
+    await h.dom.window.flush()
+    assert.equal(puts(h).length, 0)
+    assert.deepEqual(h.stored().gunBalance, initialBalance())
+    assert.match(field.querySelector('.state').textContent, /Введите число/)
   } finally {
     h.dom.window.close()
   }
