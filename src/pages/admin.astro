@@ -1067,9 +1067,11 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     }
     .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band {
       display: flex;
-      flex-wrap: nowrap;
+      flex-wrap: wrap;
       align-items: center;
-      gap: 6px;
+      gap: 2px 6px;
+      flex: 1 1 auto;
+      min-width: 0;
     }
     .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band .gun-band-lab {
       flex: none;
@@ -1078,9 +1080,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     }
     .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band input[type='text'],
     .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band input[type='number'] {
-      flex: none;
+      flex: 0 1 72px;
       width: 72px;
-      margin-block: 8px;
+      min-width: 0;
+      margin-block: 4px;
+    }
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band .gun-mini {
+      flex: none;
+      width: auto;
+      margin-left: auto;
+      white-space: nowrap;
     }
     .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band .gun-dmg-wrap {
       display: flex;
@@ -1090,10 +1099,20 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       gap: 6px;
     }
     .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band .gun-band-final {
-      flex: 1 1 auto;
+      flex: 1 1 100%;
       min-width: 0;
       font-size: 12px;
       color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-group-title {
+      margin: 10px 0 -2px;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--sand);
     }
     .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-mini {
       flex: none;
@@ -3190,6 +3209,36 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       script_param: 'Параметры скрипта',
       charging: 'Зарядка',
     }
+    // Русские подписи значений enum: хранится raw-значение, показывается перевод.
+    const GUN_VALUE_LABELS: Record<string, string> = {
+      open_bolt: 'Открытый затвор',
+      closed_bolt: 'Закрытый затвор',
+      manual_action: 'Ручное перезаряжание',
+      magazine: 'Магазинная',
+      manual: 'Ручная',
+      fuel: 'Топливная',
+      inventory: 'Из инвентаря',
+      auto: 'Автоматический',
+      semi: 'Одиночный',
+      burst: 'Очередь',
+      hold: 'Удержание',
+      delay: 'С задержкой',
+      stand: 'Стоя',
+      move: 'В движении',
+      sneak: 'Крадучись',
+      lie: 'Лёжа',
+      aim: 'В прицеле',
+      scope: 'Прицел',
+      muzzle: 'Дуло',
+      stock: 'Приклад',
+      grip: 'Рукоять',
+      laser: 'Лазер',
+      extended_mag: 'Расширенный магазин',
+    }
+    const gunValueLabel = (value: string) => GUN_VALUE_LABELS[value] ?? value
+    // Короткий заголовок группы «Дополнительно»: bullet → «Пуля», остальное — подпись верха.
+    const GUN_GROUP_TITLES: Record<string, string> = { bullet: 'Пуля' }
+    const gunGroupTitle = (top: string) => GUN_GROUP_TITLES[top] ?? GUN_LABELS[top] ?? top
     let gunCatalog: GunBalanceCatalog | undefined,
       gunOverrides: GunOverrides = {},
       gunRevision = 0
@@ -3299,7 +3348,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         resource: 'ID ресурса',
         json: 'JSON',
       }
-      return field.values?.join(' / ') ?? words[field.type] ?? field.type
+      return field.values?.map(gunValueLabel).join(' / ') ?? words[field.type] ?? field.type
     }
     function gunRowValue(row: Element) {
       return JSON.stringify(
@@ -3653,7 +3702,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 ? el(
                     'select',
                     { id },
-                    ...options.map((v) => el('option', { value: v, textContent: v })),
+                    ...options.map((v) =>
+                      el('option', { value: v, textContent: gunValueLabel(v) }),
+                    ),
                   )
                 : el('input', {
                     id,
@@ -4068,29 +4119,13 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               value: distance === 'infinite' ? '∞' : (distance ?? ''),
               title: 'Дистанция в метрах или ∞ для дальнейшей',
             })
-            const dmgWrap = el('span', { className: 'gun-dmg-wrap' })
             const dmg = el('input', {
               type: 'number',
               step: 'any',
               value: typeof damage === 'number' ? String(damage) : (damage ?? ''),
               title: 'Урон на этой дистанции',
             })
-            dmgWrap.append(dmg)
-            gunDamageHint(dmgWrap, () => {
-              const parsed = Number(dmg.value.trim())
-              if (!Number.isFinite(parsed)) throw new Error('Введите число.')
-              return parsed
-            })
             const final = el('span', { className: 'gun-band-final' })
-            const band = el(
-              'span',
-              { className: 'gun-band' },
-              el('span', { className: 'gun-band-lab', textContent: 'до' }),
-              dist,
-              el('span', { className: 'gun-band-lab gun-band-unit', textContent: 'м · урон' }),
-              dmgWrap,
-              final,
-            )
             const del = el('button', {
               type: 'button',
               className: 'gun-mini',
@@ -4102,9 +4137,20 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 onChange(del)
               },
             })
+            // Строка 1 — ввод и ×, строка 2 (flex 100%) — итог; «?» только на главном «Уроне».
+            const band = el(
+              'span',
+              { className: 'gun-band' },
+              el('span', { className: 'gun-band-lab', textContent: 'до' }),
+              dist,
+              el('span', { className: 'gun-band-lab gun-band-unit', textContent: 'м · урон' }),
+              dmg,
+              del,
+              final,
+            )
             dist.onchange = () => onChange(dist)
             dmg.onchange = () => onChange(dmg)
-            row.append(band, del)
+            row.append(band)
             list.append(row)
             syncBandLabel(row)
             return row
@@ -4233,7 +4279,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               const select = selectout(el('select', { id }))
               const paint = (value: unknown) => {
                 select.replaceChildren(
-                  ...opts.map((v) => el('option', { value: v, textContent: v })),
+                  ...opts.map((v) => el('option', { value: v, textContent: gunValueLabel(v) })),
                   typeof value === 'string' && !opts.includes(value) && value !== ''
                     ? el('option', { value: value, textContent: `${value} (устаревшее)` })
                     : null,
@@ -4563,7 +4609,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                     'select',
                     { dataGunkey: '' },
                     ...(field.keys.values.map((v) =>
-                      el('option', { value: v, textContent: v }),
+                      el('option', { value: v, textContent: gunValueLabel(v) }),
                     ) as HTMLOptionElement[]),
                   ),
                 )
@@ -4672,11 +4718,17 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               : GUN_LABELS[s] !== undefined
           const segName = (s: string, i: number) => (i ? gunKidLabel(s) : (GUN_LABELS[s] ?? s))
           // Сырой ключ в конце — не главная подпись: показываем русскую группу,
-          // а ключ уходит в мелкий вторичный текст.
+          // а ключ уходит в мелкий вторичный текст. В «Дополнительно» группа уходит
+          // в общий заголовок, строке остаётся только короткая подпись.
+          const fullLabel = segKnown(segs.at(-1)!, segs.length - 1)
+            ? segs.map(segName).join(' · ')
+            : segs.slice(0, -1).map(segName).join(' · ') || 'Параметр'
           const label = (shortLabel ||
-            (segKnown(segs.at(-1)!, segs.length - 1)
-              ? segs.map(segName).join(' · ')
-              : segs.slice(0, -1).map(segName).join(' · ') || 'Параметр')) as string
+            (!main && segs.length > 1
+              ? segKnown(segs.at(-1)!, segs.length - 1)
+                ? segName(segs.at(-1)!, segs.length - 1)
+                : segs.at(-1)!
+              : fullLabel)) as string
           const rawKeys = segs.filter((s, i) => !segKnown(s, i))
           const ctl = gunNullWrap(
             field,
@@ -4987,6 +5039,22 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         )
         .forEach(({ row }, at) => (mainRows[at] = row))
       const advRows = built.filter((row) => !row.main)
+      // Группы «Дополнительно»: общий заголовок вместо повтора префикса в каждой строке.
+      const advNodes: HTMLElement[] = []
+      {
+        const groups = new Map<string, typeof advRows>()
+        for (const row of advRows) {
+          const top = row.rk.split('-')[0]
+          groups.set(top, [...(groups.get(top) ?? []), row])
+        }
+        for (const [top, rows] of groups) {
+          if (rows.length > 1 || rows.some((row) => row.rk.includes('-')))
+            advNodes.push(
+              el('div', { className: 'gun-group-title', textContent: gunGroupTitle(top) }),
+            )
+          for (const row of rows) advNodes.push(row.node)
+        }
+      }
       const syncRows = (container: Element, list: { rk: string; node: HTMLElement }[]) => {
         if (!live) {
           container.replaceChildren(...list.map((row) => row.node))
@@ -4999,8 +5067,20 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         })
         while (container.children.length > list.length) container.lastElementChild!.remove()
       }
+      const syncNodes = (container: Element, want: HTMLElement[]) => {
+        if (!live) {
+          container.replaceChildren(...want)
+          return
+        }
+        want.forEach((node, index) => {
+          const old = container.children[index]
+          if (!old) container.append(node)
+          else if (old !== node) old.replaceWith(node)
+        })
+        while (container.children.length > want.length) container.lastElementChild!.remove()
+      }
       syncRows($('#gun-fields'), mainRows)
-      syncRows($('#gun-advanced-fields'), advRows)
+      syncNodes($('#gun-advanced-fields'), advNodes)
       $('#gun-advanced').hidden = !advRows.length
       for (const box of ['#gun-fields', '#gun-advanced-fields'])
         $(box).querySelectorAll('select').forEach(customSelect)

@@ -140,6 +140,8 @@ async function setup(options = {}) {
     const LOBBY = [], DEATHMATCH = [], CLASS_COSTS = {}, CLASS_NAMES = {}, PARCOOL_ACTIONS = [], PARCOOL_FILE_DEFAULT = [];
     const ROOMS = [{key:'maxRooms', label:'Матчей одновременно', min:1, max:16, def:2}, {key:'idleCloseSeconds', label:'Закрывать пустую комнату через', min:30, max:3600, def:600}];
     const SETTING_LABELS = {}, GUN_LABELS = {};
+    const GUN_VALUE_LABELS = {}, GUN_GROUP_TITLES = {};
+    const gunValueLabel = (v) => v, gunGroupTitle = (t) => t;
     const gunText = value => JSON.stringify(value) ?? 'null';
     const gunPretty = (id) => id.split(':').at(-1).split(/[_/-]+/).filter(Boolean).map((part) => (/\\d/.test(part) ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1))).join(' ');
     const gunLabel = gun => gun.id; const KIT_GUNS = new Set();
