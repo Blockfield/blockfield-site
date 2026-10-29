@@ -4195,7 +4195,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             // Недописанное число — считаем от подтверждённого.
           }
           const part = (name: string) =>
-            typeof merged?.[name] === 'number' ? (merged as Record<string, number>)[name] : 1
+            gunCatalog?.bodyPartsEnabled !== false && typeof merged?.[name] === 'number'
+              ? (merged as Record<string, number>)[name]
+              : 1
           return {
             head: part('head'),
             torso: part('torso'),
@@ -4203,22 +4205,20 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           }
         }
         const gunDamageKit = () => {
-          const over = gunIsObject(gunOverrides[gun.id]?.bullet)
-            ? (gunOverrides[gun.id].bullet as Record<string, unknown>)
-            : undefined
-          const base = gunIsObject(gun.defaults.bullet)
-            ? (gun.defaults.bullet as Record<string, unknown>)
-            : {}
-          const extra = (key: string, fallback: number) => {
-            const fromOver = gunIsObject(over?.extra_damage)
-              ? (over.extra_damage as Record<string, unknown>)[key]
-              : undefined
-            if (typeof fromOver === 'number') return fromOver
-            const fromBase = gunIsObject(base.extra_damage)
-              ? (base.extra_damage as Record<string, unknown>)[key]
-              : undefined
-            return typeof fromBase === 'number' ? fromBase : fallback
+          let group = gunPathGet(gunCurrentTop('bullet').effective, ['extra_damage'])
+          try {
+            const draft = gunReaders.get('bullet-extra_damage-off')?.()
+            if (gunIsObject(draft)) {
+              if (draft.extra_damage === null) group = null
+              else if (group === null) group = gunPathGet(gun.defaults.bullet, ['extra_damage'])
+            }
+          } catch {
+            // An invalid draft leaves the confirmed group in force.
           }
+          // Refabricated's null branch initializes both native modifiers to zero.
+          if (!gunIsObject(group)) return { armorIgnore: 0, headMult: 0 }
+          const extra = (key: string, fallback: number) =>
+            typeof group[key] === 'number' ? (group[key] as number) : fallback
           const num = (rk: string, fallback: number) => {
             try {
               // Черновик читаем листом поля: общий reader отдаёт весь родитель.
@@ -4254,16 +4254,12 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 part,
               }),
             )
-          const limbValues = parts.limbs.map((mult) => ({
-            raw: damage * mult,
-            final: final('limbs', mult),
-          }))
           const lo = Math.min(...parts.limbs),
             hi = Math.max(...parts.limbs)
           const limbText =
             lo === hi
-              ? `${fmt(damage * lo)} → ${limbValues[0].final}`
-              : `${fmt(damage * lo)}–${fmt(damage * hi)} → ${limbValues[0].final}–${limbValues[3].final}`
+              ? `${fmt(damage * lo)} → ${final('limbs', lo)}`
+              : `${fmt(damage * lo)}–${fmt(damage * hi)} → ${final('limbs', lo)}–${final('limbs', hi)}`
           return `По игроку в броне: в голову ${fmt(damage * headMult * parts.head)} → ${final('head', parts.head)} · в тело ${fmt(damage * parts.torso)} → ${final('torso', parts.torso)} · руки/ноги ${limbText} · ${gunPlateNote}`
         }
         const gunDamageHint = (box: HTMLElement, paintText: () => string) => {
@@ -4547,7 +4543,25 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             read: readAll,
             write,
             sync: (value, accepted) => {
-              if (accepted || shown === gunRowValue(box)) write(value)
+              if (accepted || shown === gunRowValue(box)) {
+                try {
+                  const bands = readAll()
+                  if (
+                    Array.isArray(value) &&
+                    value.length === bands.length &&
+                    value.every(
+                      (band, i) =>
+                        gunIsObject(band) &&
+                        band.distance === bands[i].distance &&
+                        band.damage === bands[i].damage,
+                    )
+                  )
+                    return
+                } catch {
+                  // A genuinely changed server list replaces an invalid accepted value.
+                }
+                write(value)
+              }
             },
           }
           return ctl

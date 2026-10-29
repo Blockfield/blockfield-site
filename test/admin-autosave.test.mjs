@@ -3215,3 +3215,279 @@ test('R9 a parent conflict remains visible after subsequent live settings refres
     finish(h)
   }
 })
+
+// Independent round-9 tooltip/focus regression probes.
+test('R9 nonuniform limbs report final minimum and maximum, independent of limb order', async () => {
+  const h = await realSetup({
+    initial: { gunBalance: { 'tacz:ak47': { body_part_multipliers: { left_arm: 3 } } } },
+  })
+  try {
+    // Inspect the detail hint used by ordinary damage fields: a simple one-band weapon has no bands.
+    const defaults = structuredClone(ak.defaults)
+    defaults.bullet.extra_damage.damage_adjust = []
+    h.dom.window.gunComplexSetup(JSON.stringify(catalog.fields), JSON.stringify(defaults))
+    const validated = structuredClone(h.dom.window.currentGunCatalog())
+    validated.schema = 1
+    validated.revision = 1
+    for (const gun of validated.guns) {
+      delete gun.weaponKind
+      delete gun.sourceId
+    }
+    validateGunCatalog(validated)
+    const base = row(h.doc, 'bullet-damage')
+    base.querySelector('.gun-dmg-btn').dispatchEvent(new h.dom.window.Event('focus'))
+    const text = base.querySelector('.gun-dmg-pop').textContent
+    const damage = defaults.bullet.damage
+    const fmt = (x) => String(Math.round(x * 10) / 10)
+    const lo = fmt(
+      finalDamageVsMatchKit({
+        damage,
+        armorIgnore: 0.3,
+        headMult: 1.5,
+        bodyMult: 1,
+        part: 'limbs',
+      }),
+    )
+    const hi = fmt(
+      finalDamageVsMatchKit({
+        damage,
+        armorIgnore: 0.3,
+        headMult: 1.5,
+        bodyMult: 3,
+        part: 'limbs',
+      }),
+    )
+    assert.ok(text.includes(`руки/ноги ${damage}–${damage * 3} → ${lo}–${hi}`))
+  } finally {
+    finish(h)
+  }
+})
+
+for (const mode of ['persisted null', 'checkbox save']) {
+  test(`R9 ${mode} extra-damage disable does not reuse gunpack multiplier or armor bypass`, async () => {
+    const h = await realSetup(
+      mode === 'persisted null'
+        ? { initial: { gunBalance: { 'tacz:ak47': { bullet: { extra_damage: null } } } } }
+        : {},
+    )
+    try {
+      if (mode === 'checkbox save') {
+        const off = h.doc.querySelector('#gun-field-bullet-extra_damage-off')
+        off.checked = true
+        off.dispatchEvent(new h.dom.window.Event('change', { bubbles: true }))
+        await h.dom.window.flush()
+        assert.equal(h.stored().gunBalance['tacz:ak47'].bullet.extra_damage, null)
+        h.dom.window.reviewRender(false) // Same confirmed state shown on a fresh page.
+      }
+      const base = row(h.doc, 'bullet-damage')
+      base.querySelector('.gun-dmg-btn').dispatchEvent(new h.dom.window.Event('focus'))
+      const text = base.querySelector('.gun-dmg-pop').textContent
+      const damage = ak.defaults.bullet.damage
+      // Exact cached Refabricated 0.7.0 modifiers use 0 for both null-group modifiers.
+      const body = String(
+        Math.round(
+          finalDamageVsMatchKit({
+            damage,
+            armorIgnore: 0,
+            headMult: 0,
+            bodyMult: 1,
+            part: 'torso',
+          }) * 10,
+        ) / 10,
+      )
+      assert.ok(
+        text.includes(`в голову 0 → 0`),
+        'HeadShotModifier.initCache uses 0 when extraDamage is null',
+      )
+      assert.ok(
+        text.includes(`в тело ${damage} → ${body}`),
+        'ArmorIgnoreModifier.initCache uses 0 when extraDamage is null',
+      )
+    } finally {
+      finish(h)
+    }
+  })
+}
+
+// Independent round-9 tooltip/focus regression probes.
+test('R9 clean focused distance input survives an unrelated live revision', async () => {
+  const h = await realSetup()
+  try {
+    const bands = row(h.doc, 'bullet-extra_damage-damage_adjust')
+    const input = bands.querySelector('input[type=number]')
+    input.focus()
+    assert.equal(h.doc.activeElement, input)
+    await h.dom.window.reviewApply({ revision: 4, rooms: { maxRooms: 6 }, gunBalance: {} })
+    assert.equal(
+      h.doc.activeElement,
+      input,
+      'unrelated live update must not remove the focused field',
+    )
+  } finally {
+    finish(h)
+  }
+})
+
+test('R9 unfinished distance input survives an unrelated live revision', async () => {
+  const h = await realSetup()
+  try {
+    const input = row(h.doc, 'bullet-extra_damage-damage_adjust').querySelector(
+      'input[type=number]',
+    )
+    input.focus()
+    input.value = ''
+    await h.dom.window.reviewApply({ revision: 4, rooms: { maxRooms: 6 }, gunBalance: {} })
+    assert.equal(h.doc.activeElement, input)
+    assert.equal(input.value, '')
+    assert.equal(puts(h).length, 0)
+  } finally {
+    finish(h)
+  }
+})
+
+test('R9 clean focused ordinary and body fields survive unrelated live revisions', async () => {
+  for (const selector of ['#gun-field-bullet-damage', '#body-part-head']) {
+    const h = await realSetup({
+      initial: { gunBalance: { 'tacz:ak47': { body_part_multipliers: { head: 2 } } } },
+    })
+    try {
+      const input = h.doc.querySelector(selector)
+      input.focus()
+      await h.dom.window.reviewApply({
+        revision: 4,
+        rooms: { maxRooms: 6 },
+        gunBalance: { 'tacz:ak47': { body_part_multipliers: { head: 2 } } },
+      })
+      assert.equal(h.doc.activeElement, input)
+    } finally {
+      finish(h)
+    }
+  }
+})
+
+for (const largest of ['right_arm', 'left_leg', 'right_leg']) {
+  test(`R10 limb range includes the actual ${largest} maximum`, async () => {
+    const h = await realSetup({
+      initial: {
+        gunBalance: { 'tacz:ak47': { body_part_multipliers: { left_arm: 0, [largest]: 3 } } },
+      },
+    })
+    try {
+      const defaults = structuredClone(ak.defaults)
+      defaults.bullet.extra_damage.damage_adjust = []
+      h.dom.window.gunComplexSetup(JSON.stringify(catalog.fields), JSON.stringify(defaults))
+      const field = row(h.doc, 'bullet-damage')
+      field.querySelector('.gun-dmg-btn').dispatchEvent(new h.dom.window.Event('focus'))
+      const hi =
+        Math.round(
+          finalDamageVsMatchKit({
+            damage: 7,
+            armorIgnore: 0.3,
+            headMult: 1.5,
+            bodyMult: 3,
+            part: 'limbs',
+          }) * 10,
+        ) / 10
+      assert.ok(
+        field.querySelector('.gun-dmg-pop').textContent.includes(`руки/ноги 0–21 → 0–${hi}`),
+      )
+    } finally {
+      finish(h)
+    }
+  })
+}
+
+test('R10 disabled extra damage ignores valid but inactive modifier inputs', async () => {
+  const h = await realSetup({
+    initial: { gunBalance: { 'tacz:ak47': { bullet: { extra_damage: null } } } },
+  })
+  try {
+    h.doc.querySelector('#gun-field-bullet-extra_damage-armor_ignore').value = '1'
+    h.doc.querySelector('#gun-field-bullet-extra_damage-head_shot_multiplier').value = '9'
+    const field = row(h.doc, 'bullet-damage')
+    field.querySelector('.gun-dmg-btn').dispatchEvent(new h.dom.window.Event('focus'))
+    const text = field.querySelector('.gun-dmg-pop').textContent
+    assert.ok(text.includes('в голову 0 → 0'))
+    assert.ok(text.includes('в тело 7 → 1.2'))
+    assert.equal(puts(h).length, 0)
+  } finally {
+    finish(h)
+  }
+})
+
+test('R10 explicitly enabling the group previews its active valid replacement', async () => {
+  let release
+  const h = await realSetup({
+    initial: { gunBalance: { 'tacz:ak47': { bullet: { extra_damage: null } } } },
+    handle: async ({ method }) => {
+      if (method === 'PUT')
+        await new Promise((resolve) => {
+          release = resolve
+        })
+    },
+  })
+  try {
+    const off = h.doc.querySelector('#gun-field-bullet-extra_damage-off')
+    off.checked = false
+    off.dispatchEvent(new h.dom.window.Event('change', { bubbles: true }))
+    await Promise.resolve()
+    assert.ok(release)
+    h.doc.querySelector('#gun-field-bullet-extra_damage-armor_ignore').value = '1'
+    h.doc.querySelector('#gun-field-bullet-extra_damage-head_shot_multiplier').value = '2'
+    const field = row(h.doc, 'bullet-damage')
+    field.querySelector('.gun-dmg-btn').dispatchEvent(new h.dom.window.Event('focus'))
+    const text = field.querySelector('.gun-dmg-pop').textContent
+    assert.ok(text.includes('в голову 14 → 13.4'))
+    assert.ok(text.includes('в тело 7 → 6.7'))
+  } finally {
+    release?.()
+    await h.dom.window.flush()
+    finish(h)
+  }
+})
+
+test('R10 disabled body-part system does not apply prepared coefficients to totals', async () => {
+  const h = await realSetup({
+    initial: {
+      gunBalance: { 'tacz:ak47': { body_part_multipliers: { head: 4, torso: 3, left_arm: 2 } } },
+    },
+  })
+  try {
+    const defaults = structuredClone(ak.defaults)
+    defaults.bullet.extra_damage.damage_adjust = []
+    h.dom.window.gunComplexSetup(JSON.stringify(catalog.fields), JSON.stringify(defaults))
+    h.dom.window.currentGunCatalog().bodyPartsEnabled = false
+    h.dom.window.reviewRender(false)
+    const field = row(h.doc, 'bullet-damage')
+    field.querySelector('.gun-dmg-btn').dispatchEvent(new h.dom.window.Event('focus'))
+    const text = field.querySelector('.gun-dmg-pop').textContent
+    assert.ok(text.includes('в голову 10.5 → 4.3'))
+    assert.ok(text.includes('в тело 7 → 2.8'))
+    assert.ok(text.includes('руки/ноги 7 → 2.8'))
+  } finally {
+    finish(h)
+  }
+})
+
+test('R10 focused bands survive semantically unchanged records with a different key order', async () => {
+  const h = await realSetup()
+  try {
+    const input = row(h.doc, 'bullet-extra_damage-damage_adjust').querySelector(
+      'input[type=number]',
+    )
+    input.focus()
+    const bands = ak.defaults.bullet.extra_damage.damage_adjust.map((b) => ({
+      damage: b.damage,
+      distance: b.distance,
+    }))
+    await h.dom.window.reviewApply({
+      revision: 4,
+      gunBalance: { 'tacz:ak47': { bullet: { extra_damage: { damage_adjust: bands } } } },
+    })
+    assert.equal(h.doc.activeElement, input)
+    assert.equal(input.isConnected, true)
+    assert.equal(puts(h).length, 0)
+  } finally {
+    finish(h)
+  }
+})
