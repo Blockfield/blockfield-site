@@ -3360,6 +3360,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     }
     let selectedGun: GunDefinition | undefined
     const gunReaders = new Map<string, () => unknown>()
+    // Пересчёт итогов по дистанциям: его зовут поля других строк (множители частей тела).
+    let gunFinalsRefresh: (() => void) | null = null
     const gunText = (value: unknown) => JSON.stringify(value) ?? 'null'
     // Человекочитаемая запись значения для подсказок и «Отменить»: JSON в панели не показываем.
     function gunSummary(value: unknown): string {
@@ -3471,6 +3473,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         ...$('#gun-advanced-fields').children,
       ] as HTMLElement[]
       gunReaders.clear()
+      gunFinalsRefresh = null
       if (!gun || !gunCatalog) {
         $('#gun-fields').replaceChildren()
         $('#gun-advanced-fields').replaceChildren()
@@ -3708,6 +3711,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           summary.id = `gun-field-${key}`
           summary.append(badge)
           gunReaders.set(key, body.read)
+          body.node.addEventListener('input', () => gunFinalsRefresh?.())
           const confirmed = () => {
             const enabled = Object.hasOwn(gunOverrides[gun.id] ?? {}, key)
             body.write(
@@ -3719,6 +3723,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             row.toggleAttribute('data-override', enabled)
             badge.hidden = !enabled
             row.dataset.saved = gunRowValue(row)
+            gunFinalsRefresh?.()
           }
           body.node.addEventListener('change', (event) => {
             const control = event.target
@@ -3750,6 +3755,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 badge.hidden = !row.hasAttribute('data-override')
                 if (next === undefined) confirmed()
                 row.dataset.saved = gunRowValue(row)
+                gunFinalsRefresh?.()
               },
               confirmed,
               'Урон по частям тела',
@@ -4078,7 +4084,14 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         const gunDamageParts = () => {
           const over = gunOverrides[gun.id]?.body_part_multipliers
           const base = gun.defaults.body_part_multipliers
-          const merged = (over ? gunValues(base, over) : base) as Record<string, number> | undefined
+          let merged = (over ? gunValues(base, over) : base) as Record<string, number> | undefined
+          // Допустимый черновик множителей важнее подтверждённого значения.
+          try {
+            const draft = gunReaders.get('body_part_multipliers')?.()
+            if (gunIsObject(draft)) merged = draft as Record<string, number>
+          } catch {
+            // Недописанное число — считаем от подтверждённого.
+          }
           const part = (name: string) =>
             typeof merged?.[name] === 'number' ? (merged as Record<string, number>)[name] : 1
           return {
@@ -4217,6 +4230,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               input && Number.isFinite(damage) ? `итог: ${gunBandFinal(damage)}` : 'итог: —'
           }
         }
+        gunFinalsRefresh = () => refreshBandFinals()
         // Компактная таблица «Урон по дистанциям»: одна строка на диапазон, итог сразу виден.
         // Последняя строка — открытая («от X м и дальше»), без ввода дистанции: хранится
         // маркер infinite из каталога, руками его никто не вводит. Удаление последней строки
@@ -4233,10 +4247,13 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           const rows = () => [...list.children] as HTMLElement[]
           const distInput = (row: HTMLElement) =>
             row.querySelector('.gun-band-dist') as HTMLInputElement
+          // Поле текстовое (там бывает «∞»), поэтому запятую-разделитель разбираем сами.
+          const parseDistance = (raw: string) =>
+            Number(/^\d+,\d+$/.test(raw) ? raw.replace(',', '.') : raw)
           const prevFinite = (before: number): number | undefined => {
             let found: number | undefined
             for (const row of rows().slice(0, before)) {
-              const n = Number(distInput(row).value.trim())
+              const n = parseDistance(distInput(row).value.trim())
               if (Number.isFinite(n)) found = n
             }
             return found
@@ -4278,8 +4295,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             if (rows().indexOf(row) === rows().length - 1) return { distance: 'infinite', damage }
             const rawDist = distInput(row).value.trim()
             if (!rawDist) throw new Error('Укажите дистанцию или удалите строку.')
-            // Поле текстовое (там бывает «∞»), поэтому запятую-разделитель разбираем сами.
-            const distance = Number(/^\d+,\d+$/.test(rawDist) ? rawDist.replace(',', '.') : rawDist)
+            const distance = parseDistance(rawDist)
             if (!Number.isFinite(distance)) throw new Error('Дистанция — число.')
             checkGunField(distance, distField)
             return { distance, damage }
@@ -4416,7 +4432,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           // Имя для скринридера: «Режим огня, пункт 2»; сгенерированные i0/e0 в имени не нужны.
           const ariaName = [
             GUN_LABELS[top] ?? top,
-            ...path.filter((seg) => !/^[ie]\d+$/.test(seg)).map(gunKidLabel),
+            ...path.filter((seg) => seg && !/^[ie]\d+$/.test(seg)).map(gunKidLabel),
           ].join(' · ')
           const nameControls = (node: HTMLElement, text: string) => {
             const controls = node.matches('input, select')
@@ -4626,6 +4642,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               inner = gunControl(top, [...path, ''], pseudo(seed), onChange)
               inner.write(seed)
               box.replaceChildren(kind, inner.node)
+              // Новые поля созданы заново: даём им имя настройки (тип уже подписан).
+              nameControls(inner.node, ariaName)
               if (kind.isConnected) customSelect(kind)
             }
             kind.replaceChildren(...kinds.map((k) => el('option', { value: k, textContent: k })))
@@ -4869,10 +4887,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               },
             })
             keyCtl.setAttribute('aria-label', `${ariaName}, ключ`)
-            nameControls(val.node, `${ariaName}, значение`)
             row.append(keyCtl, val.node, del)
             entries.append(row)
             val.write(value)
+            nameControls(val.node, `${ariaName}, значение`)
             if (keyCtl instanceof HTMLSelectElement && keyCtl.isConnected) customSelect(keyCtl)
             const select = val.node.querySelector('select')
             if (select && select.isConnected) customSelect(select)
@@ -5513,14 +5531,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           gunPending--
           return
         }
-        const old = structuredClone(key ? gunOverrides[id]?.[key] : gunOverrides[id])
         const defaults =
           gunCatalog?.guns?.find((gun) => gun.id === id)?.defaults ?? selectedGun?.defaults
-        const oldValue = key
-          ? old === undefined
-            ? defaults?.[key]
-            : gunValues(defaults?.[key], old)
-          : (old ?? defaults)
+        let old: any, oldValue: unknown
         const feedback = key === 'body_part_multipliers' ? bodyPartSummary : gunSummary
         fieldState(line, 'сохраняем…', 'saving')
         const release = lockControl(control)
@@ -5532,6 +5545,14 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               toast(`${label}: значение уже изменил ${remoteSettingsName}`)
               return
             }
+            // База для «Отменить» берётся для той попытки, что дошла до сервера: после
+            // 409-обновления это уже состояние с чужими правками.
+            old = structuredClone(key ? gunOverrides[id]?.[key] : gunOverrides[id])
+            oldValue = key
+              ? old === undefined
+                ? defaults?.[key]
+                : gunValues(defaults?.[key], old)
+              : (old ?? defaults)
             const overrides = structuredClone(gunOverrides)
             if (key === null) {
               if (value === undefined) delete overrides[id]
@@ -5571,7 +5592,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               fieldState(line, 'сохранено', 'saved')
               // Сервер отдаёт компактный override (без равных ганпаку соседей): «Отменить»
               // сверяется с ним, а не с отправленным полным значением.
-              const canonical = JSON.stringify(key ? gunOverrides[id]?.[key] : gunOverrides[id])
+              // Берём из ответа на наш сохранённый запрос, а не из глобального состояния:
+              // более новая чужая ревизия не должна считаться нашим результатом.
+              const savedOverrides = result.settings.gunBalance ?? {}
+              const canonical = JSON.stringify(key ? savedOverrides[id]?.[key] : savedOverrides[id])
               changeToast(
                 label,
                 summary?.before ?? feedback(oldValue),

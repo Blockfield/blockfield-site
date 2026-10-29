@@ -70,6 +70,9 @@ const functions = compile(
     .map((n) => n.getText(source))
     .join('\n'),
 )
+const productionSelect = compile(
+  readFileSync(new URL('../src/lib/custom-select.ts', import.meta.url), 'utf8'),
+).replace(/^export /gm, '')
 const messageHandlers = compile(
   script.slice(
     script.indexOf(
@@ -140,7 +143,7 @@ async function setup(options = {}) {
   })
   dom.window.eval(`
     const $ = s => document.querySelector(s);
-    const customSelect = () => {}, number = String, ago = () => 'только что';
+    ${options.realSelect ? productionSelect : 'const customSelect = () => {};'} const number = String, ago = () => 'только что';
     const LOBBY = [], DEATHMATCH = [], CLASS_COSTS = {}, CLASS_NAMES = {}, PARCOOL_ACTIONS = [], PARCOOL_FILE_DEFAULT = [];
     const ROOMS = [{key:'maxRooms', label:'Матчей одновременно', min:1, max:16, def:2}, {key:'idleCloseSeconds', label:'Закрывать пустую комнату через', min:30, max:3600, def:600}];
     const SETTING_LABELS = {}, GUN_LABELS = {};
@@ -152,7 +155,7 @@ async function setup(options = {}) {
     let rules = {}, defaults = {}, balance = {}, scope = '*', hadLocks, extraLocks = [], fieldId = 0;
     const mapAvailabilityWaiters = new Set(); let kitCatalog; let settingsLoaded = false, settingsRevision = 0, observedSettingsRevision = 0, lastApplied = null;
     let settingsQueue = Promise.resolve(), gunQueue = Promise.resolve(), gunPending = 0, settingsQueueVersion = 0, gunQueueVersion = 0;
-    let gunCatalog, selectedGun, gunOverrides = {}, gunRevision = 0;
+    let gunCatalog, selectedGun, gunOverrides = {}, gunRevision = 0; let gunFinalsRefresh = null;
     const gunReaders = new Map(), settingValues = new Map(), stateTimers = new WeakMap();
     let remoteSettingsName = 'Kira'; const me = {name:'Nether'}, toastMessages = [], toast = text => toastMessages.push(text);
     window.toastMessages = toastMessages;
@@ -183,6 +186,7 @@ async function setup(options = {}) {
     };
     window.currentGunCatalog = () => gunCatalog;
     $('#scope').addEventListener('change', e => {scope=e.target.value;renderScopes();renderBalance();rememberSettingsControls('#balance-fields')});
+    window.reviewApply = settings => loadSettings(0, false, {settings}); window.reviewRender = (live = true) => renderGun(live);
     window.flush = () => Promise.all([settingsQueue, gunQueue]);
     window.finishMessage = result => requestResult('message-1', result);
     window.receiptCache = () => [...requestResults.keys()];
@@ -1525,4 +1529,157 @@ test('review #6: distance popover states the plate assumption; headshots bypass 
   assert.match(script, /\.concat\(gunPlateNote\)/)
   assert.match(script, /выстрелы в голову плиту обходят, но расходуют её/)
   assert.doesNotMatch(script, /по рукам, ногам и голове/)
+})
+
+// ---- Ревью раунд 2 ----
+test('review round 2: distance: comma last finite boundary updates open row label', async () => {
+  const h = await realSetup()
+  try {
+    const inputs = [...h.doc.querySelectorAll('.gun-band-dist')]
+    inputs.at(-2).value = '120,5'
+    inputs.at(-2).dispatchEvent(new h.dom.window.Event('input', { bubbles: true }))
+    h.change(inputs.at(-2), '120,5')
+    await h.dom.window.flush()
+    const text = [...h.doc.querySelectorAll('.gun-band')]
+      .at(-1)
+      .querySelector('.gun-band-lab').textContent
+    assert.equal(text, 'от 120.5 м и дальше')
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('review round 2: saved body multiplier updates visible bands', async () => {
+  const h = await realSetup()
+  try {
+    const br = row(h.doc, 'body_part_multipliers')
+    assert.ok(br)
+    const toggle = br.querySelector('input[type=checkbox]')
+    toggle.checked = true
+    toggle.dispatchEvent(new h.dom.window.Event('change', { bubbles: true }))
+    const head = h.doc.querySelector('#body-part-head')
+    h.change(head, '2')
+    await h.dom.window.flush()
+    assert.equal(h.stored().gunBalance['tacz:ak47'].body_part_multipliers.head, 2)
+    const text = h.doc.querySelector('.gun-band-final').textContent
+    const hintRow = row(h.doc, 'bullet-extra_damage-damage_adjust')
+    hintRow.querySelector('.gun-dmg-btn').dispatchEvent(new h.dom.window.Event('focus'))
+    assert.equal(text, 'итог: голова 11.8 · тело 3.7')
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('review round 2: unsaved body multiplier updates visible bands', async () => {
+  const h = await realSetup()
+  try {
+    const br = row(h.doc, 'body_part_multipliers')
+    const toggle = br.querySelector('input[type=checkbox]')
+    toggle.checked = true
+    toggle.dispatchEvent(new h.dom.window.Event('change', { bubbles: true }))
+    const head = h.doc.querySelector('#body-part-head')
+    head.value = '2'
+    head.dispatchEvent(new h.dom.window.Event('input', { bubbles: true }))
+    h.doc
+      .querySelector('.gun-band input[type=number]')
+      .dispatchEvent(new h.dom.window.Event('input', { bubbles: true }))
+    assert.equal(h.doc.querySelector('.gun-band-final').textContent, 'итог: голова 11.8 · тело 3.7')
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('review round 2: conflict retry then Undo preserves concurrently saved sibling', async () => {
+  let puts = 0
+  const h = await realSetup({
+    handle: ({ method, current }) => {
+      if (method === 'PUT' && ++puts === 1) {
+        Object.assign(current, {
+          revision: 9,
+          gunBalance: { 'tacz:ak47': { bullet: { extra_damage: { armor_ignore: 0.8 } } } },
+        })
+        return { status: 409, data: { error: 'stale' } }
+      }
+      if (method === 'GET' && puts === 1) return { status: 200, data: { settings: current } }
+    },
+  })
+  try {
+    h.change(h.doc.querySelector('#gun-field-bullet-damage'), '10')
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance, {
+      'tacz:ak47': { bullet: { damage: 10, extra_damage: { armor_ignore: 0.8 } } },
+    })
+    h.doc.querySelector('.toast button').click()
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance, {
+      'tacz:ak47': { bullet: { extra_damage: { armor_ignore: 0.8 } } },
+    })
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('review round 2: late save response cannot let Undo erase a newer observed external edit', async () => {
+  let finish
+  let intercepted = false
+  let serverState
+  const h = await realSetup({
+    handle: async ({ method, body, current }) => {
+      if (method === 'PUT' && !intercepted) {
+        intercepted = true
+        const accepted = {
+          revision: 4,
+          gunBalance: validateGunOverrides(body.gunBalance, h.dom.window.currentGunCatalog()),
+        }
+        Object.assign(current, structuredClone(accepted))
+        serverState = current
+        await new Promise((r) => {
+          finish = () => r()
+        })
+        return { status: 200, data: { settings: accepted } }
+      }
+    },
+  })
+  try {
+    h.change(h.doc.querySelector('#gun-field-bullet-damage'), '10')
+    await Promise.resolve()
+    assert.ok(finish)
+    const newer = {
+      revision: 5,
+      updatedBy: { name: 'Other editor' },
+      gunBalance: { 'tacz:ak47': { bullet: { damage: 12, extra_damage: { armor_ignore: 0.8 } } } },
+    }
+    Object.assign(serverState, structuredClone(newer))
+    await h.dom.window.reviewApply(newer)
+    finish()
+    await h.dom.window.flush()
+    const before = h.calls.filter((c) => c.method === 'PUT').length
+    h.doc.querySelector('.toast button').click()
+    await h.dom.window.flush()
+    assert.equal(
+      h.calls.filter((c) => c.method === 'PUT').length,
+      before,
+      'stale successful save must not authorize reverting the newer snapshot',
+    )
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('review round 2: free-form map value controls have accessible names after type rebuild', async () => {
+  const h = await realSetup({ realSelect: true })
+  try {
+    const gun = h.dom.window.currentGunCatalog().guns[0]
+    gun.defaults.script_param = { custom_rate: 2 }
+    h.dom.window.reviewRender(false)
+    const scriptRow = row(h.doc, 'script_param')
+    const valueControl = scriptRow.querySelector('input[type=number]')
+    assert.ok(valueControl)
+    assert.ok(
+      valueControl.getAttribute('aria-label') || valueControl.labels.length,
+      'numeric map value needs a setting/value label',
+    )
+  } finally {
+    h.dom.window.close()
+  }
 })
