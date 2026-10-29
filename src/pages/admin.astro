@@ -846,24 +846,69 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               </select>
             </div>
             <label for="console-input">Команда</label>
-            <input
-              id="console-input"
-              name="command"
-              maxlength="1000"
-              required
-              autocomplete="off"
-              spellcheck="false"
-              aria-describedby="console-hint"
-            />
+            <div class="console-complete">
+              <input
+                id="console-input"
+                name="command"
+                maxlength="1000"
+                required
+                autocomplete="off"
+                spellcheck="false"
+                role="combobox"
+                aria-expanded="false"
+                aria-controls="console-suggest"
+                aria-describedby="console-hint"
+              />
+              <ul id="console-suggest" class="console-suggest" role="listbox" hidden></ul>
+            </div>
             <small id="console-hint">
-              Без «/». Стрелки ↑ и ↓ листают введённые команды. Опасные команды попросят
-              подтверждения.
+              Без «/». Tab и стрелки ↑ ↓ выбирают подсказку, Esc закрывает. Без подсказки стрелки ↑
+              и ↓ листают введённые команды. Опасные команды попросят подтверждения.
             </small>
+            <p id="console-usage" class="console-usage muted" hidden></p>
             <button class="primary" type="submit">
               Выполнить
             </button>
             <p class="form-status" role="status"></p>
           </form>
+          <div class="console-logs group">
+            <header>
+              <h3>Журнал сервера</h3>
+              <p class="hint">
+                Прямой эфир и ответы выполненных команд. Память — последние 500 строк.
+              </p>
+            </header>
+            <div class="console-log-controls">
+              <label for="console-level">Уровень</label>
+              <select id="console-level">
+                <option value="">Все</option>
+                <option value="INFO">Info</option>
+                <option value="WARN">Предупреждения</option>
+                <option value="ERROR">Ошибки</option>
+              </select>
+              <label for="console-search">Поиск</label>
+              <input
+                id="console-search"
+                maxlength="200"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="Текст или игрок"
+              />
+              <label class="console-check" for="console-follow">
+                <input id="console-follow" type="checkbox" checked /> Следить
+              </label>
+              <button id="console-pause" type="button" class="small">
+                Пауза
+              </button>
+            </div>
+            <div
+              id="console-log"
+              class="console-log"
+              role="log"
+              aria-label="Строки журнала сервера"
+            ></div>
+            <p id="console-log-detail" class="console-log-detail muted" hidden></p>
+          </div>
           <pre
             id="console-output"
             class="console-output"
@@ -1591,6 +1636,100 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     }
     .admin-main .console-output .bad {
       color: var(--danger);
+    }
+    .admin-main .console-complete {
+      position: relative;
+    }
+    .admin-main .console-suggest {
+      position: absolute;
+      z-index: 5;
+      left: 0;
+      right: 0;
+      top: 100%;
+      margin: 2px 0 0;
+      padding: 4px;
+      list-style: none;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      max-height: 240px;
+      overflow-y: auto;
+      font-family: var(--mono);
+      font-size: 13px;
+    }
+    .admin-main .console-suggest li {
+      padding: 6px 8px;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .admin-main .console-suggest li.active {
+      color: var(--amber);
+    }
+    .admin-main .console-suggest li small {
+      color: var(--muted);
+      margin-left: 8px;
+    }
+    .admin-main .console-usage {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: 13px;
+    }
+    .admin-main .console-usage:empty {
+      display: none;
+    }
+    .admin-main .console-logs {
+      margin-top: 16px;
+    }
+    .admin-main .console-log-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      padding: 0 18px 12px;
+    }
+    .admin-main .console-log-controls input[type='checkbox'] {
+      margin-right: 4px;
+    }
+    .admin-main .console-log {
+      font-family: var(--mono);
+      font-size: 13px;
+      margin: 0 18px 12px;
+      padding: 8px 10px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      max-height: 50vh;
+      overflow-y: auto;
+      color: var(--cream);
+    }
+    .admin-main .console-log:empty {
+      display: none;
+    }
+    .admin-main .console-log .line {
+      display: block;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      cursor: pointer;
+    }
+    .admin-main .console-log .t {
+      color: var(--muted);
+    }
+    .admin-main .console-log .warn {
+      color: var(--amber);
+    }
+    .admin-main .console-log .error,
+    .admin-main .console-log .cmd-bad {
+      color: var(--danger);
+    }
+    .admin-main .console-log .cmd {
+      color: var(--amber);
+    }
+    .admin-main .console-log-detail {
+      margin: 0 18px 12px;
+      font-family: var(--mono);
+      font-size: 13px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
     .admin-main #console-form .cselect-btn,
     .admin-main #console-form .cselect-list li {
@@ -9965,14 +10104,219 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     const consoleTarget = $<HTMLSelectElement>('#console-target')
     customSelect(consoleTarget)
     const consoleInput = $<HTMLInputElement>('#console-input')
+    const consoleSuggest = $<HTMLUListElement>('#console-suggest')
+    const consoleUsage = $('#console-usage')
+    let suggestFrom = 0,
+      suggestItems: { text: string; hint: string }[] = [],
+      suggestActive = -1,
+      suggestTimer = 0
+    function closeSuggest() {
+      suggestItems = []
+      suggestActive = -1
+      consoleSuggest.hidden = true
+      consoleSuggest.replaceChildren()
+      consoleInput.setAttribute('aria-expanded', 'false')
+    }
+    function renderSuggest() {
+      consoleSuggest.replaceChildren(
+        ...suggestItems.map((item, i) =>
+          el(
+            'li',
+            {
+              role: 'option',
+              className: i === suggestActive ? 'active' : '',
+              ariaSelected: i === suggestActive ? 'true' : 'false',
+            },
+            el('span', { textContent: item.text }),
+            item.hint ? el('small', { textContent: item.hint }) : null,
+          ),
+        ),
+      )
+      consoleSuggest.hidden = false
+      consoleInput.setAttribute('aria-expanded', 'true')
+      const first = suggestItems[0]
+      if (first && suggestActive === -1) {
+        consoleUsage.textContent = `⇥ ${consoleInput.value.slice(0, suggestFrom)}${first.text}${first.hint ? ` — ${first.hint}` : ''}`
+        consoleUsage.hidden = false
+      }
+    }
+    function applySuggest(i: number) {
+      const item = suggestItems[i]
+      if (!item) return
+      consoleInput.value = consoleInput.value.slice(0, suggestFrom) + item.text
+      closeSuggest()
+      consoleUsage.hidden = true
+      scheduleSuggest()
+      consoleInput.focus()
+    }
+    async function fetchSuggest() {
+      const value = consoleInput.value
+      if (!value.trim()) {
+        closeSuggest()
+        consoleUsage.hidden = true
+        return
+      }
+      try {
+        const page = await api(
+          `console/suggest?target=${consoleTarget.value}&input=${encodeURIComponent(value)}`,
+        )
+        suggestFrom = page.from
+        suggestItems = page.suggestions
+        suggestActive = -1
+        if (!suggestItems.length) {
+          closeSuggest()
+          consoleUsage.hidden = true
+          return
+        }
+        renderSuggest()
+      } catch {
+        closeSuggest()
+      }
+    }
+    function scheduleSuggest() {
+      window.clearTimeout(suggestTimer)
+      suggestTimer = window.setTimeout(fetchSuggest, 150)
+    }
+    consoleInput.addEventListener('input', scheduleSuggest)
+    consoleSuggest.addEventListener('mousedown', (e) => {
+      const li = (e.target as HTMLElement).closest('li')
+      if (!li) return
+      e.preventDefault()
+      applySuggest([...consoleSuggest.children].indexOf(li))
+    })
+    document.addEventListener('click', (e) => {
+      if (!(e.target as HTMLElement).closest('.console-complete')) closeSuggest()
+    })
     consoleInput.addEventListener('keydown', (e) => {
+      if (!consoleSuggest.hidden) {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault()
+          suggestActive =
+            (suggestActive + (e.key === 'ArrowDown' ? 1 : -1) + suggestItems.length) %
+            suggestItems.length
+          renderSuggest()
+          consoleSuggest.children[suggestActive]?.scrollIntoView({ block: 'nearest' })
+          return
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          closeSuggest()
+          return
+        }
+        if ((e.key === 'Tab' || e.key === 'Enter') && suggestActive >= 0) {
+          e.preventDefault()
+          applySuggest(suggestActive)
+          return
+        }
+      }
       if ((e.key !== 'ArrowUp' && e.key !== 'ArrowDown') || !consoleHistory.length) return
       e.preventDefault()
+      closeSuggest()
       historyAt = Math.max(
         0,
         Math.min(consoleHistory.length, historyAt + (e.key === 'ArrowUp' ? -1 : 1)),
       )
       consoleInput.value = consoleHistory[historyAt] ?? ''
+    })
+    // Live server log: polled stream with follow, level/text filters and a 500-line cap.
+    const consoleLog = $('#console-log')
+    const consoleLevel = $<HTMLSelectElement>('#console-level')
+    customSelect(consoleLevel)
+    const consoleSearch = $<HTMLInputElement>('#console-search')
+    const consoleFollow = $<HTMLInputElement>('#console-follow')
+    const consolePause = $<HTMLButtonElement>('#console-pause')
+    const consoleDetail = $('#console-log-detail')
+    let logSince = 0,
+      logPaused = false,
+      logLastError = ''
+    function logMatches(line: HTMLElement) {
+      const level = line.dataset.level ?? '',
+        levelFilter = consoleLevel.value,
+        // INFO stands for the quiet levels too: the server sends DEBUG/TRACE as-is.
+        levelOk =
+          !levelFilter ||
+          level === levelFilter ||
+          (levelFilter === 'INFO' &&
+            (level === '' || level === 'INFO' || level === 'DEBUG' || level === 'TRACE'))
+      if (!levelOk) return false
+      const query = consoleSearch.value.trim().toLowerCase()
+      return !query || (line.dataset.text ?? '').includes(query)
+    }
+    function logRefilter() {
+      for (const line of consoleLog.children) {
+        if (logMatches(line as HTMLElement)) line.removeAttribute('hidden')
+        else line.setAttribute('hidden', '')
+      }
+    }
+    function appendLogLine(kind: string, head: string, text: string, full: string) {
+      const line = el(
+        'span',
+        {
+          className: `line${kind ? ` ${kind}` : ''}`,
+          dataText: `${head} ${text}`.toLowerCase(),
+        },
+        el('span', { className: 't', textContent: head }),
+        el('span', { textContent: text ? ` ${text}` : '' }),
+      )
+      if (kind === 'warn' || kind === 'error')
+        (line.firstElementChild!.nextElementSibling as HTMLElement).className = kind
+      line.addEventListener('click', () => {
+        consoleDetail.textContent = full
+        consoleDetail.hidden = false
+        if (kind === 'cmd') consoleInput.value = full.split('\n')[0].replace(/^> /, '')
+      })
+      consoleLog.append(line)
+      while (consoleLog.childElementCount > 500) consoleLog.firstElementChild!.remove()
+      logRefilter()
+      if (consoleFollow.checked) consoleLog.scrollTop = consoleLog.scrollHeight
+    }
+    function logServerEntry(entry: { at: number; level: string; logger: string; message: string }) {
+      const time = new Date(entry.at).toLocaleTimeString('ru-RU', { hour12: false }),
+        level = (entry.level || '').toUpperCase(),
+        kind = level === 'ERROR' || level === 'FATAL' ? 'error' : level === 'WARN' ? 'warn' : '',
+        head = `[${time}${level ? ` ${level}` : ''}]`
+      appendLogLine(kind, head, entry.message || '', `${head} ${entry.message || ''}`)
+    }
+    function logCommand(target: string, command: string, output: string, bad: boolean) {
+      const label = TARGET_LABELS[target] ?? target
+      appendLogLine(
+        bad ? 'cmd-bad' : 'cmd',
+        `[${label}]`,
+        `> ${command}`,
+        `> ${command}\n${output || '(пустой ответ)'}`,
+      )
+    }
+    async function pollLog() {
+      if (logPaused || $('#console').hidden || document.hidden) return
+      try {
+        const page = await api(`console/logs?target=${consoleTarget.value}&since=${logSince}`)
+        logLastError = ''
+        for (const entry of page.entries) logServerEntry(entry)
+        logSince = page.next
+      } catch (error) {
+        const message = (error as Error).message
+        if (message !== logLastError) {
+          logLastError = message
+          appendLogLine('error', '[журнал]', message, `[журнал] ${message}`)
+        }
+      }
+    }
+    window.setInterval(pollLog, 2000)
+    consoleTarget.addEventListener('change', () => {
+      consoleLog.replaceChildren()
+      consoleDetail.hidden = true
+      logSince = 0
+      logLastError = ''
+      closeSuggest()
+      consoleUsage.hidden = true
+      pollLog()
+    })
+    consoleLevel.addEventListener('change', logRefilter)
+    consoleSearch.addEventListener('input', logRefilter)
+    consolePause.addEventListener('click', () => {
+      logPaused = !logPaused
+      consolePause.textContent = logPaused ? 'Продолжить' : 'Пауза'
+      if (!logPaused) pollLog()
     })
     function consoleLine(target: string, command: string, text: string, bad: boolean) {
       const out = $('#console-output')
@@ -10008,9 +10352,11 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         async () => {
           const reply = await api('rcon/raw', 'POST', { command, target }).catch((error: Error) => {
             consoleLine(target, command, error.message, true)
+            logCommand(target, command, error.message, true)
             throw error
           })
           consoleLine(reply.target ?? target, command, reply.output, reply.rejected)
+          logCommand(reply.target ?? target, command, reply.output, reply.rejected)
           consoleInput.value = ''
           if (reply.rejected) throw new Error('Команда не выполнена. Проверьте её и повторите.')
         },
