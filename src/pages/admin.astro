@@ -4087,8 +4087,12 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           let merged = (over ? gunValues(base, over) : base) as Record<string, number> | undefined
           // Допустимый черновик множителей важнее подтверждённого значения.
           try {
-            const draft = gunReaders.get('body_part_multipliers')?.()
-            if (gunIsObject(draft)) merged = draft as Record<string, number>
+            const reader = gunReaders.get('body_part_multipliers')
+            // Снятая отметка (reader → undefined) — черновик сброса: считаем по умолчанию.
+            if (reader) {
+              const draft = reader()
+              merged = (gunIsObject(draft) ? draft : base) as Record<string, number> | undefined
+            }
           } catch {
             // Недописанное число — считаем от подтверждённого.
           }
@@ -4649,6 +4653,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             kind.replaceChildren(...kinds.map((k) => el('option', { value: k, textContent: k })))
             kind.onchange = () => {
               rebuild(kind.value as (typeof kinds)[number], null)
+              // Выбор типа — не очистка: пока значение нового типа пусто (текст, объект),
+              // это локальный черновик, и сохранённая запись остаётся нетронутой.
+              if (inner?.read() === undefined) return
               onChange(kind)
             }
             return leaf(

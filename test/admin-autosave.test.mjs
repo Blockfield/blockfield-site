@@ -1683,3 +1683,79 @@ test('review round 2: free-form map value controls have accessible names after t
     h.dom.window.close()
   }
 })
+
+// ---- Ревью раунд 3 ----
+test('review round 3: body reset updates totals while pending and after save', async () => {
+  let finish
+  const h = await realSetup({
+    initial: { gunBalance: { 'tacz:ak47': { body_part_multipliers: { head: 2 } } } },
+    handle: async ({ method }) => {
+      if (method === 'PUT')
+        await new Promise((r) => {
+          finish = r
+        })
+    },
+  })
+  try {
+    assert.equal(h.doc.querySelector('.gun-band-final').textContent, 'итог: голова 11.8 · тело 3.7')
+    const toggle = row(h.doc, 'body_part_multipliers').querySelector('input[type=checkbox]')
+    toggle.checked = false
+    toggle.dispatchEvent(new h.dom.window.Event('input', { bubbles: true }))
+    toggle.dispatchEvent(new h.dom.window.Event('change', { bubbles: true }))
+    await Promise.resolve()
+    assert.ok(finish)
+    const pending = h.doc.querySelector('.gun-band-final').textContent
+    finish()
+    await h.dom.window.flush()
+    const saved = h.doc.querySelector('.gun-band-final').textContent
+    assert.equal(saved, 'итог: голова 5.5 · тело 3.7')
+    assert.equal(pending, 'итог: голова 5.5 · тело 3.7')
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+for (const nextKind of ['текст', 'объект'])
+  test(`review round 3: changing a saved script map value to ${nextKind} preserves the draft and saved entry`, async () => {
+    const initial = { 'tacz:ak47': { script_param: { custom_rate: 2 } } }
+    const h = await realSetup({ realSelect: true, initial: { gunBalance: initial } })
+    try {
+      assert.deepEqual(
+        validateGunOverrides(initial, h.dom.window.currentGunCatalog()),
+        initial,
+        'starting override must be legal',
+      )
+      const before = row(h.doc, 'script_param')
+      const kind = before.querySelector('select[aria-label="Тип значения"]')
+      assert.equal(kind.value, 'число')
+      h.change(kind, nextKind)
+      await h.dom.window.flush()
+      const after = row(h.doc, 'script_param')
+      const selected = after.querySelector('select[aria-label="Тип значения"]')
+      assert.deepEqual(
+        h.stored().gunBalance,
+        initial,
+        'choosing a new type with no value entered must not erase the saved entry',
+      )
+      assert.equal(selected?.value, nextKind, 'type draft must survive while user enters its value')
+    } finally {
+      h.dom.window.close()
+    }
+  })
+
+test('review round 3: after switching a saved map value to text, entering text saves it', async () => {
+  const initial = { 'tacz:ak47': { script_param: { custom_rate: 2 } } }
+  const h = await realSetup({ realSelect: true, initial: { gunBalance: initial } })
+  try {
+    const kind = row(h.doc, 'script_param').querySelector('select[aria-label="Тип значения"]')
+    h.change(kind, 'текст')
+    await h.dom.window.flush()
+    assert.equal(h.requests.length, 0)
+    const text = row(h.doc, 'script_param').querySelector('input[type=text]:not([data-gunkey])')
+    h.change(text, 'fast')
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, { custom_rate: 'fast' })
+  } finally {
+    h.dom.window.close()
+  }
+})
