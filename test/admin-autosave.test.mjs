@@ -3491,3 +3491,60 @@ test('R10 focused bands survive semantically unchanged records with a different 
     finish(h)
   }
 })
+
+// ---- Ревью раунд 10: сохранённая лента дистанций не оставляет stale-снапшот ----
+async function savedBandThenRemote() {
+  const h = await realSetup({
+    realSelect: true,
+    handle: async ({ method, body, current }) => {
+      if (method === 'PUT' && body.expectedRevision !== current.revision)
+        return { status: 409, data: { error: 'stale' } }
+    },
+  })
+  const bands = row(h.doc, 'bullet-extra_damage-damage_adjust')
+  const input = bands.querySelector('input[type=number]')
+  input.focus()
+  h.change(input, '14')
+  await h.dom.window.flush()
+  assert.equal(h.stored().gunBalance['tacz:ak47'].bullet.extra_damage.damage_adjust[0].damage, 14)
+  row(h.doc, 'bullet-extra_damage-damage_adjust').querySelector('input[type=number]').focus()
+  const remote = structuredClone(h.stored())
+  remote.revision += 1
+  remote.gunBalance['tacz:ak47'].bullet.extra_damage.damage_adjust[0].damage = 20
+  // Другой администратор — и в подтверждённом состоянии клиента, и на сервере.
+  Object.assign(h.stored(), structuredClone(remote))
+  await h.dom.window.reviewApply(remote)
+  return h
+}
+
+test('R10 saved distance band adopts a later remote change instead of a stale snapshot', async () => {
+  const h = await savedBandThenRemote()
+  try {
+    const value = row(h.doc, 'bullet-extra_damage-damage_adjust').querySelector(
+      'input[type=number]',
+    ).value
+    assert.equal(value, '20', 'сохранённые 14 подтверждены, а не незавершённый черновик')
+  } finally {
+    finish(h)
+  }
+})
+
+test('R10 editing another band after a live revision preserves the other writer value', async () => {
+  const h = await savedBandThenRemote()
+  try {
+    const inputs = row(h.doc, 'bullet-extra_damage-damage_adjust').querySelectorAll(
+      'input[type=number]',
+    )
+    h.change(inputs[1], '13')
+    await h.dom.window.flush()
+    assert.equal(puts(h).length, 2)
+    assert.equal(puts(h)[1].expectedRevision, 5)
+    assert.equal(
+      h.stored().gunBalance['tacz:ak47'].bullet.extra_damage.damage_adjust[0].damage,
+      20,
+      'значение другого администратора нельзя затирать сохранёнными 14',
+    )
+  } finally {
+    finish(h)
+  }
+})

@@ -4555,8 +4555,11 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                         band.distance === bands[i].distance &&
                         band.damage === bands[i].damage,
                     )
-                  )
+                  ) {
+                    // Подтверждённая лента равна текущей: снапшот догоняет, DOM не трогаем.
+                    shown = gunRowValue(box)
                     return
+                  }
                 } catch {
                   // A genuinely changed server list replaces an invalid accepted value.
                 }
