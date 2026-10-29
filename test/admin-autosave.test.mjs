@@ -6,7 +6,7 @@ import ts from 'typescript'
 import { settingsBody, settingsReceipt } from '../src/lib/settings-form.ts'
 import { weaponFields, BODY_PARTS } from '../src/lib/gun-fields.ts'
 import { finalDamageVsMatchKit } from '../src/lib/gun-damage.ts'
-import { validateGunOverrides } from '../src/lib/gun-balance.ts'
+import { validateGunOverrides, validateGunCatalog } from '../src/lib/gun-balance.ts'
 import { bodyPartSummary, renderBodyPartField } from '../src/lib/body-part-form.ts'
 
 const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
@@ -1854,3 +1854,202 @@ for (const nextKind of ['текст', 'объект']) {
     }
   })
 }
+
+// ---- Ревью раунд 6 ----
+
+const jsonField = { type: 'json', nullable: false }
+const numField = { type: 'number', nullable: false, min: 0, max: 1000 }
+const mapField = {
+  type: 'map',
+  nullable: false,
+  keys: { type: 'string', nullable: false },
+  items: jsonField,
+}
+const kindControl = (parent) => parent.querySelector('select[aria-label="Тип значения"]')
+const scalarControl = (parent) => parent.querySelector('input[type=number]')
+async function withSchema(schema, defaults, initial) {
+  const h = await realSetup({ realSelect: true, initial: { gunBalance: { 'tacz:ak47': initial } } })
+  h.dom.window.gunComplexSetup(JSON.stringify(schema), JSON.stringify(defaults))
+  const realCatalog = structuredClone(h.dom.window.currentGunCatalog())
+  realCatalog.schema = 1
+  realCatalog.revision = 1
+  for (const gun of realCatalog.guns) {
+    delete gun.weaponKind
+    delete gun.sourceId
+  }
+  validateGunCatalog(realCatalog)
+  assert.deepEqual(validateGunOverrides({ 'tacz:ak47': initial }, realCatalog), {
+    'tacz:ak47': initial,
+  })
+  return h
+}
+for (const nextKind of ['текст', 'объект']) {
+  for (const index of [0, 1, 10]) {
+    test(`review round 6: generated e${index} collision preserves ${nextKind} draft`, async () => {
+      const params = Object.fromEntries([...Array(index)].map((_, i) => [`pad${i}`, 30 + i]))
+      Object.assign(params, { custom_rate: 2, [`e${index}`]: 99, custom_other: 3 })
+      const h = await realSetup({
+        realSelect: true,
+        initial: { gunBalance: { 'tacz:ak47': { script_param: params } } },
+      })
+      try {
+        assert.deepEqual(
+          validateGunOverrides(
+            { 'tacz:ak47': { script_param: params } },
+            h.dom.window.currentGunCatalog(),
+          ),
+          { 'tacz:ak47': { script_param: params } },
+        )
+        const field = row(h.doc, 'script_param')
+        h.change(kindControl(entry(field, 'custom_rate')), nextKind)
+        await h.dom.window.flush()
+        assert.equal(h.requests.length, 0)
+        h.change(scalarControl(entry(field, 'custom_other')), '4')
+        await h.dom.window.flush()
+        assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, {
+          ...params,
+          custom_other: 4,
+        })
+      } finally {
+        h.dom.window.close()
+      }
+    })
+  }
+  for (const key of ['e0', 'e1', 'e10', 'a.b', 'a[0]', 'a.b[10]', 'a"b', 'кириллица']) {
+    test(`review round 6: real key ${JSON.stringify(key)} preserves ${nextKind} draft`, async () => {
+      const params = { [key]: 2, custom_other: 3 }
+      const h = await realSetup({
+        realSelect: true,
+        initial: { gunBalance: { 'tacz:ak47': { script_param: params } } },
+      })
+      try {
+        assert.deepEqual(
+          validateGunOverrides(
+            { 'tacz:ak47': { script_param: params } },
+            h.dom.window.currentGunCatalog(),
+          ),
+          { 'tacz:ak47': { script_param: params } },
+        )
+        const field = row(h.doc, 'script_param')
+        h.change(kindControl(entry(field, key)), nextKind)
+        await h.dom.window.flush()
+        assert.equal(h.requests.length, 0)
+        h.change(scalarControl(entry(field, 'custom_other')), '4')
+        await h.dom.window.flush()
+        assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, {
+          ...params,
+          custom_other: 4,
+        })
+      } finally {
+        h.dom.window.close()
+      }
+    })
+  }
+  for (const container of ['object', 'array', 'map', 'object-in-map']) {
+    test(`review round 6: nested ${container} preserves ${nextKind} draft on sibling save`, async () => {
+      let fieldSchema, initial, defaults, findMap
+      const params = { custom_rate: 2, e0: 99, custom_other: 3 }
+      if (container === 'object') {
+        fieldSchema = { type: 'object', nullable: false, fields: { nested: mapField } }
+        initial = { tuning: { nested: params } }
+        defaults = { tuning: { nested: {} } }
+        findMap = (h) => row(h.doc, 'tuning-nested') ?? row(h.doc, 'tuning')
+      } else if (container === 'array') {
+        fieldSchema = { type: 'array', nullable: false, items: mapField }
+        initial = { tuning: [params] }
+        defaults = { tuning: [] }
+        findMap = (h) => row(h.doc, 'tuning')
+      } else if (container === 'map') {
+        fieldSchema = {
+          type: 'map',
+          nullable: false,
+          keys: { type: 'string', nullable: false },
+          items: mapField,
+        }
+        initial = { tuning: { outer: params } }
+        defaults = { tuning: {} }
+        findMap = (h) => entry(row(h.doc, 'tuning'), 'outer')
+      } else {
+        fieldSchema = {
+          type: 'map',
+          nullable: false,
+          keys: { type: 'string', nullable: false },
+          items: {
+            type: 'object',
+            nullable: false,
+            fields: { custom_rate: jsonField, custom_other: numField },
+          },
+        }
+        initial = { tuning: { outer: { custom_rate: 2, custom_other: 3 } } }
+        defaults = { tuning: {} }
+        findMap = (h) => entry(row(h.doc, 'tuning'), 'outer')
+      }
+      const h = await withSchema(
+        { type: 'object', nullable: false, fields: { tuning: fieldSchema } },
+        defaults,
+        initial,
+      )
+      try {
+        const field = findMap(h)
+        const draft = container === 'object-in-map' ? field : entry(field, 'custom_rate')
+        h.change(kindControl(draft), nextKind)
+        await h.dom.window.flush()
+        assert.equal(h.requests.length, 0)
+        const other =
+          container === 'object-in-map'
+            ? field.querySelector('input[id$="-custom_other"]')
+            : scalarControl(entry(field, 'custom_other'))
+        h.change(other, '4')
+        await h.dom.window.flush()
+        const stored = h.stored().gunBalance['tacz:ak47'].tuning
+        const actual =
+          container === 'object' ? stored.nested : container === 'array' ? stored[0] : stored.outer
+        assert.equal(actual.custom_other, 4, 'sibling edit must save')
+        assert.equal(actual.custom_rate, 2, 'unfinished draft must retain confirmed value')
+      } finally {
+        h.dom.window.close()
+      }
+    })
+  }
+  test(`review round 6: rename real key during ${nextKind} draft preserves its value`, async () => {
+    const h = await realSetup({
+      realSelect: true,
+      initial: {
+        gunBalance: { 'tacz:ak47': { script_param: { custom_rate: 2, custom_other: 3 } } },
+      },
+    })
+    try {
+      const field = row(h.doc, 'script_param'),
+        draft = entry(field, 'custom_rate')
+      h.change(kindControl(draft), nextKind)
+      await h.dom.window.flush()
+      assert.equal(h.requests.length, 0)
+      h.change(draft.querySelector('[data-gunkey]'), 'renamed')
+      await h.dom.window.flush()
+      assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, {
+        renamed: 2,
+        custom_other: 3,
+      })
+    } finally {
+      h.dom.window.close()
+    }
+  })
+}
+
+test('review round 6: control: renaming a populated map entry preserves its value', async () => {
+  const h = await realSetup({
+    realSelect: true,
+    initial: { gunBalance: { 'tacz:ak47': { script_param: { custom_rate: 2, custom_other: 3 } } } },
+  })
+  try {
+    const field = row(h.doc, 'script_param')
+    h.change(entry(field, 'custom_rate').querySelector('[data-gunkey]'), 'renamed')
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, {
+      renamed: 2,
+      custom_other: 3,
+    })
+  } finally {
+    h.dom.window.close()
+  }
+})

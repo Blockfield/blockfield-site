@@ -4598,6 +4598,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             const box = el('div', { className: 'gun-sub' })
             const kind = el('select', { ariaLabel: 'Тип значения' })
             let inner: GunCtl | null = null
+            // Последнее подтверждённое значение этого узла: приходит через write() из
+            // сохранённого состояния и едет вместе с узлом (в том числе при смене ключа).
+            let confirmed: unknown
             const infer = (value: unknown): (typeof kinds)[number] =>
               typeof value === 'number'
                 ? 'число'
@@ -4668,14 +4671,13 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 if (value !== undefined) delete box.dataset.typeDraft
                 // Незаконченная замена типа не должна стираться при сохранении соседей:
                 // пока она пуста, вклад в запись — последнее подтверждённое значение.
-                // Внутри записи карты путь — лишь id контрола (e0…), он может совпасть с
-                // настоящим ключом: там значение по ключу подставляет сама карта.
-                else if (box.dataset.typeDraft !== undefined && !box.closest('[data-map-entry]'))
-                  return gunPathGet(gunCurrentTop(top).effective, path)
+                // Узел сам хранит подтверждённое значение, поэтому не зависит от пути/ключа.
+                else if (box.dataset.typeDraft !== undefined) return structuredClone(confirmed)
                 return value
               },
               (value) => {
                 delete box.dataset.typeDraft
+                confirmed = structuredClone(value)
                 kind.value = infer(value)
                 rebuild(kind.value as (typeof kinds)[number], value)
               },
@@ -4869,12 +4871,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               if (Object.hasOwn(out, key)) throw new Error(`Ключ «${key}» уже есть.`)
               if (field.keys) checkGunField(key, field.keys)
               const ctl = entryControls.get(row as HTMLElement)
-              let v = ctl?.()
-              if (v === undefined && row.querySelector('[data-type-draft]')) {
-                // Недописанная смена типа у этой записи: остаётся её сохранённое значение.
-                const saved = gunPathGet(gunCurrentTop(top).effective, path)
-                if (gunIsObject(saved)) v = saved[key]
-              }
+              const v = ctl?.()
               if (v !== undefined) out[key] = v
             }
             return out
@@ -4884,7 +4881,6 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           const appendEntry = (key: string, value?: unknown, values?: GunField) => {
             void values
             const row = el('div', { className: 'gun-list-row' })
-            row.dataset.mapEntry = ''
             const keyCtl = field.keys?.values
               ? selectout(
                   el(
