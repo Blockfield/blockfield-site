@@ -3,7 +3,7 @@
 Сайт [blockfield.pro](https://blockfield.pro): загрузка лаунчера, аккаунты, игровые комнаты и статистика. Astro в режиме SSR (`@astrojs/node`, standalone), образ `ghcr.io/blockfield/blockfield-site`.
 Репозиторий `Blockfield/blockfield-site` (до 2026-09-27 — `netherg-io/blockfield-web`; старый адрес GitHub перенаправляет).
 
-Карта репозиториев и контрактов: [ARCHITECTURE](https://github.com/Blockfield/blockfield-workspace/blob/main/docs/ARCHITECTURE.md).
+Карта репозиториев и контрактов: [ARCHITECTURE](https://github.com/Blockfield/blockfield-workspace-private/blob/main/docs/ARCHITECTURE.md).
 
 Общие 404/500 и другие страницы ошибок — в [blockfield-errors](https://github.com/Blockfield/blockfield-errors).
 
