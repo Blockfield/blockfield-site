@@ -4655,13 +4655,25 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               rebuild(kind.value as (typeof kinds)[number], null)
               // Выбор типа — не очистка: пока значение нового типа пусто (текст, объект),
               // это локальный черновик, и сохранённая запись остаётся нетронутой.
-              if (inner?.read() === undefined) return
+              if (inner?.read() === undefined) {
+                box.dataset.typeDraft = ''
+                return
+              }
               onChange(kind)
             }
             return leaf(
               box,
-              () => inner?.read(),
+              () => {
+                const value = inner?.read()
+                if (value !== undefined) delete box.dataset.typeDraft
+                // Незаконченная замена типа не должна стираться при сохранении соседей:
+                // пока она пуста, вклад в запись — последнее подтверждённое значение.
+                else if (box.dataset.typeDraft !== undefined)
+                  return gunPathGet(gunCurrentTop(top).effective, path)
+                return value
+              },
               (value) => {
+                delete box.dataset.typeDraft
                 kind.value = infer(value)
                 rebuild(kind.value as (typeof kinds)[number], value)
               },
@@ -4855,7 +4867,12 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               if (Object.hasOwn(out, key)) throw new Error(`Ключ «${key}» уже есть.`)
               if (field.keys) checkGunField(key, field.keys)
               const ctl = entryControls.get(row as HTMLElement)
-              const v = ctl?.()
+              let v = ctl?.()
+              if (v === undefined && row.querySelector('[data-type-draft]')) {
+                // Недописанная смена типа у этой записи: остаётся её сохранённое значение.
+                const saved = gunPathGet(gunCurrentTop(top).effective, path)
+                if (gunIsObject(saved)) v = saved[key]
+              }
               if (v !== undefined) out[key] = v
             }
             return out

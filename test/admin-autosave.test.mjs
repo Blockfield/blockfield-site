@@ -1759,3 +1759,34 @@ test('review round 3: after switching a saved map value to text, entering text s
     h.dom.window.close()
   }
 })
+
+// ---- Ревью раунд 4 ----
+for (const nextKind of ['текст', 'объект'])
+  test(`review round 4: unfinished ${nextKind} type draft cannot erase its saved entry when a sibling is edited`, async () => {
+    const initial = { 'tacz:ak47': { script_param: { custom_rate: 2, custom_other: 3 } } }
+    const h = await realSetup({ realSelect: true, initial: { gunBalance: initial } })
+    try {
+      assert.deepEqual(validateGunOverrides(initial, h.dom.window.currentGunCatalog()), initial)
+      const scriptRow = row(h.doc, 'script_param')
+      const entry = (key) =>
+        [...scriptRow.querySelectorAll('[data-gunkey]')]
+          .find((c) => c.value === key)
+          .closest('.gun-list-row')
+      const kind = entry('custom_rate').querySelector('select[aria-label="Тип значения"]')
+      h.change(kind, nextKind)
+      await h.dom.window.flush()
+      assert.equal(h.requests.length, 0, 'type choice alone must not write')
+      assert.deepEqual(h.stored().gunBalance, initial)
+      const sibling = entry('custom_other').querySelector('input[type=number]')
+      h.change(sibling, '4')
+      await h.dom.window.flush()
+      assert.equal(
+        h.stored().gunBalance['tacz:ak47'].script_param.custom_rate,
+        2,
+        'editing another key must not silently delete the unfinished replacement entry',
+      )
+      assert.equal(h.stored().gunBalance['tacz:ak47'].script_param.custom_other, 4)
+    } finally {
+      h.dom.window.close()
+    }
+  })
