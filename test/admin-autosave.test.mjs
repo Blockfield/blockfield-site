@@ -6,6 +6,7 @@ import ts from 'typescript'
 import { settingsBody, settingsReceipt } from '../src/lib/settings-form.ts'
 import { weaponFields, BODY_PARTS } from '../src/lib/gun-fields.ts'
 import { finalDamageVsMatchKit } from '../src/lib/gun-damage.ts'
+import { validateGunOverrides } from '../src/lib/gun-balance.ts'
 import { bodyPartSummary, renderBodyPartField } from '../src/lib/body-part-form.ts'
 
 const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
@@ -1247,4 +1248,281 @@ test('weapon editor shows no JSON wording and keeps nested rows and ↺ inside t
   // На узком экране ↺ уходит на свою строку под таблицей дистанций.
   assert.match(page, /\.ctl > \.gun-sub \{\s*flex: 1 1 100%;/)
   assert.match(page, /\.ctl > \.gun-sub ~ \.gun-reset \{\s*margin-left: auto;/)
+})
+
+// ---- Независимое ревью PR #64: настоящий нормализатор сервера вместо эхо-ответа ----
+const catalog = JSON.parse(
+  readFileSync(new URL('./fixtures/gun-balance-ak47.json', import.meta.url), 'utf8'),
+)
+const ak = catalog.guns.find((g) => g.id === 'elitex:ak47')
+async function realSetup(options = {}) {
+  let current = { revision: 3, rooms: { maxRooms: 4 }, ...(options.initial ?? {}) }
+  let harness
+  const requests = []
+  harness = await setup({
+    settings: current,
+    handle: async ({ path, method, body }) => {
+      if (!harness) return
+      if (options.handle) {
+        const response = await options.handle({ path, method, body, current })
+        if (response) return response
+      }
+      if (method === 'PUT') {
+        current = {
+          ...current,
+          revision: current.revision + 1,
+          gunBalance: validateGunOverrides(body.gunBalance, harness.dom.window.currentGunCatalog()),
+        }
+        requests.push(structuredClone(current))
+        return { status: 200, data: { settings: current } }
+      }
+      if (path === 'settings') return { status: 200, data: { settings: current } }
+    },
+  })
+  harness.dom.window.gunComplexSetup(JSON.stringify(catalog.fields), JSON.stringify(ak.defaults))
+  return { ...harness, requests, stored: () => current, doc: harness.dom.window.document }
+}
+const row = (doc, rk) => doc.querySelector(`[data-rk="${rk}"]`)
+
+test('review #1: nested undo against real server normalization', async () => {
+  const h = await realSetup()
+  try {
+    h.change(h.doc.querySelector('#gun-field-bullet-damage'), '10')
+    await h.dom.window.flush()
+    h.doc.querySelector('.toast button').click()
+    await h.dom.window.flush()
+    assert.equal(h.requests.length, 2, 'Undo must send the restoration PUT')
+  } finally {
+    h.dom.window.close()
+  }
+})
+test('review #2: edit body and base damage sequentially', async () => {
+  const h = await realSetup()
+  try {
+    h.change(h.doc.querySelector('#gun-field-bullet-damage'), '10')
+    await h.dom.window.flush()
+    h.change(h.doc.querySelector('#gun-field-bullet-bullet_amount'), '2')
+    await h.dom.window.flush()
+    assert.equal(h.stored().gunBalance['tacz:ak47'].bullet.damage, 10)
+  } finally {
+    h.dom.window.close()
+  }
+})
+test('review #3: refresh displays saved array and null overrides', async () => {
+  const h = await realSetup({
+    initial: { gunBalance: { 'tacz:ak47': { fire_mode: ['semi'], inaccuracy: null } } },
+  })
+  try {
+    const modes = row(h.doc, 'fire_mode')
+    const spread = row(h.doc, 'inaccuracy')
+    assert.deepEqual(
+      [...modes.querySelectorAll('select')].map((s) => s.value),
+      ['semi'],
+    )
+    assert.equal(spread.querySelector('.gun-null input').checked, true)
+  } finally {
+    h.dom.window.close()
+  }
+})
+test('review #4: descending distance bands rejected', async () => {
+  const h = await realSetup()
+  try {
+    h.change(h.doc.querySelector('.gun-band-dist'), '100')
+    await h.dom.window.flush()
+    assert.equal(h.requests.length, 0, '100,50,80,120 must be rejected')
+  } finally {
+    h.dom.window.close()
+  }
+})
+test('review #5: comma in a distance field', async () => {
+  const h = await realSetup()
+  try {
+    h.change(h.doc.querySelector('.gun-band-dist'), '25,5')
+    await h.dom.window.flush()
+    assert.equal(h.requests.length, 1)
+  } finally {
+    h.dom.window.close()
+  }
+})
+test('review #6: live armor-ignore input updates final damage', async () => {
+  const h = await realSetup()
+  try {
+    const armor = h.doc.querySelector('#gun-field-bullet-extra_damage-armor_ignore')
+    const before = h.doc.querySelector('.gun-band-final').textContent
+    armor.value = '1'
+    armor.dispatchEvent(new h.dom.window.Event('input', { bubbles: true }))
+    // Trigger existing band input handler, which recomputes all finals.
+    h.doc
+      .querySelector('.gun-band input[type=number]')
+      .dispatchEvent(new h.dom.window.Event('input', { bubbles: true }))
+    const after = h.doc.querySelector('.gun-band-final').textContent
+    assert.notEqual(after, before)
+  } finally {
+    h.dom.window.close()
+  }
+})
+test('review #7: reset nested override removes key, preserves sibling', async () => {
+  const h = await realSetup({
+    initial: {
+      gunBalance: { 'tacz:ak47': { bullet: { damage: 10, extra_damage: { armor_ignore: 0.5 } } } },
+    },
+  })
+  try {
+    row(h.doc, 'bullet-damage').querySelector('.gun-reset').click()
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance, {
+      'tacz:ak47': { bullet: { extra_damage: { armor_ignore: 0.5 } } },
+    })
+  } finally {
+    h.dom.window.close()
+  }
+})
+test('review #8: 409 preserves another changed leaf of same bullet object', async () => {
+  let puts = 0
+  const h = await realSetup({
+    handle: ({ method, current }) => {
+      if (method === 'PUT' && ++puts === 1) {
+        Object.assign(current, {
+          revision: 9,
+          gunBalance: { 'tacz:ak47': { bullet: { extra_damage: { armor_ignore: 0.8 } } } },
+        })
+        return { status: 409, data: { error: 'stale' } }
+      }
+      if (method === 'GET' && puts === 1) return { status: 200, data: { settings: current } }
+    },
+  })
+  try {
+    h.change(h.doc.querySelector('#gun-field-bullet-damage'), '10')
+    await h.dom.window.flush()
+    assert.equal(h.stored().gunBalance['tacz:ak47'].bullet.extra_damage.armor_ignore, 0.8)
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('review #9: committed armor-ignore refreshes visible final damage', async () => {
+  const h = await realSetup()
+  try {
+    h.change(h.doc.querySelector('#gun-field-bullet-extra_damage-armor_ignore'), '1')
+    await h.dom.window.flush()
+    assert.equal(h.doc.querySelector('.gun-band-final').textContent, 'итог: голова 13 · тело 8.6')
+  } finally {
+    h.dom.window.close()
+  }
+})
+test('review #10: weapon 403 restores rejected value and cancels queued PUTs', async () => {
+  let finish
+  const h = await realSetup({
+    handle: async ({ method }) => {
+      if (method === 'PUT') {
+        await new Promise((r) => (finish = r))
+        return { status: 403, data: { error: 'no permission' } }
+      }
+    },
+  })
+  try {
+    h.change(h.doc.querySelector('#gun-field-bullet-damage'), '10')
+    await Promise.resolve()
+    h.change(h.doc.querySelector('#gun-field-rpm'), '800')
+    finish()
+    await h.dom.window.flush()
+    assert.equal(h.calls.filter((c) => c.method === 'PUT').length, 1)
+    assert.equal(h.doc.querySelector('#gun-field-bullet-damage').value, '7')
+  } finally {
+    h.dom.window.close()
+  }
+})
+test('review #11: number limits and normal empty reset', async () => {
+  const h = await realSetup()
+  try {
+    for (const bad of ['-1', '10001']) {
+      h.change(h.doc.querySelector('#gun-field-bullet-damage'), bad)
+      await h.dom.window.flush()
+      assert.equal(h.requests.length, 0)
+    }
+    h.change(h.doc.querySelector('#gun-field-bullet-damage'), '8.5')
+    await h.dom.window.flush()
+    assert.equal(h.stored().gunBalance['tacz:ak47'].bullet.damage, 8.5)
+    h.change(h.doc.querySelector('#gun-field-bullet-damage'), '')
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance, {})
+  } finally {
+    h.dom.window.close()
+  }
+})
+test('review #12: removal promotes previous distance to infinite', async () => {
+  const h = await realSetup()
+  try {
+    ;[...h.doc.querySelectorAll('.gun-band')].at(-1).querySelector('button').click()
+    await h.dom.window.flush()
+    const bands = h.stored().gunBalance['tacz:ak47'].bullet.extra_damage.damage_adjust
+    assert.equal(bands.at(-1).distance, 'infinite')
+    assert.equal(bands.at(-1).damage, 6.5)
+  } finally {
+    h.dom.window.close()
+  }
+})
+test('review #13: top-level array edit keeps saved changed badge and reset', async () => {
+  const h = await realSetup()
+  try {
+    ;[...row(h.doc, 'fire_mode').querySelectorAll('.gun-list-row')][0]
+      .querySelector('button')
+      .click()
+    await h.dom.window.flush()
+    const modes = row(h.doc, 'fire_mode')
+    assert.equal(modes.hasAttribute('data-override'), true)
+    assert.equal(modes.querySelector('.gun-reset').hidden, false)
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('review #14: structured array selects have accessible labels', async () => {
+  const h = await realSetup()
+  try {
+    const select = row(h.doc, 'fire_mode').querySelector('select')
+    assert.ok(
+      select.labels.length ||
+        select.getAttribute('aria-label') ||
+        select.getAttribute('aria-labelledby') ||
+        select.title,
+    )
+  } finally {
+    h.dom.window.close()
+  }
+})
+test('review #16: an unfinished number is not mistaken for an empty reset', async () => {
+  const h = await realSetup()
+  try {
+    h.change(h.doc.querySelector('#gun-field-bullet-damage'), '10')
+    await h.dom.window.flush()
+    const before = h.requests.length
+    // jsdom не заполняет validity.badInput; браузер для недописанного числа даёт value '' + badInput.
+    const input = h.doc.querySelector('#gun-field-bullet-damage')
+    Object.defineProperty(input, 'validity', { value: { badInput: true } })
+    h.change(input, '')
+    await h.dom.window.flush()
+    assert.equal(h.requests.length, before)
+    assert.equal(h.stored().gunBalance['tacz:ak47'].bullet.damage, 10)
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('review #1b: two sibling bullet edits queued back to back both survive', async () => {
+  const h = await realSetup()
+  try {
+    h.change(h.doc.querySelector('#gun-field-bullet-damage'), '10')
+    h.change(h.doc.querySelector('#gun-field-bullet-bullet_amount'), '2')
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].bullet, { damage: 10, bullet_amount: 2 })
+  } finally {
+    h.dom.window.close()
+  }
+})
+
+test('review #6: distance popover states the plate assumption; headshots bypass the plate', async () => {
+  assert.match(script, /\.concat\(gunPlateNote\)/)
+  assert.match(script, /выстрелы в голову плиту обходят, но расходуют её/)
+  assert.doesNotMatch(script, /по рукам, ногам и голове/)
 })

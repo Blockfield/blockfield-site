@@ -1,0 +1,1303 @@
+{
+ "schema": 1,
+ "bodyPartsEnabled": true,
+ "revision": 0,
+ "fields": {
+  "nullable": false,
+  "type": "object",
+  "fields": {
+   "ammo": {
+    "nullable": false,
+    "type": "resource"
+   },
+   "ammo_amount": {
+    "nullable": false,
+    "type": "integer",
+    "min": 1.0,
+    "max": 1000.0
+   },
+   "extended_mag_ammo_amount": {
+    "nullable": true,
+    "type": "array",
+    "items": {
+     "nullable": false,
+     "type": "integer",
+     "min": 1.0,
+     "max": 1000.0
+    }
+   },
+   "can_crawl": {
+    "nullable": false,
+    "type": "boolean"
+   },
+   "can_slide": {
+    "nullable": false,
+    "type": "boolean"
+   },
+   "bolt": {
+    "nullable": false,
+    "type": "string",
+    "values": [
+     "open_bolt",
+     "closed_bolt",
+     "manual_action"
+    ]
+   },
+   "rpm": {
+    "nullable": false,
+    "type": "integer",
+    "min": 1.0,
+    "max": 1200.0
+   },
+   "bullet": {
+    "nullable": false,
+    "type": "object",
+    "fields": {
+     "life": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.0,
+      "max": 60.0
+     },
+     "bullet_amount": {
+      "nullable": false,
+      "type": "integer",
+      "min": 1.0,
+      "max": 128.0
+     },
+     "damage": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.0,
+      "max": 10000.0
+     },
+     "extra_damage": {
+      "nullable": true,
+      "type": "object",
+      "fields": {
+       "armor_ignore": {
+        "nullable": false,
+        "type": "number",
+        "min": 0.0,
+        "max": 1.0
+       },
+       "head_shot_multiplier": {
+        "nullable": false,
+        "type": "number",
+        "min": 0.0,
+        "max": 10000.0
+       },
+       "damage_adjust": {
+        "nullable": false,
+        "type": "array",
+        "items": {
+         "nullable": false,
+         "type": "object",
+         "fields": {
+          "distance": {
+           "nullable": false,
+           "acceptsInfinite": true,
+           "type": "number",
+           "min": 0.0,
+           "max": 10000.0
+          },
+          "damage": {
+           "nullable": false,
+           "type": "number",
+           "min": 0.0,
+           "max": 10000.0
+          }
+         }
+        }
+       }
+      }
+     },
+     "speed": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.0,
+      "max": 10000.0
+     },
+     "gravity": {
+      "nullable": false,
+      "type": "number",
+      "min": -100.0,
+      "max": 100.0
+     },
+     "knockback": {
+      "nullable": false,
+      "type": "number",
+      "min": -100.0,
+      "max": 100.0
+     },
+     "friction": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.0,
+      "max": 1.0
+     },
+     "pierce": {
+      "nullable": false,
+      "type": "integer",
+      "min": 1.0,
+      "max": 128.0
+     },
+     "ignite": {
+      "nullable": false,
+      "type": "object",
+      "fields": {
+       "entity": {
+        "nullable": false,
+        "type": "boolean"
+       },
+       "block": {
+        "nullable": false,
+        "type": "boolean"
+       }
+      },
+      "acceptsBoolean": true
+     },
+     "ignite_entity_time": {
+      "nullable": false,
+      "type": "integer",
+      "min": 0.0,
+      "max": 10000.0
+     },
+     "tracer_count_interval": {
+      "nullable": false,
+      "type": "integer",
+      "min": -1.0,
+      "max": 1000.0
+     },
+     "explosion": {
+      "nullable": true,
+      "type": "object",
+      "fields": {
+       "explode": {
+        "nullable": false,
+        "type": "boolean"
+       },
+       "radius": {
+        "nullable": false,
+        "type": "number",
+        "min": 0.0,
+        "max": 64.0
+       },
+       "damage": {
+        "nullable": false,
+        "type": "number",
+        "min": 0.0,
+        "max": 10000.0
+       },
+       "knockback": {
+        "nullable": false,
+        "type": "boolean"
+       },
+       "destroy_block": {
+        "nullable": false,
+        "type": "boolean"
+       },
+       "delay": {
+        "nullable": false,
+        "type": "number",
+        "min": 0.0,
+        "max": 60.0
+       }
+      }
+     }
+    }
+   },
+   "draw_time": {
+    "nullable": false,
+    "type": "number",
+    "min": 0.0,
+    "max": 60.0
+   },
+   "put_away_time": {
+    "nullable": false,
+    "type": "number",
+    "min": 0.0,
+    "max": 60.0
+   },
+   "sprint_time": {
+    "nullable": false,
+    "type": "number",
+    "min": 0.0,
+    "max": 60.0
+   },
+   "aim_time": {
+    "nullable": false,
+    "type": "number",
+    "min": 0.0,
+    "max": 60.0
+   },
+   "bolt_action_time": {
+    "nullable": false,
+    "type": "number",
+    "min": 0.0,
+    "max": 60.0
+   },
+   "bolt_feed_time": {
+    "nullable": false,
+    "type": "number",
+    "min": -1.0,
+    "max": 60.0
+   },
+   "fire_sound": {
+    "nullable": false,
+    "type": "object",
+    "fields": {
+     "fire_multiplier": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.0,
+      "max": 10.0
+     },
+     "silence_multiplier": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.0,
+      "max": 10.0
+     }
+    }
+   },
+   "reload": {
+    "nullable": false,
+    "type": "object",
+    "fields": {
+     "type": {
+      "nullable": false,
+      "type": "string",
+      "values": [
+       "magazine",
+       "manual",
+       "fuel",
+       "inventory"
+      ]
+     },
+     "infinite": {
+      "nullable": false,
+      "type": "boolean"
+     },
+     "feed": {
+      "nullable": false,
+      "type": "object",
+      "fields": {
+       "empty": {
+        "nullable": false,
+        "type": "number",
+        "min": 0.0,
+        "max": 60.0
+       },
+       "tactical": {
+        "nullable": false,
+        "type": "number",
+        "min": 0.0,
+        "max": 60.0
+       }
+      }
+     },
+     "cooldown": {
+      "nullable": false,
+      "type": "object",
+      "fields": {
+       "empty": {
+        "nullable": false,
+        "type": "number",
+        "min": 0.0,
+        "max": 60.0
+       },
+       "tactical": {
+        "nullable": false,
+        "type": "number",
+        "min": 0.0,
+        "max": 60.0
+       }
+      }
+     }
+    }
+   },
+   "fire_mode": {
+    "nullable": false,
+    "type": "array",
+    "items": {
+     "nullable": false,
+     "type": "string",
+     "values": [
+      "auto",
+      "semi",
+      "burst"
+     ]
+    }
+   },
+   "fire_mode_adjust": {
+    "nullable": false,
+    "type": "map",
+    "keys": {
+     "nullable": false,
+     "type": "string",
+     "values": [
+      "auto",
+      "semi",
+      "burst"
+     ]
+    },
+    "items": {
+     "nullable": true,
+     "type": "object",
+     "fields": {
+      "damage": {
+       "nullable": false,
+       "type": "number",
+       "min": -10000.0,
+       "max": 10000.0
+      },
+      "rpm": {
+       "nullable": false,
+       "type": "integer",
+       "min": -10000.0,
+       "max": 10000.0
+      },
+      "speed": {
+       "nullable": false,
+       "type": "number",
+       "min": -10000.0,
+       "max": 10000.0
+      },
+      "knockback": {
+       "nullable": false,
+       "type": "number",
+       "min": -10000.0,
+       "max": 10000.0
+      },
+      "armor_ignore": {
+       "nullable": false,
+       "type": "number",
+       "min": -10000.0,
+       "max": 10000.0
+      },
+      "head_shot_multiplier": {
+       "nullable": false,
+       "type": "number",
+       "min": -10000.0,
+       "max": 10000.0
+      },
+      "aim_inaccuracy": {
+       "nullable": false,
+       "type": "number",
+       "min": -10000.0,
+       "max": 10000.0
+      },
+      "other_inaccuracy": {
+       "nullable": false,
+       "type": "number",
+       "min": -10000.0,
+       "max": 10000.0
+      }
+     }
+    }
+   },
+   "burst_data": {
+    "nullable": false,
+    "type": "object",
+    "fields": {
+     "continuous_shoot": {
+      "nullable": false,
+      "type": "boolean"
+     },
+     "count": {
+      "nullable": false,
+      "type": "integer",
+      "min": 1.0,
+      "max": 128.0
+     },
+     "bpm": {
+      "nullable": false,
+      "type": "integer",
+      "min": 1.0,
+      "max": 12000.0
+     },
+     "min_interval": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.0,
+      "max": 60.0
+     }
+    }
+   },
+   "crawl_recoil_multiplier": {
+    "nullable": false,
+    "type": "number",
+    "min": 0.0,
+    "max": 10000.0
+   },
+   "recoil": {
+    "nullable": false,
+    "type": "object",
+    "fields": {
+     "pitch": {
+      "nullable": true,
+      "type": "array",
+      "items": {
+       "nullable": false,
+       "type": "object",
+       "fields": {
+        "time": {
+         "nullable": false,
+         "type": "number",
+         "min": 0.0,
+         "max": 60.0
+        },
+        "value": {
+         "nullable": false,
+         "type": "array",
+         "items": {
+          "nullable": false,
+          "type": "number",
+          "min": -180.0,
+          "max": 180.0
+         }
+        }
+       }
+      }
+     },
+     "yaw": {
+      "nullable": true,
+      "type": "array",
+      "items": {
+       "nullable": false,
+       "type": "object",
+       "fields": {
+        "time": {
+         "nullable": false,
+         "type": "number",
+         "min": 0.0,
+         "max": 60.0
+        },
+        "value": {
+         "nullable": false,
+         "type": "array",
+         "items": {
+          "nullable": false,
+          "type": "number",
+          "min": -180.0,
+          "max": 180.0
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "hurt_bob_tweak_multiplier": {
+    "nullable": false,
+    "type": "number",
+    "min": 0.0,
+    "max": 10000.0
+   },
+   "inaccuracy": {
+    "nullable": true,
+    "type": "map",
+    "keys": {
+     "nullable": true,
+     "type": "string",
+     "values": [
+      "stand",
+      "move",
+      "sneak",
+      "lie",
+      "aim"
+     ]
+    },
+    "items": {
+     "nullable": false,
+     "type": "number",
+     "min": 0.0,
+     "max": 10000.0
+    }
+   },
+   "movement_speed": {
+    "nullable": false,
+    "type": "object",
+    "fields": {
+     "base": {
+      "nullable": false,
+      "type": "number",
+      "min": -1.0,
+      "max": 10.0
+     },
+     "aim": {
+      "nullable": false,
+      "type": "number",
+      "min": -1.0,
+      "max": 10.0
+     },
+     "reload": {
+      "nullable": false,
+      "type": "number",
+      "min": -1.0,
+      "max": 10.0
+     }
+    }
+   },
+   "melee": {
+    "nullable": false,
+    "type": "object",
+    "fields": {
+     "distance": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.0,
+      "max": 10000.0
+     },
+     "cooldown": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.0,
+      "max": 60.0
+     },
+     "default": {
+      "nullable": true,
+      "type": "object",
+      "fields": {
+       "animation_type": {
+        "nullable": false,
+        "type": "string"
+       },
+       "distance": {
+        "nullable": false,
+        "type": "number",
+        "min": 0.0,
+        "max": 10000.0
+       },
+       "range_angle": {
+        "nullable": false,
+        "type": "number",
+        "min": 0.0,
+        "max": 360.0
+       },
+       "cooldown": {
+        "nullable": false,
+        "type": "number",
+        "min": 0.0,
+        "max": 60.0
+       },
+       "damage": {
+        "nullable": false,
+        "type": "number",
+        "min": 0.0,
+        "max": 10000.0
+       },
+       "knockback": {
+        "nullable": false,
+        "type": "number",
+        "min": -100.0,
+        "max": 100.0
+       },
+       "prep": {
+        "nullable": false,
+        "type": "number",
+        "min": 0.0,
+        "max": 60.0
+       }
+      }
+     }
+    }
+   },
+   "heat": {
+    "nullable": true,
+    "type": "object",
+    "fields": {
+     "max": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.001,
+      "max": 100000.0
+     },
+     "per_shot": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.0,
+      "max": 10000.0
+     },
+     "cooling_multiplier": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.0,
+      "max": 10000.0
+     },
+     "cooling_delay": {
+      "nullable": false,
+      "type": "integer",
+      "min": 0.0,
+      "max": 300000.0
+     },
+     "over_heat_time": {
+      "nullable": false,
+      "type": "integer",
+      "min": 0.0,
+      "max": 300000.0
+     },
+     "min_inaccuracy": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.0,
+      "max": 10000.0
+     },
+     "max_inaccuracy": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.0,
+      "max": 10000.0
+     },
+     "min_rpm_mod": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.01,
+      "max": 10.0
+     },
+     "max_rpm_mod": {
+      "nullable": false,
+      "type": "number",
+      "min": 0.01,
+      "max": 10.0
+     }
+    }
+   },
+   "allow_attachment_types": {
+    "nullable": false,
+    "type": "array",
+    "items": {
+     "nullable": false,
+     "type": "string",
+     "values": [
+      "scope",
+      "muzzle",
+      "stock",
+      "grip",
+      "laser",
+      "extended_mag"
+     ]
+    }
+   },
+   "exclusive_attachments": {
+    "nullable": false,
+    "type": "map",
+    "keys": {
+     "nullable": false,
+     "type": "resource"
+    },
+    "items": {
+     "nullable": false,
+     "type": "object",
+     "fields": {
+      "weight": {
+       "nullable": false,
+       "type": "number",
+       "min": -100.0,
+       "max": 100.0
+      },
+      "extended_mag_level": {
+       "nullable": false,
+       "type": "integer",
+       "min": 0.0,
+       "max": 3.0
+      },
+      "melee": {
+       "nullable": true,
+       "type": "object",
+       "fields": {
+        "distance": {
+         "nullable": false,
+         "type": "number",
+         "min": 0.0,
+         "max": 10000.0
+        },
+        "range_angle": {
+         "nullable": false,
+         "type": "number",
+         "min": 0.0,
+         "max": 360.0
+        },
+        "cooldown": {
+         "nullable": false,
+         "type": "number",
+         "min": 0.0,
+         "max": 60.0
+        },
+        "damage": {
+         "nullable": false,
+         "type": "number",
+         "min": 0.0,
+         "max": 10000.0
+        },
+        "knockback": {
+         "nullable": false,
+         "type": "number",
+         "min": -100.0,
+         "max": 100.0
+        },
+        "prep": {
+         "nullable": false,
+         "type": "number",
+         "min": 0.0,
+         "max": 60.0
+        },
+        "effects": {
+         "nullable": false,
+         "type": "array",
+         "items": {
+          "nullable": false,
+          "type": "object",
+          "fields": {
+           "id": {
+            "nullable": false,
+            "type": "resource"
+           },
+           "time": {
+            "nullable": false,
+            "type": "integer",
+            "min": 0.0,
+            "max": 12000.0
+           },
+           "amplifier": {
+            "nullable": false,
+            "type": "integer",
+            "min": 0.0,
+            "max": 255.0
+           },
+           "hide_particles": {
+            "nullable": false,
+            "type": "boolean"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "weight": {
+    "nullable": false,
+    "type": "number",
+    "min": 0.0,
+    "max": 10000.0
+   },
+   "builtin_attachments": {
+    "nullable": false,
+    "type": "map",
+    "keys": {
+     "nullable": false,
+     "type": "string",
+     "values": [
+      "scope",
+      "muzzle",
+      "stock",
+      "grip",
+      "laser",
+      "extended_mag"
+     ]
+    },
+    "items": {
+     "nullable": false,
+     "type": "resource"
+    }
+   },
+   "script": {
+    "nullable": true,
+    "type": "resource"
+   },
+   "script_param": {
+    "nullable": true,
+    "type": "map",
+    "keys": {
+     "nullable": true,
+     "type": "string"
+    },
+    "items": {
+     "nullable": true,
+     "type": "json"
+    }
+   },
+   "charging": {
+    "nullable": true,
+    "type": "map",
+    "keys": {
+     "nullable": true,
+     "type": "string",
+     "values": [
+      "auto",
+      "semi",
+      "burst"
+     ]
+    },
+    "items": {
+     "nullable": true,
+     "type": "object",
+     "fields": {
+      "type": {
+       "nullable": false,
+       "type": "string",
+       "values": [
+        "auto",
+        "hold",
+        "delay"
+       ]
+      },
+      "increase_per_tick": {
+       "nullable": false,
+       "type": "number",
+       "min": 0.0,
+       "max": 10000.0
+      },
+      "decrease_per_tick": {
+       "nullable": false,
+       "type": "number",
+       "min": 0.0,
+       "max": 10000.0
+      },
+      "decrease_on_fire": {
+       "nullable": false,
+       "type": "number",
+       "min": 0.0,
+       "max": 10000.0
+      },
+      "max_charge": {
+       "nullable": false,
+       "type": "number",
+       "min": 0.001,
+       "max": 100000.0
+      },
+      "fire_threshold": {
+       "nullable": false,
+       "type": "number",
+       "min": 0.0,
+       "max": 10000.0
+      },
+      "charge_during_cooldown": {
+       "nullable": false,
+       "type": "boolean"
+      }
+     }
+    }
+   },
+   "body_part_multipliers": {
+    "type": "object",
+    "nullable": false,
+    "serverOnly": true,
+    "fields": {
+     "head": {
+      "type": "number",
+      "nullable": false,
+      "min": 0,
+      "max": 10
+     },
+     "left_arm": {
+      "type": "number",
+      "nullable": false,
+      "min": 0,
+      "max": 10
+     },
+     "left_leg": {
+      "type": "number",
+      "nullable": false,
+      "min": 0,
+      "max": 10
+     },
+     "right_arm": {
+      "type": "number",
+      "nullable": false,
+      "min": 0,
+      "max": 10
+     },
+     "right_leg": {
+      "type": "number",
+      "nullable": false,
+      "min": 0,
+      "max": 10
+     },
+     "torso": {
+      "type": "number",
+      "nullable": false,
+      "min": 0,
+      "max": 10
+     }
+    }
+   }
+  }
+ },
+ "guns": [
+  {
+   "id": "elitex:ak47",
+   "weaponKind": "tacz",
+   "sourceId": "elitex:ak47",
+   "data": "elitex:ak47x_data",
+   "name": "elitex.gun.ak47x.name",
+   "type": "rifle",
+   "defaults": {
+    "ammo": "tacz:762x39",
+    "ammo_amount": 30,
+    "can_crawl": true,
+    "can_slide": true,
+    "bolt": "closed_bolt",
+    "rpm": 620,
+    "bullet": {
+     "life": 0.8,
+     "bullet_amount": 1,
+     "damage": 7,
+     "extra_damage": {
+      "armor_ignore": 0.3,
+      "head_shot_multiplier": 1.5,
+      "damage_adjust": [
+       {
+        "distance": 25,
+        "damage": 9
+       },
+       {
+        "distance": 50,
+        "damage": 8.5
+       },
+       {
+        "distance": 80,
+        "damage": 7.5
+       },
+       {
+        "distance": 120,
+        "damage": 6.5
+       },
+       {
+        "distance": "infinite",
+        "damage": 5.5
+       }
+      ]
+     },
+     "speed": 340,
+     "gravity": 0.0245,
+     "knockback": 0,
+     "friction": 0.01,
+     "pierce": 1,
+     "ignite": false,
+     "ignite_entity_time": 2,
+     "tracer_count_interval": 0
+    },
+    "draw_time": 0.95,
+    "put_away_time": 0.5,
+    "sprint_time": 0.1,
+    "aim_time": 0.1,
+    "bolt_action_time": 0.0,
+    "bolt_feed_time": -1.0,
+    "fire_sound": {
+     "fire_multiplier": 1.0,
+     "silence_multiplier": 1.0
+    },
+    "reload": {
+     "type": "magazine",
+     "infinite": false,
+     "feed": {
+      "empty": 2.15,
+      "tactical": 1.58
+     },
+     "cooldown": {
+      "empty": 2.82,
+      "tactical": 2.52
+     }
+    },
+    "fire_mode": [
+     "auto",
+     "semi"
+    ],
+    "fire_mode_adjust": {},
+    "burst_data": {
+     "continuous_shoot": true,
+     "count": 3,
+     "bpm": 900,
+     "min_interval": 0.3
+    },
+    "crawl_recoil_multiplier": 0.5,
+    "recoil": {
+     "pitch": [
+      {
+       "time": 0,
+       "value": [
+        0.7,
+        0.7
+       ]
+      },
+      {
+       "time": 0.25,
+       "value": [
+        0.7,
+        0.7
+       ]
+      },
+      {
+       "time": 0.45,
+       "value": [
+        -0.175,
+        -0.175
+       ]
+      },
+      {
+       "time": 0.6,
+       "value": [
+        0,
+        0
+       ]
+      }
+     ],
+     "yaw": [
+      {
+       "time": 0,
+       "value": [
+        -0.35,
+        -0.15
+       ]
+      },
+      {
+       "time": 0.25,
+       "value": [
+        -0.35,
+        -0.15
+       ]
+      },
+      {
+       "time": 0.45,
+       "value": [
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    "hurt_bob_tweak_multiplier": 0.05,
+    "inaccuracy": {
+     "stand": 7,
+     "move": 5.75,
+     "sneak": 3.5,
+     "lie": 2.5,
+     "aim": 0.15
+    },
+    "movement_speed": {
+     "base": 0.0,
+     "aim": 0.0,
+     "reload": 0.0
+    },
+    "melee": {
+     "distance": 1.0,
+     "cooldown": 1.0
+    },
+    "allow_attachment_types": [
+     "scope",
+     "muzzle",
+     "grip"
+    ],
+    "exclusive_attachments": {
+     "tacz:scope_standard_8x": {
+      "modifier": {},
+      "weight": 2.0,
+      "extended_mag_level": 0,
+      "ads_addend": 0.04,
+      "inaccuracy_addend": -0.4,
+      "recoil_modifier": {
+       "pitch": -0.2,
+       "yaw": -0.1
+      }
+     }
+    },
+    "weight": 3.5,
+    "builtin_attachments": {},
+    "body_part_multipliers": {
+     "head": 1.0,
+     "left_arm": 1.0,
+     "left_leg": 1.0,
+     "right_arm": 1.0,
+     "right_leg": 1.0,
+     "torso": 1.0
+    }
+   },
+   "effective": {
+    "ammo": "tacz:762x39",
+    "ammo_amount": 30,
+    "can_crawl": true,
+    "can_slide": true,
+    "bolt": "closed_bolt",
+    "rpm": 620,
+    "bullet": {
+     "life": 0.8,
+     "bullet_amount": 1,
+     "damage": 7,
+     "extra_damage": {
+      "armor_ignore": 0.3,
+      "head_shot_multiplier": 1.5,
+      "damage_adjust": [
+       {
+        "distance": 25,
+        "damage": 9
+       },
+       {
+        "distance": 50,
+        "damage": 8.5
+       },
+       {
+        "distance": 80,
+        "damage": 7.5
+       },
+       {
+        "distance": 120,
+        "damage": 6.5
+       },
+       {
+        "distance": "infinite",
+        "damage": 5.5
+       }
+      ]
+     },
+     "speed": 340,
+     "gravity": 0.0245,
+     "knockback": 0,
+     "friction": 0.01,
+     "pierce": 1,
+     "ignite": false,
+     "ignite_entity_time": 2,
+     "tracer_count_interval": 0
+    },
+    "draw_time": 0.95,
+    "put_away_time": 0.5,
+    "sprint_time": 0.1,
+    "aim_time": 0.1,
+    "bolt_action_time": 0.0,
+    "bolt_feed_time": -1.0,
+    "fire_sound": {
+     "fire_multiplier": 1.0,
+     "silence_multiplier": 1.0
+    },
+    "reload": {
+     "type": "magazine",
+     "infinite": false,
+     "feed": {
+      "empty": 2.15,
+      "tactical": 1.58
+     },
+     "cooldown": {
+      "empty": 2.82,
+      "tactical": 2.52
+     }
+    },
+    "fire_mode": [
+     "auto",
+     "semi"
+    ],
+    "fire_mode_adjust": {},
+    "burst_data": {
+     "continuous_shoot": true,
+     "count": 3,
+     "bpm": 900,
+     "min_interval": 0.3
+    },
+    "crawl_recoil_multiplier": 0.5,
+    "recoil": {
+     "pitch": [
+      {
+       "time": 0,
+       "value": [
+        0.7,
+        0.7
+       ]
+      },
+      {
+       "time": 0.25,
+       "value": [
+        0.7,
+        0.7
+       ]
+      },
+      {
+       "time": 0.45,
+       "value": [
+        -0.175,
+        -0.175
+       ]
+      },
+      {
+       "time": 0.6,
+       "value": [
+        0,
+        0
+       ]
+      }
+     ],
+     "yaw": [
+      {
+       "time": 0,
+       "value": [
+        -0.35,
+        -0.15
+       ]
+      },
+      {
+       "time": 0.25,
+       "value": [
+        -0.35,
+        -0.15
+       ]
+      },
+      {
+       "time": 0.45,
+       "value": [
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    "hurt_bob_tweak_multiplier": 0.05,
+    "inaccuracy": {
+     "stand": 7,
+     "move": 5.75,
+     "sneak": 3.5,
+     "lie": 2.5,
+     "aim": 0.15
+    },
+    "movement_speed": {
+     "base": 0.0,
+     "aim": 0.0,
+     "reload": 0.0
+    },
+    "melee": {
+     "distance": 1.0,
+     "cooldown": 1.0
+    },
+    "allow_attachment_types": [
+     "scope",
+     "muzzle",
+     "grip"
+    ],
+    "exclusive_attachments": {
+     "tacz:scope_standard_8x": {
+      "modifier": {},
+      "weight": 2.0,
+      "extended_mag_level": 0,
+      "ads_addend": 0.04,
+      "inaccuracy_addend": -0.4,
+      "recoil_modifier": {
+       "pitch": -0.2,
+       "yaw": -0.1
+      }
+     }
+    },
+    "weight": 3.5,
+    "builtin_attachments": {},
+    "body_part_multipliers": {
+     "head": 1.0,
+     "left_arm": 1.0,
+     "left_leg": 1.0,
+     "right_arm": 1.0,
+     "right_leg": 1.0,
+     "torso": 1.0
+    }
+   },
+   "warnings": []
+  }
+ ]
+}

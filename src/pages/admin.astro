@@ -3840,6 +3840,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             if (sub.type === 'boolean') return (input as HTMLInputElement).checked
             if (input instanceof HTMLSelectElement) return input.value
             if (['integer', 'number'].includes(sub.type)) {
+              // Недописанное число даёт value === '' с badInput: это ошибка, а не сброс.
+              if ((input as HTMLInputElement).validity?.badInput) throw new Error('Введите число.')
               if (!input.value.trim()) return childKey ? structuredClone(defaultValue) : undefined
               if (!Number.isFinite(Number(input.value))) throw new Error('Введите число.')
               const parsed = Number(input.value)
@@ -3882,25 +3884,33 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             let next: unknown, childNext: unknown
             try {
               next = gunReaders.get(rk)!()
-              if (childKey) {
-                childNext = next
-                if (next !== undefined)
-                  next = {
-                    ...(gunIsObject(parentEffective) ? parentEffective : {}),
-                    [childKey]: next,
-                  }
-              } else if (next !== undefined && next !== null) checkGunField(next, field)
-              if (next !== undefined && gunSame(next, parentDefault)) next = undefined
+              childNext = next
+              if (!childKey && next !== undefined && next !== null) checkGunField(next, field)
             } catch (error) {
               fieldState(state, (error as Error).message, 'error')
               return
             }
+            // Родитель собирается при отправке из подтверждённого состояния: так не теряются
+            // соседние поля, сохранённые раньше или другим редактором (409).
+            const assemble = () => {
+              if (childNext === undefined) return undefined
+              const merged = childKey
+                ? {
+                    ...(gunIsObject(gunCurrentTop(top).effective)
+                      ? (gunCurrentTop(top).effective as object)
+                      : {}),
+                    [childKey]: childNext,
+                  }
+                : childNext
+              return gunSame(merged, parentDefault) ? undefined : merged
+            }
+            next = assemble()
             void commitGun(
               control,
               state,
               gun.id,
               top,
-              next,
+              assemble,
               () => {
                 refreshMark()
                 if (next === undefined) writeEffective()
@@ -4096,8 +4106,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           }
           const num = (rk: string, fallback: number) => {
             try {
-              const value = gunReaders.get(rk)?.()
-              return typeof value === 'number' ? value : fallback
+              // Черновик читаем листом поля: общий reader отдаёт весь родитель.
+              const value = (gunReaders.get(`leaf:${rk}`) ?? gunReaders.get(rk))?.()
+              return typeof value === 'number' && Number.isFinite(value) ? value : fallback
             } catch {
               return fallback
             }
@@ -4110,6 +4121,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             ),
           }
         }
+        // Итоги считаются для истощённой плиты; PR #223 (2.78.2): плита снова прикрывает
+        // конечности, а выстрелы в голову обходят её, но расходуют.
+        const gunPlateNote =
+          'Бронеплита (30 ед.) в итог не входит: она сначала забирает урон по груди, а после обновления 2.78.2 и по рукам и ногам; выстрелы в голову плиту обходят, но расходуют её.'
         const gunDamageText = (damage: number) => {
           const { armorIgnore, headMult } = gunDamageKit()
           const parts = gunDamageParts()
@@ -4134,7 +4149,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             lo === hi
               ? `${fmt(damage * lo)} → ${limbValues[0].final}`
               : `${fmt(damage * lo)}–${fmt(damage * hi)} → ${limbValues[0].final}–${limbValues[3].final}`
-          return `По игроку в броне: в голову ${fmt(damage * headMult * parts.head)} → ${final('head', parts.head)} · в тело ${fmt(damage * parts.torso)} → ${final('torso', parts.torso)} · руки/ноги ${limbText} · бронеплита (30 ед.) в итог не входит: она сначала забирает урон — по груди, а после обновления 2.78.2 и по рукам, ногам и голове`
+          return `По игроку в броне: в голову ${fmt(damage * headMult * parts.head)} → ${final('head', parts.head)} · в тело ${fmt(damage * parts.torso)} → ${final('torso', parts.torso)} · руки/ноги ${limbText} · ${gunPlateNote}`
         }
         const gunDamageHint = (box: HTMLElement, paintText: () => string) => {
           const id = `gun-dmg-${Math.random().toString(36).slice(2)}`
@@ -4263,12 +4278,27 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             if (rows().indexOf(row) === rows().length - 1) return { distance: 'infinite', damage }
             const rawDist = distInput(row).value.trim()
             if (!rawDist) throw new Error('Укажите дистанцию или удалите строку.')
-            const distance = Number(rawDist)
+            // Поле текстовое (там бывает «∞»), поэтому запятую-разделитель разбираем сами.
+            const distance = Number(/^\d+,\d+$/.test(rawDist) ? rawDist.replace(',', '.') : rawDist)
             if (!Number.isFinite(distance)) throw new Error('Дистанция — число.')
             checkGunField(distance, distField)
             return { distance, damage }
           }
-          const readAll = () => rows().map((row) => readBand(row))
+          const readAll = () => {
+            const bands = rows().map((row) => readBand(row))
+            // TaCZ берёт первую подходящую строку: границы обязаны строго расти.
+            bands.forEach((band, index) => {
+              const prev = bands[index - 1]
+              if (
+                index > 0 &&
+                typeof band.distance === 'number' &&
+                typeof prev.distance === 'number' &&
+                band.distance <= prev.distance
+              )
+                throw new Error('Дистанции должны идти по возрастанию, без повторов.')
+            })
+            return bands
+          }
           const appendBand = (distance: unknown, damage: unknown) => {
             const row = el('div', { className: 'gun-list-row' })
             const dist = el('input', {
@@ -4383,8 +4413,25 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             return gunBandControl(top, path, field, onChange)
           const rk = [top, ...path].join('-')
           const id = `gun-field-${rk}`
+          // Имя для скринридера: «Режим огня, пункт 2»; сгенерированные i0/e0 в имени не нужны.
+          const ariaName = [
+            GUN_LABELS[top] ?? top,
+            ...path.filter((seg) => !/^[ie]\d+$/.test(seg)).map(gunKidLabel),
+          ].join(' · ')
+          const nameControls = (node: HTMLElement, text: string) => {
+            const controls = node.matches('input, select')
+              ? [node]
+              : [...node.querySelectorAll<HTMLElement>('input, select')]
+            for (const control of controls)
+              if (
+                !control.hasAttribute('aria-label') &&
+                !(control as HTMLInputElement).labels?.length
+              )
+                control.setAttribute('aria-label', text)
+          }
           const current = () => gunPathGet(gunCurrentTop(top).effective, path)
           const readNumber = (input: HTMLInputElement, blank: unknown) => {
+            if (input.validity?.badInput) throw new Error('Введите число.')
             if (!input.value.trim()) return blank
             if (!Number.isFinite(Number(input.value))) throw new Error('Введите число.')
             const parsed = Number(input.value)
@@ -4710,6 +4757,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               row.append(ctl.node, del)
               list.append(row)
               itemReads.set(row, ctl.read)
+              nameControls(ctl.node, `${ariaName}, пункт ${list.children.length}`)
               ctl.write(value)
               const select = ctl.node.querySelector('select')
               if (select && select.isConnected) customSelect(select)
@@ -4725,7 +4773,12 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 appendRow(blank())
               },
             })
-            const box = el('div', { className: 'gun-sub' }, list, add)
+            const box = el(
+              'div',
+              { className: 'gun-sub', role: 'group', ariaLabel: ariaName },
+              list,
+              add,
+            )
             return leaf(
               box,
               () => {
@@ -4815,6 +4868,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 onChange(del)
               },
             })
+            keyCtl.setAttribute('aria-label', `${ariaName}, ключ`)
+            nameControls(val.node, `${ariaName}, значение`)
             row.append(keyCtl, val.node, del)
             entries.append(row)
             val.write(value)
@@ -4822,7 +4877,12 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             const select = val.node.querySelector('select')
             if (select && select.isConnected) customSelect(select)
           }
-          const mapBox = el('div', { className: 'gun-sub' }, entries, addEntry)
+          const mapBox = el(
+            'div',
+            { className: 'gun-sub', role: 'group', ariaLabel: ariaName },
+            entries,
+            addEntry,
+          )
           const mapCtl = leaf(
             mapBox,
             () => {
@@ -4881,13 +4941,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           const id = `gun-field-${rk}`
           const parentDefault = gun.defaults[top]
           const defaultValue = gunPathGet(parentDefault, path)
-          const readLeaf = () =>
-            gunPathGet(
-              gunIsObject(gunOverrides[gun.id]?.[top])
-                ? gunValues(parentDefault, gunOverrides[gun.id][top])
-                : parentDefault,
-              path,
-            )
+          // Массив и null заменяют значение целиком, поэтому смотрим на наличие ключа, а не на тип.
+          const readLeaf = () => gunPathGet(gunCurrentTop(top).effective, path)
           const overridden = !gunSame(readLeaf(), defaultValue)
           const state = el('span', { className: 'state', role: 'status' })
           const badge = el('span', {
@@ -4925,14 +4980,18 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             ctl.write(readLeaf() === undefined ? defaultValue : readLeaf())
           const refreshMark = () => gunMark(row, !gunSame(readLeaf(), defaultValue), reset)
           const commit = (control: HTMLElement) => {
-            let next: unknown
+            let next: unknown, leaf: unknown
+            // Собирается при отправке из подтверждённого состояния (см. buildRow).
+            const assemble = () => {
+              const merged = gunPathTop(top, path, leaf)
+              return merged !== undefined && gunSame(merged, parentDefault) ? undefined : merged
+            }
             try {
-              const leaf = ctl.read()
+              leaf = ctl.read()
               // Проверяем только правку: в effective могут лежать устаревшие
               // неизвестные схеме ключи — их трогает только серверный дифф.
               if (leaf !== undefined) checkGunField(leaf, field)
-              next = gunPathTop(top, path, leaf)
-              if (next !== undefined && gunSame(next, parentDefault)) next = undefined
+              next = assemble()
             } catch (error) {
               fieldState(state, (error as Error).message, 'error')
               return
@@ -4942,7 +5001,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               state,
               gun.id,
               top,
-              next,
+              assemble,
               () => {
                 refreshMark()
                 if (next === undefined) writeEffective()
@@ -5014,6 +5073,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                     ? `${where} — ${String(band.damage)}: ${gunBandFinal(band.damage)}`
                     : `${where}: введите урон числом`
                 })
+                .concat(gunPlateNote)
                 .join('\n')
             }
             gunDamageHint(row.querySelector('label') as HTMLElement, bandsHint)
@@ -5029,6 +5089,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           row.toggleAttribute('data-override', overridden)
           row.dataset.saved = gunRowValue(row)
           gunReaders.set(rk, () => gunPathTop(top, path, ctl.read()))
+          gunReaders.set(`leaf:${rk}`, () => ctl.read())
+          // Итоги по дистанциям следят за незаписанным черновиком брони и множителя в голову.
+          if (rk.startsWith('bullet-extra_damage-'))
+            row.addEventListener('input', () => refreshBandFinals())
           const old = oldRows.find((row) => row.dataset.rk === rk)
           if (
             live &&
@@ -5043,6 +5107,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               old.querySelector<HTMLElement>('.gun-reset'),
             )
             gunReaders.set(rk, oldReaders.get(rk)!)
+            gunReaders.set(`leaf:${rk}`, oldReaders.get(`leaf:${rk}`)!)
             return { rk, node: old, main }
           }
           return { rk, node: row, main }
@@ -5053,13 +5118,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           const toggleId = `gun-field-${toggleRk}`
           const toggleParentDefault = gun.defaults[top]
           const toggleDefault = gunPathGet(toggleParentDefault, path)
-          const toggleRead = () =>
-            gunPathGet(
-              gunIsObject(gunOverrides[gun.id]?.[top])
-                ? gunValues(toggleParentDefault, gunOverrides[gun.id][top])
-                : toggleParentDefault,
-              path,
-            )
+          const toggleRead = () => gunPathGet(gunCurrentTop(top).effective, path)
           const toggleOverridden = !gunSame(toggleRead(), toggleDefault)
           const toggleState = el('span', { className: 'state', role: 'status' })
           const toggleBadge = el('span', {
@@ -5091,15 +5150,18 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           const toggleMark = () =>
             gunMark(toggleRow, !gunSame(toggleRead(), toggleDefault), toggleReset)
           const toggleCommit = (control: HTMLInputElement | HTMLButtonElement) => {
-            const next = gunPathTop(top, path, toggleOff.checked ? null : undefined)
-            const fixed =
-              next !== undefined && gunSame(next, toggleParentDefault) ? undefined : next
+            const leaf = toggleOff.checked ? null : undefined
+            const assemble = () => {
+              const next = gunPathTop(top, path, leaf)
+              return next !== undefined && gunSame(next, toggleParentDefault) ? undefined : next
+            }
+            const fixed = assemble()
             void commitGun(
               control,
               toggleState,
               gun.id,
               top,
-              fixed,
+              assemble,
               () => {
                 toggleMark()
                 if (fixed === undefined) toggleWrite()
@@ -5435,7 +5497,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       line: HTMLElement,
       id: string,
       key: string | null,
-      value: unknown,
+      // Готовое значение или функция: её вызывают при отправке (и при повторе после 409),
+      // чтобы собрать изменение из последнего подтверждённого состояния.
+      requested: unknown,
       saved: () => void,
       restore: () => void,
       label: string,
@@ -5463,6 +5527,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         let rejected = false
         try {
           for (let attempt = 0; attempt < 2; attempt++) {
+            const value = typeof requested === 'function' ? requested() : requested
             if (canUndo && !canUndo()) {
               toast(`${label}: значение уже изменил ${remoteSettingsName}`)
               return
@@ -5504,6 +5569,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               renderOrphans()
               settingsMeta()
               fieldState(line, 'сохранено', 'saved')
+              // Сервер отдаёт компактный override (без равных ганпаку соседей): «Отменить»
+              // сверяется с ним, а не с отправленным полным значением.
+              const canonical = JSON.stringify(key ? gunOverrides[id]?.[key] : gunOverrides[id])
               changeToast(
                 label,
                 summary?.before ?? feedback(oldValue),
@@ -5516,7 +5584,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 false,
                 () => {
                   const current = key ? gunOverrides[id]?.[key] : gunOverrides[id]
-                  if (JSON.stringify(current) !== JSON.stringify(value)) {
+                  if (JSON.stringify(current) !== canonical) {
                     toast(`${label}: значение уже изменил ${remoteSettingsName}`)
                     return
                   }
@@ -5549,7 +5617,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                     label,
                     () =>
                       JSON.stringify(key ? gunOverrides[id]?.[key] : gunOverrides[id]) ===
-                      JSON.stringify(value),
+                      canonical,
                   )
                 },
               )

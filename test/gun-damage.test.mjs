@@ -22,3 +22,15 @@ test('AK case: damage 9, armor_ignore 0.3, head x1.5 hits 5.48 against the match
   assert.ok(Math.abs(body - 3.65) < 0.01, `body ${body}`)
   assert.equal(MATCH_KIT.plate, 30)
 })
+
+test('vanilla armor mitigation weakens at high damage: 100 / armor_ignore 0.3 gives about 64.97', () => {
+  // Нормальная часть 58.8: эффективная броня 22 - 58.8 / 4.75 = 9.62, а не кап 20.
+  const total = finalDamageVsMatchKit({
+    damage: 100,
+    armorIgnore: 0.3,
+    headMult: 1,
+    bodyMult: 1,
+    part: 'torso',
+  })
+  assert.ok(Math.abs(total - 64.97) < 0.01, `total ${total}`)
+})

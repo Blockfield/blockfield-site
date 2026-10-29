@@ -13,8 +13,6 @@ export const MATCH_KIT = {
   /** Броня и прочность полного кита. */
   armor: 22,
   toughness: 11,
-  /** Итоговый множитель ванильной брони: кап 20 → ×0.20. */
-  vanillaFactor: 0.2,
   /** Сопротивление пулям (BR). */
   bulletResistance: 0.2,
   /** Доля пробивающего урона после сопротивления: × (1 − 0.2·BR). */
@@ -22,6 +20,13 @@ export const MATCH_KIT = {
   /** Доля обычного урона после сопротивления: × (1 − 0.8·BR). */
   normalFactor: 0.84,
 } as const
+
+/** Ваниль (CombatRules#getDamageAfterAbsorb): эффективная броня падает с ростом урона. */
+export function vanillaAfterArmor(damage: number): number {
+  const { armor, toughness } = MATCH_KIT
+  const effective = Math.min(Math.max(armor - damage / (2 + toughness / 4), armor * 0.2), 20)
+  return damage * (1 - effective / 25)
+}
 
 export function finalDamageVsMatchKit({
   damage,
@@ -38,6 +43,6 @@ export function finalDamageVsMatchKit({
 }): number {
   const afterPart = damage * (part === 'head' ? headMult : 1) * bodyMult
   const piercing = afterPart * armorIgnore * MATCH_KIT.piercingFactor
-  const normal = afterPart * (1 - armorIgnore) * MATCH_KIT.normalFactor * MATCH_KIT.vanillaFactor
+  const normal = vanillaAfterArmor(afterPart * (1 - armorIgnore) * MATCH_KIT.normalFactor)
   return piercing + normal
 }
