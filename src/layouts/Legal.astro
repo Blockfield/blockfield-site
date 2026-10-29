@@ -9,6 +9,8 @@ interface Props {
 }
 const { title, description, sections } = Astro.props
 const canonical = new URL(Astro.url.pathname, 'https://blockfield.pro')
+// Per-user header HTML (nickname, «Панель» link) must never sit in a shared cache.
+Astro.response.headers.set('Cache-Control', 'no-store')
 ---
 
 <Site title={`${title} — Blockfield`} description={description} canonical={canonical}>

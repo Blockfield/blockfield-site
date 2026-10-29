@@ -41,11 +41,14 @@ const account = {
   <a class="site-header__account" href={account.href} aria-label={account.aria}>
     {account.label}
   </a>
-  {identity?.hasAdminAccess && (
-    <a class="site-header__console" href="/admin">
-      Панель
-    </a>
-  )}
+  {/*
+    SSR-first: staff see «Панель» immediately. The link stays in the HTML (hidden)
+    for everyone else, so a stale SSR denial (cached page, transient account/DB
+    failure) converges to the /admin decision via the script below.
+  */}
+  <a class="site-header__console" href="/admin" data-admin-link hidden={!identity?.hasAdminAccess}>
+    Панель
+  </a>
   {cta && (
     <a
       class="button primary site-header__cta"
@@ -82,11 +85,14 @@ const account = {
     <a href={account.href} aria-label={account.aria}>
       {account.label}
     </a>
-    {identity?.hasAdminAccess && (
-      <a class="site-header__console" href="/admin">
-        Панель
-      </a>
-    )}
+    <a
+      class="site-header__console"
+      href="/admin"
+      data-admin-link
+      hidden={!identity?.hasAdminAccess}
+    >
+      Панель
+    </a>
   </div>
   {cta && (
     <a
@@ -104,6 +110,18 @@ const account = {
 <script>
   const burger = document.querySelector<HTMLButtonElement>('.site-header__burger')
   const menu = document.querySelector<HTMLElement>('#mobile-menu')
+  // The header shows «Панель» exactly when /admin would let in: an SSR denial can be
+  // stale (cached page, transient account/DB failure), so recheck the /admin gate
+  // and only ever reveal — an SSR grant never depends on this round trip.
+  const deniedAdminLinks = [...document.querySelectorAll('[data-admin-link][hidden]')]
+  if (deniedAdminLinks.length && typeof fetch === 'function') {
+    fetch('/api/admin/me', { headers: { Accept: 'application/json' } }).then(
+      (response) => {
+        if (response.ok) deniedAdminLinks.forEach((link) => link.removeAttribute('hidden'))
+      },
+      () => {},
+    )
+  }
   if (burger && menu) {
     const setOpen = (open: boolean) => {
       burger.setAttribute('aria-expanded', String(open))
