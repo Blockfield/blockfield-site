@@ -1032,9 +1032,20 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     }
     .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-sub-row {
       display: grid;
-      grid-template-columns: minmax(0, 1fr);
-      gap: 2px;
+      grid-template-columns: minmax(6rem, 9rem) minmax(0, 1fr);
+      gap: 2px 12px;
       align-items: center;
+    }
+    /* Вложенная группа («Досылка» → «Пустой», «Тактическая»): заголовок сверху, поля с отступом. */
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-sub-row:has(> .gun-sub) {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-sub-row > .gun-sub {
+      padding-left: 12px;
+      border-left: 1px solid var(--line);
+    }
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-sub-row > :is(input, select, .cselect) {
+      margin-block: 0;
     }
     .admin-main
       :is(#gun-fields, #gun-advanced-fields)
@@ -1439,13 +1450,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     .admin-main
       .gun-group
       .ctl
-      > :is(
-        input:not([type='checkbox']):not([type='radio']),
-        select,
-        .cselect,
-        .gun-sub,
-        .gun-null
-      ) {
+      > :is(input:not([type='checkbox']):not([type='radio']), select, .cselect, .gun-null) {
       flex: 1 1 0;
       width: 100%;
       max-width: none;
@@ -1458,6 +1463,14 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       font-size: 14px;
       line-height: 1.5;
       cursor: pointer;
+    }
+    /* Составные поля: ↺ на своей строке под таблицей, а не сбоку от «×». */
+    .admin-main .gun-group .ctl > .gun-sub {
+      flex: 1 1 100%;
+      min-width: 0;
+    }
+    .admin-main .gun-group .ctl > .gun-sub ~ .gun-reset {
+      margin-left: auto;
     }
     .admin-main .gun-group .gun-advanced {
       margin: 4px 0 0;
@@ -1482,6 +1495,17 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       .admin-main #kit-bindings .field,
       .admin-main .gun-group .field {
         grid-template-columns: minmax(0, 1fr);
+        position: relative;
+      }
+      /* Подсказка «?» на всю ширину строки, а не обрезанная у края экрана. */
+      .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-dmg {
+        position: static;
+      }
+      .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-dmg-pop {
+        left: 0;
+        right: 0;
+        top: 56px;
+        min-width: 0;
       }
       .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band input[type='text'],
       .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band input[type='number'] {
@@ -3337,6 +3361,31 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     let selectedGun: GunDefinition | undefined
     const gunReaders = new Map<string, () => unknown>()
     const gunText = (value: unknown) => JSON.stringify(value) ?? 'null'
+    // Человекочитаемая запись значения для подсказок и «Отменить»: JSON в панели не показываем.
+    function gunSummary(value: unknown): string {
+      if (value === null || value === undefined) return 'не задано'
+      if (typeof value === 'boolean') return value ? 'да' : 'нет'
+      if (Array.isArray(value)) {
+        const band = (item: any) =>
+          item && typeof item === 'object' && 'distance' in item && 'damage' in item
+        if (value.length && value.every(band))
+          return value
+            .map((item, i) =>
+              item.distance === 'infinite' || i === value.length - 1
+                ? `дальше — ${item.damage}`
+                : `до ${item.distance} м — ${item.damage}`,
+            )
+            .join('; ')
+        return value.length ? value.map(gunSummary).join(', ') : 'пусто'
+      }
+      if (typeof value === 'object')
+        return (
+          Object.entries(value as Record<string, unknown>)
+            .map(([key, child]) => `${GUN_LABELS[key] ?? key}: ${gunSummary(child)}`)
+            .join('; ') || 'пусто'
+        )
+      return String(value)
+    }
     function gunValues(base: any, overrides: any): any {
       if (
         !base ||
@@ -3403,7 +3452,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         boolean: 'да / нет',
         string: 'текст',
         resource: 'ID ресурса',
-        json: 'JSON',
+        json: 'число, текст, да/нет, список или набор полей',
       }
       return field.values?.map(gunValueLabel).join(' / ') ?? words[field.type] ?? field.type
     }
@@ -3867,8 +3916,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               undefined,
               childKey
                 ? {
-                    before: gunText(value) ?? 'null',
-                    after: gunText(next === undefined ? defaultValue : childNext) ?? 'null',
+                    before: gunSummary(value) ?? 'null',
+                    after: gunSummary(next === undefined ? defaultValue : childNext) ?? 'null',
                   }
                 : undefined,
             )
@@ -3878,7 +3927,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             hidden: !overridden,
             textContent: 'изменено',
           })
-          const defaultRepr = gunText(defaultValue) ?? 'null'
+          const defaultRepr = gunSummary(defaultValue) ?? 'null'
           const reset = el('button', {
             type: 'button',
             className: 'gun-reset',
@@ -4085,7 +4134,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             lo === hi
               ? `${fmt(damage * lo)} → ${limbValues[0].final}`
               : `${fmt(damage * lo)}–${fmt(damage * hi)} → ${limbValues[0].final}–${limbValues[3].final}`
-          return `По игроку в броне: в голову ${fmt(damage * headMult * parts.head)} → ${final('head', parts.head)} · в тело ${fmt(damage * parts.torso)} → ${final('torso', parts.torso)} · руки/ноги ${limbText} · грудь: первые 30 урона забирает бронеплита`
+          return `По игроку в броне: в голову ${fmt(damage * headMult * parts.head)} → ${final('head', parts.head)} · в тело ${fmt(damage * parts.torso)} → ${final('torso', parts.torso)} · руки/ноги ${limbText} · бронеплита (30 ед.) в итог не входит: она сначала забирает урон — по груди, а после обновления 2.78.2 и по рукам, ногам и голове`
         }
         const gunDamageHint = (box: HTMLElement, paintText: () => string) => {
           const id = `gun-dmg-${Math.random().toString(36).slice(2)}`
@@ -4908,12 +4957,12 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               label,
               undefined,
               {
-                before: gunText(readLeaf()) ?? 'null',
-                after: gunText(next === undefined ? defaultValue : ctl.read()) ?? 'null',
+                before: gunSummary(readLeaf()) ?? 'null',
+                after: gunSummary(next === undefined ? defaultValue : ctl.read()) ?? 'null',
               },
             )
           }
-          const defaultRepr = gunText(defaultValue) ?? 'null'
+          const defaultRepr = gunSummary(defaultValue) ?? 'null'
           const reset = el('button', {
             type: 'button',
             className: 'gun-reset',
@@ -5023,7 +5072,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             type: 'checkbox',
             checked: toggleRead() === null,
           })
-          const toggleDefaultRepr = gunText(toggleDefault) ?? 'null'
+          const toggleDefaultRepr = gunSummary(toggleDefault) ?? 'null'
           const toggleReset = el('button', {
             type: 'button',
             className: 'gun-reset',
@@ -5064,8 +5113,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               legend,
               undefined,
               {
-                before: gunText(toggleRead()) ?? 'null',
-                after: gunText(fixed === undefined ? toggleDefault : null) ?? 'null',
+                before: gunSummary(toggleRead()) ?? 'null',
+                after: gunSummary(fixed === undefined ? toggleDefault : null) ?? 'null',
               },
             )
           }
@@ -5331,7 +5380,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       if (value === null) fail('Значение null недоступно')
       if (depth > (field.type === 'json' ? 8 : 16)) fail('Слишком много вложенных полей')
       if (typeof value === 'object' && Object.keys(value).length > 256)
-        fail('Слишком много элементов. Сократите JSON')
+        fail('Слишком много элементов. Сократите список.')
       if (field.type === 'json') {
         if (
           typeof value === 'number' &&
@@ -5408,7 +5457,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             ? defaults?.[key]
             : gunValues(defaults?.[key], old)
           : (old ?? defaults)
-        const feedback = key === 'body_part_multipliers' ? bodyPartSummary : gunText
+        const feedback = key === 'body_part_multipliers' ? bodyPartSummary : gunSummary
         fieldState(line, 'сохраняем…', 'saving')
         const release = lockControl(control)
         let rejected = false

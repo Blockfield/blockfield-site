@@ -48,6 +48,7 @@ const names = [
   'renderOrphans',
   'removeOrphans',
   'gunText',
+  'gunSummary',
   'gunValues',
   'gunShape',
   'renderGun',
@@ -423,7 +424,7 @@ test('complex weapon fields render as structured controls without any JSON texta
     change(rate, '3')
     await dom.window.flush()
     assert.deepEqual(calls[0].body.gunBalance['bf:test'].nested, { rate: 3 })
-    assert.equal(doc.querySelector('.toast span').textContent, 'Параметр: {"rate":2} → {"rate":3}')
+    assert.equal(doc.querySelector('.toast span').textContent, 'Параметр: rate: 2 → rate: 3')
     assert.equal(row.querySelector('.state').textContent, 'сохранено')
   } finally {
     dom.window.close()
@@ -1237,4 +1238,13 @@ test('distance band add inserts before the open-ended last band; removing it reo
   } finally {
     dom.window.close()
   }
+})
+
+test('weapon editor shows no JSON wording and keeps nested rows and ↺ inside the viewport', () => {
+  assert.doesNotMatch(script, /Сократите JSON|json: 'JSON'/)
+  // Вложенная группа перезарядки: заголовок сверху, поля с отступом, а не колонка впритык.
+  assert.match(page, /\.gun-sub-row:has\(> \.gun-sub\)/)
+  // На узком экране ↺ уходит на свою строку под таблицей дистанций.
+  assert.match(page, /\.ctl > \.gun-sub \{\s*flex: 1 1 100%;/)
+  assert.match(page, /\.ctl > \.gun-sub ~ \.gun-reset \{\s*margin-left: auto;/)
 })
