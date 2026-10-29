@@ -71,9 +71,15 @@ export function renderBodyPartField(
   return {
     node: root,
     sync,
-    write: (value: Record<string, GunValue> | null, enabled: boolean) => {
-      toggle.checked = enabled
-      inputs.forEach((input, index) => (input.value = String(value?.[BODY_PARTS[index]] ?? '')))
+    write: (
+      value: Record<string, GunValue> | null,
+      enabled: boolean,
+      preserve?: ReadonlySet<HTMLElement>,
+    ) => {
+      if (!preserve?.has(toggle)) toggle.checked = enabled
+      inputs.forEach((input, index) => {
+        if (!preserve?.has(input)) input.value = String(value?.[BODY_PARTS[index]] ?? '')
+      })
       sync()
     },
     read: () => {

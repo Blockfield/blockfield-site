@@ -3461,7 +3461,11 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     function gunRowValue(row: Element) {
       return JSON.stringify(
         [...row.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input, select')].map((c) =>
-          c.type === 'checkbox' ? (c as HTMLInputElement).checked : c.value,
+          c instanceof HTMLInputElement && c.validity.badInput
+            ? { unfinished: true }
+            : c.type === 'checkbox'
+              ? (c as HTMLInputElement).checked
+              : c.value,
         ),
       )
     }
@@ -3686,6 +3690,59 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             : gun.defaults[top],
         }
       }
+      const gunParentShape = (value: unknown) =>
+        value === undefined
+          ? 'missing'
+          : value === null
+            ? 'disabled'
+            : gunIsObject(value)
+              ? 'object'
+              : typeof value
+      const gunParentConflict = () =>
+        new Error(
+          'Группа удалена, отключена или изменила тип. Обновите страницу и повторите правку.',
+        )
+      const gunCheckParent = (expected: string, latest: unknown) => {
+        if (
+          !gunIsObject(latest) &&
+          !(expected === 'missing' && latest === undefined) &&
+          !(expected === 'disabled' && latest === null)
+        )
+          throw gunParentConflict()
+      }
+      // DOM snapshots only retain unfinished input; saves never read these as confirmed values.
+      const gunSyncControls = (
+        row: HTMLElement,
+        write: (preserve?: ReadonlySet<HTMLElement>) => void,
+        after = () => {},
+      ) => {
+        const controls = [
+          ...row.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input, select'),
+        ]
+        const shown = new Map(controls.map((control) => [control, controlValue(control)]))
+        return (accepted?: HTMLElement, submitted?: string) => {
+          const nativeDrafts = new Set(
+            controls.filter(
+              (control) => control instanceof HTMLInputElement && control.validity.badInput,
+            ),
+          )
+          const drafts = controls
+            .filter(
+              (control) =>
+                controlValue(control) !== shown.get(control) &&
+                !(control === accepted && controlValue(control) === submitted) &&
+                !nativeDrafts.has(control),
+            )
+            .map((control) => [control, controlValue(control)] as const)
+          // A native invalid number has no readable raw value; never assign to that input.
+          write(nativeDrafts)
+          for (const control of controls)
+            if (!nativeDrafts.has(control)) shown.set(control, controlValue(control))
+          if (!nativeDrafts.size) row.dataset.saved = gunRowValue(row)
+          for (const [control, value] of drafts) setControl(control, value)
+          after()
+        }
+      }
       const built: { rk: string; node: HTMLElement; main: boolean }[] = []
       for (const [key, field] of Object.entries(weaponFields(gunCatalog, gun).fields!)) {
         const hasOverride = Object.hasOwn(gunOverrides[gun.id] ?? {}, key)
@@ -3712,19 +3769,24 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           summary.append(badge)
           gunReaders.set(key, body.read)
           body.node.addEventListener('input', () => gunFinalsRefresh?.())
-          const confirmed = () => {
+          let bodyEnabled = hasOverride
+          const confirmed = (preserve?: ReadonlySet<HTMLElement>) => {
             const enabled = Object.hasOwn(gunOverrides[gun.id] ?? {}, key)
+            bodyEnabled = enabled
             body.write(
               (enabled
                 ? gunValues(gun.defaults[key], gunOverrides[gun.id][key])
                 : gun.defaults[key]) as Record<string, any>,
               enabled,
+              preserve,
             )
             row.toggleAttribute('data-override', enabled)
             badge.hidden = !enabled
-            row.dataset.saved = gunRowValue(row)
+            if (!preserve?.size) row.dataset.saved = gunRowValue(row)
             gunFinalsRefresh?.()
           }
+          const sync = gunSyncControls(row, confirmed, body.sync)
+          gunReaders.set(`sync:${key}`, () => sync())
           body.node.addEventListener('change', (event) => {
             const control = event.target
             if (!(control instanceof HTMLInputElement)) return
@@ -3733,6 +3795,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               body.node.querySelector<HTMLInputElement>('[type=number]')!.focus()
               return
             }
+            const enabledBefore = bodyEnabled
+            const submitted = controlValue(control)
             let next: Record<string, number> | undefined
             try {
               const values = body.read()
@@ -3752,6 +3816,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               control.type === 'checkbox'
                 ? undefined
                 : () => {
+                    if (enabledBefore && !Object.hasOwn(gunOverrides[gun.id] ?? {}, key))
+                      throw gunParentConflict()
                     const part = control.id.slice('body-part-'.length)
                     const merged = {
                       ...(gunCurrentTop(key).effective as Record<string, number>),
@@ -3765,8 +3831,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               () => {
                 row.toggleAttribute('data-override', Object.hasOwn(gunOverrides[gun.id] ?? {}, key))
                 badge.hidden = !row.hasAttribute('data-override')
-                if (next === undefined) confirmed()
-                row.dataset.saved = gunRowValue(row)
+                sync(control, submitted)
                 gunFinalsRefresh?.()
               },
               confirmed,
@@ -3780,11 +3845,14 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             live &&
             old &&
             (gunPending ||
+              old.querySelector('.state[data-s="error"]') ||
               old.contains(document.activeElement) ||
               gunRowValue(old) !== old.dataset.saved)
           ) {
             old.toggleAttribute('data-override', hasOverride)
             old.querySelector<HTMLElement>('.gun-badge')!.hidden = !hasOverride
+            oldReaders.get(`sync:${key}`)?.()
+            gunReaders.set(`sync:${key}`, oldReaders.get(`sync:${key}`)!)
             gunReaders.set(key, oldReaders.get(key)!)
             built.push({ rk: key, node: old, main: true })
             continue
@@ -3805,6 +3873,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           const id = `gun-field-${rk}`
           const { effective: parentEffective } = gunCurrentTop(top)
           const parentDefault = gun.defaults[top]
+          let expectedParent = gunParentShape(parentEffective)
           const defaultValue = childKey
             ? gunIsObject(parentDefault)
               ? parentDefault[childKey]
@@ -3876,17 +3945,20 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               ? (GUN_CHILD_LABELS[childKey] ?? GUN_LABELS[childKey] ?? childKey)
               : `${GUN_LABELS[top] ?? top} · ${GUN_CHILD_LABELS[childKey] ?? GUN_LABELS[childKey] ?? childKey}`
             : (GUN_LABELS[top] ?? top)
-          const writeEffective = () => {
+          const writeEffective = (preserve?: ReadonlySet<HTMLElement>) => {
             const { effective } = gunCurrentTop(top)
+            if (gunIsObject(effective)) expectedParent = 'object'
             const shown = childKey
               ? gunIsObject(effective)
                 ? effective[childKey]
                 : undefined
               : effective
-            if (input instanceof HTMLSelectElement) input.value = String(shown ?? '')
-            else if (input.type === 'checkbox') input.checked = shown === true
-            else input.value = shown === null || shown === undefined ? '' : String(shown)
-            if (off) off.checked = shown === null
+            if (!preserve?.has(input)) {
+              if (input instanceof HTMLSelectElement) input.value = String(shown ?? '')
+              else if (input.type === 'checkbox') input.checked = shown === true
+              else input.value = shown === null || shown === undefined ? '' : String(shown)
+            }
+            if (off && !preserve?.has(off)) off.checked = shown === null
             if (input instanceof HTMLSelectElement && input.isConnected) customSelect(input)
           }
           const refreshMark = () => {
@@ -3899,6 +3971,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             gunMark(row, !gunSame(shown, defaultValue), reset)
           }
           const commit = (control: HTMLInputElement | HTMLSelectElement | HTMLButtonElement) => {
+            const submitted = controlValue(input)
             let next: unknown, childNext: unknown
             try {
               next = gunReaders.get(rk)!()
@@ -3911,6 +3984,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             // Родитель собирается при отправке из подтверждённого состояния: так не теряются
             // соседние поля, сохранённые раньше или другим редактором (409).
             const assemble = () => {
+              if (childKey) gunCheckParent(expectedParent, gunCurrentTop(top).effective)
               if (childNext === undefined) return undefined
               const merged = childKey
                 ? {
@@ -3931,8 +4005,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               assemble,
               () => {
                 refreshMark()
-                if (next === undefined) writeEffective()
-                row.dataset.saved = gunRowValue(row)
+                sync(input, submitted)
                 refreshBandFinals()
                 if (shared) renderGun(true)
               },
@@ -4024,6 +4097,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               }
               return 'Введите урон числом — здесь будет итог по игроку в броне.'
             })
+          const sync = gunSyncControls(row, writeEffective)
+          gunReaders.set(`sync:${rk}`, () => sync())
           row.dataset.rk = rk
           row.toggleAttribute('data-override', overridden)
           row.dataset.saved = gunRowValue(row)
@@ -4032,6 +4107,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             live &&
             old &&
             (gunPending ||
+              old.querySelector('.state[data-s="error"]') ||
               old.contains(document.activeElement) ||
               gunRowValue(old) !== old.dataset.saved)
           ) {
@@ -4046,6 +4122,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               !gunSame(shown, defaultValue),
               old.querySelector<HTMLElement>('.gun-reset'),
             )
+            oldReaders.get(`sync:${rk}`)?.()
+            gunReaders.set(`sync:${rk}`, oldReaders.get(`sync:${rk}`)!)
             gunReaders.set(rk, oldReaders.get(rk)!)
             return { rk, node: old, main }
           }
@@ -4063,9 +4141,17 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         }
         // Собирает значение всего top-поля из подтверждённого effective с правкой по пути.
         // undefined на месте листа удаляет ключ (с чисткой пустых объектов), null пишет явный null.
-        const gunPathTop = (top: string, path: string[], leaf: unknown): unknown => {
+        const gunPathTop = (
+          top: string,
+          path: string[],
+          leaf: unknown,
+          parents?: string[],
+        ): unknown => {
           if (!path.length) return leaf
           const { effective } = gunCurrentTop(top)
+          parents?.forEach((expected, i) =>
+            gunCheckParent(expected, gunPathGet(effective, path.slice(0, i))),
+          )
           const base = (gunIsObject(effective) ? structuredClone(effective) : {}) as Record<
             string,
             unknown
@@ -4292,6 +4378,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           const distField = field.items!.fields!.distance
           const dmgField = field.items!.fields!.damage
           const list = el('div', { className: 'gun-list' })
+          let shown = ''
           const rows = () => [...list.children] as HTMLElement[]
           const distInput = (row: HTMLElement) =>
             row.querySelector('.gun-band-dist') as HTMLInputElement
@@ -4453,11 +4540,15 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             }
             paintRows(true)
             refreshBandFinals(box)
+            shown = gunRowValue(box)
           }
           const ctl: GunCtl = {
             node: box,
             read: readAll,
             write,
+            sync: (value, accepted) => {
+              if (accepted || shown === gunRowValue(box)) write(value)
+            },
           }
           return ctl
         }
@@ -4465,8 +4556,20 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           top: string,
           path: string[],
           field: GunField,
-          onChange: GunChange,
+          changed: GunChange,
         ): GunCtl => {
+          let parentShape = 'missing'
+          const observeParent = (value: unknown) => {
+            if (gunIsObject(value)) parentShape = 'object'
+          }
+          const onChange: GunChange = (control, edit) => {
+            if (!edit || !['object', 'map'].includes(field.type)) return changed(control, edit)
+            const expected = parentShape
+            changed(control, (latest) => {
+              gunCheckParent(expected, latest)
+              return edit(latest)
+            })
+          }
           // Урон по дистанциям — компактная таблица с итогом, а не generic-список объектов.
           if (
             top === 'bullet' &&
@@ -4521,9 +4624,11 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 ? JSON.stringify([
                     (node as HTMLInputElement).value,
                     (node as HTMLInputElement).checked,
+                    (node as HTMLInputElement).validity?.badInput,
                   ])
                 : gunRowValue(node)
             const put = (value: unknown) => {
+              parentShape = gunParentShape(value)
               write(value)
               shown = snapshot()
             }
@@ -4770,12 +4875,27 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               const mode = selectout(el('select', { ariaLabel: 'Режим значения' }))
               const holder = el('div')
               let kids: GunCtl[] = []
+              let modeDraft = false
               const paintKids = (value: unknown) => {
                 holder.replaceChildren()
                 kids = Object.entries(field.fields ?? {}).map(([name, sub]) => {
                   const ctl = gunControl(top, [...path, name], sub, (control, edit) => {
-                    const change = gunEditValue(ctl, edit)
-                    onChange(control, (latest) => gunChildEdit(latest, name, change))
+                    if (modeDraft) {
+                      try {
+                        const value = group.read()
+                        if (value === undefined) return
+                        modeDraft = false
+                        delete wrap.dataset.typeDraft
+                        changed(control, () => value)
+                      } catch (error) {
+                        changed(control, () => {
+                          throw error
+                        })
+                      }
+                    } else {
+                      const change = gunEditValue(ctl, edit)
+                      onChange(control, (latest) => gunChildEdit(latest, name, change))
+                    }
                   })
                   const row = el('div', { className: 'gun-sub-row' })
                   const lab = el('label', {
@@ -4794,6 +4914,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                   holder.querySelectorAll('select').forEach((s) => customSelect(s))
               }
               const paintMode = (value: unknown) => {
+                modeDraft = false
+                delete wrap.dataset.typeDraft
                 mode.replaceChildren(
                   el('option', { value: 'object', textContent: 'подробно' }),
                   el('option', { value: 'true', textContent: 'да' }),
@@ -4805,10 +4927,13 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               }
               mode.onchange = () => {
                 paintMode(mode.value === 'object' ? {} : mode.value === 'true')
-                onChange(mode)
+                if (mode.value === 'object') {
+                  modeDraft = true
+                  wrap.dataset.typeDraft = ''
+                } else onChange(mode)
               }
               wrap.append(mode, holder)
-              const ctl = leaf(
+              const group = leaf(
                 wrap,
                 () => {
                   if (mode.value !== 'object') return mode.value === 'true'
@@ -4821,15 +4946,17 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 },
                 paintMode,
               )
-              ctl.sync = (value, accepted) => {
+              group.sync = (value, accepted) => {
+                if (modeDraft) return
+                observeParent(value)
                 if (mode.value === 'object' && typeof value !== 'boolean') {
                   const obj = gunIsObject(value) ? value : {}
                   Object.keys(field.fields ?? {}).forEach((name, i) =>
                     kids[i].sync?.(obj[name], accepted),
                   )
-                } else ctl.write(value)
+                } else group.write(value)
               }
-              return ctl
+              return group
             }
             const rows = Object.entries(field.fields ?? {}).map(([name, sub]) => {
               const ctl = gunControl(top, [...path, name], sub, (control, edit) => {
@@ -4859,6 +4986,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               },
             )
             ctl.sync = (value, accepted) => {
+              observeParent(value)
               const obj = gunIsObject(value) ? value : {}
               for (const { name, ctl } of rows) ctl.sync?.(obj[name], accepted)
             }
@@ -5131,6 +5259,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             },
           )
           mapCtl.sync = (value, accepted) => {
+            observeParent(value)
             const obj = gunIsObject(value) ? value : {}
             const seen = new Set<string>()
             for (const [row, ctl] of entryControls) {
@@ -5180,8 +5309,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             write: (value) => {
               off.checked = value === null
               inner.node.toggleAttribute('inert', off.checked)
-              if (value !== null) inner.write(value)
-              else inner.write(undefined)
+              inner.write(value)
             },
           }
         }
@@ -5199,6 +5327,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           const defaultValue = gunPathGet(parentDefault, path)
           // Массив и null заменяют значение целиком, поэтому смотрим на наличие ключа, а не на тип.
           const readLeaf = () => gunPathGet(gunCurrentTop(top).effective, path)
+          const parents = path.map((_, i) =>
+            gunParentShape(gunPathGet(gunCurrentTop(top).effective, path.slice(0, i))),
+          )
           const overridden = !gunSame(readLeaf(), defaultValue)
           const state = el('span', { className: 'state', role: 'status' })
           const badge = el('span', {
@@ -5243,7 +5374,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             const assemble = () => {
               const leaf = change(readLeaf())
               if (leaf !== undefined) checkGunField(leaf, field)
-              const merged = gunPathTop(top, path, leaf)
+              const merged = gunPathTop(top, path, leaf, parents)
               return merged !== undefined && gunSame(merged, parentDefault) ? undefined : merged
             }
             try {
@@ -5357,7 +5488,13 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           row.dataset.saved = gunRowValue(row)
           gunReaders.set(rk, () => gunPathTop(top, path, ctl.read()))
           gunReaders.set(`leaf:${rk}`, () => ctl.read())
-          gunReaders.set(`sync:${rk}`, () => ctl.sync?.(readLeaf()))
+          gunReaders.set(`sync:${rk}`, () => {
+            parents.forEach((_, i) => {
+              if (gunIsObject(gunPathGet(gunCurrentTop(top).effective, path.slice(0, i))))
+                parents[i] = 'object'
+            })
+            ctl.sync?.(readLeaf())
+          })
           // Итоги по дистанциям следят за незаписанным черновиком брони и множителя в голову.
           if (rk.startsWith('bullet-extra_damage-'))
             row.addEventListener('input', () => refreshBandFinals())
@@ -5367,6 +5504,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             old &&
             (gunPending ||
               old.querySelector('[data-type-draft]') ||
+              old.querySelector('.state[data-s="error"]') ||
               old.contains(document.activeElement) ||
               gunRowValue(old) !== old.dataset.saved)
           ) {
@@ -5390,6 +5528,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           const toggleParentDefault = gun.defaults[top]
           const toggleDefault = gunPathGet(toggleParentDefault, path)
           const toggleRead = () => gunPathGet(gunCurrentTop(top).effective, path)
+          const toggleParents = path.map((_, i) =>
+            gunParentShape(gunPathGet(gunCurrentTop(top).effective, path.slice(0, i))),
+          )
           const toggleOverridden = !gunSame(toggleRead(), toggleDefault)
           const toggleState = el('span', { className: 'state', role: 'status' })
           const toggleBadge = el('span', {
@@ -5415,15 +5556,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               toggleCommit(toggleReset as HTMLButtonElement)
             },
           })
-          const toggleWrite = () => {
-            toggleOff.checked = toggleRead() === null
+          const toggleWrite = (preserve?: ReadonlySet<HTMLElement>) => {
+            if (!preserve?.has(toggleOff)) toggleOff.checked = toggleRead() === null
           }
           const toggleMark = () =>
             gunMark(toggleRow, !gunSame(toggleRead(), toggleDefault), toggleReset)
           const toggleCommit = (control: HTMLInputElement | HTMLButtonElement) => {
+            const submitted = controlValue(toggleOff)
             const leaf = toggleOff.checked ? null : undefined
             const assemble = () => {
-              const next = gunPathTop(top, path, leaf)
+              const next = gunPathTop(top, path, leaf, toggleParents)
               return next !== undefined && gunSame(next, toggleParentDefault) ? undefined : next
             }
             const fixed = assemble()
@@ -5435,8 +5577,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               assemble,
               () => {
                 toggleMark()
-                if (fixed === undefined) toggleWrite()
-                toggleRow.dataset.saved = gunRowValue(toggleRow)
+                toggleSync(toggleOff, submitted)
                 renderGun(true)
               },
               () => {
@@ -5470,6 +5611,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             el('div', { className: 'ctl' }, toggleOff, toggleReset),
             toggleState,
           )
+          const toggleSync = gunSyncControls(toggleRow, toggleWrite)
+          gunReaders.set(`sync:${toggleRk}`, () => toggleSync())
           toggleRow.dataset.rk = toggleRk
           toggleRow.toggleAttribute('data-override', toggleOverridden)
           toggleRow.dataset.saved = gunRowValue(toggleRow)
@@ -5481,6 +5624,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             live &&
             toggleOld &&
             (gunPending ||
+              toggleOld.querySelector('.state[data-s="error"]') ||
               toggleOld.contains(document.activeElement) ||
               gunRowValue(toggleOld) !== toggleOld.dataset.saved)
           ) {
@@ -5489,6 +5633,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               !gunSame(toggleRead(), toggleDefault),
               toggleOld.querySelector<HTMLElement>('.gun-reset'),
             )
+            oldReaders.get(`sync:${toggleRk}`)?.()
+            gunReaders.set(`sync:${toggleRk}`, oldReaders.get(`sync:${toggleRk}`)!)
             gunReaders.set(toggleRk, oldReaders.get(toggleRk)!)
             return { rk: toggleRk, node: toggleOld, main }
           }
@@ -5631,6 +5777,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       $('#gun-advanced').hidden = !advRows.length
       for (const box of ['#gun-fields', '#gun-advanced-fields'])
         $(box).querySelectorAll('select').forEach(customSelect)
+      gunFinalsRefresh?.()
     }
     function filterGuns(live = false) {
       if (!gunCatalog) return
@@ -5913,6 +6060,10 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           release()
           if (rejected) restore()
           gunPending--
+          if (!gunPending && !rejected) {
+            for (const [key, sync] of gunReaders) if (key.startsWith('sync:')) sync()
+            gunFinalsRefresh?.()
+          }
         }
       })
       return gunQueue

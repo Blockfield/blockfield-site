@@ -2575,3 +2575,643 @@ test('R8 invalid replacement numbers show validation and leave the saved leaf un
     h.dom.window.close()
   }
 })
+
+// Round-8 independent review: parent preconditions and confirmed display.
+const conflictOnce = (mutate) => {
+  let first = true
+  return ({ method, body, current }) => {
+    if (method === 'PUT' && first) {
+      first = false
+      current.revision = 4
+      mutate(current)
+    }
+    if (method === 'PUT' && body.expectedRevision !== current.revision)
+      return { status: 409, data: { error: 'stale' } }
+  }
+}
+const finish = (h) => h.dom.window.close()
+
+for (const replacement of [99, null, [8, 9]]) {
+  test(`R8 concurrent ancestor replacement ${JSON.stringify(replacement)} must not be discarded by a nested edit`, async () => {
+    const initial = {
+      'tacz:ak47': { script_param: { custom_rate: { a: 2, b: 3 }, custom_other: 3 } },
+    }
+    const h = await realSetup({
+      realSelect: true,
+      initial: { gunBalance: initial },
+      handle: conflictOnce((current) => {
+        current.gunBalance['tacz:ak47'].script_param.custom_rate = replacement
+        assert.deepEqual(
+          validateGunOverrides(current.gunBalance, h.dom.window.currentGunCatalog()),
+          current.gunBalance,
+        )
+      }),
+    })
+    try {
+      const outer = entry(row(h.doc, 'script_param'), 'custom_rate')
+      h.change(scalarControl(entry(outer, 'b')), '4')
+      await h.dom.window.flush()
+      assert.deepEqual(
+        h.stored().gunBalance['tacz:ak47'].script_param.custom_rate,
+        replacement,
+        'do not silently replace an incompatible new ancestor',
+      )
+      assert.equal(puts(h).length, 1, 'the unsafe retry must be refused')
+      assert.match(
+        row(h.doc, 'script_param').querySelector('.state').textContent,
+        /Группа.*Обновите/,
+      )
+    } finally {
+      finish(h)
+    }
+  })
+}
+
+test('R8 body coefficient 409 refresh must also refresh displayed untouched coefficients and totals', async () => {
+  const h = await realSetup({
+    handle: conflictOnce((current) => {
+      current.gunBalance = { 'tacz:ak47': { body_part_multipliers: { torso: 3 } } }
+    }),
+  })
+  try {
+    const toggle = row(h.doc, 'body_part_multipliers').querySelector('input[type=checkbox]')
+    toggle.checked = true
+    toggle.dispatchEvent(new h.dom.window.Event('change', { bubbles: true }))
+    h.change(h.doc.querySelector('#body-part-head'), '2')
+    await h.dom.window.flush()
+    assert.equal(h.stored().gunBalance['tacz:ak47'].body_part_multipliers.torso, 3)
+    assert.equal(
+      h.doc.querySelector('#body-part-torso').value,
+      '3',
+      'display the confirmed coefficient',
+    )
+    const torso =
+      Math.round(
+        finalDamageVsMatchKit({
+          damage: 9,
+          armorIgnore: 0.3,
+          headMult: 1.5,
+          bodyMult: 3,
+          part: 'torso',
+        }) * 10,
+      ) / 10
+    assert.match(h.doc.querySelector('.gun-band-final').textContent, new RegExp(`тело ${torso}$`))
+  } finally {
+    finish(h)
+  }
+})
+
+test('R8 map rename on 409 moves latest value and Undo retains concurrent sibling', async () => {
+  const h = await realSetup({
+    realSelect: true,
+    initial: { gunBalance: initialBalance() },
+    handle: conflictOnce((current) => {
+      current.gunBalance['tacz:ak47'].script_param = { custom_rate: 7, custom_other: 8 }
+    }),
+  })
+  try {
+    h.change(
+      entry(row(h.doc, 'script_param'), 'custom_rate').querySelector('[data-gunkey]'),
+      'renamed',
+    )
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, {
+      renamed: 7,
+      custom_other: 8,
+    })
+    h.doc.querySelector('.toast button').click()
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, {
+      custom_rate: 7,
+      custom_other: 8,
+    })
+  } finally {
+    finish(h)
+  }
+})
+
+test('R8 map rename target collision on 409 is refused without replacing either entry', async () => {
+  const h = await realSetup({
+    realSelect: true,
+    initial: { gunBalance: initialBalance() },
+    handle: conflictOnce((current) => {
+      current.gunBalance['tacz:ak47'].script_param.renamed = 9
+    }),
+  })
+  try {
+    h.change(
+      entry(row(h.doc, 'script_param'), 'custom_rate').querySelector('[data-gunkey]'),
+      'renamed',
+    )
+    await h.dom.window.flush()
+    assert.equal(puts(h).length, 1)
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, {
+      custom_rate: 2,
+      custom_other: 3,
+      renamed: 9,
+    })
+  } finally {
+    finish(h)
+  }
+})
+
+test('R8 explicit nested deletion preserves concurrently edited other leaf', async () => {
+  const h = await realSetup({
+    realSelect: true,
+    initial: { gunBalance: initialBalance() },
+    handle: conflictOnce((current) => {
+      current.gunBalance['tacz:ak47'].script_param.custom_other = 8
+    }),
+  })
+  try {
+    entry(row(h.doc, 'script_param'), 'custom_rate')
+      .querySelector(':scope > button[aria-label="Удалить"]')
+      .click()
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, { custom_other: 8 })
+    h.doc.querySelector('.toast button').click()
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, {
+      custom_rate: 2,
+      custom_other: 8,
+    })
+  } finally {
+    finish(h)
+  }
+})
+
+test('R8 ordinary scalar 409 merge displays the refreshed untouched sibling', async () => {
+  const h = await realSetup({
+    handle: conflictOnce((current) => {
+      current.gunBalance = { 'tacz:ak47': { bullet: { bullet_amount: 2 } } }
+    }),
+  })
+  try {
+    h.change(h.doc.querySelector('#gun-field-bullet-damage'), '10')
+    await h.dom.window.flush()
+    assert.equal(h.stored().gunBalance['tacz:ak47'].bullet.bullet_amount, 2)
+    assert.equal(h.doc.querySelector('#gun-field-bullet-bullet_amount').value, '2')
+  } finally {
+    finish(h)
+  }
+})
+
+async function twoEditors(balance) {
+  let current = { revision: 3, rooms: { maxRooms: 4 }, gunBalance: structuredClone(balance) }
+  const editors = []
+  for (let i = 0; i < 2; i++) {
+    let h
+    h = await realSetup({
+      realSelect: true,
+      initial: structuredClone(current),
+      handle: ({ path, method, body }) => {
+        if (!h) return
+        if (method === 'PUT') {
+          if (body.expectedRevision !== current.revision)
+            return { status: 409, data: { error: 'stale' } }
+          current = {
+            ...current,
+            revision: current.revision + 1,
+            gunBalance: validateGunOverrides(body.gunBalance, h.dom.window.currentGunCatalog()),
+          }
+          return { status: 200, data: { settings: structuredClone(current) } }
+        }
+        if (path === 'settings')
+          return { status: 200, data: { settings: structuredClone(current) } }
+      },
+    })
+    editors.push(h)
+  }
+  return {
+    a: editors[0],
+    b: editors[1],
+    stored: () => current,
+    close: () => editors.forEach(finish),
+  }
+}
+
+test('R8 two real editors: separate nested leaf edits merge', async () => {
+  const pair = await twoEditors({
+    'tacz:ak47': { script_param: { custom_rate: { a: 2, b: 3 }, custom_other: 3 } },
+  })
+  try {
+    hEdit(pair.b, 'a', '7')
+    await pair.b.dom.window.flush()
+    hEdit(pair.a, 'b', '4')
+    await pair.a.dom.window.flush()
+    assert.deepEqual(pair.stored().gunBalance['tacz:ak47'].script_param.custom_rate, { a: 7, b: 4 })
+  } finally {
+    pair.close()
+  }
+})
+function hEdit(h, key, value) {
+  h.change(scalarControl(entry(entry(row(h.doc, 'script_param'), 'custom_rate'), key)), value)
+}
+
+test('R8 two real editors: atomic type replacement must survive an older nested operation', async () => {
+  const pair = await twoEditors({
+    'tacz:ak47': { script_param: { custom_rate: { a: 2, b: 3 }, custom_other: 3 } },
+  })
+  try {
+    const rate = entry(row(pair.b.doc, 'script_param'), 'custom_rate')
+    pair.b.change(kindControl(rate), 'число')
+    pair.b.change(scalarControl(rate), '99')
+    await pair.b.dom.window.flush()
+    assert.equal(pair.stored().gunBalance['tacz:ak47'].script_param.custom_rate, 99)
+    hEdit(pair.a, 'b', '4')
+    await pair.a.dom.window.flush()
+    assert.equal(pair.stored().gunBalance['tacz:ak47'].script_param.custom_rate, 99)
+  } finally {
+    pair.close()
+  }
+})
+
+test('R8 two real editors: deleting an unrelated leaf survives another leaf edit', async () => {
+  const pair = await twoEditors({
+    'tacz:ak47': { script_param: { custom_rate: { a: 2, b: 3 }, custom_other: 3 } },
+  })
+  try {
+    entry(entry(row(pair.b.doc, 'script_param'), 'custom_rate'), 'a')
+      .querySelector(':scope > button[aria-label="Удалить"]')
+      .click()
+    await pair.b.dom.window.flush()
+    hEdit(pair.a, 'b', '4')
+    await pair.a.dom.window.flush()
+    assert.deepEqual(pair.stored().gunBalance['tacz:ak47'].script_param.custom_rate, { b: 4 })
+  } finally {
+    pair.close()
+  }
+})
+
+test('R8 two real editors: explicit edits of the same leaf use the last explicit edit', async () => {
+  const pair = await twoEditors(initialBalance())
+  try {
+    pair.b.change(scalarControl(entry(row(pair.b.doc, 'script_param'), 'custom_rate')), '7')
+    await pair.b.dom.window.flush()
+    pair.a.change(scalarControl(entry(row(pair.a.doc, 'script_param'), 'custom_rate')), '8')
+    await pair.a.dom.window.flush()
+    assert.equal(pair.stored().gunBalance['tacz:ak47'].script_param.custom_rate, 8)
+  } finally {
+    pair.close()
+  }
+})
+
+for (const action of ['delete', 'reset']) {
+  test(`R8 two editors: a nested edit after another editor's ${action} must not resurrect the deleted ancestor`, async () => {
+    const pair = await twoEditors({
+      'tacz:ak47': { script_param: { custom_rate: { a: 2, b: 3 }, custom_other: 3 } },
+    })
+    try {
+      if (action === 'delete')
+        entry(row(pair.b.doc, 'script_param'), 'custom_rate')
+          .querySelector(':scope > button[aria-label="Удалить"]')
+          .click()
+      else row(pair.b.doc, 'script_param').querySelector('.gun-reset').click()
+      await pair.b.dom.window.flush()
+      hEdit(pair.a, 'b', '4')
+      await pair.a.dom.window.flush()
+      assert.equal(pair.stored().gunBalance?.['tacz:ak47']?.script_param?.custom_rate, undefined)
+    } finally {
+      pair.close()
+    }
+  })
+}
+
+test('R8 reset structured child on conflict preserves other server fields and Undo restores latest baseline', async () => {
+  const h = await realSetup({
+    initial: {
+      gunBalance: {
+        'tacz:ak47': { bullet: { extra_damage: { armor_ignore: 0.8, head_shot_multiplier: 2 } } },
+      },
+    },
+    handle: conflictOnce((current) => {
+      current.gunBalance['tacz:ak47'].bullet.extra_damage.head_shot_multiplier = 3
+    }),
+  })
+  try {
+    row(h.doc, 'bullet-extra_damage-armor_ignore').querySelector('.gun-reset').click()
+    await h.dom.window.flush()
+    assert.equal(h.stored().gunBalance['tacz:ak47'].bullet.extra_damage.armor_ignore, undefined)
+    assert.equal(h.stored().gunBalance['tacz:ak47'].bullet.extra_damage.head_shot_multiplier, 3)
+    h.doc.querySelector('.toast button').click()
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].bullet.extra_damage, {
+      armor_ignore: 0.8,
+      head_shot_multiplier: 3,
+    })
+  } finally {
+    finish(h)
+  }
+})
+
+{
+  test('R8 concurrent new nested-object siblings are preserved', async () => {
+    const h = await realSetup({
+      realSelect: true,
+      initial: { gunBalance: { 'tacz:ak47': { script_param: { custom_rate: { a: 2, b: 3 } } } } },
+      handle: conflictOnce((current) => {
+        current.gunBalance['tacz:ak47'].script_param.custom_rate.extra = 77
+      }),
+    })
+    try {
+      hEdit(h, 'b', '4')
+      await h.dom.window.flush()
+      assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param.custom_rate, {
+        a: 2,
+        b: 4,
+        extra: 77,
+      })
+    } finally {
+      finish(h)
+    }
+  })
+}
+
+test('R8 two editors: deleting an old nested key must not delete a new scalar ancestor', async () => {
+  const pair = await twoEditors({
+    'tacz:ak47': { script_param: { custom_rate: { a: 2, b: 3 }, custom_other: 3 } },
+  })
+  try {
+    const rate = entry(row(pair.b.doc, 'script_param'), 'custom_rate')
+    pair.b.change(kindControl(rate), 'число')
+    pair.b.change(scalarControl(rate), '99')
+    await pair.b.dom.window.flush()
+    entry(entry(row(pair.a.doc, 'script_param'), 'custom_rate'), 'b')
+      .querySelector(':scope > button[aria-label="Удалить"]')
+      .click()
+    await pair.a.dom.window.flush()
+    assert.equal(pair.stored().gunBalance['tacz:ak47'].script_param.custom_rate, 99)
+  } finally {
+    pair.close()
+  }
+})
+
+test('R8 sequential array additions and edits work', async () => {
+  const h = await realSetup({
+    realSelect: true,
+    initial: { gunBalance: { 'tacz:ak47': { script_param: { custom_rate: [2, 3] } } } },
+  })
+  try {
+    let outer = entry(row(h.doc, 'script_param'), 'custom_rate')
+    const array = outer.querySelector(':scope > .gun-sub > .gun-sub')
+    array.querySelector(':scope > button[aria-label="Добавить"]').click()
+    h.change([...outer.querySelectorAll('input[type=number]')].at(-1), '5')
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param.custom_rate, [2, 3, 5])
+    h.change(outer.querySelector('input[type=number]'), '7')
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param.custom_rate, [7, 3, 5])
+  } finally {
+    finish(h)
+  }
+})
+
+for (const variant of ['different-index', 'length', 'reorder']) {
+  test(`R8 array ${variant} conflict refuses an ambiguous retry`, async () => {
+    const initial = { 'tacz:ak47': { script_param: { custom_rate: [2, 3] } } }
+    const fresh = variant === 'different-index' ? [2, 7] : variant === 'length' ? [2, 3, 9] : [3, 2]
+    const h = await realSetup({
+      realSelect: true,
+      initial: { gunBalance: initial },
+      handle: conflictOnce((current) => {
+        current.gunBalance['tacz:ak47'].script_param.custom_rate = fresh
+      }),
+    })
+    try {
+      h.change(scalarControl(entry(row(h.doc, 'script_param'), 'custom_rate')), '4')
+      await h.dom.window.flush()
+      assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param.custom_rate, fresh)
+      assert.equal(puts(h).length, 1)
+    } finally {
+      finish(h)
+    }
+  })
+}
+
+test('R8 rename of a concurrently deleted source does not resurrect it', async () => {
+  const h = await realSetup({
+    realSelect: true,
+    initial: { gunBalance: initialBalance() },
+    handle: conflictOnce((current) => {
+      delete current.gunBalance['tacz:ak47'].script_param.custom_rate
+    }),
+  })
+  try {
+    h.change(
+      entry(row(h.doc, 'script_param'), 'custom_rate').querySelector('[data-gunkey]'),
+      'renamed',
+    )
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, { custom_other: 3 })
+  } finally {
+    finish(h)
+  }
+})
+
+test('R8 queued reset after nested leaf edit wins and Undo restores that edit', async () => {
+  const h = await realSetup({ realSelect: true, initial: { gunBalance: initialBalance() } })
+  try {
+    h.change(scalarControl(entry(row(h.doc, 'script_param'), 'custom_rate')), '7')
+    row(h.doc, 'script_param').querySelector('.gun-reset').click()
+    await h.dom.window.flush()
+    assert.equal(h.stored().gunBalance?.['tacz:ak47']?.script_param, undefined)
+    ;[...h.doc.querySelectorAll('.toast button')].at(-1).click()
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, {
+      custom_rate: 7,
+      custom_other: 3,
+    })
+  } finally {
+    finish(h)
+  }
+})
+
+test('R8 two editors: an old extra-damage child edit must not re-enable a concurrently disabled group', async () => {
+  const pair = await twoEditors({
+    'tacz:ak47': { bullet: { extra_damage: { armor_ignore: 0.8 } } },
+  })
+  try {
+    const off = pair.b.doc.querySelector('#gun-field-bullet-extra_damage-off')
+    assert.ok(off, 'the production nullable-group control exists')
+    off.checked = true
+    off.dispatchEvent(new pair.b.dom.window.Event('change', { bubbles: true }))
+    await pair.b.dom.window.flush()
+    assert.equal(pair.stored().gunBalance['tacz:ak47'].bullet.extra_damage, null)
+    pair.a.change(
+      pair.a.doc.querySelector('#gun-field-bullet-extra_damage-head_shot_multiplier'),
+      '3',
+    )
+    await pair.a.dom.window.flush()
+    assert.equal(pair.stored().gunBalance['tacz:ak47'].bullet.extra_damage, null)
+  } finally {
+    pair.close()
+  }
+})
+
+test('R9 an existing body group cannot be re-enabled by an old coefficient edit', async () => {
+  const h = await realSetup({
+    initial: { gunBalance: { 'tacz:ak47': { body_part_multipliers: { head: 2 } } } },
+    handle: conflictOnce((current) => {
+      current.gunBalance = {}
+    }),
+  })
+  try {
+    h.change(h.doc.querySelector('#body-part-head'), '3')
+    await h.dom.window.flush()
+    assert.equal(puts(h).length, 1)
+    assert.equal(h.stored().gunBalance['tacz:ak47']?.body_part_multipliers, undefined)
+    assert.match(
+      row(h.doc, 'body_part_multipliers').querySelector('.state').textContent,
+      /Группа.*Обновите/,
+    )
+  } finally {
+    finish(h)
+  }
+})
+
+test('R9 first entry in an explicitly enabled empty map still saves', async () => {
+  const h = await realSetup({ realSelect: true })
+  try {
+    const field = row(h.doc, 'script_param')
+    const off = field.querySelector('.gun-null > label input')
+    off.checked = false
+    off.dispatchEvent(new h.dom.window.Event('change', { bubbles: true }))
+    await h.dom.window.flush()
+    field.querySelector('button[aria-label="Добавить"]').click()
+    const key = field.querySelector('[data-gunkey]')
+    h.change(key, 'rate')
+    const kind = field.querySelector('select[aria-label="Тип значения"]')
+    h.change(kind, 'число')
+    h.change(field.querySelector('input[type=number]'), '5')
+    await h.dom.window.flush()
+    assert.deepEqual(h.stored().gunBalance['tacz:ak47'].script_param, { rate: 5 })
+  } finally {
+    finish(h)
+  }
+})
+
+test('R9 body live refresh updates confirmed fields while preserving an unfinished sibling input', async () => {
+  const h = await realSetup({
+    initial: { gunBalance: { 'tacz:ak47': { body_part_multipliers: { head: 2 } } } },
+    handle: conflictOnce((current) => {
+      current.gunBalance['tacz:ak47'].body_part_multipliers.torso = 3
+    }),
+  })
+  try {
+    const unfinished = h.doc.querySelector('#body-part-left_arm')
+    unfinished.value = ''
+    // Live refresh uses the same synchronization path as a successful merge.
+    await h.dom.window.reviewApply({
+      revision: 4,
+      gunBalance: { 'tacz:ak47': { body_part_multipliers: { head: 2, torso: 3 } } },
+    })
+    assert.equal(unfinished.value, '')
+    assert.equal(h.doc.querySelector('#body-part-torso').value, '3')
+  } finally {
+    finish(h)
+  }
+})
+
+for (const kind of ['body', 'scalar']) {
+  test(`R9 ${kind} refresh does not assign to a native unfinished number`, async () => {
+    const h = await realSetup({
+      initial: { gunBalance: { 'tacz:ak47': { body_part_multipliers: { head: 2 } } } },
+    })
+    try {
+      const input = h.doc.querySelector(
+        kind === 'body' ? '#body-part-left_arm' : '#gun-field-bullet-damage',
+      )
+      const value = Object.getOwnPropertyDescriptor(
+        h.dom.window.HTMLInputElement.prototype,
+        'value',
+      )
+      let writes = 0
+      Object.defineProperty(input, 'validity', { configurable: true, value: { badInput: true } })
+      Object.defineProperty(input, 'value', {
+        configurable: true,
+        get: () => '',
+        set: (next) => {
+          writes++
+          value.set.call(input, next)
+        },
+      })
+      input.focus()
+      await h.dom.window.reviewApply({
+        revision: 4,
+        gunBalance: {
+          'tacz:ak47': {
+            body_part_multipliers: { head: 2, torso: 3 },
+            bullet: { bullet_amount: 2 },
+          },
+        },
+      })
+      assert.equal(writes, 0, 'keep the actual native input buffer intact')
+      assert.equal(h.doc.querySelector('#body-part-torso').value, '3')
+      assert.equal(h.doc.querySelector('#gun-field-bullet-bullet_amount').value, '2')
+    } finally {
+      finish(h)
+    }
+  })
+}
+
+test('R9 a rejected old child edit displays the confirmed disabled group toggle', async () => {
+  const h = await realSetup({
+    handle: conflictOnce((current) => {
+      current.gunBalance = { 'tacz:ak47': { bullet: { extra_damage: null } } }
+    }),
+  })
+  try {
+    h.change(h.doc.querySelector('#gun-field-bullet-extra_damage-head_shot_multiplier'), '3')
+    await h.dom.window.flush()
+    assert.equal(puts(h).length, 1)
+    assert.equal(h.doc.querySelector('#gun-field-bullet-extra_damage-off').checked, true)
+    assert.match(
+      row(h.doc, 'bullet-extra_damage-head_shot_multiplier').querySelector('.state').textContent,
+      /Группа.*Обновите/,
+    )
+  } finally {
+    finish(h)
+  }
+})
+
+test('R9 choosing detailed mode explicitly can create a previously boolean group', async () => {
+  const h = await realSetup({
+    initial: { gunBalance: { 'tacz:ak47': { bullet: { ignite: false } } } },
+  })
+  try {
+    const field = row(h.doc, 'bullet-ignite')
+    const mode = field.querySelector('select[aria-label="Режим значения"]')
+    assert.equal(mode.value, 'false')
+    h.change(mode, 'object')
+    await h.dom.window.flush()
+    assert.equal(puts(h).length, 0, 'the detailed group is not valid until a value is entered')
+    const input = field.querySelector('input[type=checkbox]')
+    input.checked = true
+    input.dispatchEvent(new h.dom.window.Event('change', { bubbles: true }))
+    await h.dom.window.flush()
+    assert.equal(h.stored().gunBalance['tacz:ak47'].bullet.ignite.entity, true)
+  } finally {
+    finish(h)
+  }
+})
+
+test('R9 a parent conflict remains visible after subsequent live settings refreshes', async () => {
+  const h = await realSetup({
+    handle: conflictOnce((current) => {
+      current.gunBalance = { 'tacz:ak47': { bullet: { extra_damage: null } } }
+    }),
+  })
+  try {
+    h.change(h.doc.querySelector('#gun-field-bullet-extra_damage-head_shot_multiplier'), '3')
+    await h.dom.window.flush()
+    await h.dom.window.reviewApply(structuredClone(h.stored()))
+    assert.match(
+      row(h.doc, 'bullet-extra_damage-head_shot_multiplier').querySelector('.state').textContent,
+      /Группа.*Обновите/,
+    )
+    assert.equal(puts(h).length, 1)
+    assert.equal(h.stored().gunBalance['tacz:ak47'].bullet.extra_damage, null)
+  } finally {
+    finish(h)
+  }
+})
