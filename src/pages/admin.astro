@@ -4668,7 +4668,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 if (value !== undefined) delete box.dataset.typeDraft
                 // Незаконченная замена типа не должна стираться при сохранении соседей:
                 // пока она пуста, вклад в запись — последнее подтверждённое значение.
-                else if (box.dataset.typeDraft !== undefined)
+                // Внутри записи карты путь — лишь id контрола (e0…), он может совпасть с
+                // настоящим ключом: там значение по ключу подставляет сама карта.
+                else if (box.dataset.typeDraft !== undefined && !box.closest('[data-map-entry]'))
                   return gunPathGet(gunCurrentTop(top).effective, path)
                 return value
               },
@@ -4882,6 +4884,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           const appendEntry = (key: string, value?: unknown, values?: GunField) => {
             void values
             const row = el('div', { className: 'gun-list-row' })
+            row.dataset.mapEntry = ''
             const keyCtl = field.keys?.values
               ? selectout(
                   el(

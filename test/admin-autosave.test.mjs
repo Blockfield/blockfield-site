@@ -1790,3 +1790,67 @@ for (const nextKind of ['текст', 'объект'])
       h.dom.window.close()
     }
   })
+
+// ---- Ревью раунд 5 ----
+const entry = (parent, key) =>
+  [...parent.querySelectorAll('[data-gunkey]')]
+    .find((c) => c.value === key)
+    ?.closest('.gun-list-row')
+for (const nextKind of ['текст', 'объект']) {
+  test(`review round 5: fixed-field object/free-form child preserves ${nextKind} draft during sibling save`, async () => {
+    const initial = { 'tacz:ak47': { tuning: { custom_rate: 2, custom_other: 3 } } }
+    const h = await realSetup({ realSelect: true, initial: { gunBalance: initial } })
+    try {
+      const schema = {
+        type: 'object',
+        nullable: false,
+        fields: {
+          tuning: {
+            type: 'object',
+            nullable: false,
+            fields: {
+              custom_rate: { type: 'json', nullable: false },
+              custom_other: { type: 'number', nullable: false, min: 0, max: 10 },
+            },
+          },
+        },
+      }
+      h.dom.window.gunComplexSetup(
+        JSON.stringify(schema),
+        JSON.stringify({ tuning: { custom_rate: 1, custom_other: 1 } }),
+      )
+      assert.deepEqual(validateGunOverrides(initial, h.dom.window.currentGunCatalog()), initial)
+      const field = row(h.doc, 'tuning')
+      h.change(field.querySelector('select[aria-label="Тип значения"]'), nextKind)
+      await h.dom.window.flush()
+      assert.equal(h.requests.length, 0)
+      h.change(field.querySelector('#gun-field-tuning-custom_other'), '4')
+      await h.dom.window.flush()
+      assert.equal(h.stored().gunBalance['tacz:ak47'].tuning.custom_rate, 2)
+      assert.equal(h.stored().gunBalance['tacz:ak47'].tuning.custom_other, 4)
+    } finally {
+      h.dom.window.close()
+    }
+  })
+  test(`review round 5: actual map key e0 cannot replace another entry's unfinished ${nextKind} type draft`, async () => {
+    const initial = { 'tacz:ak47': { script_param: { custom_rate: 2, e0: 99, custom_other: 3 } } }
+    const h = await realSetup({ realSelect: true, initial: { gunBalance: initial } })
+    try {
+      assert.deepEqual(validateGunOverrides(initial, h.dom.window.currentGunCatalog()), initial)
+      const field = row(h.doc, 'script_param')
+      h.change(
+        entry(field, 'custom_rate').querySelector('select[aria-label="Тип значения"]'),
+        nextKind,
+      )
+      await h.dom.window.flush()
+      assert.equal(h.requests.length, 0)
+      h.change(entry(field, 'custom_other').querySelector('input[type=number]'), '4')
+      await h.dom.window.flush()
+      assert.equal(h.stored().gunBalance['tacz:ak47'].script_param.custom_rate, 2)
+      assert.equal(h.stored().gunBalance['tacz:ak47'].script_param.e0, 99)
+      assert.equal(h.stored().gunBalance['tacz:ak47'].script_param.custom_other, 4)
+    } finally {
+      h.dom.window.close()
+    }
+  })
+}
