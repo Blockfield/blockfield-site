@@ -59,6 +59,8 @@ const names = [
   'follow',
   'commitMessage',
   'waitMapAvailability',
+  'gunBandInsert',
+  'gunBandRemove',
 ]
 const functions = compile(
   source.statements
@@ -166,6 +168,7 @@ async function setup(options = {}) {
     window.gunAliasSetup = () => { gunCatalog.guns.push({id:'bf:test_alias',data:'bf:test',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Alias'}); renderGun(); };
     window.gunBulletSetup = () => { gunCatalog = {fields:{fields:{bullet:{type:'object',nullable:false,fields:{damage:{type:'number',nullable:false,min:0,max:100},penetrating:{type:'boolean',nullable:false}}},rpm:{type:'integer',nullable:false,min:1,max:1200}}}}; selectedGun = {id:'bf:test',data:'bf:test',type:'rifle',defaults:{bullet:{damage:8,penetrating:false},rpm:600},warnings:[],name:'Test'}; gunCatalog.guns = [selectedGun]; renderGun(); };
     window.gunComplexSetup = (schemaJson, defaultsJson) => { gunCatalog = {fields:JSON.parse(schemaJson)}; const defaults = JSON.parse(defaultsJson); selectedGun = {id:'tacz:ak47',data:'tacz:ak47_data',type:'rifle',weaponKind:'tacz',sourceId:'tacz:ak47',defaults,warnings:[],name:'Test'}; selectedGun.effective = structuredClone(defaults); gunCatalog.guns = [selectedGun]; renderGun(); };
+    window.gunBandFns = { insert: gunBandInsert, remove: gunBandRemove };
     window.bodySetup = (kind) => {
       window.gunSetup();
       const defaults = ${JSON.stringify(Object.fromEntries(BODY_PARTS.map((part) => [part, 1])))};
@@ -1124,7 +1127,19 @@ test('arrays, maps, nullable objects and json render without textareas; damage p
     // Урон — плоская строка с подсказкой.
     const damage = doc.querySelector('#gun-field-bullet-damage')
     assert.equal(damage.placeholder, '9')
-    const dmgBtn = damage.closest('.ctl').querySelector('.gun-dmg-btn')
+    // Лента задана: у базы нет «?», хинт поясняет fallback; «?» — в шапке таблицы.
+    assert.ok(
+      damage
+        .closest('.field')
+        .querySelector('label small')
+        .textContent.includes('только если урон по дистанциям не задан'),
+    )
+    assert.equal(damage.closest('.ctl').querySelector('.gun-dmg-btn'), null)
+    const bandRow = [...doc.querySelectorAll('#gun-fields .field')].find(
+      (row) => row.title === 'bullet-extra_damage-damage_adjust',
+    )
+    assert.ok(bandRow)
+    const dmgBtn = bandRow.querySelector('label .gun-dmg-btn')
     assert.ok(dmgBtn)
     assert.equal(
       dmgBtn.getAttribute('aria-describedby'),
@@ -1133,9 +1148,9 @@ test('arrays, maps, nullable objects and json render without textareas; damage p
     dmgBtn.dispatchEvent(new dom.window.Event('mouseenter', { bubbles: true }))
     const pop = dmgBtn.parentElement.querySelector('.gun-dmg-pop')
     assert.equal(pop.hidden, false)
-    assert.ok(pop.textContent.includes('в голову 13.5 → 5.5'), pop.textContent)
-    assert.ok(pop.textContent.includes('в тело 9 → 3.7'), pop.textContent)
-    assert.ok(pop.textContent.includes('грудь: первые 30 урона забирает бронеплита'))
+    assert.ok(pop.textContent.includes('дальше — 7'), pop.textContent)
+    assert.ok(pop.textContent.includes('голова'), pop.textContent)
+    assert.ok(pop.textContent.includes('тело'), pop.textContent)
     // Доп. урон поднят в «Основные»: броня, голова и таблица дистанций отдельными строками.
     const armor = doc.querySelector('#gun-field-bullet-extra_damage-armor_ignore')
     assert.ok(armor)
@@ -1184,6 +1199,41 @@ test('arrays, maps, nullable objects and json render without textareas; damage p
     added.querySelector('.gun-mini[aria-label=Удалить]').click()
     await dom.window.flush()
     assert.deepEqual(calls.at(-1).body.gunBalance['tacz:ak47'], { inaccuracy: null })
+  } finally {
+    dom.window.close()
+  }
+})
+
+test('distance band add inserts before the open-ended last band; removing it reopens the previous', async () => {
+  const { dom } = await setup()
+  try {
+    const { insert, remove } = dom.window.gunBandFns
+    const plain = (value) => JSON.parse(JSON.stringify(value))
+    const bands = [
+      { distance: 25, damage: 9 },
+      { distance: 120, damage: 6.5 },
+      { distance: 'infinite', damage: 5.5 },
+    ]
+    assert.deepEqual(plain(insert(bands, 7)), [
+      { distance: 25, damage: 9 },
+      { distance: 120, damage: 6.5 },
+      { distance: 145, damage: 6.5 },
+      { distance: 'infinite', damage: 5.5 },
+    ])
+    assert.deepEqual(plain(insert([{ distance: 'infinite', damage: 5.5 }], 7)), [
+      { distance: 25, damage: 5.5 },
+      { distance: 'infinite', damage: 5.5 },
+    ])
+    assert.deepEqual(plain(insert([], 7)), [{ distance: 'infinite', damage: 7 }])
+    assert.deepEqual(plain(remove(bands, 2)), [
+      { distance: 25, damage: 9 },
+      { distance: 120, damage: 6.5 },
+    ])
+    assert.deepEqual(plain(remove(bands, 0)), [
+      { distance: 120, damage: 6.5 },
+      { distance: 'infinite', damage: 5.5 },
+    ])
+    assert.deepEqual(plain(remove(bands, 9)), bands)
   } finally {
     dom.window.close()
   }

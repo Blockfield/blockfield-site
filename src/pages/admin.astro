@@ -1032,9 +1032,20 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     }
     .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-sub-row {
       display: grid;
-      grid-template-columns: minmax(120px, 200px) minmax(0, 1fr);
-      gap: 4px 12px;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2px;
       align-items: center;
+    }
+    .admin-main
+      :is(#gun-fields, #gun-advanced-fields)
+      .gun-sub-row
+      :is(input:not([type='checkbox']), select, .cselect) {
+      width: 100%;
+      max-width: none;
+      min-width: 0;
+    }
+    .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band-dist[hidden] {
+      display: none;
     }
     .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-list {
       display: grid;
@@ -1130,12 +1141,20 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       flex: none;
     }
     .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-dmg-btn {
-      width: auto;
-      padding: 2px 9px;
+      width: 22px;
+      height: 22px;
+      min-width: 0;
+      min-height: 0;
+      padding: 0;
+      aspect-ratio: 1;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       border-radius: 50%;
       cursor: help;
       font-size: 13px;
-      line-height: 1.5;
+      line-height: 1;
     }
     .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-dmg-pop {
       position: absolute;
@@ -1150,7 +1169,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       color: var(--cream);
       font-size: 13px;
       line-height: 1.6;
-      white-space: normal;
+      white-space: pre-line;
     }
     .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-dmg-pop[hidden] {
       display: none;
@@ -1417,7 +1436,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
     .admin-main .gun-group .ctl {
       flex-wrap: wrap;
     }
-    .admin-main .gun-group .ctl > :is(input:not([type='checkbox']):not([type='radio']), .cselect) {
+    .admin-main
+      .gun-group
+      .ctl
+      > :is(
+        input:not([type='checkbox']):not([type='radio']),
+        select,
+        .cselect,
+        .gun-sub,
+        .gun-null
+      ) {
       flex: 1 1 0;
       width: 100%;
       max-width: none;
@@ -1454,6 +1482,11 @@ Astro.response.headers.set('Cache-Control', 'no-store')
       .admin-main #kit-bindings .field,
       .admin-main .gun-group .field {
         grid-template-columns: minmax(0, 1fr);
+      }
+      .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band input[type='text'],
+      .admin-main :is(#gun-fields, #gun-advanced-fields) .gun-band input[type='number'] {
+        flex-basis: 62px;
+        width: 62px;
       }
     }
 
@@ -3319,6 +3352,30 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         ...Object.entries(overrides).map(([key, value]) => [key, gunValues(base[key], value)]),
       ])
     }
+    // Правило открытых дистанций: новая конечная строка вставляется ПЕРЕД последней
+    // (по умолчанию предыдущий предел + 25, урон предыдущей), удаление последней делает
+    // открытой предыдущую (при чтении последняя всегда infinite). Чистые функции для тестов.
+    function gunBandInsert(
+      bands: { distance: number | string; damage: number }[],
+      fallbackDamage: number,
+    ): { distance: number | string; damage: number }[] {
+      const list = (Array.isArray(bands) ? bands : []).map((band) => ({ ...band }))
+      if (!list.length) return [{ distance: 'infinite', damage: fallbackDamage }]
+      const prev = list[list.length - 2] ?? list[list.length - 1]
+      const finite = list
+        .map((band) => band.distance)
+        .filter((d): d is number => typeof d === 'number' && Number.isFinite(d))
+      list.splice(list.length - 1, 0, {
+        distance: (finite.length ? finite[finite.length - 1] : 0) + 25,
+        damage: typeof prev?.damage === 'number' ? prev.damage : fallbackDamage,
+      })
+      return list
+    }
+    function gunBandRemove<T>(bands: T[], index: number): T[] {
+      const list = (Array.isArray(bands) ? bands : []).slice()
+      if (index >= 0 && index < list.length) list.splice(index, 1)
+      return list
+    }
     // Человеческое имя из ID: «elitex:ak47» → «AK47», «item:superbwarfare/ak_47» → «Ak 47».
     const gunPretty = (id: string) =>
       id
@@ -3388,6 +3445,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         $('#gun-about').textContent +=
           ` Общие данные с ${sharers.join(', ')}: всё, кроме урона по частям тела, действует и для ${sharers.length === 1 ? 'него' : 'них'}.`
       $('#gun-warnings').textContent = gun.warnings.join(' ')
+      {
+        // «Дополнительно» по умолчанию свернуто для каждого оружия; живое обновление
+        // каталога раскрытый блок не трогает. Состояние храним в DOM: тесты извлекают
+        // renderGun без новых имён верхнего уровня.
+        const adv = $<HTMLDetailsElement>('#gun-advanced')
+        if (adv.dataset.gun !== gun.id) {
+          adv.dataset.gun = gun.id
+          adv.open = false
+        }
+      }
       // «Основные» — то, что крутит обычный админ; остальное — в «Дополнительно».
       // Всё это живёт внутри renderGun: тесты извлекают её целиком и не знают новых имён.
       const GUN_MAIN_TOP = new Set([
@@ -3734,8 +3801,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             return input.value
           })
           const state = el('span', { className: 'state', role: 'status' })
-          const bare =
-            top === 'bullet' && ['damage', 'armor_ignore', 'head_shot'].includes(childKey ?? '')
+          const bare = top === 'bullet'
           const label = childKey
             ? bare
               ? (GUN_CHILD_LABELS[childKey] ?? GUN_LABELS[childKey] ?? childKey)
@@ -3832,7 +3898,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           })
           input.onchange = () => commit(input)
           if (off) off.onchange = () => commit(off)
-          const hintText = main ? (GUN_HINTS[childKey ?? top] ?? GUN_HINTS[top]) : undefined
+          // Лента дистанций заменяет базовый урон: база действует, только если её нет.
+          const bandAdjust = (parentEffective as any)?.extra_damage?.damage_adjust
+          const hasBands =
+            rk === 'bullet-damage' && Array.isArray(bandAdjust) && bandAdjust.length > 0
+          const hintText =
+            rk === 'bullet-damage' && hasBands
+              ? 'Используется, только если урон по дистанциям не задан.'
+              : main
+                ? (GUN_HINTS[childKey ?? top] ?? GUN_HINTS[top])
+                : undefined
           const row = el(
             'div',
             { className: 'field row', title: top },
@@ -3856,17 +3931,21 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             ),
             state,
           )
-          if (rk === 'bullet-damage')
+          if (rk === 'bullet-damage' && !hasBands)
             gunDamageHint(row.querySelector('.ctl') as HTMLElement, () => {
               try {
                 const value = gunReaders.get(rk)!()
-                if (typeof value === 'number' && Number.isFinite(value)) return value
+                if (typeof value === 'number' && Number.isFinite(value)) return gunDamageText(value)
               } catch {
                 // Черновик не числом — считаем от подтверждённого значения.
               }
-              const eff = gunPathGet(gunCurrentTop(top).effective, childKey ? [childKey] : [])
-              if (typeof eff === 'number') return eff
-              throw new Error('Введите число.')
+              try {
+                const eff = gunPathGet(gunCurrentTop(top).effective, childKey ? [childKey] : [])
+                if (typeof eff === 'number') return gunDamageText(eff)
+              } catch {
+                // Нет подтверждённого числа — подскажем ввести.
+              }
+              return 'Введите урон числом — здесь будет итог по игроку в броне.'
             })
           row.dataset.rk = rk
           row.toggleAttribute('data-override', overridden)
@@ -4008,7 +4087,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               : `${fmt(damage * lo)}–${fmt(damage * hi)} → ${limbValues[0].final}–${limbValues[3].final}`
           return `По игроку в броне: в голову ${fmt(damage * headMult * parts.head)} → ${final('head', parts.head)} · в тело ${fmt(damage * parts.torso)} → ${final('torso', parts.torso)} · руки/ноги ${limbText} · грудь: первые 30 урона забирает бронеплита`
         }
-        const gunDamageHint = (box: HTMLElement, getDamage: () => number) => {
+        const gunDamageHint = (box: HTMLElement, paintText: () => string) => {
           const id = `gun-dmg-${Math.random().toString(36).slice(2)}`
           const pop = el('span', {
             className: 'gun-dmg-pop',
@@ -4017,11 +4096,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             hidden: true,
           })
           const paint = () => {
-            try {
-              pop.textContent = gunDamageText(getDamage())
-            } catch {
-              pop.textContent = 'Введите урон числом — здесь будет итог по игроку в броне.'
-            }
+            pop.textContent = paintText()
           }
           const btn = el('button', {
             type: 'button',
@@ -4079,6 +4154,9 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           }
         }
         // Компактная таблица «Урон по дистанциям»: одна строка на диапазон, итог сразу виден.
+        // Последняя строка — открытая («от X м и дальше»), без ввода дистанции: хранится
+        // маркер infinite из каталога, руками его никто не вводит. Удаление последней строки
+        // делает открытой предыдущую, «+» вставляет конечную строку перед последней.
         const gunBandControl = (
           top: string,
           path: string[],
@@ -4088,36 +4166,73 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           const distField = field.items!.fields!.distance
           const dmgField = field.items!.fields!.damage
           const list = el('div', { className: 'gun-list' })
-          const syncBandLabel = (row: HTMLElement) => {
-            const raw = (row.querySelector('input[type=text]') as HTMLInputElement).value.trim()
-            const infinite = raw === '∞' || raw.toLowerCase() === 'infinite'
-            row.querySelector('.gun-band-lab')!.textContent = infinite ? 'дальше' : 'до'
-            row.querySelector('.gun-band-unit')!.textContent = infinite ? '· урон' : 'м · урон'
+          const rows = () => [...list.children] as HTMLElement[]
+          const distInput = (row: HTMLElement) =>
+            row.querySelector('.gun-band-dist') as HTMLInputElement
+          const prevFinite = (before: number): number | undefined => {
+            let found: number | undefined
+            for (const row of rows().slice(0, before)) {
+              const n = Number(distInput(row).value.trim())
+              if (Number.isFinite(n)) found = n
+            }
+            return found
+          }
+          const paintRows = (fill: boolean) => {
+            const all = rows()
+            all.forEach((row, index) => {
+              const last = index === all.length - 1
+              const dist = distInput(row)
+              const lab = row.querySelector('.gun-band-lab')!
+              const unit = row.querySelector('.gun-band-unit')!
+              if (last) {
+                const prev = prevFinite(index)
+                lab.textContent =
+                  prev === undefined ? 'на любой дистанции' : `от ${prev} м и дальше`
+                unit.textContent = '— урон'
+                dist.hidden = true
+              } else {
+                if (
+                  fill &&
+                  (!dist.value.trim() ||
+                    dist.value.trim() === '∞' ||
+                    dist.value.trim().toLowerCase() === 'infinite')
+                )
+                  dist.value = String((prevFinite(index) ?? 0) + 25)
+                dist.hidden = false
+                lab.textContent = 'до'
+                unit.textContent = 'м · урон'
+              }
+            })
           }
           const readBand = (row: HTMLElement) => {
-            const distInput = row.querySelector('input[type=text]') as HTMLInputElement
             const dmgInput = row.querySelector('input[type=number]') as HTMLInputElement
-            const rawDist = distInput.value.trim()
-            if (!rawDist) throw new Error('Укажите дистанцию или удалите строку.')
-            const distance =
-              rawDist === '∞' || rawDist.toLowerCase() === 'infinite' ? 'infinite' : Number(rawDist)
-            if (distance !== 'infinite' && !Number.isFinite(distance))
-              throw new Error('Дистанция — число или ∞.')
-            checkGunField(distance, distField)
             const rawDmg = dmgInput.value.trim()
             if (!rawDmg) throw new Error('Заполните все строки или удалите пустые.')
             const damage = Number(rawDmg)
             if (!Number.isFinite(damage)) throw new Error('Введите число.')
             checkGunField(damage, dmgField)
+            if (rows().indexOf(row) === rows().length - 1) return { distance: 'infinite', damage }
+            const rawDist = distInput(row).value.trim()
+            if (!rawDist) throw new Error('Укажите дистанцию или удалите строку.')
+            const distance = Number(rawDist)
+            if (!Number.isFinite(distance)) throw new Error('Дистанция — число.')
+            checkGunField(distance, distField)
             return { distance, damage }
           }
+          const readAll = () => rows().map((row) => readBand(row))
           const appendBand = (distance: unknown, damage: unknown) => {
             const row = el('div', { className: 'gun-list-row' })
             const dist = el('input', {
               type: 'text',
               maxLength: 256,
-              value: distance === 'infinite' ? '∞' : (distance ?? ''),
-              title: 'Дистанция в метрах или ∞ для дальнейшей',
+              className: 'gun-band-dist',
+              value:
+                distance === 'infinite'
+                  ? '∞'
+                  : typeof distance === 'number'
+                    ? String(distance)
+                    : (distance ?? ''),
+              title: 'Дистанция в метрах',
             })
             const dmg = el('input', {
               type: 'number',
@@ -4133,11 +4248,17 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               title: 'Удалить',
               ariaLabel: 'Удалить',
               onclick: () => {
-                row.remove()
+                const index = rows().indexOf(row)
+                try {
+                  write(gunBandRemove(readAll(), index))
+                } catch {
+                  row.remove()
+                  paintRows(true)
+                }
                 onChange(del)
               },
             })
-            // Строка 1 — ввод и ×, строка 2 (flex 100%) — итог; «?» только на главном «Уроне».
+            // Строка 1 — ввод и ×, строка 2 (flex 100%) — итог; «?» живёт в шапке таблицы.
             const band = el(
               'span',
               { className: 'gun-band' },
@@ -4148,18 +4269,14 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               del,
               final,
             )
-            dist.onchange = () => onChange(dist)
-            dmg.onchange = () => onChange(dmg)
             row.append(band)
             list.append(row)
-            syncBandLabel(row)
+            dist.onchange = () => onChange(dist)
+            dmg.onchange = () => onChange(dmg)
             return row
           }
-          list.addEventListener('input', (event) => {
-            const row = (event.target as HTMLElement).closest?.(
-              '.gun-list-row',
-            ) as HTMLElement | null
-            if (row) syncBandLabel(row)
+          list.addEventListener('input', () => {
+            paintRows(false)
             refreshBandFinals()
           })
           const add = el('button', {
@@ -4169,23 +4286,35 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             title: 'Добавить',
             ariaLabel: 'Добавить дистанцию',
             onclick: () => {
-              const row = appendBand('', '')
-              row.querySelector('input')!.focus()
+              let bands
+              try {
+                bands = readAll()
+              } catch {
+                // Commit покажет ошибку, черновик останется цел.
+                onChange(add)
+                return
+              }
+              const base = gunPathGet(gunCurrentTop(top).effective, ['damage'])
+              const next = gunBandInsert(bands, typeof base === 'number' ? base : 0)
+              write(next)
+              rows()[Math.max(0, next.length - 2)]?.querySelector('input')?.focus()
               onChange(add)
             },
           })
           const box = el('div', { className: 'gun-sub' }, list, add)
+          const write = (value: unknown) => {
+            list.replaceChildren()
+            for (const item of Array.isArray(value) ? value : []) {
+              const band = (item ?? {}) as Record<string, unknown>
+              appendBand(band.distance, band.damage)
+            }
+            paintRows(true)
+            refreshBandFinals(box)
+          }
           const ctl: GunCtl = {
             node: box,
-            read: () => [...list.children].map((row) => readBand(row as HTMLElement)),
-            write: (value) => {
-              list.replaceChildren()
-              for (const item of Array.isArray(value) ? value : []) {
-                const band = (item ?? {}) as Record<string, unknown>
-                appendBand(band.distance, band.damage)
-              }
-              refreshBandFinals(box)
-            },
+            read: readAll,
+            write,
           }
           return ctl
         }
@@ -4240,6 +4369,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
               id,
               type: 'number',
               step: field.type === 'integer' ? '1' : 'any',
+              placeholder: 'как в ганпаке',
               ...(field.min === undefined ? {} : { min: field.min, max: field.max }),
             })
             checkout(input)
@@ -4253,11 +4383,16 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             if (isGunDamagePath(top, path)) {
               const box = el('span', { className: 'gun-dmg-wrap' }, input)
               gunDamageHint(box, () => {
-                const value = readNumber(input, undefined)
-                if (typeof value === 'number' && Number.isFinite(value)) return value
-                const eff = current()
-                if (typeof eff === 'number') return eff
-                throw new Error('Введите число.')
+                try {
+                  const value = readNumber(input, undefined)
+                  if (typeof value === 'number' && Number.isFinite(value))
+                    return gunDamageText(value)
+                  const eff = current()
+                  if (typeof eff === 'number') return gunDamageText(eff)
+                } catch {
+                  // Нет числа — подскажем ввести.
+                }
+                return 'Введите урон числом — здесь будет итог по игроку в броне.'
               })
               return { ...ctl, node: box }
             }
@@ -4811,6 +4946,36 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             el('div', { className: 'ctl' }, ctl.node, reset),
             state,
           )
+          if (rk === 'bullet-extra_damage-damage_adjust') {
+            // Лента заменяет базу: «?» с итогом по дистанциям живёт в шапке таблицы.
+            const bandsHint = () => {
+              let bands: { distance: unknown; damage: unknown }[]
+              try {
+                bands = ctl.read() as { distance: unknown; damage: unknown }[]
+              } catch {
+                return 'Заполните дистанции — здесь будет итог по игроку в броне.'
+              }
+              if (!Array.isArray(bands) || !bands.length)
+                return 'Добавьте дистанции — здесь будет итог по игроку в броне.'
+              return bands
+                .map((band, index) => {
+                  const where =
+                    index === bands.length - 1 ? 'дальше' : `до ${String(band.distance)} м`
+                  return typeof band.damage === 'number' && Number.isFinite(band.damage)
+                    ? `${where} — ${String(band.damage)}: ${gunBandFinal(band.damage)}`
+                    : `${where}: введите урон числом`
+                })
+                .join('\n')
+            }
+            gunDamageHint(row.querySelector('label') as HTMLElement, bandsHint)
+            // «?» — в строку с названием, а не под хинт.
+            {
+              const lab = row.querySelector('label') as HTMLElement
+              const dmg = lab.querySelector('.gun-dmg')
+              const hint = lab.querySelector('small')
+              if (dmg && hint) lab.insertBefore(dmg, hint)
+            }
+          }
           row.dataset.rk = rk
           row.toggleAttribute('data-override', overridden)
           row.dataset.saved = gunRowValue(row)
