@@ -399,6 +399,7 @@ test('RCON allowlist builds exact commands and rejects injection', () => {
     'bf maintenance interrupt',
     'bf maintenance interrupt confirm авария',
   ])
+  assert.deepEqual(rconCommand({ action: 'resume' }).commands, ['bf maintenance resume'])
   assert.deepEqual(rconCommand({ action: 'class-unlock', classId: 'sniper' }).commands, [
     'bf class unlock sniper',
   ])

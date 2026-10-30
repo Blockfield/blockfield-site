@@ -1524,6 +1524,8 @@ export function rconCommand(body: any): {
       return { permission: 'maintenance', commands: ['bf maintenance status'], target: null }
     case 'drain':
       return { permission: 'maintenance', commands: ['bf maintenance drain'], target: null }
+    case 'resume':
+      return { permission: 'maintenance', commands: ['bf maintenance resume'], target: null }
     // The server confirms an interrupt only from the same sender within 60 s, so both commands share one connection.
     case 'interrupt':
       return {

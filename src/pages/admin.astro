@@ -113,15 +113,25 @@ Astro.response.headers.set('Cache-Control', 'no-store')
             </div>
             <div class="quick-group quick-group--warn" data-perm="maintenance">
               <h4 id="maint-title">Техработы и аварии</h4>
-              <p class="muted">Идущие матчи можно закончить перед техработами игры.</p>
+              <p class="muted" id="maint-state" role="status">
+                Состояние: загрузка…
+              </p>
               <div class="actions">
                 <button type="button" id="drain">
                   Не начинать новые матчи
+                </button>
+                <button type="button" id="resume">
+                  Снова разрешить матчи
                 </button>
                 <button type="button" id="interrupt" class="danger">
                   Прервать все матчи
                 </button>
               </div>
+              <p class="muted">
+                «Не начинать новые» — идущие матчи доиграют, новые не начнутся. «Снова разрешить» —
+                отменяет запрет. «Прервать» — останавливает всё сразу без победителя. Вход в игру
+                закрывается отдельно на хосте, здесь видно только его состояние.
+              </p>
               <p class="form-status" id="maint-status" role="status"></p>
             </div>
           </div>
@@ -9552,6 +9562,8 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           return ['проверил', 'проверить', ' состояние техработ']
         case 'rcon:drain':
           return ['запретил', 'запретить', ' начинать новые матчи']
+        case 'rcon:resume':
+          return ['разрешил', 'разрешить', ' начинать новые матчи']
         case 'rcon:interrupt':
           return ['прервал', 'прервать', ` все матчи${reason}`]
         case 'settings':
@@ -10387,6 +10399,28 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         )
       }),
     )
+    /** Текущее состояние для блока «Техработы»: вход (гейт хоста) + запрет новых матчей (игра). */
+    async function loadMaintState() {
+      const line = $('#maint-state')
+      try {
+        const [{ output }, { rooms }] = await Promise.all([
+          api('rcon', 'POST', { action: 'maintenance-status' }),
+          api('overview'),
+        ])
+        const draining = /(^|\s)draining=true(\s|$)/.test(String(output ?? ''))
+        const entry = rooms?.maintenance
+          ? 'вход закрыт'
+          : rooms?.available === false
+            ? 'вход недоступен'
+            : 'вход открыт'
+        say(
+          line,
+          `Состояние: ${rooms?.maintenance ? 'техработы' : draining ? 'новые матчи не начинаются' : 'обычный режим'} (${entry}${draining ? ', новые матчи не начинаются' : ''}).`,
+        )
+      } catch {
+        say(line, 'Состояние: неизвестно, не удалось опросить сервер.', 'error')
+      }
+    }
     $('#drain').addEventListener('click', async () => {
       if (
         !(await ask({
@@ -10401,9 +10435,21 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         $('#maint-status'),
         async () => {
           await api('rcon', 'POST', { action: 'drain' })
+          loadMaintState().catch(() => {})
           return 'Новые матчи больше не начинаются.'
         },
         $('#drain').parentElement,
+      )
+    })
+    $('#resume').addEventListener('click', async () => {
+      run(
+        $('#maint-status'),
+        async () => {
+          await api('rcon', 'POST', { action: 'resume' })
+          loadMaintState().catch(() => {})
+          return 'Новые матчи снова разрешены.'
+        },
+        $('#resume').parentElement,
       )
     })
     $('#interrupt').addEventListener('click', async () => {
@@ -10420,6 +10466,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         async () => {
           await api('rcon', 'POST', { action: 'interrupt', reason: String(answer.get('reason')) })
           loadOverview()
+          loadMaintState().catch(() => {})
           return 'Все матчи прерваны.'
         },
         $('#interrupt').parentElement,
@@ -10511,6 +10558,7 @@ Astro.response.headers.set('Cache-Control', 'no-store')
           ['stats', loadKeys, 'Ключи'],
           ['audit', loadAudit, 'Журнал'],
           ['diagnostics', loadHealth, 'Производительность'],
+          ['maintenance', loadMaintState, 'Состояние техработ'],
           ['moderate', loadPlayerHints, 'Подсказки игроков'],
         ]
         await Promise.all(
