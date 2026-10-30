@@ -1870,12 +1870,20 @@ const routes: Record<string, Route> = {
       }
       const { mode, message } = toggle
       const { postGateCp } = await import('./cp.ts')
-      return postGateCp(
-        mode,
-        message,
-        { id: actor.uuid, role: actor.role === 'owner' ? 'owner' : 'admin' },
-        randomUUID(),
-      )
+      try {
+        return await postGateCp(
+          mode,
+          message,
+          { id: actor.uuid, role: actor.role === 'owner' ? 'owner' : 'admin' },
+          randomUUID(),
+        )
+      } catch (error) {
+        const text = error instanceof Error ? error.message : ''
+        // Безопасно для показа: ревизия CP — только номер, «не настроен» — без секретов.
+        if (/ревизия \d+/.test(text)) throw fail(409, text)
+        if (/не настроен/.test(text)) throw fail(503, text)
+        throw error
+      }
     },
     audit: (body, result) => ({
       action: `gate:${body?.action}`,

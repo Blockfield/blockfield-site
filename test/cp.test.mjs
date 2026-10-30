@@ -1,7 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { maintenanceFromCp, readGateCp, postGateCp, gateToggle } from '../src/lib/cp.ts'
+import {
+  maintenanceFromCp,
+  readGateCp,
+  postGateCp,
+  gateToggle,
+  cpConfigured,
+} from '../src/lib/cp.ts'
 import { maintenanceFrom } from '../src/lib/rooms.ts'
 
 test('CP maintenance closes entry, other modes keep it open', () => {
@@ -17,6 +23,16 @@ test('CP maintenance closes entry, other modes keep it open', () => {
     maintenanceFromCp({ ...base, mode: 'maintenance', message: '' })?.message,
     maintenanceFrom({ mode: 'maintenance' })?.message,
   )
+})
+
+test('CP buttons flag follows BLOCKFIELD_CP_URL (fail-before: no such flag)', () => {
+  delete process.env.BLOCKFIELD_CP_URL
+  assert.equal(cpConfigured(), false)
+  assert.equal(cpConfigured({ BLOCKFIELD_CP_URL: '   ' }), false)
+  assert.equal(cpConfigured({ BLOCKFIELD_CP_URL: 'http://127.0.0.1:9' }), true)
+  process.env.BLOCKFIELD_CP_URL = 'http://127.0.0.1:9/'
+  assert.equal(cpConfigured(), true)
+  delete process.env.BLOCKFIELD_CP_URL
 })
 
 test('gate toggle accepts only the two maintenance actions', () => {

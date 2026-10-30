@@ -19,6 +19,11 @@ export function gateToggle(body: any): { mode: 'maintenance' | 'open'; message: 
 
 const TIMEOUT_MS = 2500
 
+/** Кнопки «Начать/Закончить техработы» живы, только когда задан URL (иначе их нет на странице). */
+export function cpConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return ((env.BLOCKFIELD_CP_URL ?? '') as string).replace(/\/+$/, '').trim().length > 0
+}
+
 function config() {
   const env = process.env
   const url = (env.BLOCKFIELD_CP_URL ?? '').replace(/\/+$/, '')

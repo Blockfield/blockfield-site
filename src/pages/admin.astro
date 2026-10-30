@@ -1,10 +1,13 @@
 ---
 import Site from '../layouts/Site.astro'
 import { siteIdentity } from '../lib/admin'
+import { cpConfigured } from '../lib/cp.ts'
 // Оболочку панели видят только участники команды; права на данные отдельно проверяет /api/admin.
 const identity = await siteIdentity(Astro.cookies).catch(() => null)
 if (!identity?.hasAdminAccess) return Astro.redirect(identity ? '/' : '/account', 302)
 Astro.response.headers.set('Cache-Control', 'no-store')
+// Кнопки техработ через control-plane: без BLOCKFIELD_CP_URL их нет (прод выглядит как раньше).
+const cpGate = cpConfigured()
 ---
 
 <Site title="Панель управления — Blockfield" noindex>
@@ -123,21 +126,30 @@ Astro.response.headers.set('Cache-Control', 'no-store')
                 <button type="button" id="resume">
                   Снова разрешить матчи
                 </button>
-                <button type="button" id="maint-start" class="danger">
-                  Начать техработы
-                </button>
-                <button type="button" id="maint-stop">
-                  Закончить техработы
-                </button>
+                {cpGate && (
+                  <>
+                    <button type="button" id="maint-start" class="danger">
+                      Начать техработы
+                    </button>
+                    <button type="button" id="maint-stop">
+                      Закончить техработы
+                    </button>
+                  </>
+                )}
                 <button type="button" id="interrupt" class="danger">
                   Прервать все матчи
                 </button>
               </div>
               <p class="muted">
                 «Не начинать новые» — идущие матчи доиграют, новые не начнутся. «Снова разрешить» —
-                отменяет запрет. «Начать/Закончить техработы» — закрывает и открывает вход в игру
-                через control-plane. «Прервать» — останавливает всё сразу без победителя. Вход в
-                игру читается из control-plane, файл — только запасной путь.
+                отменяет запрет.{' '}
+                {cpGate
+                  ? '«Начать/Закончить техработы» — закрывает и открывает вход в игру через control-plane.'
+                  : '«Начать/Закончить техработы» недоступны: control-plane не настроен на сайте (BLOCKFIELD_CP_URL).'}
+                «Прервать» — останавливает всё сразу без победителя.{' '}
+                {cpGate
+                  ? 'Вход в игру читается из control-plane, файл — только запасной путь.'
+                  : 'Вход в игру закрывается отдельно на хосте, здесь видно только его состояние.'}
               </p>
               <p class="form-status" id="maint-status" role="status"></p>
             </div>
@@ -10805,37 +10817,42 @@ Astro.response.headers.set('Cache-Control', 'no-store')
         $('#resume').parentElement,
       )
     })
-    $('#maint-start').addEventListener('click', async () => {
-      if (
-        !(await ask({
-          title: 'Начать техработы?',
-          text: 'Вход в игру закроется для всех.',
-          ok: 'Начать техработы',
-          danger: true,
-        }))
-      )
-        return
-      run(
-        $('#maint-status'),
-        async () => {
-          await api('gate', 'POST', { action: 'maintenance-start' })
-          loadMaintState().catch(() => {})
-          return 'Техработы начаты, вход закрыт.'
-        },
-        $('#maint-start').parentElement,
-      )
-    })
-    $('#maint-stop').addEventListener('click', async () => {
-      run(
-        $('#maint-status'),
-        async () => {
-          await api('gate', 'POST', { action: 'maintenance-stop' })
-          loadMaintState().catch(() => {})
-          return 'Техработы закончены, вход открыт.'
-        },
-        $('#maint-stop').parentElement,
-      )
-    })
+    // Кнопок нет без BLOCKFIELD_CP_URL (см. разметку выше): слушатели только когда они есть.
+    const maintStart = document.querySelector<HTMLButtonElement>('#maint-start')
+    const maintStop = document.querySelector<HTMLButtonElement>('#maint-stop')
+    if (maintStart && maintStop) {
+      maintStart.addEventListener('click', async () => {
+        if (
+          !(await ask({
+            title: 'Начать техработы?',
+            text: 'Вход в игру закроется для всех.',
+            ok: 'Начать техработы',
+            danger: true,
+          }))
+        )
+          return
+        run(
+          $('#maint-status'),
+          async () => {
+            await api('gate', 'POST', { action: 'maintenance-start' })
+            loadMaintState().catch(() => {})
+            return 'Техработы начаты, вход закрыт.'
+          },
+          maintStart.parentElement,
+        )
+      })
+      maintStop.addEventListener('click', async () => {
+        run(
+          $('#maint-status'),
+          async () => {
+            await api('gate', 'POST', { action: 'maintenance-stop' })
+            loadMaintState().catch(() => {})
+            return 'Техработы закончены, вход открыт.'
+          },
+          maintStop.parentElement,
+        )
+      })
+    }
     $('#interrupt').addEventListener('click', async () => {
       const answer = await ask({
         title: 'Прервать все матчи?',
