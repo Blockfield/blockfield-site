@@ -20,7 +20,16 @@ import type { AstroCookies } from 'astro'
 import { account, drasl, fail, nickname, readJson, session, token } from './account.ts'
 import { rcon } from './rcon.ts'
 import { eventStream, heartbeat } from './admin-events.ts'
-import { rawCommand, rconTarget, type RconTarget, stripColors } from './console.ts'
+import {
+  consoleLogPage,
+  consoleSince,
+  consoleSuggestPage,
+  rawCommand,
+  rconTarget,
+  suggestInput,
+  type RconTarget,
+  stripColors,
+} from './console.ts'
 import { parseTickQuery, readDiagnostics, redact } from './diagnostics.ts'
 import { currentRooms, roomId } from './rooms.ts'
 import { readGunBalance, validateGunOverrides, type GunBalanceCatalog } from './gun-balance.ts'
@@ -1576,6 +1585,50 @@ function sendRcon(commands: string[], target: RconTarget = 'game') {
     throw hidden(502, `${serverDesc} не отвечает.`, error.message)
   })
 }
+/**
+ * The mod's console link (log stream + Brigadier completion) lives next to RCON: same host, the
+ * RCON port plus one unless overridden, the RCON password as the bearer token. No new secrets.
+ */
+function consoleLink(target: RconTarget = 'game') {
+  const env = process.env
+  const isWorkshop = target === 'workshop'
+  rconConfigured(target)
+  const rconPort = Number(
+    (isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_PORT : env.BLOCKFIELD_RCON_PORT) || 25575,
+  )
+  const port = Number(
+    (isWorkshop ? env.BLOCKFIELD_WORKSHOP_CONSOLE_PORT : env.BLOCKFIELD_CONSOLE_PORT) ||
+      rconPort + 1,
+  )
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535)
+    throw fail(503, 'Порт консоли настроен неверно.')
+  const host = isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_HOST : env.BLOCKFIELD_RCON_HOST
+  const password = isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_PASSWORD : env.BLOCKFIELD_RCON_PASSWORD
+  return { host: host!, port, password: password! }
+}
+/** One proxied call to the mod's console link: structured data only, never raw JSON to the browser. */
+async function fetchConsole(target: RconTarget, path: 'logs' | 'suggest', search: string) {
+  const { host, port, password } = consoleLink(target)
+  const response = await fetch(`http://${host}:${port}/blockfield/console/v1/${path}?${search}`, {
+    headers: { Authorization: `Bearer ${password}`, Accept: 'application/json' },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(8000),
+  }).catch((error: Error) => {
+    console.error(`Console [${target}] failed`, error.message)
+    const serverDesc = target === 'workshop' ? 'Сервер Workshop' : 'Игровой сервер'
+    throw hidden(502, `${serverDesc} не отвечает.`, error.message)
+  })
+  if (response.status === 401 || response.status === 403)
+    throw fail(502, 'Консоль сервера отвергла ключ сайта.')
+  if (response.status !== 200) throw fail(502, 'Консоль сервера вернула ошибку.')
+  const type = response.headers.get('content-type')?.split(';', 1)[0].trim()
+  const data = type === 'application/json' ? await response.json().catch(() => null) : null
+  try {
+    return path === 'logs' ? consoleLogPage(data) : consoleSuggestPage(data)
+  } catch {
+    throw fail(502, 'Консоль сервера ответила непонятно.')
+  }
+}
 
 async function lookupName(name: unknown): Promise<{ uuid: string; name: string }> {
   if (typeof name !== 'string' || !nickname.test(name))
@@ -1850,6 +1903,33 @@ const routes: Record<string, Route> = {
   'GET diagnostics': {
     permission: 'diagnostics',
     handler: async ({ store }) => readDiagnostics(store.db),
+  },
+  // Live server log stream and Brigadier completion from the mod's console link (read-only, unaudited).
+  'GET console/logs': {
+    permission: 'rcon-raw',
+    handler: async ({ context }) => {
+      let target: RconTarget, since: number
+      try {
+        target = rconTarget(context.url.searchParams.get('target'))
+        since = consoleSince(context.url.searchParams.get('since'))
+      } catch (error) {
+        throw bad((error as Error).message)
+      }
+      return fetchConsole(target, 'logs', `since=${since}`)
+    },
+  },
+  'GET console/suggest': {
+    permission: 'rcon-raw',
+    handler: async ({ context }) => {
+      let target: RconTarget, input: string
+      try {
+        target = rconTarget(context.url.searchParams.get('target'))
+        input = suggestInput(context.url.searchParams.get('input') ?? '')
+      } catch (error) {
+        throw bad((error as Error).message)
+      }
+      return fetchConsole(target, 'suggest', `input=${encodeURIComponent(input)}`)
+    },
   },
   // The server's own tick window right now (vanilla `tick query`, read-only), independent of pushed samples.
   'GET diagnostics/live': {

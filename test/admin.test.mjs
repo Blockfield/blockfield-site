@@ -1743,3 +1743,88 @@ test('diagnostics are admin-only and never report health without data', async (t
   assert.deepEqual([empty.samples, empty.events], [[], []])
   assert.equal((await call(`${ADMIN}:Adm`, 'diagnostics/live')).status, 503)
 })
+
+test('console link: logs and suggestions proxy the mod endpoint with the RCON secret, reads stay unaudited', async (t) => {
+  const { createServer } = await import('node:http')
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  const seen = []
+  const server = createServer((req, res) => {
+    seen.push(`${req.method} ${req.url} auth=${req.headers.authorization}`)
+    if (req.headers.authorization !== 'Bearer x') {
+      res.writeHead(401, { 'content-type': 'application/json' })
+      res.end('{"error":"Unauthorized."}')
+      return
+    }
+    const url = new URL(req.url, 'http://game')
+    res.writeHead(200, { 'content-type': 'application/json' })
+    if (url.pathname.endsWith('/logs'))
+      res.end(
+        JSON.stringify({
+          next: 2,
+          entries: [
+            { seq: 1, at: 1000, level: 'INFO', logger: 'net.Foo', message: 'hello' },
+            { seq: 2, at: 2000, level: 'WARN', logger: 'net.Foo', message: 'careful' },
+          ],
+        }),
+      )
+    else
+      res.end(
+        JSON.stringify({
+          from: 5,
+          suggestions: [{ text: 'set', hint: '' }],
+        }),
+      )
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  Object.assign(process.env, {
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_RCON_HOST: '127.0.0.1',
+    BLOCKFIELD_RCON_PORT: '1',
+    BLOCKFIELD_RCON_PASSWORD: 'x',
+    BLOCKFIELD_CONSOLE_PORT: String(server.address().port),
+  })
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const call = (as, path) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL(`http://site/api/admin/${path}`)
+    return handleAdmin(
+      {
+        request: new Request(url, { method: 'GET' }),
+        url,
+        cookies: { get: () => undefined },
+      },
+      path.split('?')[0],
+      s,
+    ).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  // Moderators keep their old console: only the raw-console permission may read the link.
+  assert.equal((await call(`${MOD}:Moddy`, 'console/logs?since=0')).status, 403)
+  const logs = await call(`${OWNER}:Nether`, 'console/logs?since=0')
+  assert.equal(logs.status, 200)
+  assert.deepEqual(await logs.json(), {
+    entries: [
+      { seq: 1, at: 1000, level: 'INFO', logger: 'net.Foo', message: 'hello' },
+      { seq: 2, at: 2000, level: 'WARN', logger: 'net.Foo', message: 'careful' },
+    ],
+    next: 2,
+  })
+  const suggest = await call(`${OWNER}:Nether`, 'console/suggest?input=time%20s')
+  assert.equal(suggest.status, 200)
+  assert.deepEqual(await suggest.json(), { from: 5, suggestions: [{ text: 'set', hint: '' }] })
+  assert.equal((await call(`${OWNER}:Nether`, 'console/logs?since=nope')).status, 400)
+  assert.ok(
+    seen.every((line) => line.includes('auth=Bearer x')),
+    'the RCON password is the only link secret',
+  )
+  assert.equal((await s.auditLog()).length, 0, 'link reads are not audited')
+})
