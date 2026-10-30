@@ -205,7 +205,14 @@ export function currentRooms(): Promise<RoomStatus> {
   const env = process.env
   const publicHost = 'play.blockfield.pro'
   // За Velocity комнаты отдаёт только игровой сервер (внутренний адрес), а публичный адрес — это прокси с лобби.
-  return (inflight ??= readGate(env.BLOCKFIELD_GATE_FILE)
+  // BLOCKFIELD_GATE_SOURCE=cp: вход читается из control-plane, файл — только запасной путь.
+  const gate =
+    env.BLOCKFIELD_GATE_SOURCE === 'cp'
+      ? import('./cp.ts').then((cp) =>
+          cp.readGateCp().catch(() => readGate(env.BLOCKFIELD_GATE_FILE)),
+        )
+      : readGate(env.BLOCKFIELD_GATE_FILE)
+  return (inflight ??= gate
     .then((maintenance) =>
       Promise.all([
         maintenance

@@ -32,6 +32,7 @@ import {
 } from './console.ts'
 import { parseTickQuery, readDiagnostics, redact } from './diagnostics.ts'
 import { currentRooms, roomId } from './rooms.ts'
+import { gateToggle } from './cp.ts'
 import { readGunBalance, validateGunOverrides, type GunBalanceCatalog } from './gun-balance.ts'
 import { readAiLimits, validateAiAccounts } from './ai-limits.ts'
 import {
@@ -1553,6 +1554,7 @@ export function rconCommand(body: any): {
 export const rejectedByServer = (output: string) =>
   /^\s*(Unknown or incomplete command|Unknown command)/i.test(output) ||
   output.includes('<--[HERE]')
+/** «Начать/Закончить техработы» (POST gate): mapping lives in ./cp.ts. */
 /** A failure whose `internal` text goes only to the server log and the audit log, never to the browser. */
 function hidden(status: number, message: string, internal: string) {
   return Object.assign(fail(status, message), { internal })
@@ -1854,6 +1856,38 @@ const routes: Record<string, Route> = {
       action: `rcon:${body?.action}`,
       target: body?.player ?? body?.roomId ?? body?.classId ?? body?.op ?? null,
       detail: { ...body, room: result?.room, output: result?.output?.slice(0, 500) },
+    }),
+  },
+  // Entry gate via control-plane (U1): owner AND site admins; CP audits the actor too.
+  'POST gate': {
+    permission: 'maintenance',
+    handler: async ({ actor, body }) => {
+      let toggle
+      try {
+        toggle = gateToggle(body)
+      } catch {
+        throw bad('Неизвестное действие.')
+      }
+      const { mode, message } = toggle
+      const { postGateCp } = await import('./cp.ts')
+      try {
+        return await postGateCp(
+          mode,
+          message,
+          { id: actor.uuid, role: actor.role === 'owner' ? 'owner' : 'admin' },
+          randomUUID(),
+        )
+      } catch (error) {
+        const text = error instanceof Error ? error.message : ''
+        // Безопасно для показа: ревизия CP — только номер, «не настроен» — без секретов.
+        if (/ревизия \d+/.test(text)) throw fail(409, text)
+        if (/не настроен/.test(text)) throw fail(503, text)
+        throw error
+      }
+    },
+    audit: (body, result) => ({
+      action: `gate:${body?.action}`,
+      detail: { revision: result?.revision },
     }),
   },
   // Owner only: any single command line. Refusals are audited too (without the command: the body is not read).
