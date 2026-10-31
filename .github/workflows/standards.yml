@@ -5,11 +5,37 @@ on:
   pull_request:
 permissions:
   contents: read
+  actions: read # decide job looks up the green standards run for this tree
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  # Cheap skip decision on a free runner: main pushes that merge an
+  # already-tested tree never occupy a paid Blacksmith runner.
+  decide:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tested: ${{ steps.same.outputs.tested }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # Main pushes usually merge a tree a green PR run already tested.
+      # PR runs check out the merge ref, so head_sha's tree differs when the PR
+      # was behind main: the PR job records its tested merge tree as an artifact.
+      - name: Check for green run of the same tree
+        id: same
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tested=$(scripts/ci-same-tree.sh standards.yml)
+          echo "Same tree already tested: $tested."
+          echo "tested=$tested" >> "$GITHUB_OUTPUT"
   check:
+    needs: decide
+    if: needs.decide.outputs.tested != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
@@ -55,7 +81,26 @@ jobs:
           BLOCKFIELD_TEST_DATABASE_URL: postgres://blockfield:test-only@localhost:5432/blockfield_test
 
       - run: pnpm build
+      # Records the exact tree this green PR run tested (the merge ref), so a
+      # merge skips even when the PR branch itself was behind an unmoved main.
+      - name: Record tested merge tree
+        id: tree
+        if: github.event_name == 'pull_request'
+        run: |
+          tree=$(git rev-parse "HEAD^{tree}")
+          echo "$tree" > tested-tree.txt
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+      - name: Upload tested merge tree
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tested-tree-${{ steps.tree.outputs.tree }}
+          path: tested-tree.txt
+          retention-days: 7
+          if-no-files-found: error
   postgres:
+    needs: decide
+    if: needs.decide.outputs.tested != 'true'
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 15
     services:
