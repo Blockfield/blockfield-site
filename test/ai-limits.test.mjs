@@ -136,7 +136,7 @@ test('corrupt or oversized policy fails closed without overwriting existing byte
   }
 })
 
-test('only site admin/owner can read or raise budgets; Workshop ACL does not authorize writes and refusals are audited', async (t) => {
+test('only the owner can read or raise budgets; admins and below are refused and audited', async (t) => {
   const directory = temp(t),
     environment = { ...process.env },
     store = await database(t)
@@ -178,7 +178,7 @@ test('only site admin/owner can read or raise budgets; Workshop ACL does not aut
       store,
     ).catch((error) => error)
   }
-  for (const actor of [moderator, builder]) {
+  for (const actor of [admin, moderator, builder]) {
     assert.equal((await call(actor, 'GET')).status, 403)
     assert.equal(
       (
@@ -192,8 +192,8 @@ test('only site admin/owner can read or raise budgets; Workshop ACL does not aut
     )
   }
   assert.equal(readAiLimits(directory).revision, 0)
-  for (const actor of [admin, owner]) assert.equal((await call(actor, 'GET')).status, 200)
-  const response = await call(admin, 'PUT', {
+  assert.equal((await call(owner, 'GET')).status, 200)
+  const response = await call(owner, 'PUT', {
     expectedRevision: 0,
     mode: 'builder',
     builders: { [BUILDER]: 1_250_000 },
@@ -214,6 +214,6 @@ test('only site admin/owner can read or raise budgets; Workshop ACL does not aut
   )
   assert.equal(readFileSync(join(directory, 'ai-limits.json'), 'utf8'), before)
   const audit = await store.auditLog(20)
-  assert.equal(audit.filter((entry) => entry.action === 'ai-limits' && !entry.ok).length, 4)
+  assert.equal(audit.filter((entry) => entry.action === 'ai-limits' && !entry.ok).length, 5)
   assert.equal(audit.filter((entry) => entry.action === 'ai-limits' && entry.ok).length, 1)
 })

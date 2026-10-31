@@ -12,9 +12,9 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  isWorkshopAiGuardModel,
   isWorkshopAiKey,
   isWorkshopAiModel,
+  isWorkshopAiProvider,
   workshopAiKeyLine,
 } from '../src/lib/workshop-ai.ts'
 import {
@@ -32,9 +32,19 @@ const settings = () => ({
   schema: 1,
   revision: 2,
   enabled: true,
-  generationModel: 'meta/muse-spark-1.3-contributor',
-  guardModel: 'typesafe/jev-1.13',
-  transcriptionModel: 'elevenlabs/scribe-v2',
+  provider: 'vercel-gateway',
+  generationModel: 'other/custom-model',
+  guardModel: 'other/guard-9',
+  transcriptionModel: 'other/stt-9',
+  maxBlocks: 1024,
+  blocksPerTick: 512,
+  minimumBuildTicks: 60,
+  applyBudgetMs: 4,
+  hourlyRequestLimit: 100,
+  hourlyPlayerRequestLimit: 10,
+  maxHourlyBuilders: 32,
+  generationMaxPricePromptUsdPerM: 0.5,
+  generationMaxPriceCompletionUsdPerM: 1.5,
 })
 const rejected = (action, status = 400) =>
   assert.throws(action, (error) => error instanceof Response && error.status === status)
@@ -44,12 +54,17 @@ function temp(t, prefix = 'bf-workshop-ai-') {
   return directory
 }
 
-test('settings validate a closed schema with per-field model rules', () => {
+test('settings validate a closed schema with one shape check per model, never a list', () => {
   assert.deepEqual(validateWorkshopAiSettings(settings()), settings())
   assert.ok(isWorkshopAiModel('a/b'))
   assert.ok(!isWorkshopAiModel('no-slash'))
-  assert.ok(isWorkshopAiGuardModel('typesafe/jev-1.13'))
-  assert.ok(!isWorkshopAiGuardModel('meta/muse-spark-1.3-contributor'))
+  assert.ok(isWorkshopAiProvider('openrouter'))
+  assert.ok(isWorkshopAiProvider('vercel-gateway'))
+  assert.ok(!isWorkshopAiProvider('direct'))
+  // Any well-shaped model works, including ones no old allowlist knew.
+  assert.ok(isWorkshopAiModel('typesafe/jev-1.13'))
+  assert.ok(isWorkshopAiModel('other/guard-9'))
+  assert.ok(isWorkshopAiModel('other/stt-9'))
   assert.ok(isWorkshopAiKey(SECRET))
   assert.ok(!isWorkshopAiKey('too short'))
   for (const mutate of [
@@ -59,15 +74,24 @@ test('settings validate a closed schema with per-field model rules', () => {
     (value) => (value.enabled = 'yes'),
     (value) => delete value.enabled,
     (value) => (value.extra = true),
+    (value) => delete value.provider,
+    (value) => (value.provider = 'direct'),
     (value) => (value.generationModel = 'no-slash-here'),
     (value) => (value.generationModel = `a/${'x'.repeat(128)}`),
     (value) => (value.generationModel = 'a/b c'),
-    (value) => (value.guardModel = 'typesafe/other-1'),
-    (value) => (value.guardModel = 'meta/muse-spark-1.3-contributor'),
-    (value) => (value.guardModel = `typesafe/jev-${'x'.repeat(65)}`),
+    (value) => (value.guardModel = 'not a model!'),
     (value) => (value.transcriptionModel = ''),
     (value) => (value.transcriptionModel = 42),
-    (value) => (value.transcriptionModel = 'provider/stt'),
+    (value) => (value.maxBlocks = 0),
+    (value) => (value.maxBlocks = 32769),
+    (value) => (value.blocksPerTick = 16385),
+    (value) => (value.minimumBuildTicks = 39),
+    (value) => (value.applyBudgetMs = 21),
+    (value) => (value.hourlyRequestLimit = 0),
+    (value) => (value.hourlyPlayerRequestLimit = 1_000_001),
+    (value) => (value.maxHourlyBuilders = 4097),
+    (value) => (value.generationMaxPricePromptUsdPerM = -0.1),
+    (value) => (value.generationMaxPriceCompletionUsdPerM = '0.2'),
     (value) => (value.generationModel = 'vendor:x/model'),
   ]) {
     const invalid = settings()
@@ -82,13 +106,23 @@ test('missing file returns defaults with revision 0; corrupt or oversized files 
     schema: 1,
     revision: 0,
     enabled: false,
+    provider: 'openrouter',
     generationModel: 'meta/muse-spark-1.3-contributor',
     guardModel: 'typesafe/jev-1.13',
-    transcriptionModel: 'elevenlabs/scribe-v2',
+    transcriptionModel: 'openai/whisper-1',
+    maxBlocks: 16384,
+    blocksPerTick: 2048,
+    minimumBuildTicks: 80,
+    applyBudgetMs: 8,
+    hourlyRequestLimit: 360,
+    hourlyPlayerRequestLimit: 60,
+    maxHourlyBuilders: 256,
+    generationMaxPricePromptUsdPerM: 0.1,
+    generationMaxPriceCompletionUsdPerM: 0.2,
   })
   for (const bytes of [
     '{broken',
-    JSON.stringify({ ...settings(), guardModel: 'wrong/model' }),
+    JSON.stringify({ ...settings(), provider: 'direct' }),
     'x'.repeat(4097),
   ]) {
     writeFileSync(join(directory, 'workshop-ai-settings.json'), bytes)
@@ -117,14 +151,25 @@ test('settings save uses optimistic revision and rejects unknown keys', (t) => {
   const body = {
     expectedRevision: 0,
     enabled: true,
+    provider: 'openrouter',
     generationModel: 'provider/gen-model',
-    guardModel: 'typesafe/jev-2',
-    transcriptionModel: 'openai/whisper-1',
+    guardModel: 'other/guard-2',
+    transcriptionModel: 'other/stt-9',
+    maxBlocks: 1024,
+    blocksPerTick: 512,
+    minimumBuildTicks: 60,
+    applyBudgetMs: 4,
+    hourlyRequestLimit: 100,
+    hourlyPlayerRequestLimit: 10,
+    maxHourlyBuilders: 32,
+    generationMaxPricePromptUsdPerM: 0.5,
+    generationMaxPriceCompletionUsdPerM: 1.5,
   }
   rejected(() => saveWorkshopAiSettings(directory, body, false), 400)
   const saved = saveWorkshopAiSettings(directory, body, true)
   assert.equal(saved.revision, 1)
   assert.equal(saved.enabled, true)
+  assert.equal(saved.provider, 'openrouter')
   assert.deepEqual(JSON.parse(readFileSync(join(directory, 'workshop-ai-settings.json'), 'utf8')), {
     ...saved,
   })
@@ -133,11 +178,7 @@ test('settings save uses optimistic revision and rejects unknown keys', (t) => {
     saveWorkshopAiSettings(directory, { ...body, expectedRevision: 1, extra: 1 }, true),
   )
   rejected(() =>
-    saveWorkshopAiSettings(
-      directory,
-      { ...body, expectedRevision: 1, guardModel: 'other/model' },
-      true,
-    ),
+    saveWorkshopAiSettings(directory, { ...body, expectedRevision: 1, provider: 'direct' }, true),
   )
   assert.equal(
     JSON.parse(readFileSync(join(directory, 'workshop-ai-settings.json'), 'utf8')).revision,
@@ -259,7 +300,7 @@ test('key status line covers unset, pending, error and set states', () => {
   assert.equal(workshopAiKeyLine({ set: true }, { waiting: false }, stamp), 'Ключ задан')
 })
 
-test('admin routes: staff-only access, no key in files, responses, errors or audit', async (t) => {
+test('owner-only routes: staff below owner are refused, key never leaks, gateway needs no site key', async (t) => {
   const settingsDir = temp(t, 'bf-ai-settings-'),
     adminDir = temp(t, 'bf-ai-admin-'),
     inbox = temp(t, 'bf-ai-inbox-'),
@@ -281,6 +322,24 @@ test('admin routes: staff-only access, no key in files, responses, errors or aud
   })
   await store.setStaff(admin, 'Tester', 'admin', 'seed')
   await store.setStaff(moderator, 'Tester', 'moderator', 'seed')
+  const adminBody = (overrides) => ({
+    expectedRevision: 0,
+    enabled: false,
+    provider: 'openrouter',
+    generationModel: 'provider/gen',
+    guardModel: 'other/guard-2',
+    transcriptionModel: 'other/stt-9',
+    maxBlocks: 1024,
+    blocksPerTick: 512,
+    minimumBuildTicks: 60,
+    applyBudgetMs: 4,
+    hourlyRequestLimit: 100,
+    hourlyPlayerRequestLimit: 10,
+    maxHourlyBuilders: 32,
+    generationMaxPricePromptUsdPerM: 0.5,
+    generationMaxPriceCompletionUsdPerM: 1.5,
+    ...overrides,
+  })
   const call = async (actor, method, path, body) => {
     process.env.BLOCKFIELD_ADMIN_DEV_USER = `${actor}:Tester`
     const url = new URL(`http://site/api/admin/${path}`)
@@ -297,75 +356,88 @@ test('admin routes: staff-only access, no key in files, responses, errors or aud
   }
   for (const [method, path, body] of [
     ['GET', 'workshop-ai-settings', undefined],
-    ['PUT', 'workshop-ai-settings', { expectedRevision: 0, ...settings(), revision: undefined }],
+    ['PUT', 'workshop-ai-settings', adminBody({})],
     ['GET', 'workshop-ai-key', undefined],
     ['POST', 'workshop-ai-key', { key: SECRET }],
   ]) {
-    const response = await call(moderator, method, path, body)
-    assert.equal(response.status, 403, `${method} ${path} is not staff-only`)
+    for (const actor of [admin, moderator]) {
+      const response = await call(actor, method, path, body)
+      assert.equal(response.status, 403, `${method} ${path} is not owner-only`)
+    }
   }
-  const initial = await call(admin, 'GET', 'workshop-ai-settings')
+  const initial = await call(owner, 'GET', 'workshop-ai-settings')
   assert.equal(initial.status, 200)
   assert.deepEqual((await initial.json()).settings, {
     schema: 1,
     revision: 0,
     enabled: false,
+    provider: 'openrouter',
     generationModel: 'meta/muse-spark-1.3-contributor',
     guardModel: 'typesafe/jev-1.13',
-    transcriptionModel: 'elevenlabs/scribe-v2',
-  })
-  const keyless = await call(admin, 'PUT', 'workshop-ai-settings', {
-    expectedRevision: 0,
-    enabled: true,
-    generationModel: 'provider/gen',
-    guardModel: 'typesafe/jev-2',
     transcriptionModel: 'openai/whisper-1',
+    maxBlocks: 16384,
+    blocksPerTick: 2048,
+    minimumBuildTicks: 80,
+    applyBudgetMs: 8,
+    hourlyRequestLimit: 360,
+    hourlyPlayerRequestLimit: 60,
+    maxHourlyBuilders: 256,
+    generationMaxPricePromptUsdPerM: 0.1,
+    generationMaxPriceCompletionUsdPerM: 0.2,
   })
+  const keyless = await call(
+    owner,
+    'PUT',
+    'workshop-ai-settings',
+    adminBody({ expectedRevision: 0, enabled: true }),
+  )
   assert.equal(keyless.status, 400)
   assert.match((await keyless.json()).error, /ключ OpenRouter/)
-  const saved = await call(admin, 'PUT', 'workshop-ai-settings', {
-    expectedRevision: 0,
-    enabled: false,
-    generationModel: 'provider/gen',
-    guardModel: 'typesafe/jev-2',
-    transcriptionModel: 'openai/whisper-1',
-  })
+  // The gateway key lives in a host file, so enabling it needs no site key.
+  const gateway = await call(
+    owner,
+    'PUT',
+    'workshop-ai-settings',
+    adminBody({ expectedRevision: 0, enabled: true, provider: 'vercel-gateway' }),
+  )
+  assert.equal(gateway.status, 200)
+  assert.equal((await gateway.json()).settings.provider, 'vercel-gateway')
+  const saved = await call(owner, 'PUT', 'workshop-ai-settings', adminBody({ expectedRevision: 1 }))
   assert.equal(saved.status, 200)
-  assert.equal((await saved.json()).settings.revision, 1)
+  assert.equal((await saved.json()).settings.revision, 2)
   assert.equal(
-    (await call(admin, 'PUT', 'workshop-ai-settings', { expectedRevision: 0, enabled: true }))
-      .status,
+    (await call(owner, 'PUT', 'workshop-ai-settings', adminBody({ expectedRevision: 1 }))).status,
     409,
   )
-  const posted = await call(admin, 'POST', 'workshop-ai-key', { key: SECRET })
+  const posted = await call(owner, 'POST', 'workshop-ai-key', { key: SECRET })
   assert.equal(posted.status, 200)
   const { id } = await posted.json()
   assert.deepEqual(Object.keys({ id }), ['id'])
   const inboxFiles = readdirSync(inbox)
   assert.equal(inboxFiles.length, 1)
   assert.equal(JSON.parse(readFileSync(join(inbox, inboxFiles[0]), 'utf8')).key, SECRET)
-  const bad = await call(admin, 'POST', 'workshop-ai-key', { key: 'short' })
+  const bad = await call(owner, 'POST', 'workshop-ai-key', { key: 'short' })
   assert.equal(bad.status, 400)
   assert.ok(LEAK(await bad.clone().json()))
   // Pending while the controller has no result yet; corrupt results fail closed.
-  const pending = await call(admin, 'GET', 'workshop-ai-key', undefined)
+  const pending = await call(owner, 'GET', 'workshop-ai-key', undefined)
   assert.equal(pending.status, 200)
   assert.deepEqual(await pending.json(), { status: { set: false }, result: null })
-  const pendingId = await call(admin, 'GET', `workshop-ai-key?id=${id}`, undefined)
+  const pendingId = await call(owner, 'GET', `workshop-ai-key?id=${id}`, undefined)
   assert.deepEqual(await pendingId.json(), { status: { set: false }, result: null })
   mkdirSync(join(adminDir, 'results'), { recursive: true })
   writeFileSync(
     join(adminDir, 'results', `${id}.json`),
     JSON.stringify({ schema: 1, id, ok: 'yes' }),
   )
-  assert.equal((await call(admin, 'GET', `workshop-ai-key?id=${id}`, undefined)).status, 503)
+  assert.equal((await call(owner, 'GET', `workshop-ai-key?id=${id}`, undefined)).status, 503)
   writeFileSync(
     join(adminDir, 'results', `${id}.json`),
     JSON.stringify({ schema: 1, id, kind: 'ai-key', ok: true, set: true, last4: 'ab12' }),
   )
-  const done = await call(admin, 'GET', `workshop-ai-key?id=${id}`, undefined)
+  const done = await call(owner, 'GET', `workshop-ai-key?id=${id}`, undefined)
   assert.equal((await done.json()).result.ok, true)
-  assert.equal((await call(admin, 'GET', 'workshop-ai-key?id=nope', undefined)).status, 400)
+  assert.equal((await call(owner, 'GET', 'workshop-ai-key?id=nope', undefined)).status, 400)
   // The key lives only in the inbox file: never in settings, responses, errors or audit.
   assert.ok(LEAK(readFileSync(join(settingsDir, 'workshop-ai-settings.json'), 'utf8')))
   for (const entry of await store.auditLog(50)) assert.ok(LEAK(entry))
@@ -381,12 +453,12 @@ test('admin routes: staff-only access, no key in files, responses, errors or aud
     join(adminDir, 'ai-key.json'),
     JSON.stringify({ schema: 1, set: true, last4: 'ab12' }),
   )
-  const enabled = await call(admin, 'PUT', 'workshop-ai-settings', {
-    expectedRevision: 1,
-    enabled: true,
-    generationModel: 'provider/gen',
-    guardModel: 'typesafe/jev-2',
-    transcriptionModel: 'openai/whisper-1',
-  })
+  const enabled = await call(
+    owner,
+    'PUT',
+    'workshop-ai-settings',
+    adminBody({ expectedRevision: 2, enabled: true, provider: 'openrouter' }),
+  )
+  // With the controller key status set, enabling OpenRouter succeeds.
   assert.equal(enabled.status, 200)
 })

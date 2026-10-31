@@ -79,7 +79,8 @@ const PERMISSIONS: Record<Role, string[]> = {
   builder: ['view', 'map-edit'],
   moderator,
   admin,
-  owner: [...admin, 'roles-admin', 'rcon-raw'],
+  // Money and every Workshop AI setting are owner-only: admins below owner cannot change them.
+  owner: [...admin, 'roles-admin', 'rcon-raw', 'ai'],
 }
 export const permissions = (role: Role | null) =>
   role && Object.hasOwn(PERMISSIONS, role) ? PERMISSIONS[role] : []
@@ -1415,9 +1416,19 @@ export function saveWorkshopAiSettings(directory: string, body: any, keySet: boo
         ![
           'expectedRevision',
           'enabled',
+          'provider',
           'generationModel',
           'guardModel',
           'transcriptionModel',
+          'maxBlocks',
+          'blocksPerTick',
+          'minimumBuildTicks',
+          'applyBudgetMs',
+          'hourlyRequestLimit',
+          'hourlyPlayerRequestLimit',
+          'maxHourlyBuilders',
+          'generationMaxPricePromptUsdPerM',
+          'generationMaxPriceCompletionUsdPerM',
         ].includes(key),
     )
   )
@@ -1431,12 +1442,23 @@ export function saveWorkshopAiSettings(directory: string, body: any, keySet: boo
     schema: 1,
     revision: current.revision + 1,
     enabled: body.enabled,
+    provider: body.provider,
     generationModel: body.generationModel,
     guardModel: body.guardModel,
     transcriptionModel: body.transcriptionModel,
+    maxBlocks: body.maxBlocks,
+    blocksPerTick: body.blocksPerTick,
+    minimumBuildTicks: body.minimumBuildTicks,
+    applyBudgetMs: body.applyBudgetMs,
+    hourlyRequestLimit: body.hourlyRequestLimit,
+    hourlyPlayerRequestLimit: body.hourlyPlayerRequestLimit,
+    maxHourlyBuilders: body.maxHourlyBuilders,
+    generationMaxPricePromptUsdPerM: body.generationMaxPricePromptUsdPerM,
+    generationMaxPriceCompletionUsdPerM: body.generationMaxPriceCompletionUsdPerM,
   })
-  // Workshop refuses to start an enabled AI without its key; say so here instead of silently.
-  if (settings.enabled && !keySet)
+  // Workshop refuses to start an enabled OpenRouter AI without its key; say so here instead of
+  // silently. The gateway key lives in a host file, which the site cannot verify.
+  if (settings.provider === 'openrouter' && settings.enabled && !keySet)
     throw fail(400, 'Сначала сохраните ключ OpenRouter и дождитесь статуса «Ключ задан».')
   writeAtomic(directory, 'workshop-ai-settings.json', settings)
   return settings
@@ -2034,11 +2056,11 @@ const routes: Record<string, Route> = {
     }),
   },
   'GET ai-limits': {
-    permission: 'settings',
+    permission: 'ai',
     handler: () => ({ policy: readAiLimits(settingsDir()) }),
   },
   'PUT ai-limits': {
-    permission: 'settings',
+    permission: 'ai',
     maxBody: 65_536,
     handler: ({ body }) => ({ policy: saveAiLimits(settingsDir(), body) }),
     audit: (body, result) => ({
@@ -2048,11 +2070,11 @@ const routes: Record<string, Route> = {
     }),
   },
   'GET workshop-ai-settings': {
-    permission: 'settings',
+    permission: 'ai',
     handler: () => ({ settings: readWorkshopAiSettings(settingsDir()) }),
   },
   'PUT workshop-ai-settings': {
-    permission: 'settings',
+    permission: 'ai',
     maxBody: 4096,
     handler: ({ body }) => ({
       settings: saveWorkshopAiSettings(
@@ -2068,7 +2090,7 @@ const routes: Record<string, Route> = {
     }),
   },
   'GET workshop-ai-key': {
-    permission: 'settings',
+    permission: 'ai',
     handler: ({ context }) => {
       const id = context.url.searchParams.get('id')
       return {
@@ -2078,7 +2100,7 @@ const routes: Record<string, Route> = {
     },
   },
   'POST workshop-ai-key': {
-    permission: 'settings',
+    permission: 'ai',
     maxBody: 4096,
     handler: ({ actor, body }) => ({
       id: writeRequest(inboxDir(), actor, { kind: 'ai-key', key: body?.key }),

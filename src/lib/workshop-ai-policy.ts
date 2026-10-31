@@ -3,16 +3,32 @@ import { join } from 'node:path'
 import { fail } from './account.ts'
 import {
   WORKSHOP_AI_DEFAULTS,
-  isWorkshopAiGuardModel,
   isWorkshopAiKey,
   isWorkshopAiModel,
-  isWorkshopAiTranscriptionModel,
+  isWorkshopAiProvider,
   type WorkshopAiKeyStatus,
   type WorkshopAiSettings,
 } from './workshop-ai.ts'
 
 const plain = (value: unknown): value is Record<string, any> =>
   !!value && typeof value === 'object' && !Array.isArray(value)
+
+function int(value: unknown, min: number, max: number, message: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max)
+    throw fail(400, message)
+  return value
+}
+
+function decimal(value: unknown, min: number, max: number, message: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max)
+    throw fail(400, message)
+  return value
+}
+
+function model(value: unknown, message: string): string {
+  if (!isWorkshopAiModel(value)) throw fail(400, message)
+  return value
+}
 
 export function validateWorkshopAiSettings(value: unknown): WorkshopAiSettings {
   if (
@@ -23,30 +39,60 @@ export function validateWorkshopAiSettings(value: unknown): WorkshopAiSettings {
           'schema',
           'revision',
           'enabled',
+          'provider',
           'generationModel',
           'guardModel',
           'transcriptionModel',
+          'maxBlocks',
+          'blocksPerTick',
+          'minimumBuildTicks',
+          'applyBudgetMs',
+          'hourlyRequestLimit',
+          'hourlyPlayerRequestLimit',
+          'maxHourlyBuilders',
+          'generationMaxPricePromptUsdPerM',
+          'generationMaxPriceCompletionUsdPerM',
         ].includes(key),
     ) ||
     value.schema !== 1 ||
     !Number.isSafeInteger(value.revision) ||
     value.revision < 0 ||
-    typeof value.enabled !== 'boolean'
+    typeof value.enabled !== 'boolean' ||
+    !isWorkshopAiProvider(value.provider)
   )
     throw fail(400, 'AI мастерской: некорректные настройки.')
-  if (!isWorkshopAiModel(value.generationModel))
-    throw fail(400, 'Модель генерации: 1–128 знаков (латиница, цифры, . _ / : -) и «/» в имени.')
-  if (!isWorkshopAiGuardModel(value.guardModel))
-    throw fail(400, 'Сторожевая модель: только typesafe/jev-…')
-  if (!isWorkshopAiTranscriptionModel(value.transcriptionModel))
-    throw fail(400, 'Модель расшифровки: elevenlabs/scribe-v2 или openai/whisper-1.')
   return {
     schema: 1,
     revision: value.revision,
     enabled: value.enabled,
-    generationModel: value.generationModel,
-    guardModel: value.guardModel,
-    transcriptionModel: value.transcriptionModel,
+    provider: value.provider,
+    generationModel: model(value.generationModel, 'Модель генерации: vendor/model.'),
+    guardModel: model(value.guardModel, 'Сторожевая модель: vendor/model.'),
+    transcriptionModel: model(value.transcriptionModel, 'Модель расшифровки: vendor/model.'),
+    maxBlocks: int(value.maxBlocks, 1, 32768, 'Максимум блоков: 1…32768.'),
+    blocksPerTick: int(value.blocksPerTick, 1, 16384, 'Блоков в тик: 1…16384.'),
+    minimumBuildTicks: int(value.minimumBuildTicks, 40, 1200, 'Минимум тиков стройки: 40…1200.'),
+    applyBudgetMs: int(value.applyBudgetMs, 1, 20, 'Бюджет тика: 1…20 мс.'),
+    hourlyRequestLimit: int(value.hourlyRequestLimit, 1, 1_000_000, 'Запросов в час: 1…1000000.'),
+    hourlyPlayerRequestLimit: int(
+      value.hourlyPlayerRequestLimit,
+      1,
+      1_000_000,
+      'Запросов игрока в час: 1…1000000.',
+    ),
+    maxHourlyBuilders: int(value.maxHourlyBuilders, 1, 4096, 'Строителей в час: 1…4096.'),
+    generationMaxPricePromptUsdPerM: decimal(
+      value.generationMaxPricePromptUsdPerM,
+      0,
+      1000,
+      'Потолок входа: 0…1000 USD за млн токенов.',
+    ),
+    generationMaxPriceCompletionUsdPerM: decimal(
+      value.generationMaxPriceCompletionUsdPerM,
+      0,
+      1000,
+      'Потолок выхода: 0…1000 USD за млн токенов.',
+    ),
   }
 }
 
