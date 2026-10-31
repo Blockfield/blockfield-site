@@ -33,6 +33,7 @@ const settings = () => ({
   revision: 2,
   enabled: true,
   provider: 'vercel-gateway',
+  inputGuardEnabled: true,
   generationModel: 'other/custom-model',
   guardModel: 'other/guard-9',
   transcriptionModel: 'other/stt-9',
@@ -76,6 +77,8 @@ test('settings validate a closed schema with one shape check per model, never a 
     (value) => (value.extra = true),
     (value) => delete value.provider,
     (value) => (value.provider = 'direct'),
+    (value) => (value.inputGuardEnabled = 'yes'),
+    (value) => delete value.inputGuardEnabled,
     (value) => (value.generationModel = 'no-slash-here'),
     (value) => (value.generationModel = `a/${'x'.repeat(128)}`),
     (value) => (value.generationModel = 'a/b c'),
@@ -107,6 +110,7 @@ test('missing file returns defaults with revision 0; corrupt or oversized files 
     revision: 0,
     enabled: false,
     provider: 'openrouter',
+    inputGuardEnabled: false,
     generationModel: 'meta/muse-spark-1.3-contributor',
     guardModel: 'typesafe/jev-1.13',
     transcriptionModel: 'openai/whisper-1',
@@ -146,12 +150,42 @@ test('missing file returns defaults with revision 0; corrupt or oversized files 
   }
 })
 
+test('old files without provider/limits/caps load with defaults filled in', (t) => {
+  const directory = temp(t)
+  writeFileSync(
+    join(directory, 'workshop-ai-settings.json'),
+    JSON.stringify({
+      schema: 1,
+      revision: 3,
+      enabled: true,
+      generationModel: 'vendor/model:free',
+      guardModel: 'typesafe/jev-1.13',
+      transcriptionModel: 'openai/whisper-1',
+    }),
+  )
+  const loaded = readWorkshopAiSettings(directory)
+  assert.equal(loaded.revision, 3)
+  assert.equal(loaded.provider, 'openrouter')
+  assert.equal(loaded.maxBlocks, 16384)
+  assert.equal(loaded.hourlyRequestLimit, 360)
+  assert.equal(loaded.generationMaxPricePromptUsdPerM, 0.1)
+  assert.equal(loaded.generationMaxPriceCompletionUsdPerM, 0.2)
+  assert.equal(loaded.inputGuardEnabled, false)
+  // Unknown future keys are ignored, not a 503.
+  writeFileSync(
+    join(directory, 'workshop-ai-settings.json'),
+    JSON.stringify({ schema: 1, revision: 4, enabled: false, frobnicator: true }),
+  )
+  assert.equal(readWorkshopAiSettings(directory).revision, 4)
+})
+
 test('settings save uses optimistic revision and rejects unknown keys', (t) => {
   const directory = temp(t)
   const body = {
     expectedRevision: 0,
     enabled: true,
     provider: 'openrouter',
+    inputGuardEnabled: false,
     generationModel: 'provider/gen-model',
     guardModel: 'other/guard-2',
     transcriptionModel: 'other/stt-9',
@@ -338,6 +372,7 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     maxHourlyBuilders: 32,
     generationMaxPricePromptUsdPerM: 0.5,
     generationMaxPriceCompletionUsdPerM: 1.5,
+    inputGuardEnabled: false,
     ...overrides,
   })
   const call = async (actor, method, path, body) => {
@@ -372,6 +407,7 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     revision: 0,
     enabled: false,
     provider: 'openrouter',
+    inputGuardEnabled: false,
     generationModel: 'meta/muse-spark-1.3-contributor',
     guardModel: 'typesafe/jev-1.13',
     transcriptionModel: 'openai/whisper-1',
@@ -461,4 +497,34 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   )
   // With the controller key status set, enabling OpenRouter succeeds.
   assert.equal(enabled.status, 200)
+  // The gateway key mirrors the OpenRouter flow, owner-only, with no echo anywhere.
+  for (const actor of [admin, moderator]) {
+    assert.equal((await call(actor, 'GET', 'workshop-ai-gateway-key')).status, 403)
+    assert.equal(
+      (await call(actor, 'POST', 'workshop-ai-gateway-key', { key: SECRET })).status,
+      403,
+    )
+  }
+  const gatewayPosted = await call(owner, 'POST', 'workshop-ai-gateway-key', { key: SECRET })
+  assert.equal(gatewayPosted.status, 200)
+  const { id: gatewayId } = await gatewayPosted.json()
+  assert.match(gatewayId, /^[0-9a-f-]{36}$/)
+  const gatewayRequest = JSON.parse(readFileSync(join(inbox, `${gatewayId}.json`), 'utf8'))
+  assert.equal(gatewayRequest.kind, 'ai-gateway-key')
+  assert.equal(gatewayRequest.key, SECRET)
+  assert.equal(statSync(join(inbox, `${gatewayId}.json`)).mode & 0o777, 0o600)
+  const gatewayStatus = await call(owner, 'GET', 'workshop-ai-gateway-key', undefined)
+  assert.equal(gatewayStatus.status, 200)
+  assert.deepEqual(await gatewayStatus.json(), { status: { set: false }, result: null })
+  const shortGateway = await call(owner, 'POST', 'workshop-ai-gateway-key', { key: 'short' })
+  assert.equal(shortGateway.status, 400)
+  assert.ok(LEAK(await shortGateway.clone().json()))
+  const gatewayAudit = (await store.auditLog(100)).filter(
+    (entry) => entry.action === 'workshop-ai-gateway-key',
+  )
+  assert.ok(gatewayAudit.length >= 1)
+  for (const entry of gatewayAudit) {
+    assert.ok(LEAK(entry))
+    assert.deepEqual(Object.keys(JSON.parse(entry.detail)), ['remove'])
+  }
 })

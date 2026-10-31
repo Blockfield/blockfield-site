@@ -1011,14 +1011,20 @@ export function writeRequest(
         ? { resolutions: resolutions(body.resolutions) }
         : {}),
     }
-  } else if (body?.kind === 'ai-key') {
-    // The OpenRouter key is write-only: it travels to the controller inbox and never
-    // lands in settings, the DB, logs or responses. Validation errors never echo it.
+  } else if (body?.kind === 'ai-key' || body?.kind === 'ai-gateway-key') {
+    // Keys are write-only: they travel to the controller inbox and never
+    // land in settings, the DB, logs or responses. Validation errors never echo them.
     if (!plain(body) || !Object.hasOwn(body, 'key')) throw bad('Укажите ключ или его удаление.')
-    request = { ...base, key: validateWorkshopAiKey(body.key) }
+    request = { ...base, kind: body.kind, key: validateWorkshopAiKey(body.key) }
   } else throw bad('Неизвестный тип запроса.')
   // The site and the controller's reader share UID 1000; a key request is readable by them only.
-  writeAtomic(directory, `${base.id}.json`, request, request.kind === 'ai-key' ? 0o600 : undefined)
+  const keyKinds = ['ai-key', 'ai-gateway-key']
+  writeAtomic(
+    directory,
+    `${base.id}.json`,
+    request,
+    keyKinds.includes(request.kind as string) ? 0o600 : undefined,
+  )
   return base.id
 }
 
@@ -1429,6 +1435,7 @@ export function saveWorkshopAiSettings(directory: string, body: any, keySet: boo
           'maxHourlyBuilders',
           'generationMaxPricePromptUsdPerM',
           'generationMaxPriceCompletionUsdPerM',
+          'inputGuardEnabled',
         ].includes(key),
     )
   )
@@ -1455,6 +1462,7 @@ export function saveWorkshopAiSettings(directory: string, body: any, keySet: boo
     maxHourlyBuilders: body.maxHourlyBuilders,
     generationMaxPricePromptUsdPerM: body.generationMaxPricePromptUsdPerM,
     generationMaxPriceCompletionUsdPerM: body.generationMaxPriceCompletionUsdPerM,
+    inputGuardEnabled: body.inputGuardEnabled,
   })
   // Workshop refuses to start an enabled OpenRouter AI without its key; say so here instead of
   // silently. The gateway key lives in a host file, which the site cannot verify.
@@ -2107,6 +2115,28 @@ const routes: Record<string, Route> = {
     }),
     // The key itself never reaches the audit log: only whether it is set or removed.
     audit: (body) => ({ action: 'workshop-ai-key', detail: { remove: body?.key == null } }),
+  },
+  'GET workshop-ai-gateway-key': {
+    permission: 'ai',
+    handler: ({ context }) => {
+      const id = context.url.searchParams.get('id')
+      return {
+        status: readWorkshopAiKeyStatus(adminDir(), 'ai-gateway-key.json'),
+        result: id === null || id === '' ? null : readRequestResult(id),
+      }
+    },
+  },
+  'POST workshop-ai-gateway-key': {
+    permission: 'ai',
+    maxBody: 4096,
+    handler: ({ actor, body }) => ({
+      id: writeRequest(inboxDir(), actor, { kind: 'ai-gateway-key', key: body?.key }),
+    }),
+    // The key itself never reaches the audit log: only whether it is set or removed.
+    audit: (body) => ({
+      action: 'workshop-ai-gateway-key',
+      detail: { remove: body?.key == null },
+    }),
   },
   'GET gun-balance': {
     permission: 'settings',

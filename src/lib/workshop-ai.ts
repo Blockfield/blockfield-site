@@ -19,6 +19,7 @@ export const WORKSHOP_AI_DEFAULTS = {
   maxHourlyBuilders: 256,
   generationMaxPricePromptUsdPerM: 0.1,
   generationMaxPriceCompletionUsdPerM: 0.2,
+  inputGuardEnabled: false,
 } as const
 
 export const WORKSHOP_AI_PROVIDERS = ['openrouter', 'vercel-gateway'] as const
@@ -42,6 +43,7 @@ export type WorkshopAiSettings = {
   maxHourlyBuilders: number
   generationMaxPricePromptUsdPerM: number
   generationMaxPriceCompletionUsdPerM: number
+  inputGuardEnabled: boolean
 }
 
 // Same shape as the server's check: vendor/name with an optional :variant such as :free.
