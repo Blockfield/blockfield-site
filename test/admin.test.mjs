@@ -36,6 +36,7 @@ const temp = (t) => {
 }
 import { database as store } from './storage.mjs'
 import { StatsError, statsStore } from '../src/lib/stats.ts'
+import { subscribe } from '../src/lib/admin-events.ts'
 
 test('permission map: roles grow strictly, unknown/no role has nothing', () => {
   assert.equal(can('builder', 'view'), true)
@@ -191,6 +192,89 @@ test('workshop tablet flows journal first: dead log fails closed, lost finalize 
     (await call(flaky, { ...grant, mapId: 'fields', allowed: false })).status,
     503,
     'a lost finalize fails closed like staff/map-access',
+  )
+})
+
+test('audit finalize stays silent until emitAudit', async (t) => {
+  const s = await store(t)
+  const seen = []
+  const off = subscribe(
+    (event) => event.type === 'audit',
+    (event) => seen.push(event),
+  )
+  t.after(off)
+  const id = await s.auditPending({
+    actorUuid: ADMIN,
+    actorName: 'Adm',
+    role: 'admin',
+    action: 'message',
+    ok: false,
+    error: null,
+  })
+  await s.auditFinalize(id, {
+    actorUuid: ADMIN,
+    actorName: 'Adm',
+    role: 'admin',
+    action: 'message',
+    ok: true,
+    error: null,
+  })
+  assert.equal(seen.length, 0, 'finalize must not publish before the commit')
+  s.emitAudit({ action: 'message', ok: true })
+  assert.equal(seen.length, 1)
+})
+
+test('a failed commit never shows as ok in the live feed', async (t) => {
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const seen = []
+  const off = subscribe(
+    (event) => event.type === 'audit',
+    (event) => seen.push(event),
+  )
+  t.after(off)
+  const noCommit = new Proxy(s, {
+    get: (target, prop) => {
+      if (prop === 'db') {
+        const fake = Object.create(
+          Object.getPrototypeOf(target.db),
+          Object.getOwnPropertyDescriptors(target.db),
+        )
+        fake.transaction = async (work) => {
+          await work()
+          throw new Error('commit failed')
+        }
+        return fake
+      }
+      return Reflect.get(target, prop)
+    },
+  })
+  process.env.BLOCKFIELD_ADMIN_DEV_USER = `${ADMIN}:Adm`
+  const url = new URL('http://site/api/admin/keys')
+  const request = new Request(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: 'e10438e4-797b-4971-8cfe-cec6a8fa171b', label: 'x' }),
+  })
+  const response = await handleAdmin(
+    { request, url, cookies: { get: () => undefined } },
+    'keys',
+    noCommit,
+  ).then(
+    (r) => r,
+    (e) => e,
+  )
+  assert.ok(response.status >= 500)
+  assert.equal(
+    seen.filter((e) => e.entry.action === 'ingest-key-create' && e.entry.ok).length,
+    0,
+    'rolled-back writes never show as ok',
   )
 })
 

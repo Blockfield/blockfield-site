@@ -1,6 +1,7 @@
 /** Durable, Minecraft-independent result ingestion. Node >=22.19; no browser imports. */
 import { Database } from './database.ts'
 import { publish } from './admin-events.ts'
+import { openTokenRaw, sessionKeyBytes } from './session-crypto.ts'
 import { saveReport, validateReport } from './diagnostics.ts'
 import { playerId, roleOf } from './admin.ts'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -551,6 +552,17 @@ export class StatsStore {
           "UPDATE admin_audit SET pending=NULL,ok=0,error='Прервано перезапуском: проверьте, применилось ли изменение.' WHERE pending=1",
         )
         .run()
+      // Sessions need the seal key: validate it while sessions exist, so a missing or
+      // malformed secret fails fast instead of 503ing every login. Empty tables (fresh
+      // installs, migrations, tests) need nothing.
+      if (((await this.db.prepare('SELECT COUNT(*) n FROM site_sessions').get()) as any).n > 0) {
+        const key = sessionKeyBytes()
+        const sample = (await this.db
+          .prepare('SELECT drasl_token "token" FROM site_sessions ORDER BY last_seen DESC LIMIT 1')
+          .get()) as { token: string } | undefined
+        if (sample && openTokenRaw(sample.token, key) === null)
+          console.error('session secret changed: all sessions invalid')
+      }
       if (sqlite) {
         if (!(await columns('ingest_keys')).includes('id'))
           await this.db.exec(`
@@ -916,13 +928,18 @@ export class StatsStore {
     return row.id
   }
   async auditFinalize(id: number, entry: AuditEntry) {
+    // No live event here: the caller publishes after the surrounding commit,
+    // so a rolled-back write never shows as ok in the feed.
     const row = await this.db
       .prepare(
         'UPDATE admin_audit SET at=?,actor_uuid=?,actor_name=?,role=?,action=?,target=?,detail=?,ok=?,error=?,pending=NULL WHERE id=? RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending"',
       )
       .get(...auditArgs(entry, Date.now()), id)
-    publish({ type: 'audit', entry: row })
     await this.pruneAudit()
+    return row
+  }
+  emitAudit(entry: any) {
+    publish({ type: 'audit', entry })
   }
   private async pruneAudit() {
     // ponytail: keeps the newest 10 000 entries; export them elsewhere first if a longer history is ever required.

@@ -2829,7 +2829,7 @@ export async function handleWorkshopSubmit(
       new Set(catalog.maps.map((entry) => entry.mapId)),
     )
     applied = true
-    await finalize(true, null, id)
+    store.emitAudit(await finalize(true, null, id))
     return Response.json({ id }, { headers: noStore })
   } catch (thrown) {
     error =
@@ -2844,7 +2844,7 @@ export async function handleWorkshopSubmit(
         : 'internal error'
     if (!applied) {
       try {
-        await finalize(false, error, null)
+        store.emitAudit(await finalize(false, error, null))
       } catch {
         console.error('workshop-candidate audit failed; the original error stands')
       }
@@ -2955,7 +2955,7 @@ export async function handleWorkshopAccess(
     )
     result = { mapId, name: edit.target.name, maps: edit.maps, sync }
     applied = true
-    await finalize(true, null)
+    store.emitAudit(await finalize(true, null))
     return result instanceof Response ? result : Response.json(result, { headers: noStore })
   } catch (thrown) {
     ;({ actor, role } = outer)
@@ -2971,7 +2971,7 @@ export async function handleWorkshopAccess(
         : 'internal error'
     if (!applied) {
       try {
-        await finalize(false, error)
+        store.emitAudit(await finalize(false, error))
       } catch {
         console.error('workshop-map-access audit failed; the original error stands')
       }
@@ -3056,21 +3056,23 @@ export async function handleAdmin(
         ok,
         error,
       })
-    const run = async () => {
-      result = await route.handler({ context, actor, store, body })
-      await finalize(true, null)
-    }
     try {
       // Pure DB effects share one transaction with the finalize; RCON and file
       // effects cannot, so they finalize right after the handler instead.
       // applied flips only after the commit: a rolled-back effect never ran.
+      // The live event goes out after the commit too: rolled-back rows never show as ok.
       if (route.tx) {
-        await store.db.transaction(run)
+        let row
+        await store.db.transaction(async () => {
+          result = await route.handler({ context, actor, store, body })
+          row = await finalize(true, null)
+        })
         applied = true
+        store.emitAudit(row)
       } else {
         result = await route.handler({ context, actor, store, body })
         applied = true
-        await finalize(true, null)
+        store.emitAudit(await finalize(true, null))
       }
     } catch (inner) {
       const { response, message } = await adminError(inner)
@@ -3078,7 +3080,7 @@ export async function handleAdmin(
         (inner as any)?.internal != null ? `${message} (${(inner as any).internal})` : message
       if (!applied) {
         try {
-          await finalize(false, detail)
+          store.emitAudit(await finalize(false, detail))
         } catch {
           console.error(`admin audit failed for ${method} ${path}; the original error stands`)
         }

@@ -1,5 +1,6 @@
 import type { APIContext, APIRoute, AstroCookies } from 'astro'
-import { createDecipheriv, createCipheriv, randomBytes } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
+import { openTokenRaw, sealTokenRaw, sessionKeyBytes } from './session-crypto.ts'
 import { statsStore, type StatsStore } from './stats.ts'
 
 export const nickname = /^[A-Za-z0-9_]{3,16}$/
@@ -228,34 +229,21 @@ export async function importMojangSkin(token: string, user: any): Promise<any> {
 }
 
 /** Drasl tokens at rest are AES-256-GCM sealed: a DB dump alone leaks nothing usable. */
-function sessionKey(): Buffer {
-  const raw = process.env.BLOCKFIELD_SESSION_SECRET ?? ''
-  if (!/^[0-9a-f]{64}$/.test(raw))
+export function sessionKey(): Buffer {
+  try {
+    return sessionKeyBytes()
+  } catch {
     throw fail(503, 'Хранилище сессий не настроено: задайте BLOCKFIELD_SESSION_SECRET.')
-  return Buffer.from(raw, 'hex')
+  }
 }
 export function sealToken(token: string): string {
-  const iv = randomBytes(12),
-    cipher = createCipheriv('aes-256-gcm', sessionKey(), iv)
-  const sealed = Buffer.concat([cipher.update(token, 'utf8'), cipher.final(), cipher.getAuthTag()])
-  return `${iv.toString('hex')}.${sealed.toString('hex')}`
+  return sealTokenRaw(token, sessionKey())
 }
 function openToken(sealed: string): string {
-  const key = sessionKey()
-  const [ivHex, dataHex] = sealed.split('.')
-  try {
-    const iv = Buffer.from(ivHex, 'hex'),
-      data = Buffer.from(dataHex, 'hex')
-    if (iv.length !== 12 || data.length < 17) throw new Error('bad seal')
-    const decipher = createDecipheriv('aes-256-gcm', key, iv)
-    decipher.setAuthTag(data.subarray(-16))
-    return Buffer.concat([decipher.update(data.subarray(0, -16)), decipher.final()]).toString(
-      'utf8',
-    )
-  } catch {
-    // Wrong key, corruption, or a forged row: the session is simply dead.
-    throw fail(401, 'Сессия истекла. Войдите снова.')
-  }
+  const token = openTokenRaw(sealed, sessionKey())
+  // Wrong key, corruption, or a forged row: the session is simply dead.
+  if (token === null) throw fail(401, 'Сессия истекла. Войдите снова.')
+  return token
 }
 /** The cookie holds only a random id; oversized or malformed values never reach the DB. */
 export const SESSION_COOKIE_MAX = 128

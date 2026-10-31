@@ -253,6 +253,64 @@ const sameSite = (url, body) =>
     body: body === undefined ? undefined : JSON.stringify(body),
   })
 
+test('boot validates the session secret while sessions exist', async (t) => {
+  const { mkdtempSync, rmSync } = await import('node:fs'),
+    { tmpdir } = await import('node:os'),
+    { join } = await import('node:path')
+  const { StatsStore: Open } = await import('../src/lib/stats.ts')
+  const { sealTokenRaw } = await import('../src/lib/session-crypto.ts')
+  const saved = process.env.BLOCKFIELD_SESSION_SECRET
+  t.after(() => {
+    if (saved === undefined) delete process.env.BLOCKFIELD_SESSION_SECRET
+    else process.env.BLOCKFIELD_SESSION_SECRET = saved
+  })
+  const dir = mkdtempSync(join(tmpdir(), 'bf-session-boot-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'stats.sqlite')
+  process.env.BLOCKFIELD_SESSION_SECRET = 'a'.repeat(64)
+  const first = await Open.open(path)
+  await first.insertSession(
+    '0'.repeat(32),
+    sealTokenRaw('tok', Buffer.from('a'.repeat(64), 'hex')),
+    'u',
+    Date.now(),
+  )
+  await first.close()
+  delete process.env.BLOCKFIELD_SESSION_SECRET
+  await assert.rejects(Open.open(path), /BLOCKFIELD_SESSION_SECRET/, 'missing secret fails fast')
+  process.env.BLOCKFIELD_SESSION_SECRET = 'short'
+  await assert.rejects(Open.open(path), /BLOCKFIELD_SESSION_SECRET/, 'malformed secret fails fast')
+  process.env.BLOCKFIELD_SESSION_SECRET = 'b'.repeat(64)
+  const warn = t.mock.method(console, 'error', () => {})
+  const second = await Open.open(path)
+  t.after(() => second.close())
+  assert.equal(warn.mock.calls.length, 1, 'one rotation notice')
+  assert.match(String(warn.mock.calls[0].arguments[0]), /session secret changed/)
+})
+
+test('middleware fails the deploy, not the first login, without the secret', async (t) => {
+  const { onRequest } = await import('../src/middleware.ts')
+  const saved = process.env.BLOCKFIELD_SESSION_SECRET
+  t.after(() => {
+    if (saved === undefined) delete process.env.BLOCKFIELD_SESSION_SECRET
+    else process.env.BLOCKFIELD_SESSION_SECRET = saved
+  })
+  let next = false
+  delete process.env.BLOCKFIELD_SESSION_SECRET
+  const refused = await onRequest({}, async () => {
+    next = true
+    return new Response('ok')
+  }).then(
+    (r) => r,
+    (e) => e,
+  )
+  assert.equal(next, false)
+  assert.equal(refused.status, 503)
+  process.env.BLOCKFIELD_SESSION_SECRET = 'c'.repeat(64)
+  const ok = await onRequest({}, async () => new Response('ok'))
+  assert.equal(await ok.text(), 'ok')
+})
+
 test('Drasl tokens are encrypted at rest: the DB never holds plaintext', async () => {
   process.env.BLOCKFIELD_STATS_DB = ':memory:'
   process.env.BLOCKFIELD_SESSION_SECRET = '2'.repeat(64)
