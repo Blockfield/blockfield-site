@@ -588,7 +588,7 @@ const cpGate = cpConfigured()
             </p>
             <div id="map-history" class="maps"></div>
           </div>
-          <details class="disclosure" data-perm="mode">
+          <details class="disclosure" data-perm="maps">
             <summary>Новая карта</summary>
             <p class="muted">
               Пустая площадка с небольшой стартовой платформой. Создать можно, пока мастерская
@@ -7929,7 +7929,7 @@ const cpGate = cpConfigured()
         run(
           line,
           async () => {
-            if (!can('mode') || controller?.phase !== 'workshop' || controller.gate !== 'builders')
+            if (!can('maps') || controller?.phase !== 'workshop' || controller.gate !== 'builders')
               throw new Error('Дождитесь открытия мастерской перед созданием карты.')
             if (
               !(await ask({
@@ -8312,7 +8312,7 @@ const cpGate = cpConfigured()
         save(true)
       }
       part.append(form)
-      if (can('mode') && mapSession) {
+      if (can('maps') && mapSession) {
         const rename = el('form', { className: 'form-grid' }),
           title = el('input', {
             name: 'name',

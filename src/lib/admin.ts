@@ -17,7 +17,16 @@ import {
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
-import { account, drasl, fail, nickname, readJson, session, token } from './account.ts'
+import {
+  account,
+  drasl,
+  fail,
+  nickname,
+  readJson,
+  session,
+  sessionHash,
+  sessionToken,
+} from './account.ts'
 import { rcon } from './rcon.ts'
 import { eventStream, heartbeat } from './admin-events.ts'
 import {
@@ -61,9 +70,10 @@ import {
 
 export const ROLES = ['builder', 'moderator', 'admin', 'owner'] as const
 export type Role = (typeof ROLES)[number]
-const moderator = ['view', 'map-edit', 'moderate', 'mode', 'message']
+const moderator = ['view', 'map-edit', 'moderate', 'maps', 'message']
 const admin = [
   ...moderator,
+  'mode',
   'ban',
   'maintenance',
   'recover',
@@ -101,6 +111,20 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const COPY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const VERSION_DIGEST = /^[0-9a-f]{64}$/
 const bad = (message: string) => fail(400, message)
+
+/** Per-staff throttle on admin writes: keys are staff UUIDs only, so the map stays tiny. */
+const WRITE_LIMIT = 60,
+  WRITE_WINDOW = 60_000
+const writeHits = new Map<string, number[]>()
+function throttled(uuid: string, now = Date.now()): boolean {
+  const recent = (writeHits.get(uuid) ?? []).filter((at) => now - at < WRITE_WINDOW)
+  if (recent.length >= WRITE_LIMIT) {
+    writeHits.set(uuid, recent)
+    return true
+  }
+  writeHits.set(uuid, [...recent, now])
+  return false
+}
 
 /** Player UUID as Drasl/Minecraft shows it, with or without dashes, to the workshop key: 32 lowercase hex digits. */
 export function playerId(value: unknown): string | null {
@@ -152,7 +176,7 @@ async function currentActor(context: APIContext, store: StatsStore): Promise<Act
   const who =
     dev ??
     (({ uuid, username }) => ({ uuid: playerId(uuid) ?? '', name: String(username) }))(
-      account(await drasl('/user', { token: token(context.cookies) })),
+      account(await drasl('/user', { token: await sessionToken(context.cookies, store) })),
     )
   return { ...who, role: who.uuid ? await roleOf(who.uuid, store) : null }
 }
@@ -167,12 +191,14 @@ export async function siteIdentity(
   const value = cookies.get(session)?.value
   if (!value) return null
   try {
+    const store = await statsStore()
+    if (await store.isSessionRevoked(sessionHash(value))) return null
     const { username, uuid } = account(await drasl('/user', { token: value }))
     if (!username) return null
     const id = playerId(uuid)
     return {
       name: String(username),
-      hasAdminAccess: id !== null && (await roleOf(id, await statsStore())) !== null,
+      hasAdminAccess: id !== null && (await roleOf(id, store)) !== null,
     }
   } catch {
     return null
@@ -779,7 +805,7 @@ export function writeRequest(
       ...extra,
     }
   } else if (body?.kind === 'map-create' || body?.kind === 'map-properties') {
-    if (!can(actor.role, 'mode')) throw fail(403, 'Создание и название карты доступны модератору.')
+    if (!can(actor.role, 'maps')) throw fail(403, 'Создание и название карты доступны модератору.')
     if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 0)
       throw bad('Нет ревизии состояния: обновите страницу.')
     const name = mapTitle(body.name)
@@ -2141,7 +2167,7 @@ const routes: Record<string, Route> = {
     }),
   },
   'POST maps/create': {
-    permission: 'mode',
+    permission: 'maps',
     handler: ({ actor, body }) => {
       const catalog = requiredMapCatalog()
       editorRevision(body)
@@ -2175,7 +2201,7 @@ const routes: Record<string, Route> = {
     }),
   },
   'POST maps/properties': {
-    permission: 'mode',
+    permission: 'maps',
     handler: async ({ actor, store, body }) => {
       const { catalog, entry } = await editableMap(actor, store, body?.mapId),
         { copy } = selectedMapBranch(catalog, entry)
@@ -2793,16 +2819,20 @@ export async function handleWorkshopSubmit(
         : 'internal error'
     throw thrown
   } finally {
-    await store.audit({
-      actorUuid: actor.uuid,
-      actorName: actor.name,
-      role: role ?? 'none',
-      action: 'workshop-candidate',
-      target: mapId,
-      detail: { from: 'game', request: id },
-      ok: error === null,
-      error,
-    })
+    try {
+      await store.audit({
+        actorUuid: actor.uuid,
+        actorName: actor.name,
+        role: role ?? 'none',
+        action: 'workshop-candidate',
+        target: mapId,
+        detail: { from: 'game', request: id },
+        ok: error === null,
+        error,
+      })
+    } catch {
+      console.error('workshop-candidate audit failed; the response stands')
+    }
   }
 }
 
@@ -2886,22 +2916,26 @@ export async function handleWorkshopAccess(
         : 'internal error'
     throw thrown
   } finally {
-    await store.audit({
-      actorUuid: actor.uuid,
-      actorName: actor.name,
-      role: role ?? 'none',
-      action: 'workshop-map-access',
-      target: mapId,
-      detail: {
-        changed: result ? [result.name] : [],
-        allowed: body.allowed,
-        target: target?.name ?? targetId,
-        from: 'game',
-        sync: result?.sync,
-      },
-      ok: error === null,
-      error,
-    })
+    try {
+      await store.audit({
+        actorUuid: actor.uuid,
+        actorName: actor.name,
+        role: role ?? 'none',
+        action: 'workshop-map-access',
+        target: mapId,
+        detail: {
+          changed: result ? [result.name] : [],
+          allowed: body.allowed,
+          target: target?.name ?? targetId,
+          from: 'game',
+          sync: result?.sync,
+        },
+        ok: error === null,
+        error,
+      })
+    } catch {
+      console.error('workshop-map-access audit failed; the response stands')
+    }
   }
 }
 
@@ -2946,12 +2980,23 @@ export async function handleAdmin(
   if (!route) return fail(404, 'Неизвестный запрос.')
   // Non-staff are refused before the body is read and never reach the audit log, so they cannot grow it.
   if (!actor.role) return fail(403, 'Нет доступа.')
+  // A stolen staff session can neither flood the inbox nor spam chat: writes share one throttle.
+  if (method !== 'GET' && throttled(actor.uuid))
+    return fail(429, 'Слишком много попыток. Подождите минуту.')
   let body: any, result: any
   try {
     if (!can(actor.role, route.permission)) throw fail(403, 'Недостаточно прав.')
     if (method !== 'GET') body = await readJson(context.request, route.maxBody ?? 65_536)
     result = await route.handler({ context, actor, store, body })
-    if (method !== 'GET') await record(store, actor, route, body, result, null)
+    // The change is already applied: a dead audit log must not turn it into an error
+    // (an operator retry would run the side effect twice).
+    if (method !== 'GET') {
+      try {
+        await record(store, actor, route, body, result, null)
+      } catch {
+        result = withAuditWarning(result)
+      }
+    }
     return result instanceof Response ? result : Response.json(result, { headers: noStore })
   } catch (thrown) {
     const error = thrown instanceof StatsError ? fail(thrown.status, thrown.message) : thrown
@@ -2965,17 +3010,33 @@ export async function handleAdmin(
               () => 'error',
             )
         : 'internal error'
-    if (method !== 'GET')
-      await record(
-        store,
-        actor,
-        route,
-        body,
-        result,
-        (error as any)?.internal ? `${message} (${(error as any).internal})` : message,
-      )
+    if (method !== 'GET') {
+      try {
+        await record(
+          store,
+          actor,
+          route,
+          body,
+          result,
+          (error as any)?.internal ? `${message} (${(error as any).internal})` : message,
+        )
+      } catch {
+        console.error(`admin audit failed for ${method} ${path}; the original error stands`)
+      }
+    }
     throw error
   }
+}
+/** The side effect already happened: report success, but warn against a blind retry. */
+function withAuditWarning(result: any) {
+  const auditWarning =
+    'Изменение применено, но не записано в журнал: не повторяйте запрос вслепую, проверьте состояние.'
+  if (result instanceof Response) {
+    const headers = new Headers(result.headers)
+    headers.set('X-Audit-Warning', auditWarning)
+    return new Response(result.body, { status: result.status, headers })
+  }
+  return { ...result, auditWarning }
 }
 async function record(
   store: StatsStore,

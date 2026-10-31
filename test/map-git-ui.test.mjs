@@ -244,7 +244,7 @@ test('availability displays observed state, marks pending changes and reserves o
   assert.equal(window.mapAvailabilityControls({ ...map, head: null }, line).textContent, '')
 })
 
-test('all roles get scoped draft and branch actions; only moderator and reviewers activate saved copies', (t) => {
+test('all roles get scoped draft and branch actions; only admins switch sessions and resume saved copies', (t) => {
   const window = dom(t),
     branch = map.branches[1]
   for (const role of ['builder', 'moderator', 'admin', 'owner']) {
@@ -258,7 +258,10 @@ test('all roles get scoped draft and branch actions; only moderator and reviewer
     assert.equal(draft.textContent.includes('Переименовать карту'), role !== 'builder')
     const branches = window.branchesPanel(map, false)
     // The open branch has no «open» action; another one does, for session-switching roles only.
-    assert.equal(branches.textContent.includes('Открыть в мастерской'), role !== 'builder')
+    assert.equal(
+      branches.textContent.includes('Открыть в мастерской'),
+      ['admin', 'owner'].includes(role),
+    )
     assert.match(branches.textContent, /Открыта в мастерской/)
     window.candidateList = [{ status: 'pending', mapId: 'fields', versionDigest: SECOND }]
     assert.match(window.draftPanel(map, branch).textContent, /уже на проверке/)
@@ -281,7 +284,7 @@ test('all roles get scoped draft and branch actions; only moderator and reviewer
     window.renderSavedMapSessions()
     assert.equal(
       window.$('#map-drafts').textContent.includes('Продолжить черновик'),
-      role !== 'builder',
+      ['admin', 'owner'].includes(role),
     )
     assert.equal(window.$('#map-drafts-more').hidden, false)
     window.savedMapSessions = []

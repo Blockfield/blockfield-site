@@ -1,10 +1,20 @@
-import { account, drasl, importMojangSkin, route, session } from '../../../lib/account'
+import {
+  account,
+  drasl,
+  importMojangSkin,
+  route,
+  session,
+  sessionToken,
+} from '../../../lib/account.ts'
+import { statsStore } from '../../../lib/stats.ts'
 
 export const GET = route(async ({ cookies }) => {
   const headers = { 'Cache-Control': 'no-store' }
   const value = cookies.get(session)?.value
   if (!value) return Response.json({ account: null }, { headers })
   try {
+    // Отозванная сессия выглядит истёкшей: cookie забываем, в Drasl не ходим.
+    await sessionToken(cookies, await statsStore())
     return Response.json(
       { account: account(await importMojangSkin(value, await drasl('/user', { token: value }))) },
       { headers },

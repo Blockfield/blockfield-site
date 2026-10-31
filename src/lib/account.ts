@@ -1,4 +1,6 @@
 import type { APIContext, APIRoute, AstroCookies } from 'astro'
+import { createHash } from 'node:crypto'
+import { statsStore, type StatsStore } from './stats.ts'
 
 export const nickname = /^[A-Za-z0-9_]{3,16}$/
 export const session = 'bf_session'
@@ -156,6 +158,19 @@ export function account(user: any) {
 }
 
 const noMojangSkin = new Map<string, number>()
+const MOJANG_MISS_TTL = 600_000
+/** Miss entries are per login nickname, so the cache is capped: insertion order evicts the oldest. */
+export const MOJANG_MISS_CAP = 5000
+export const mojangMiss = (key: string, now = Date.now()) => (noMojangSkin.get(key) ?? 0) > now
+export function rememberMojangMiss(key: string, now = Date.now()) {
+  if (!noMojangSkin.has(key)) {
+    for (const [known, expiry] of noMojangSkin) {
+      if (noMojangSkin.size < MOJANG_MISS_CAP && expiry > now) break
+      noMojangSkin.delete(known)
+    }
+  }
+  noMojangSkin.set(key, now + MOJANG_MISS_TTL)
+}
 const mojang = (url: string) => fetch(url, { signal: AbortSignal.timeout(5000) })
 
 async function mojangTexture(texture: any, skin: boolean): Promise<string | undefined> {
@@ -173,7 +188,7 @@ async function mojangTexture(texture: any, skin: boolean): Promise<string | unde
 export async function importMojangSkin(token: string, user: any): Promise<any> {
   const { username, uuid, skinUrl } = account(user)
   const key = String(username).toLowerCase()
-  if (!uuid || skinUrl || (noMojangSkin.get(key) ?? 0) > Date.now()) return user
+  if (!uuid || skinUrl || mojangMiss(key)) return user
   try {
     const found = await mojang(
       `https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(username)}`,
@@ -206,8 +221,8 @@ export async function importMojangSkin(token: string, user: any): Promise<any> {
     })
     return await drasl('/user', { token })
   } catch {
-    // ponytail: любой сбой кэшируется как «нет скина» на 10 минут, чтобы не долбить Mojang; перезапуск сайта сбрасывает кэш.
-    noMojangSkin.set(key, Date.now() + 600_000)
+    // Any failure counts as "no skin" for 10 minutes, so Mojang is not hammered; the map itself is capped.
+    rememberMojangMiss(key)
     return user
   }
 }
@@ -225,6 +240,18 @@ export function startSession(cookies: AstroCookies, token: string) {
 export function token(cookies: AstroCookies): string {
   const value = cookies.get(session)?.value
   if (!value) throw fail(401, 'Войдите в аккаунт.')
+  return value
+}
+
+/** SHA-256 of a session token: the revocation list stores only hashes, never tokens. */
+export const sessionHash = (value: string) =>
+  createHash('sha256').update(value, 'utf8').digest('hex')
+
+/** Cookie session checked against the server-side revocation list; revoked behaves as expired. */
+export async function sessionToken(cookies: AstroCookies, store?: StatsStore): Promise<string> {
+  const value = token(cookies)
+  if (await (store ?? (await statsStore())).isSessionRevoked(sessionHash(value)))
+    throw fail(401, 'Сессия истекла. Войдите снова.')
   return value
 }
 
@@ -248,14 +275,14 @@ export const texture = (kind: 'skin' | 'cape') => ({
     if (kind === 'skin' && model !== 'classic' && model !== 'slim')
       return fail(400, 'Неизвестная модель скина.')
     const base64 = await readPng(request, kind === 'skin')
-    const auth = token(cookies)
+    const auth = await sessionToken(cookies)
     const { uuid } = account(await drasl('/user', { token: auth }))
     const body = kind === 'skin' ? { skinBase64: base64, skinModel: model } : { capeBase64: base64 }
     const player = await drasl(`/players/${uuid}`, { method: 'PATCH', token: auth, body })
     return Response.json(account({ username: player.name, players: [player] }))
   }),
   DELETE: route(async ({ cookies }) => {
-    const auth = token(cookies)
+    const auth = await sessionToken(cookies)
     const { uuid } = account(await drasl('/user', { token: auth }))
     await drasl(`/players/${uuid}`, {
       method: 'PATCH',

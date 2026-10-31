@@ -29,12 +29,12 @@ Open admin pages share one `EventSource` connection to `GET /api/admin/events`; 
 
 The site is the source of truth for roles. Identity is the Drasl session (`bf_session` cookie) → the account's player UUID, stored without dashes in lowercase.
 
-| Role        | Can                                                                                                                                                                                                                                       |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `builder`   | open `/admin`, see status, rooms and map history; create branches, commit and request review within their map scope                                                                                                                       |
-| `moderator` | + RCON moderation (`list`, `say`, `kick`, `bf team kick`, `bf stop room`, `bf class lock/unlock`, `range`), Workshop session/test transitions without recover, maintenance/workshop message                                               |
-| `admin`     | + `ban`/`pardon`, maintenance/recover, game and weapon settings, statistics admin, audit log, grant/revoke builder/moderator, workshop sync, protected-main merge, append-only restore and map export, server performance (`diagnostics`) |
-| `owner`     | + grant/revoke `admin`, raw RCON console (`rcon-raw`)                                                                                                                                                                                     |
+| Role        | Can                                                                                                                                                                                                                                                                          |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `builder`   | open `/admin`, see status, rooms and map history; create branches, commit and request review within their map scope                                                                                                                                                          |
+| `moderator` | + RCON moderation (`list`, `say`, `kick`, `bf team kick`, `bf stop room`, `bf class lock/unlock`, `range`), map create/rename, maintenance/workshop message                                                                                                                  |
+| `admin`     | + `ban`/`pardon`, maintenance/recover, Workshop session/test transitions, game and weapon settings, statistics admin, audit log, grant/revoke builder/moderator, workshop sync, protected-main merge, append-only restore and map export, server performance (`diagnostics`) |
+| `owner`     | + grant/revoke `admin`, raw RCON console (`rcon-raw`)                                                                                                                                                                                                                        |
 
 Permissions are one map in `src/lib/admin.ts` (`can(role, permission)`); every API route checks it on the server, the page only hides what the role cannot use.
 

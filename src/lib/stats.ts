@@ -470,6 +470,7 @@ export class StatsStore {
       );
       CREATE TABLE IF NOT EXISTS staff_roles (uuid TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL, maps TEXT);
       CREATE TABLE IF NOT EXISTS ingest_keys (id INTEGER PRIMARY KEY, server_id TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
+      CREATE TABLE IF NOT EXISTS revoked_sessions (token_hash TEXT PRIMARY KEY, revoked_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS server_samples (
         server_id TEXT NOT NULL, at INTEGER NOT NULL, tps REAL NOT NULL, mspt_avg REAL NOT NULL, mspt_p95 REAL, mspt_max REAL NOT NULL,
         players INTEGER, heap_used_mb INTEGER, heap_max_mb INTEGER, gc_pause_ms INTEGER, started_at INTEGER, PRIMARY KEY(server_id,at)
@@ -810,6 +811,23 @@ export class StatsStore {
           .prepare('UPDATE ingest_keys SET revoked_at=? WHERE id=? AND revoked_at IS NULL')
           .run(Date.now(), id)
       ).changes === 1
+    )
+  }
+  /** Sessions are Drasl bearer tokens: logout remembers only the SHA-256, never the token. Human-scale writes, so no purge. */
+  async revokeSession(tokenHash: string) {
+    await this.db
+      .prepare(
+        'INSERT INTO revoked_sessions (token_hash,revoked_at) VALUES (?,?) ON CONFLICT(token_hash) DO NOTHING',
+      )
+      .run(tokenHash, Date.now())
+  }
+  async isSessionRevoked(tokenHash: string): Promise<boolean> {
+    return (
+      (
+        (await this.db
+          .prepare('SELECT token_hash FROM revoked_sessions WHERE token_hash=?')
+          .get(tokenHash)) as { token_hash: string } | undefined
+      )?.token_hash === tokenHash
     )
   }
   async ingestKeyHashes(serverId: string): Promise<Buffer[]> {

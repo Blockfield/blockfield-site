@@ -35,12 +35,13 @@ const temp = (t) => {
   return dir
 }
 import { database as store } from './storage.mjs'
-import { statsStore } from '../src/lib/stats.ts'
+import { StatsError, statsStore } from '../src/lib/stats.ts'
 
 test('permission map: roles grow strictly, unknown/no role has nothing', () => {
   assert.equal(can('builder', 'view'), true)
   assert.equal(can('builder', 'moderate'), false)
-  assert.equal(can('moderator', 'mode'), true)
+  assert.equal(can('moderator', 'mode'), false)
+  assert.equal(can('moderator', 'maps'), true)
   assert.equal(can('moderator', 'recover'), false)
   assert.equal(can('moderator', 'ban'), false)
   assert.equal(can('admin', 'settings'), true)
@@ -49,6 +50,115 @@ test('permission map: roles grow strictly, unknown/no role has nothing', () => {
   assert.equal(can('owner', 'roles-admin'), true)
   assert.equal(can(null, 'view'), false)
   assert.equal(can('root', 'view'), false)
+})
+
+test('mode switch and cancel are admin-only; map create stays with the moderator', async (t) => {
+  const dirs = { BLOCKFIELD_INBOX_DIR: temp(t) }
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const s = await store(t)
+  await s.setStaff(MOD, 'Mod', 'moderator', 'seed')
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const call = async (as, method, path, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL(`http://site/api/admin/${path}`)
+    const request = new Request(url, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  assert.equal(can('moderator', 'mode'), false, 'a moderator must not switch the server mode')
+  assert.equal(can('moderator', 'maps'), true, 'map create/rename stay with the moderator')
+  assert.equal(can('admin', 'mode'), true)
+  assert.equal(
+    (await call(`${MOD}:Mod`, 'POST', 'mode', { profile: 'game', expectedRevision: 0 })).status,
+    403,
+  )
+  assert.equal((await call(`${MOD}:Mod`, 'POST', 'cancel', {})).status, 403)
+  assert.equal((await call(`${MOD}:Mod`, 'POST', 'message', { message: 'hi' })).status, 200)
+  assert.equal(
+    (await call(`${ADMIN}:Adm`, 'POST', 'mode', { profile: 'game', expectedRevision: 0 })).status,
+    200,
+  )
+})
+
+test('audit is best-effort: an applied write stays 200 with a warning, a refusal keeps its status', async (t) => {
+  const dirs = { BLOCKFIELD_INBOX_DIR: temp(t) }
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const failing = new Proxy(s, {
+    get: (target, prop) =>
+      prop === 'audit'
+        ? async () => {
+            throw new StatsError(503, 'audit store is down')
+          }
+        : Reflect.get(target, prop),
+  })
+  const call = async (storage, as, method, path, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL(`http://site/api/admin/${path}`)
+    const request = new Request(url, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, storage).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  const applied = await call(failing, `${ADMIN}:Adm`, 'POST', 'message', { message: 'hi' })
+  assert.equal(applied.status, 200, 'an applied write must not turn into a 503')
+  assert.match((await applied.json()).auditWarning, /не повторяйте/)
+  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 1, 'the handler ran exactly once')
+  const refused = await call(failing, `${ADMIN}:Adm`, 'POST', 'message', {
+    message: 'x'.repeat(201),
+  })
+  assert.equal(refused.status, 400, 'the original refusal must survive a dead audit log')
+})
+
+test('admin writes are throttled per user: a flood ends in 429, reads are untouched', async (t) => {
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const FLOOD = 'dddddddddddddddddddddddddddddddd'
+  const s = await store(t)
+  await s.setStaff(FLOOD, 'Flo', 'builder', 'seed')
+  const call = async (method, path, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = `${FLOOD}:Flo`
+    const url = new URL(`http://site/api/admin/${path}`)
+    const request = new Request(url, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  for (let i = 0; i < 60; i++)
+    assert.equal((await call('POST', 'message', { message: 'hi' })).status, 403)
+  assert.equal((await call('POST', 'message', { message: 'hi' })).status, 429)
+  assert.equal((await (await call('GET', 'me')).json()).role, 'builder')
 })
 
 test('bootstrap fails closed: no env and no rows means nobody; owners come only from env', async (t) => {
@@ -515,9 +625,10 @@ test('API: role gate, audit of success and refusal, members request on role chan
     403,
   )
 
-  // cancel: same "mode" gate as switching, and it writes a plain inbox request the controller can process.
+  // cancel switches the server like mode does: admin-only.
   assert.equal((await call(`${OTHER}:Nobody`, 'POST', 'cancel', {})).status, 403)
-  const cancelled = await call(`${MOD}:Moddy`, 'POST', 'cancel', {})
+  assert.equal((await call(`${MOD}:Moddy`, 'POST', 'cancel', {})).status, 403)
+  const cancelled = await call(`${ADMIN}:Adm`, 'POST', 'cancel', {})
   assert.equal(cancelled.status, 200)
   const { id: cancelId } = await cancelled.json()
   assert.deepEqual(
@@ -529,7 +640,8 @@ test('API: role gate, audit of success and refusal, members request on role chan
   assert.deepEqual(
     log.map((e) => [e.actorName, e.action, e.ok, e.error !== null]),
     [
-      ['Moddy', 'cancel', 1, false],
+      ['Adm', 'cancel', 1, false],
+      ['Moddy', 'cancel', 0, true],
       ['Adm', 'role-revoke', 0, true],
       ['Moddy', 'rcon:kick', 0, true],
       ['Moddy', 'rcon:ban', 0, true],
@@ -537,8 +649,8 @@ test('API: role gate, audit of success and refusal, members request on role chan
       ['Adm', 'role-grant', 0, true],
     ],
   )
-  assert.equal(log[4].target, MOD)
-  assert.equal(JSON.parse(log[4].detail).role, 'moderator')
+  assert.equal(log[5].target, MOD)
+  assert.equal(JSON.parse(log[5].detail).role, 'moderator')
 })
 
 test('POST rcon/raw audit: a body that never named a target is logged as unknown, not game', async (t) => {

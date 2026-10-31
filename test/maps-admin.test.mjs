@@ -929,7 +929,8 @@ test('map creation and rename require authoritative lead access, stable revision
   })
   const mode = { profile: 'test', candidateId: CANDIDATE, modeId: 'training', expectedRevision: 4 }
   assert.equal((await call('mode', mode, BUILDER)).status, 403)
-  assert.equal((await read(await call('mode', mode, LEAD))).modeId, 'training')
+  assert.equal((await call('mode', mode, LEAD)).status, 403, 'mode switch is admin-only')
+  assert.equal((await read(await call('mode', mode, ADMIN))).modeId, 'training')
   assert.equal((await call('mode', { ...mode, modeId: 'campaign' })).status, 400)
   assert.equal((await call('mode', { ...mode, modeId: 'unknown' })).status, 400)
   const catalog = fixture()
