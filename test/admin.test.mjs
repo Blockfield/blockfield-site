@@ -91,7 +91,7 @@ test('mode switch and cancel are admin-only; map create stays with the moderator
   )
 })
 
-test('audit is best-effort: an applied write stays 200 with a warning, a refusal keeps its status', async (t) => {
+test('audit leads the effect: a dead log fails everything closed before anything runs', async (t) => {
   const dirs = { BLOCKFIELD_INBOX_DIR: temp(t) }
   const saved = { ...process.env }
   t.after(() => {
@@ -101,9 +101,9 @@ test('audit is best-effort: an applied write stays 200 with a warning, a refusal
   Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
-  const failing = new Proxy(s, {
+  const dead = new Proxy(s, {
     get: (target, prop) =>
-      prop === 'audit'
+      prop === 'auditPending'
         ? async () => {
             throw new StatsError(503, 'audit store is down')
           }
@@ -122,14 +122,62 @@ test('audit is best-effort: an applied write stays 200 with a warning, a refusal
       (e) => e,
     )
   }
-  const applied = await call(failing, `${ADMIN}:Adm`, 'POST', 'message', { message: 'hi' })
-  assert.equal(applied.status, 200, 'an applied write must not turn into a 503')
-  assert.match((await applied.json()).auditWarning, /не повторяйте/)
-  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 1, 'the handler ran exactly once')
-  const refused = await call(failing, `${ADMIN}:Adm`, 'POST', 'message', {
-    message: 'x'.repeat(201),
+  assert.equal(
+    (await call(dead, `${ADMIN}:Adm`, 'POST', 'mode', { profile: 'game', expectedRevision: 11 }))
+      .status,
+    503,
+    'high-risk never runs unaudited',
+  )
+  assert.equal(
+    (await call(dead, `${ADMIN}:Adm`, 'POST', 'message', { message: 'hi-pending-dead' })).status,
+    503,
+    'nothing runs unaudited, however small',
+  )
+  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 0, 'no side effect ran')
+})
+
+test('finalize failure: low-risk warns on 200, high-risk fails closed', async (t) => {
+  const dirs = { BLOCKFIELD_INBOX_DIR: temp(t) }
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
   })
-  assert.equal(refused.status, 400, 'the original refusal must survive a dead audit log')
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const flaky = new Proxy(s, {
+    get: (target, prop) =>
+      prop === 'auditFinalize'
+        ? async () => {
+            throw new StatsError(503, 'audit store is down')
+          }
+        : Reflect.get(target, prop),
+  })
+  const call = async (as, method, path, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL(`http://site/api/admin/${path}`)
+    const request = new Request(url, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, flaky).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  const warned = await call(`${ADMIN}:Adm`, 'POST', 'message', { message: 'hi-flaky' })
+  assert.equal(warned.status, 200)
+  assert.match((await warned.json()).auditWarning, /не повторяйте/)
+  assert.equal(warned.headers.get('X-Audit-Warning') !== null, true)
+  assert.equal(
+    (await call(`${ADMIN}:Adm`, 'POST', 'mode', { profile: 'game', expectedRevision: 12012 }))
+      .status,
+    503,
+    'high-risk fails closed when the finalize is lost',
+  )
+  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 2, 'both effects ran exactly once')
 })
 
 test('admin writes are throttled per user: a flood ends in 429, reads are untouched', async (t) => {

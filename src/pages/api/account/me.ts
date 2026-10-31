@@ -14,9 +14,9 @@ export const GET = route(async ({ cookies }) => {
   if (!value) return Response.json({ account: null }, { headers })
   try {
     // Отозванная сессия выглядит истёкшей: cookie забываем, в Drasl не ходим.
-    await sessionToken(cookies, await statsStore())
+    const auth = await sessionToken(cookies, await statsStore())
     return Response.json(
-      { account: account(await importMojangSkin(value, await drasl('/user', { token: value }))) },
+      { account: account(await importMojangSkin(auth, await drasl('/user', { token: auth }))) },
       { headers },
     )
   } catch (error) {

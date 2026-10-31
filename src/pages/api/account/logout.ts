@@ -1,11 +1,10 @@
-import { route, session, sessionHash } from '../../../lib/account.ts'
+import { closeSession, route, session } from '../../../lib/account.ts'
 import { statsStore } from '../../../lib/stats.ts'
 
-// Выход отзывает сессию на сервере: украденная cookie умирает вместе с выходом.
-// Drasl-токен при этом жив (ценой сброса умирал бы и лаунчер): его rotate'ит смена пароля.
+// Выход удаляет только эту сессию: остальные устройства живут, Drasl-токен живёт,
+// чужой или просроченный cookie ничего не меняет на сервере.
 export const POST = route(async ({ cookies }) => {
-  const value = cookies.get(session)?.value
-  if (value) await (await statsStore()).revokeSession(sessionHash(value))
+  await closeSession(await statsStore(), cookies)
   cookies.delete(session, { path: '/' })
   return new Response(null, { status: 204 })
 })

@@ -1,5 +1,5 @@
 import type { APIContext, APIRoute, AstroCookies } from 'astro'
-import { createHash } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import { statsStore, type StatsStore } from './stats.ts'
 
 export const nickname = /^[A-Za-z0-9_]{3,16}$/
@@ -227,32 +227,58 @@ export async function importMojangSkin(token: string, user: any): Promise<any> {
   }
 }
 
-export function startSession(cookies: AstroCookies, token: string) {
-  cookies.set(session, token, {
+/** The cookie holds only a random id; oversized or malformed values never reach the DB. */
+export const SESSION_COOKIE_MAX = 128
+const SESSION_ID = /^[0-9a-f]{32}$/
+/** Sessions per user and their lifetime: the table stays bounded without a sweeper. */
+export const SESSION_USER_CAP = 20
+const SESSION_MAX_AGE = 60 * 86_400_000
+export function sessionId(cookies: Pick<AstroCookies, 'get'>): string {
+  const value = cookies.get(session)?.value ?? ''
+  if (!value || value.length > SESSION_COOKIE_MAX || !SESSION_ID.test(value))
+    throw fail(401, 'Сессия истекла. Войдите снова.')
+  return value
+}
+
+/** Cookie session id resolved to the Drasl token server-side; unknown means expired. */
+export async function sessionToken(
+  cookies: Pick<AstroCookies, 'get'>,
+  store?: StatsStore,
+): Promise<string> {
+  const id = sessionId(cookies)
+  const db = store ?? (await statsStore())
+  const row = await db.getSession(id)
+  if (!row) throw fail(401, 'Сессия истекла. Войдите снова.')
+  await db.touchSession(id, Date.now())
+  return row.token
+}
+
+/** Mint a session id for a Drasl token; old sessions of the user are pruned in the same step. */
+export async function startSession(
+  cookies: AstroCookies,
+  store: StatsStore,
+  token: string,
+  uuid: string,
+): Promise<string> {
+  if (!token || !uuid) throw fail(502, 'Сервер аккаунтов вернул неполные данные.')
+  const id = randomBytes(16).toString('hex'),
+    now = Date.now()
+  await store.insertSession(id, token, uuid, now)
+  await store.pruneSessions(uuid, now - SESSION_MAX_AGE, SESSION_USER_CAP)
+  cookies.set(session, id, {
     httpOnly: true,
     secure: true,
     sameSite: 'strict',
     path: '/',
     maxAge: 30 * 86_400,
   })
+  return id
 }
 
-export function token(cookies: AstroCookies): string {
-  const value = cookies.get(session)?.value
-  if (!value) throw fail(401, 'Войдите в аккаунт.')
-  return value
-}
-
-/** SHA-256 of a session token: the revocation list stores only hashes, never tokens. */
-export const sessionHash = (value: string) =>
-  createHash('sha256').update(value, 'utf8').digest('hex')
-
-/** Cookie session checked against the server-side revocation list; revoked behaves as expired. */
-export async function sessionToken(cookies: AstroCookies, store?: StatsStore): Promise<string> {
-  const value = token(cookies)
-  if (await (store ?? (await statsStore())).isSessionRevoked(sessionHash(value)))
+/** Logout deletes only a valid session: garbage cookies change nothing server-side. */
+export async function closeSession(store: StatsStore, cookies: AstroCookies): Promise<void> {
+  if (!(await store.deleteSession(sessionId(cookies))))
     throw fail(401, 'Сессия истекла. Войдите снова.')
-  return value
 }
 
 export function route(handler: (context: APIContext) => Promise<Response>): APIRoute {

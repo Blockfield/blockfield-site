@@ -14,12 +14,10 @@ import {
   route,
   sameOrigin,
   session,
-  sessionHash,
-  sessionToken,
 } from '../src/lib/account.ts'
 import { statsStore } from '../src/lib/stats.ts'
-import { database as store } from './storage.mjs'
 import { POST as logout } from '../src/pages/api/account/logout.ts'
+import { POST as login } from '../src/pages/api/account/login.ts'
 import { POST as password } from '../src/pages/api/account/password.ts'
 import { GET as me } from '../src/pages/api/account/me.ts'
 
@@ -255,54 +253,99 @@ const sameSite = (url, body) =>
     body: body === undefined ? undefined : JSON.stringify(body),
   })
 
-test('сессия отзывается: хэш стабилен, отозванный токен — как истёкший', async (t) => {
-  assert.match(sessionHash('tok'), /^[0-9a-f]{64}$/)
-  assert.equal(sessionHash('tok'), sessionHash('tok'))
-  assert.notEqual(sessionHash('tok'), sessionHash('other'))
-  const s = await store(t)
-  assert.equal(await sessionToken(jar('fresh'), s), 'fresh')
-  await s.revokeSession(sessionHash('stolen'))
-  assert.equal(await s.isSessionRevoked(sessionHash('stolen')), true)
-  assert.equal(await s.isSessionRevoked(sessionHash('fresh')), false)
-  const error = await sessionToken(jar('stolen'), s).then(
-    () => assert.fail('ожидалась ошибка'),
-    (e) => e,
-  )
-  assert.equal(error.status, 401)
-})
-
-test('logout запоминает хэш сессии и забывает cookie', async () => {
-  process.env.BLOCKFIELD_STATS_DB = ':memory:'
-  const cookies = jar('site-token')
-  const response = await logout({
-    request: sameSite('http://site/api/account/logout'),
-    cookies,
-  })
-  assert.equal(response.status, 204)
-  assert.deepEqual(cookies.calls.delete, [session, { path: '/' }])
-  const db = await statsStore()
-  assert.equal(await db.isSessionRevoked(sessionHash('site-token')), true)
-  assert.equal(
-    await sessionToken(jar('site-token'), db).then(
-      () => 'open',
-      () => 'closed',
-    ),
-    'closed',
-  )
-})
-
-test('смена пароля rotate’ит токен в Drasl и перевыпускает сессию', async () => {
+test('site sessions: login mints an opaque id per device; logout kills only that device', async () => {
   process.env.BLOCKFIELD_STATS_DB = ':memory:'
   process.env.DRASL_URL = 'http://drasl.test'
-  const cookies = jar('old-token')
+  const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
+  const stub = stubFetch(async (url, init) => {
+    if (url === 'http://drasl.test/drasl/api/v3/login' && init.method === 'POST')
+      return Response.json({ apiToken: 'stable-drasl-token', user })
+    if (url === 'http://drasl.test/drasl/api/v3/user') return Response.json(user)
+    assert.fail(`неожиданный запрос ${init?.method} ${url}`)
+  })
+  try {
+    const loginAs = async (cookies) =>
+      login({
+        request: sameSite('http://site/api/account/login', {
+          username: 'Alex',
+          password: 'password-1',
+        }),
+        cookies,
+      })
+    const meAs = async (id) =>
+      (await me({ request: new Request('http://site/api/account/me'), cookies: jar(id) })).json()
+    const a = jar(),
+      b = jar()
+    assert.equal((await loginAs(a)).status, 200)
+    assert.equal((await loginAs(b)).status, 200)
+    const [idA, idB] = [a.calls.set[1], b.calls.set[1]]
+    for (const id of [idA, idB]) assert.match(id, /^[0-9a-f]{32}$/)
+    assert.notEqual(idA, idB)
+    assert.notEqual(idA, 'stable-drasl-token', 'cookie must not carry the Drasl token')
+    assert.equal((await meAs(idA)).account.username, 'Alex')
+    assert.equal((await meAs(idB)).account.username, 'Alex')
+    assert.ok(
+      stub.seen
+        .filter(({ url }) => String(url).endsWith('/user'))
+        .every(({ init }) => init.headers.Authorization === 'Bearer stable-drasl-token'),
+      'Drasl sees the mapped token, never the cookie',
+    )
+    assert.equal(
+      (
+        await logout({
+          request: sameSite('http://site/api/account/logout'),
+          cookies: jar(idA),
+        })
+      ).status,
+      204,
+    )
+    assert.equal((await meAs(idA)).account, null, 'device A is dead')
+    assert.equal((await meAs(idB)).account.username, 'Alex', 'device B survives')
+    const c = jar()
+    assert.equal((await loginAs(c)).status, 200, 'logout then login works')
+    assert.equal((await meAs(c.calls.set[1])).account.username, 'Alex')
+  } finally {
+    stub.restore()
+    delete process.env.DRASL_URL
+  }
+})
+
+test('logout without a valid session is refused and writes nothing', async () => {
+  process.env.BLOCKFIELD_STATS_DB = ':memory:'
+  const db = await statsStore()
+  const before = await db.countSessions()
+  for (const value of [undefined, 'nope', 'x'.repeat(200)]) {
+    const response = await logout({
+      request: sameSite('http://site/api/account/logout'),
+      cookies: jar(value),
+    })
+    assert.equal(response.status, 401, JSON.stringify(value))
+  }
+  assert.equal(await db.countSessions(), before, 'no unauthenticated inserts')
+  const stub = stubFetch(async () => assert.fail('в Drasl ходить не должны'))
+  try {
+    const response = await me({
+      request: new Request('http://site/api/account/me'),
+      cookies: jar('x'.repeat(200)),
+    })
+    assert.deepEqual(await response.json(), { account: null })
+  } finally {
+    stub.restore()
+  }
+})
+
+test('password change kills every session and re-logs in', async () => {
+  process.env.BLOCKFIELD_STATS_DB = ':memory:'
+  process.env.DRASL_URL = 'http://drasl.test'
+  const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
   const stub = stubFetch(async (url, init) => {
     if (url === 'http://drasl.test/drasl/api/v3/user' && (!init.method || init.method === 'GET'))
-      return Response.json({ username: 'Alex', players: [] })
+      return Response.json(user)
     if (url === 'http://drasl.test/drasl/api/v3/login' && init.method === 'POST') {
       const body = JSON.parse(init.body)
-      if (body.password === 'current-pass-1') return Response.json({})
-      if (body.password === 'new-pass-22')
-        return Response.json({ apiToken: 'fresh-token', user: { username: 'Alex' } })
+      if (body.password === 'current-pass-1')
+        return Response.json({ apiToken: 'stable-drasl-token', user })
+      if (body.password === 'new-pass-22') return Response.json({ apiToken: 'rotated-token', user })
       return Response.json({ message: 'Incorrect password.' }, { status: 401 })
     }
     if (url === 'http://drasl.test/drasl/api/v3/user' && init.method === 'PATCH') {
@@ -314,39 +357,76 @@ test('смена пароля rotate’ит токен в Drasl и перевы�
     assert.fail(`неожиданный запрос ${init?.method} ${url}`)
   })
   try {
+    const loginAs = async (cookies) =>
+      login({
+        request: sameSite('http://site/api/account/login', {
+          username: 'Alex',
+          password: 'current-pass-1',
+        }),
+        cookies,
+      })
+    const meAs = async (id) =>
+      (await me({ request: new Request('http://site/api/account/me'), cookies: jar(id) })).json()
+    const a = jar(),
+      b = jar()
+    await loginAs(a)
+    await loginAs(b)
+    const [idA, idB] = [a.calls.set[1], b.calls.set[1]]
+    const changed = jar(idA)
     const response = await password({
       request: sameSite('http://site/api/account/password', {
         current: 'current-pass-1',
         password: 'new-pass-22',
       }),
-      cookies,
+      cookies: changed,
     })
     assert.equal(response.status, 204)
-    assert.equal(cookies.calls.set[0], session)
-    assert.equal(cookies.calls.set[1], 'fresh-token')
-    const db = await statsStore()
-    assert.equal(await db.isSessionRevoked(sessionHash('old-token')), true)
+    const idNew = changed.calls.set[1]
+    assert.match(idNew, /^[0-9a-f]{32}$/)
+    assert.equal((await meAs(idA)).account, null, 'first device is dead')
+    assert.equal((await meAs(idB)).account, null, 'second device is dead')
+    assert.equal((await meAs(idNew)).account.username, 'Alex', 'fresh session works')
   } finally {
     stub.restore()
     delete process.env.DRASL_URL
   }
 })
 
-test('me с отозванной сессией отдаёт null и не ходит в Drasl', async () => {
+test('site sessions are capped per user', async () => {
   process.env.BLOCKFIELD_STATS_DB = ':memory:'
-  const db = await statsStore()
-  await db.revokeSession(sessionHash('dead-token'))
-  const stub = stubFetch(async () => assert.fail('в Drasl ходить не должны'))
-  const cookies = jar('dead-token')
+  process.env.DRASL_URL = 'http://drasl.test'
+  const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
+  const stub = stubFetch(async (url) => {
+    if (String(url).endsWith('/login')) return Response.json({ apiToken: 't', user })
+    return Response.json(user)
+  })
   try {
-    const response = await me({
-      request: new Request('http://site/api/account/me'),
-      cookies,
+    const db = await statsStore()
+    const first = jar()
+    await login({
+      request: sameSite('http://site/api/account/login', {
+        username: 'Alex',
+        password: 'password-1',
+      }),
+      cookies: first,
     })
-    assert.deepEqual(await response.json(), { account: null })
-    assert.deepEqual(cookies.calls.delete, [session, { path: '/' }])
+    for (let i = 0; i < 25; i++)
+      await login({
+        request: sameSite('http://site/api/account/login', {
+          username: 'Alex',
+          password: 'password-1',
+        }),
+        cookies: jar(),
+      })
+    assert.ok((await db.countSessions()) <= 20, 'table stays bounded')
+    const dead = await me({
+      request: new Request('http://site/api/account/me'),
+      cookies: jar(first.calls.set[1]),
+    })
+    assert.deepEqual((await dead.json()).account, null, 'oldest session was evicted')
   } finally {
     stub.restore()
+    delete process.env.DRASL_URL
   }
 })
 

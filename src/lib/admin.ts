@@ -17,16 +17,7 @@ import {
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
-import {
-  account,
-  drasl,
-  fail,
-  nickname,
-  readJson,
-  session,
-  sessionHash,
-  sessionToken,
-} from './account.ts'
+import { account, drasl, fail, nickname, readJson, session, sessionToken } from './account.ts'
 import { rcon } from './rcon.ts'
 import { eventStream, heartbeat } from './admin-events.ts'
 import {
@@ -192,8 +183,9 @@ export async function siteIdentity(
   if (!value) return null
   try {
     const store = await statsStore()
-    if (await store.isSessionRevoked(sessionHash(value))) return null
-    const { username, uuid } = account(await drasl('/user', { token: value }))
+    const { username, uuid } = account(
+      await drasl('/user', { token: await sessionToken(cookies, store) }),
+    )
     if (!username) return null
     const id = playerId(uuid)
     return {
@@ -1745,6 +1737,8 @@ type Route = {
   handler: Handler
   audit?: (body: any, result: any) => { action: string; target?: string | null; detail?: unknown }
   maxBody?: number
+  /** Effect is a pure DB write: run it in the same transaction as the audit finalize. */
+  tx?: boolean
 }
 const page = (url: URL) => {
   const n = Number(url.searchParams.get('page') || '1')
@@ -2535,6 +2529,7 @@ const routes: Record<string, Route> = {
     },
   },
   'POST staff': {
+    tx: true,
     permission: 'roles',
     handler: async ({ actor, store, body }) => {
       if (body?.role !== null && !['builder', 'moderator', 'admin'].includes(body?.role))
@@ -2693,6 +2688,7 @@ const routes: Record<string, Route> = {
     handler: async ({ store }) => ({ keys: await store.ingestKeys() }),
   },
   'POST keys': {
+    tx: true,
     permission: 'stats',
     handler: async ({ store, body }) => {
       if (!UUID.test(body?.serverId)) throw bad('ID сервера — UUID.')
@@ -2713,6 +2709,7 @@ const routes: Record<string, Route> = {
     }),
   },
   'POST keys/revoke': {
+    tx: true,
     permission: 'stats',
     handler: async ({ store, body }) => {
       if (!Number.isSafeInteger(body?.id) || !(await store.revokeIngestKey(body.id)))
@@ -2983,34 +2980,75 @@ export async function handleAdmin(
   // A stolen staff session can neither flood the inbox nor spam chat: writes share one throttle.
   if (method !== 'GET' && throttled(actor.uuid))
     return fail(429, 'Слишком много попыток. Подождите минуту.')
-  let body: any, result: any
+  let body: any,
+    result: any,
+    pendingId: number | null = null
   try {
     if (!can(actor.role, route.permission)) throw fail(403, 'Недостаточно прав.')
-    if (method !== 'GET') body = await readJson(context.request, route.maxBody ?? 65_536)
-    result = await route.handler({ context, actor, store, body })
-    // The change is already applied: a dead audit log must not turn it into an error
-    // (an operator retry would run the side effect twice).
-    if (method !== 'GET') {
-      try {
-        await record(store, actor, route, body, result, null)
-      } catch {
-        result = withAuditWarning(result)
-      }
+    if (method === 'GET') {
+      result = await route.handler({ context, actor, store, body })
+      return result instanceof Response ? result : Response.json(result, { headers: noStore })
     }
-    return result instanceof Response ? result : Response.json(result, { headers: noStore })
+    body = await readJson(context.request, route.maxBody ?? 65_536)
+    // The attempt is journaled before the effect runs: when the log is down,
+    // nothing runs at all, so nothing goes unaudited.
+    pendingId = await store.auditPending({
+      actorUuid: actor.uuid,
+      actorName: actor.name,
+      role: actor.role,
+      ...((await route.audit?.(body, undefined)) ?? { action: 'unknown' }),
+      ok: false,
+      error: null,
+    })
+    let applied = false
+    const finalize = (ok: boolean, error: string | null) =>
+      store.auditFinalize(pendingId!, {
+        actorUuid: actor.uuid,
+        actorName: actor.name,
+        role: actor.role ?? 'none',
+        ...((route.audit ? route.audit(body, result) : undefined) ?? { action: 'unknown' }),
+        ok,
+        error,
+      })
+    const run = async () => {
+      result = await route.handler({ context, actor, store, body })
+      applied = true
+      await finalize(true, null)
+    }
+    try {
+      // Pure DB effects share one transaction with the finalize; RCON and file
+      // effects cannot, so they finalize right after the handler instead.
+      if (route.tx) await store.db.transaction(run)
+      else await run()
+    } catch (inner) {
+      const { response, message } = await adminError(inner)
+      const detail =
+        (inner as any)?.internal != null ? `${message} (${(inner as any).internal})` : message
+      if (!applied) {
+        try {
+          await finalize(false, detail)
+        } catch {
+          console.error(`admin audit failed for ${method} ${path}; the original error stands`)
+        }
+        throw response
+      }
+      // The effect ran but the finalize did not: high-risk routes fail closed so
+      // the operator verifies state instead of blindly retrying; the rest warn.
+      console.error(
+        `admin audit finalize failed for ${method} ${path}; the change may have applied`,
+      )
+      if (highRisk(method, path, body))
+        throw fail(
+          503,
+          'Изменение, возможно, применено, но журнал недоступен: проверьте состояние перед повтором.',
+        )
+      return respond(result, AUDIT_WARNING)
+    }
+    return respond(result, null)
   } catch (thrown) {
-    const error = thrown instanceof StatsError ? fail(thrown.status, thrown.message) : thrown
-    const message =
-      error instanceof Response
-        ? await error
-            .clone()
-            .json()
-            .then(
-              (d) => d.error,
-              () => 'error',
-            )
-        : 'internal error'
-    if (method !== 'GET') {
+    const { response, message } = await adminError(thrown)
+    // Refusals (and anything before the pending row) are journaled once, as before.
+    if (method !== 'GET' && pendingId === null) {
       try {
         await record(
           store,
@@ -3018,25 +3056,60 @@ export async function handleAdmin(
           route,
           body,
           result,
-          (error as any)?.internal ? `${message} (${(error as any).internal})` : message,
+          (thrown as any)?.internal ? `${message} (${(thrown as any).internal})` : message,
         )
       } catch {
         console.error(`admin audit failed for ${method} ${path}; the original error stands`)
       }
     }
-    throw error
+    throw response
   }
 }
-/** The side effect already happened: report success, but warn against a blind retry. */
-function withAuditWarning(result: any) {
-  const auditWarning =
-    'Изменение применено, но не записано в журнал: не повторяйте запрос вслепую, проверьте состояние.'
+/** Routes whose retry must never silently re-run: roles, bans, raw console, mode switches. */
+const HIGH_RISK_ROUTES = new Set([
+  'POST staff',
+  'POST staff/maps',
+  'POST staff/map-access',
+  'POST rcon/raw',
+  'POST mode',
+  'POST cancel',
+])
+function highRisk(method: string, path: string, body: any): boolean {
+  const key = `${method} ${path}`
+  if (HIGH_RISK_ROUTES.has(key)) return true
+  return key === 'POST rcon' && (body?.action === 'ban' || body?.action === 'pardon')
+}
+const AUDIT_WARNING =
+  'Изменение применено, но не записано в журнал: не повторяйте запрос вслепую, проверьте состояние.'
+/** Header values must stay ASCII: the human-readable warning travels in the JSON field. */
+const AUDIT_WARNING_HEADER = 'audit-write-failed'
+function respond(result: any, warning: string | null) {
   if (result instanceof Response) {
+    if (!warning) return result
     const headers = new Headers(result.headers)
-    headers.set('X-Audit-Warning', auditWarning)
+    headers.set('X-Audit-Warning', AUDIT_WARNING_HEADER)
     return new Response(result.body, { status: result.status, headers })
   }
-  return { ...result, auditWarning }
+  return Response.json(
+    warning && result !== null && typeof result === 'object' && !Array.isArray(result)
+      ? { ...result, auditWarning: warning }
+      : result,
+    { headers: warning ? { ...noStore, 'X-Audit-Warning': AUDIT_WARNING_HEADER } : noStore },
+  )
+}
+async function adminError(thrown: unknown): Promise<{ response: Response; message: string }> {
+  const error = thrown instanceof StatsError ? fail(thrown.status, thrown.message) : thrown
+  const message =
+    error instanceof Response
+      ? await error
+          .clone()
+          .json()
+          .then(
+            (d) => d.error,
+            () => 'error',
+          )
+      : 'internal error'
+  return { response: error instanceof Response ? error : fail(500, 'internal error'), message }
 }
 async function record(
   store: StatsStore,

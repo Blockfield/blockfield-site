@@ -87,10 +87,13 @@ test('rolled-back writes are invisible to concurrent readers', async (t) => {
   assert.deepEqual(await reading, [])
 })
 
-test(
-  'SQLite backup migrates exactly, preserves permissions and key IDs, and refuses an occupied target',
-  { skip: !process.env.BLOCKFIELD_TEST_DATABASE_URL },
-  async (t) => {
+test('SQLite backup migrates exactly, preserves permissions and key IDs, and refuses an occupied target', async (t) => {
+  if (!process.env.BLOCKFIELD_TEST_DATABASE_URL)
+    throw new Error(
+      'BLOCKFIELD_TEST_DATABASE_URL is not set: this test needs a PostgreSQL database where the test user may create schemas. ' +
+        'Local setup is documented in docs/statistics.md (Tests); CI provides it as a service.',
+    )
+  {
     const source = await StatsStore.open(':memory:')
     t.after(() => source.close())
     const target = await database(t)
@@ -123,5 +126,5 @@ test(
     assert.equal((await target.ingestKeys())[0].id, 38)
     await assert.rejects(() => migrate(source, target), /not empty/)
     assert.equal((await target.ingestKeys()).length, 2)
-  },
-)
+  }
+})
