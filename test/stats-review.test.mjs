@@ -183,7 +183,7 @@ test('schema 1 database with results opens under schema 4 without losing data', 
     await legacy.close()
     const upgraded = await StatsStore.open(path)
     try {
-      assert.equal((await upgraded.db.prepare('PRAGMA user_version').get()).user_version, 6)
+      assert.equal((await upgraded.db.prepare('PRAGMA user_version').get()).user_version, 7)
       assert.equal((await upgraded.ingest(result)).inserted, false)
       assert.equal((await upgraded.player(alpha, query())).totals.wins, 1)
       assert.equal((await upgraded.db.prepare('SELECT COUNT(*) n FROM ratings').get()).n, 0)
@@ -236,7 +236,7 @@ test('schema 2 lifetime ratings migrate in place to schema 4 season 1 rows', asy
     await legacy.close()
     const upgraded = await StatsStore.open(path)
     try {
-      assert.equal((await upgraded.db.prepare('PRAGMA user_version').get()).user_version, 6)
+      assert.equal((await upgraded.db.prepare('PRAGMA user_version').get()).user_version, 7)
       const ratings = async () =>
         (
           await upgraded.db.prepare(`SELECT season_id,${columns} FROM ratings ORDER BY uuid`).all()
@@ -273,7 +273,7 @@ test('winner UUID survives reopen', async () => {
     await first.close()
     const second = await StatsStore.open(path)
     try {
-      assert.equal((await second.db.prepare('PRAGMA user_version').get()).user_version, 6)
+      assert.equal((await second.db.prepare('PRAGMA user_version').get()).user_version, 7)
       assert.equal((await second.ingest(result)).inserted, false)
       assert.equal((await second.player(alpha, query())).totals.wins, 1)
     } finally {

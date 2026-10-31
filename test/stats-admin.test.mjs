@@ -187,7 +187,7 @@ test('schema 3 file upgrades to 4: results gain void columns, new tables appear,
     await legacy.close()
     const upgraded = await StatsStore.open(path)
     try {
-      assert.equal((await upgraded.db.prepare('PRAGMA user_version').get()).user_version, 6)
+      assert.equal((await upgraded.db.prepare('PRAGMA user_version').get()).user_version, 7)
       assert.deepEqual(await ratings(upgraded), before)
       assert.equal((await upgraded.ingest(result)).inserted, false)
       assert.equal((await upgraded.setVoided(server, uid(50), 'Adm')).rebuilt, 's1')

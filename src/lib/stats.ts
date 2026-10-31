@@ -1,6 +1,7 @@
 /** Durable, Minecraft-independent result ingestion. Node >=22.19; no browser imports. */
 import { Database } from './database.ts'
 import { publish } from './admin-events.ts'
+import { openTokenRaw, sessionKeyBytes } from './session-crypto.ts'
 import { saveReport, validateReport } from './diagnostics.ts'
 import { playerId, roleOf } from './admin.ts'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -88,6 +89,31 @@ export class StatsError extends Error {
 }
 function requireValue(condition: unknown, message: string): asserts condition {
   if (!condition) throw new StatsError(422, message)
+}
+export type AuditEntry = {
+  actorUuid: string
+  actorName: string
+  role: string
+  action: string
+  target?: string | null
+  detail?: unknown
+  ok: boolean
+  error?: string | null
+}
+function auditArgs(entry: AuditEntry, at: number): any[] {
+  const json = entry.detail === undefined ? null : JSON.stringify(entry.detail)
+  const detail = json !== null && json.length > 2048 ? `${json.slice(0, 2048)}…` : json
+  return [
+    at,
+    entry.actorUuid,
+    entry.actorName,
+    entry.role,
+    entry.action,
+    entry.target?.slice(0, 200) ?? null,
+    detail,
+    entry.ok ? 1 : 0,
+    entry.error?.slice(0, 500) ?? null,
+  ]
 }
 function integer(value: unknown, max = 1_000_000_000): boolean {
   return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= max
@@ -404,7 +430,7 @@ export class StatsStore {
       const version = (await sqlite.prepare('PRAGMA user_version').get()) as {
         user_version: number
       }
-      if (![0, 1, 2, 3, 4, 5, 6].includes(version.user_version))
+      if (![0, 1, 2, 3, 4, 5, 6, 7].includes(version.user_version))
         throw new Error('Unsupported statistics schema; restore/migrate explicitly')
       sqlite.function('season_at', (time: any) => seasonAt(Number(time)).id)
       sqlite.function('uuid_like', { deterministic: true }, (name: any) =>
@@ -415,11 +441,15 @@ export class StatsStore {
       if (this.db.postgres) {
         await this.db
           .exec(`CREATE TABLE IF NOT EXISTS blockfield_schema (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL);
-          INSERT INTO blockfield_schema VALUES (1,6) ON CONFLICT(id) DO NOTHING;`)
+          INSERT INTO blockfield_schema VALUES (1,7) ON CONFLICT(id) DO NOTHING;`)
         const { version } = await this.db
           .prepare('SELECT version FROM blockfield_schema WHERE id=1')
           .get()
-        if (version !== 6)
+        // v6 -> v7: token-hash revocations are replaced by server-side sessions.
+        if (version === 6)
+          await this.db.exec(`DROP TABLE IF EXISTS revoked_sessions;
+          UPDATE blockfield_schema SET version=7 WHERE id=1;`)
+        if (version !== 6 && version !== 7)
           throw new Error('Unsupported statistics schema; restore/migrate explicitly')
         await this.db
           .exec(`CREATE OR REPLACE FUNCTION uuid_like(name TEXT) RETURNS INTEGER LANGUAGE SQL IMMUTABLE AS
@@ -466,10 +496,12 @@ export class StatsStore {
       CREATE INDEX IF NOT EXISTS rating_changes_uuid ON rating_changes(uuid,rated_at);
       CREATE TABLE IF NOT EXISTS admin_audit (
         id INTEGER PRIMARY KEY, at INTEGER NOT NULL, actor_uuid TEXT NOT NULL, actor_name TEXT NOT NULL, role TEXT NOT NULL,
-        action TEXT NOT NULL, target TEXT, detail TEXT, ok INTEGER NOT NULL, error TEXT
+        action TEXT NOT NULL, target TEXT, detail TEXT, ok INTEGER NOT NULL, error TEXT, pending INTEGER
       );
       CREATE TABLE IF NOT EXISTS staff_roles (uuid TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL, maps TEXT);
       CREATE TABLE IF NOT EXISTS ingest_keys (id INTEGER PRIMARY KEY, server_id TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
+      CREATE TABLE IF NOT EXISTS site_sessions (id TEXT PRIMARY KEY, drasl_token TEXT NOT NULL, uuid TEXT NOT NULL, created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS site_sessions_uuid ON site_sessions(uuid,last_seen);
       CREATE TABLE IF NOT EXISTS server_samples (
         server_id TEXT NOT NULL, at INTEGER NOT NULL, tps REAL NOT NULL, mspt_avg REAL NOT NULL, mspt_p95 REAL, mspt_max REAL NOT NULL,
         players INTEGER, heap_used_mb INTEGER, heap_max_mb INTEGER, gc_pause_ms INTEGER, started_at INTEGER, PRIMARY KEY(server_id,at)
@@ -508,6 +540,29 @@ export class StatsStore {
       // v4 -> v5: workshop map access per builder (null = every map).
       if (sqlite && !(await columns('staff_roles')).includes('maps'))
         await this.db.exec('ALTER TABLE staff_roles ADD COLUMN maps TEXT;')
+      // v6 -> v7: token-hash revocations are replaced by server-side sessions; audit rows gain a pending flag.
+      if (this.db.postgres)
+        await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS pending BIGINT;')
+      if (sqlite && !(await columns('admin_audit')).includes('pending'))
+        await this.db.exec('ALTER TABLE admin_audit ADD COLUMN pending INTEGER;')
+      // Crash orphans (pending rows from a killed request) are marked interrupted, never hidden.
+      // A live row mis-marked by a concurrent replica still finalizes normally afterwards.
+      await this.db
+        .prepare(
+          "UPDATE admin_audit SET pending=NULL,ok=0,error='Прервано перезапуском: проверьте, применилось ли изменение.' WHERE pending=1",
+        )
+        .run()
+      // Sessions need the seal key: validate it while sessions exist, so a missing or
+      // malformed secret fails fast instead of 503ing every login. Empty tables (fresh
+      // installs, migrations, tests) need nothing.
+      if (((await this.db.prepare('SELECT COUNT(*) n FROM site_sessions').get()) as any).n > 0) {
+        const key = sessionKeyBytes()
+        const sample = (await this.db
+          .prepare('SELECT drasl_token "token" FROM site_sessions ORDER BY last_seen DESC LIMIT 1')
+          .get()) as { token: string } | undefined
+        if (sample && openTokenRaw(sample.token, key) === null)
+          console.error('session secret changed: all sessions invalid')
+      }
       if (sqlite) {
         if (!(await columns('ingest_keys')).includes('id'))
           await this.db.exec(`
@@ -515,7 +570,8 @@ export class StatsStore {
           CREATE TABLE ingest_keys (id INTEGER PRIMARY KEY, server_id TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
           INSERT INTO ingest_keys SELECT rowid,* FROM ingest_keys_v5;
           DROP TABLE ingest_keys_v5;`)
-        await this.db.exec('PRAGMA user_version=6')
+        await this.db.exec('DROP TABLE IF EXISTS revoked_sessions')
+        await this.db.exec('PRAGMA user_version=7')
       }
     })
   }
@@ -812,6 +868,40 @@ export class StatsStore {
       ).changes === 1
     )
   }
+  /** Server-side sessions: the cookie holds only a random id, the Drasl token never leaves the server. */
+  async insertSession(id: string, token: string, uuid: string, now: number) {
+    await this.db
+      .prepare(
+        'INSERT INTO site_sessions (id,drasl_token,uuid,created_at,last_seen) VALUES (?,?,?,?,?)',
+      )
+      .run(id, token, uuid, now, now)
+  }
+  async getSession(id: string): Promise<{ token: string; uuid: string } | undefined> {
+    const row = (await this.db
+      .prepare('SELECT drasl_token "token",uuid FROM site_sessions WHERE id=?')
+      .get(id)) as { token: string; uuid: string } | undefined
+    return row ?? undefined
+  }
+  async touchSession(id: string, now: number) {
+    await this.db.prepare('UPDATE site_sessions SET last_seen=? WHERE id=?').run(now, id)
+  }
+  async deleteSession(id: string): Promise<boolean> {
+    return (await this.db.prepare('DELETE FROM site_sessions WHERE id=?').run(id)).changes === 1
+  }
+  async deleteUserSessions(uuid: string) {
+    await this.db.prepare('DELETE FROM site_sessions WHERE uuid=?').run(uuid)
+  }
+  /** One statement keeps the table bounded: stale rows go, each user keeps the newest `keep`. */
+  async pruneSessions(uuid: string, cutoff: number, keep: number) {
+    await this.db
+      .prepare(
+        'DELETE FROM site_sessions WHERE last_seen < ? OR (uuid=? AND id NOT IN (SELECT id FROM site_sessions WHERE uuid=? ORDER BY created_at DESC, id DESC LIMIT ?))',
+      )
+      .run(cutoff, uuid, uuid, keep)
+  }
+  async countSessions(): Promise<number> {
+    return ((await this.db.prepare('SELECT COUNT(*) count FROM site_sessions').get()) as any).count
+  }
   async ingestKeyHashes(serverId: string): Promise<Buffer[]> {
     return (
       (await this.db
@@ -819,34 +909,39 @@ export class StatsStore {
         .all(serverId)) as { h: string }[]
     ).map((r) => Buffer.from(r.h, 'hex'))
   }
-  async audit(entry: {
-    actorUuid: string
-    actorName: string
-    role: string
-    action: string
-    target?: string | null
-    detail?: unknown
-    ok: boolean
-    error?: string | null
-  }) {
-    const json = entry.detail === undefined ? null : JSON.stringify(entry.detail)
-    const detail = json !== null && json.length > 2048 ? `${json.slice(0, 2048)}…` : json
+  async audit(entry: AuditEntry) {
     const row = await this.db
       .prepare(
-        'INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error) VALUES (?,?,?,?,?,?,?,?,?) RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error',
+        'INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error,pending) VALUES (?,?,?,?,?,?,?,?,?,NULL) RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending"',
       )
-      .get(
-        Date.now(),
-        entry.actorUuid,
-        entry.actorName,
-        entry.role,
-        entry.action,
-        entry.target?.slice(0, 200) ?? null,
-        detail,
-        entry.ok ? 1 : 0,
-        entry.error?.slice(0, 500) ?? null,
-      )
+      .get(...auditArgs(entry, Date.now()))
     publish({ type: 'audit', entry: row })
+    await this.pruneAudit()
+  }
+  /** The attempt is journaled before the effect runs, so nothing goes unaudited; finalize updates the same row. */
+  async auditPending(entry: AuditEntry): Promise<number> {
+    const row = (await this.db
+      .prepare(
+        'INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error,pending) VALUES (?,?,?,?,?,?,?,?,?,1) RETURNING id',
+      )
+      .get(...auditArgs(entry, Date.now()))) as { id: number }
+    return row.id
+  }
+  async auditFinalize(id: number, entry: AuditEntry) {
+    // No live event here: the caller publishes after the surrounding commit,
+    // so a rolled-back write never shows as ok in the feed.
+    const row = await this.db
+      .prepare(
+        'UPDATE admin_audit SET at=?,actor_uuid=?,actor_name=?,role=?,action=?,target=?,detail=?,ok=?,error=?,pending=NULL WHERE id=? RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending"',
+      )
+      .get(...auditArgs(entry, Date.now()), id)
+    await this.pruneAudit()
+    return row
+  }
+  emitAudit(entry: any) {
+    publish({ type: 'audit', entry })
+  }
+  private async pruneAudit() {
     // ponytail: keeps the newest 10 000 entries; export them elsewhere first if a longer history is ever required.
     await this.db
       .prepare(
@@ -893,9 +988,10 @@ export class StatsStore {
     )
   }
   async auditLog(limit = 200) {
+    // Pending=1 rows are unfinished attempts; the boot sweep marks orphans as interrupted.
     return await this.db
       .prepare(
-        'SELECT id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error FROM admin_audit ORDER BY id DESC LIMIT ?',
+        'SELECT id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending" FROM admin_audit ORDER BY id DESC LIMIT ?',
       )
       .all(limit)
   }

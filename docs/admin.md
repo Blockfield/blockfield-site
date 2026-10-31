@@ -1,6 +1,6 @@
 # Admin panel (`/admin`)
 
-Staff page of the site: independent Game and Workshop status, live moderation over RCON, persistent game settings, AI budgets, staff roles, map history, statistics administration and an audit log. Code: [admin.ts](../src/lib/admin.ts) (roles, validation, API), [gun-balance.ts](../src/lib/gun-balance.ts) (server catalog and overrides), [ai-limits.ts](../src/lib/ai-limits.ts) (money policy), `src/lib/rcon.ts`, `src/pages/api/admin/[...path].ts`, `src/pages/admin.astro`; storage in the statistics DB (`src/lib/stats.ts`, schema v6). Tests: `test/admin.test.mjs`, `test/gun-balance.test.mjs`, `test/body-part-form.test.mjs`, `test/ai-limits.test.mjs`, `test/ai-budget-form.test.mjs`, `test/maps-admin.test.mjs`, `test/rcon.test.mjs`, `test/stats-admin.test.mjs`, `test/names.test.mjs`.
+Staff page of the site: independent Game and Workshop status, live moderation over RCON, persistent game settings, AI budgets, staff roles, map history, statistics administration and an audit log. Code: [admin.ts](../src/lib/admin.ts) (roles, validation, API), [gun-balance.ts](../src/lib/gun-balance.ts) (server catalog and overrides), [ai-limits.ts](../src/lib/ai-limits.ts) (money policy), `src/lib/rcon.ts`, `src/pages/api/admin/[...path].ts`, `src/pages/admin.astro`; storage in the statistics DB (`src/lib/stats.ts`, schema v7). Tests: `test/admin.test.mjs`, `test/gun-balance.test.mjs`, `test/body-part-form.test.mjs`, `test/ai-limits.test.mjs`, `test/ai-budget-form.test.mjs`, `test/maps-admin.test.mjs`, `test/rcon.test.mjs`, `test/stats-admin.test.mjs`, `test/names.test.mjs`.
 
 **Gun balance, native map history and isolated-copy integration below are implemented in the working code, pending release/deployment and game acceptance.** Selecting an archive head and applying it to a running game are separate operations.
 
@@ -27,14 +27,14 @@ Open admin pages share one `EventSource` connection to `GET /api/admin/events`; 
 
 ## Roles
 
-The site is the source of truth for roles. Identity is the Drasl session (`bf_session` cookie) → the account's player UUID, stored without dashes in lowercase.
+The site is the source of truth for roles. Identity is a server-side session: the `bf_session` cookie holds only a random id, mapped in `site_sessions` to the Drasl API token (AES-256-GCM sealed with `BLOCKFIELD_SESSION_SECRET`) and the account's player UUID, stored without dashes in lowercase. Logout deletes one session, password change deletes all of them and rotates the Drasl token.
 
-| Role        | Can                                                                                                                                                                                                                                       |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `builder`   | open `/admin`, see status, rooms and map history; create branches, commit and request review within their map scope                                                                                                                       |
-| `moderator` | + RCON moderation (`list`, `say`, `kick`, `bf team kick`, `bf stop room`, `bf class lock/unlock`, `range`), Workshop session/test transitions without recover, maintenance/workshop message                                               |
-| `admin`     | + `ban`/`pardon`, maintenance/recover, game and weapon settings, statistics admin, audit log, grant/revoke builder/moderator, workshop sync, protected-main merge, append-only restore and map export, server performance (`diagnostics`) |
-| `owner`     | + grant/revoke `admin`, raw RCON console (`rcon-raw`)                                                                                                                                                                                     |
+| Role        | Can                                                                                                                                                                                                                                                                          |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `builder`   | open `/admin`, see status, rooms and map history; create branches, commit and request review within their map scope                                                                                                                                                          |
+| `moderator` | + RCON moderation (`list`, `say`, `kick`, `bf team kick`, `bf stop room`, `bf class lock/unlock`, `range`), map create/rename, maintenance/workshop message                                                                                                                  |
+| `admin`     | + `ban`/`pardon`, maintenance/recover, Workshop session/test transitions, game and weapon settings, statistics admin, audit log, grant/revoke builder/moderator, workshop sync, protected-main merge, append-only restore and map export, server performance (`diagnostics`) |
+| `owner`     | + grant/revoke `admin`, raw RCON console (`rcon-raw`)                                                                                                                                                                                                                        |
 
 Permissions are one map in `src/lib/admin.ts` (`can(role, permission)`); every API route checks it on the server, the page only hides what the role cannot use.
 
@@ -58,6 +58,7 @@ BLOCKFIELD_RCON_PORT=25575
 BLOCKFIELD_RCON_PASSWORD=...                         # secret; never sent to the browser
 BLOCKFIELD_DEPLOY_ANNOUNCE_TOKEN=...                 # secret; modpack Deploy workflow (DEPLOY_ANNOUNCE_TOKEN) → POST /api/deploy-announce, fixed restart notice
 BLOCKFIELD_WORKSHOP_KEY=...                          # optional; default: the file workshop.key in BLOCKFIELD_ADMIN_DIR (host /srv/minecraft/workshop/admin, root:1000 0640), shared with the workshop server
+BLOCKFIELD_SESSION_SECRET=...                        # secret; 64 hex chars (32 bytes, e.g. `openssl rand -hex 32`): seals Drasl tokens in site_sessions. Missing/invalid = logins fail closed; rotation expires every session.
 ```
 
 Mounts for the site container (host → container):
@@ -262,7 +263,7 @@ A sample summarizes one interval (one minute recommended): `tps` and `msptAvg` o
 
 ## Audit
 
-Every non-GET call by a staff member except the transient `POST presence` heartbeat writes `admin_audit` (actor, role, action, target, JSON detail capped at 2 KB, ok, error), including permission refusals and failures. Players without a role are refused before the request body is read and are not audited, so they cannot grow the table. The table keeps the newest 10 000 rows; admin sees the last 200. Settings bodies and RCON output (first 500 chars) are kept in `detail`; RCON passwords and ingest keys never are.
+Every non-GET call by a staff member except the transient `POST presence` heartbeat writes `admin_audit` (actor, role, action, target, JSON detail capped at 2 KB, ok, error), including permission refusals and failures. Players without a role are refused before the request body is read and are not audited, so they cannot grow the table. The table keeps the newest 10 000 rows; admin sees the last 200. The attempt row is written before the effect runs (pending, shown as «выполняется»); when the log is down nothing runs. Crash orphans are marked interrupted at boot. High-risk routes (roles, rcon ban/pardon, raw console, mode) fail closed when the finalize is lost; the rest return 200 with an `auditWarning`. Settings bodies and RCON output (first 500 chars) are kept in `detail`; RCON passwords and ingest keys never are.
 
 ## Local development
 

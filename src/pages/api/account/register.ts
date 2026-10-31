@@ -6,7 +6,8 @@ import {
   readJson,
   route,
   startSession,
-} from '../../../lib/account'
+} from '../../../lib/account.ts'
+import { statsStore } from '../../../lib/stats.ts'
 
 export const POST = route(async ({ request, cookies }) => {
   const { username, password } = credentials(await readJson(request))
@@ -14,6 +15,7 @@ export const POST = route(async ({ request, cookies }) => {
     method: 'POST',
     body: { username, password, playerName: username, requestApiToken: true },
   })
-  startSession(cookies, created.apiToken)
-  return Response.json(account(await importMojangSkin(created.apiToken, created.user)))
+  const user = account(await importMojangSkin(created.apiToken, created.user))
+  await startSession(cookies, await statsStore(), created.apiToken, user.uuid)
+  return Response.json(user)
 })

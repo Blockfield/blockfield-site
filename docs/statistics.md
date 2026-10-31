@@ -137,7 +137,19 @@ Schema 6 gives ingestion keys explicit IDs and preserves existing SQLite row IDs
 Keep the pre-cutover SQLite backup for recovery. SQLite is an alternative backend, **not a live replica**: switching back after PostgreSQL has accepted writes requires transferring those changes first. Before any new PostgreSQL writes, the previous image/environment and original SQLite volume remain a rollback option.
 Back up PostgreSQL with `pg_dump` and retain the SQLite snapshot independently.
 
-Tests: `pnpm test` covers SQLite. Set `BLOCKFIELD_TEST_DATABASE_URL` to a PostgreSQL database where the test user may create schemas, then run `pnpm test:postgres`. Tests create isolated random schemas and remove only those schemas; migration/reopen fixtures still exercise legacy SQLite files. CI runs both engines.
+Tests: `pnpm test` covers SQLite and fails without PostgreSQL: the backup-migration test
+requires a live database instead of silently skipping. Set `BLOCKFIELD_TEST_DATABASE_URL` to a
+PostgreSQL database where the test user may create schemas, then run `pnpm test:postgres`.
+Local setup with Podman or Docker (same credentials as CI):
+
+```sh
+podman run -d --name bf-test-pg -e POSTGRES_USER=blockfield -e POSTGRES_PASSWORD=test-only \
+  -e POSTGRES_DB=blockfield_test -p 5432:5432 docker.io/library/postgres:18
+export BLOCKFIELD_TEST_DATABASE_URL=postgres://blockfield:test-only@localhost:5432/blockfield_test
+pnpm test
+```
+
+Tests create isolated random schemas and remove only those schemas; migration/reopen fixtures still exercise legacy SQLite files. CI runs both engines.
 
 ## Legacy match import
 

@@ -35,12 +35,14 @@ const temp = (t) => {
   return dir
 }
 import { database as store } from './storage.mjs'
-import { statsStore } from '../src/lib/stats.ts'
+import { StatsError, statsStore } from '../src/lib/stats.ts'
+import { subscribe } from '../src/lib/admin-events.ts'
 
 test('permission map: roles grow strictly, unknown/no role has nothing', () => {
   assert.equal(can('builder', 'view'), true)
   assert.equal(can('builder', 'moderate'), false)
-  assert.equal(can('moderator', 'mode'), true)
+  assert.equal(can('moderator', 'mode'), false)
+  assert.equal(can('moderator', 'maps'), true)
   assert.equal(can('moderator', 'recover'), false)
   assert.equal(can('moderator', 'ban'), false)
   assert.equal(can('admin', 'settings'), true)
@@ -49,6 +51,385 @@ test('permission map: roles grow strictly, unknown/no role has nothing', () => {
   assert.equal(can('owner', 'roles-admin'), true)
   assert.equal(can(null, 'view'), false)
   assert.equal(can('root', 'view'), false)
+})
+
+test('mode switch and cancel are admin-only; map create stays with the moderator', async (t) => {
+  const dirs = { BLOCKFIELD_INBOX_DIR: temp(t) }
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const s = await store(t)
+  await s.setStaff(MOD, 'Mod', 'moderator', 'seed')
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const call = async (as, method, path, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL(`http://site/api/admin/${path}`)
+    const request = new Request(url, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  assert.equal(can('moderator', 'mode'), false, 'a moderator must not switch the server mode')
+  assert.equal(can('moderator', 'maps'), true, 'map create/rename stay with the moderator')
+  assert.equal(can('admin', 'mode'), true)
+  assert.equal(
+    (await call(`${MOD}:Mod`, 'POST', 'mode', { profile: 'game', expectedRevision: 0 })).status,
+    403,
+  )
+  assert.equal((await call(`${MOD}:Mod`, 'POST', 'cancel', {})).status, 403)
+  assert.equal((await call(`${MOD}:Mod`, 'POST', 'message', { message: 'hi' })).status, 200)
+  assert.equal(
+    (await call(`${ADMIN}:Adm`, 'POST', 'mode', { profile: 'game', expectedRevision: 0 })).status,
+    200,
+  )
+})
+
+test('pending audit rows stay visible as unfinished and are marked at boot', async (t) => {
+  const { mkdtempSync, rmSync } = await import('node:fs'),
+    { tmpdir } = await import('node:os'),
+    { join } = await import('node:path')
+  const { StatsStore: Open } = await import('../src/lib/stats.ts')
+  const dir = mkdtempSync(join(tmpdir(), 'bf-audit-pending-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'stats.sqlite')
+  const entry = {
+    actorUuid: 'a'.repeat(32),
+    actorName: 'Adm',
+    role: 'admin',
+    action: 'mode',
+    target: 'game',
+    ok: false,
+    error: null,
+  }
+  const first = await Open.open(path)
+  const id = await first.auditPending(entry)
+  const shown = (await first.auditLog()).find((e) => e.id === id)
+  assert.equal(shown?.pending, 1, 'unfinished attempts stay visible in the journal')
+  assert.equal(shown?.ok, 0)
+  await first.close()
+  // A crash between the row and the effect: reopening marks the orphan instead of hiding it.
+  const second = await Open.open(path)
+  t.after(() => second.close())
+  const marked = (await second.auditLog()).find((e) => e.id === id)
+  assert.equal(marked?.pending, null)
+  assert.equal(marked?.ok, 0)
+  assert.match(marked?.error ?? '', /Прервано/)
+})
+
+test('workshop tablet flows journal first: dead log fails closed, lost finalize errors', async (t) => {
+  const dirs = {
+    BLOCKFIELD_ADMIN_DIR: temp(t),
+    BLOCKFIELD_INBOX_DIR: temp(t),
+    BLOCKFIELD_SETTINGS_DIR: temp(t),
+  }
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const s = await store(t)
+  await s.setStaff(OTHER, 'Bob', 'builder', 'seed')
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaffMaps(OTHER, ['fields'])
+  const realFetch = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+  globalThis.fetch = async () => new Response('', { status: 404 })
+  const KEY = 'k'.repeat(40)
+  writeFileSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'workshop.key'), `${KEY}\n`)
+  const grant = { actor: ADMIN, target: OTHER, mapId: 'hub', allowed: true }
+  const call = (storage, body) =>
+    handleWorkshopAccess(
+      new Request('http://site/api/workshop/access', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` },
+        body: JSON.stringify(body),
+      }),
+      { BLOCKFIELD_WORKSHOP_KEY: KEY },
+      storage,
+    ).then(
+      (r) => r,
+      (e) => e,
+    )
+  assert.equal((await call(s, grant)).status, 200)
+  const dead = new Proxy(s, {
+    get: (target, prop) =>
+      prop === 'auditPending'
+        ? async () => {
+            throw new StatsError(503, 'audit store is down')
+          }
+        : Reflect.get(target, prop),
+  })
+  assert.equal(
+    (await call(dead, { ...grant, mapId: 'fields', allowed: false })).status,
+    503,
+    'nothing runs unaudited',
+  )
+  assert.deepEqual(
+    (await s.staff()).find((row) => row.uuid === OTHER).maps,
+    ['fields', 'hub'],
+    'the grant never ran',
+  )
+  const flaky = new Proxy(s, {
+    get: (target, prop) =>
+      prop === 'auditFinalize'
+        ? async () => {
+            throw new StatsError(503, 'audit store is down')
+          }
+        : Reflect.get(target, prop),
+  })
+  assert.equal(
+    (await call(flaky, { ...grant, mapId: 'fields', allowed: false })).status,
+    503,
+    'a lost finalize fails closed like staff/map-access',
+  )
+})
+
+test('audit finalize stays silent until emitAudit', async (t) => {
+  const s = await store(t)
+  const seen = []
+  const off = subscribe(
+    (event) => event.type === 'audit',
+    (event) => seen.push(event),
+  )
+  t.after(off)
+  const id = await s.auditPending({
+    actorUuid: ADMIN,
+    actorName: 'Adm',
+    role: 'admin',
+    action: 'message',
+    ok: false,
+    error: null,
+  })
+  await s.auditFinalize(id, {
+    actorUuid: ADMIN,
+    actorName: 'Adm',
+    role: 'admin',
+    action: 'message',
+    ok: true,
+    error: null,
+  })
+  assert.equal(seen.length, 0, 'finalize must not publish before the commit')
+  s.emitAudit({ action: 'message', ok: true })
+  assert.equal(seen.length, 1)
+})
+
+test('a failed commit never shows as ok in the live feed', async (t) => {
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const seen = []
+  const off = subscribe(
+    (event) => event.type === 'audit',
+    (event) => seen.push(event),
+  )
+  t.after(off)
+  const noCommit = new Proxy(s, {
+    get: (target, prop) => {
+      if (prop === 'db') {
+        const fake = Object.create(
+          Object.getPrototypeOf(target.db),
+          Object.getOwnPropertyDescriptors(target.db),
+        )
+        fake.transaction = async (work) => {
+          await work()
+          throw new Error('commit failed')
+        }
+        return fake
+      }
+      return Reflect.get(target, prop)
+    },
+  })
+  process.env.BLOCKFIELD_ADMIN_DEV_USER = `${ADMIN}:Adm`
+  const url = new URL('http://site/api/admin/keys')
+  const request = new Request(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: 'e10438e4-797b-4971-8cfe-cec6a8fa171b', label: 'x' }),
+  })
+  const response = await handleAdmin(
+    { request, url, cookies: { get: () => undefined } },
+    'keys',
+    noCommit,
+  ).then(
+    (r) => r,
+    (e) => e,
+  )
+  assert.ok(response.status >= 500)
+  assert.equal(
+    seen.filter((e) => e.entry.action === 'ingest-key-create' && e.entry.ok).length,
+    0,
+    'rolled-back writes never show as ok',
+  )
+})
+
+test('tx failure is not applied: a rolled-back keys/create errors and shows no key', async (t) => {
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const flaky = new Proxy(s, {
+    get: (target, prop) =>
+      prop === 'auditFinalize'
+        ? async () => {
+            throw new StatsError(503, 'audit store is down')
+          }
+        : Reflect.get(target, prop),
+  })
+  process.env.BLOCKFIELD_ADMIN_DEV_USER = `${ADMIN}:Adm`
+  const url = new URL('http://site/api/admin/keys')
+  const request = new Request(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: 'e10438e4-797b-4971-8cfe-cec6a8fa171b', label: 'producer' }),
+  })
+  const response = await handleAdmin(
+    { request, url, cookies: { get: () => undefined } },
+    'keys',
+    flaky,
+  ).then(
+    (r) => r,
+    (e) => e,
+  )
+  assert.ok(response.status >= 500, `a rolled-back write must error, got ${response.status}`)
+  assert.equal((await s.ingestKeys()).length, 0, 'the key insert rolled back with the finalize')
+})
+
+test('audit leads the effect: a dead log fails everything closed before anything runs', async (t) => {
+  const dirs = { BLOCKFIELD_INBOX_DIR: temp(t) }
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const dead = new Proxy(s, {
+    get: (target, prop) =>
+      prop === 'auditPending'
+        ? async () => {
+            throw new StatsError(503, 'audit store is down')
+          }
+        : Reflect.get(target, prop),
+  })
+  const call = async (storage, as, method, path, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL(`http://site/api/admin/${path}`)
+    const request = new Request(url, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, storage).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  assert.equal(
+    (await call(dead, `${ADMIN}:Adm`, 'POST', 'mode', { profile: 'game', expectedRevision: 11 }))
+      .status,
+    503,
+    'high-risk never runs unaudited',
+  )
+  assert.equal(
+    (await call(dead, `${ADMIN}:Adm`, 'POST', 'message', { message: 'hi-pending-dead' })).status,
+    503,
+    'nothing runs unaudited, however small',
+  )
+  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 0, 'no side effect ran')
+})
+
+test('finalize failure: low-risk warns on 200, high-risk fails closed', async (t) => {
+  const dirs = { BLOCKFIELD_INBOX_DIR: temp(t) }
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const flaky = new Proxy(s, {
+    get: (target, prop) =>
+      prop === 'auditFinalize'
+        ? async () => {
+            throw new StatsError(503, 'audit store is down')
+          }
+        : Reflect.get(target, prop),
+  })
+  const call = async (as, method, path, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL(`http://site/api/admin/${path}`)
+    const request = new Request(url, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, flaky).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  const warned = await call(`${ADMIN}:Adm`, 'POST', 'message', { message: 'hi-flaky' })
+  assert.equal(warned.status, 200)
+  assert.match((await warned.json()).auditWarning, /не повторяйте/)
+  assert.equal(warned.headers.get('X-Audit-Warning') !== null, true)
+  assert.equal(
+    (await call(`${ADMIN}:Adm`, 'POST', 'mode', { profile: 'game', expectedRevision: 12012 }))
+      .status,
+    503,
+    'high-risk fails closed when the finalize is lost',
+  )
+  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 2, 'both effects ran exactly once')
+})
+
+test('admin writes are throttled per user: a flood ends in 429, reads are untouched', async (t) => {
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const FLOOD = 'dddddddddddddddddddddddddddddddd'
+  const s = await store(t)
+  await s.setStaff(FLOOD, 'Flo', 'builder', 'seed')
+  const call = async (method, path, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = `${FLOOD}:Flo`
+    const url = new URL(`http://site/api/admin/${path}`)
+    const request = new Request(url, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  for (let i = 0; i < 60; i++)
+    assert.equal((await call('POST', 'message', { message: 'hi' })).status, 403)
+  assert.equal((await call('POST', 'message', { message: 'hi' })).status, 429)
+  assert.equal((await (await call('GET', 'me')).json()).role, 'builder')
 })
 
 test('bootstrap fails closed: no env and no rows means nobody; owners come only from env', async (t) => {
@@ -515,9 +896,10 @@ test('API: role gate, audit of success and refusal, members request on role chan
     403,
   )
 
-  // cancel: same "mode" gate as switching, and it writes a plain inbox request the controller can process.
+  // cancel switches the server like mode does: admin-only.
   assert.equal((await call(`${OTHER}:Nobody`, 'POST', 'cancel', {})).status, 403)
-  const cancelled = await call(`${MOD}:Moddy`, 'POST', 'cancel', {})
+  assert.equal((await call(`${MOD}:Moddy`, 'POST', 'cancel', {})).status, 403)
+  const cancelled = await call(`${ADMIN}:Adm`, 'POST', 'cancel', {})
   assert.equal(cancelled.status, 200)
   const { id: cancelId } = await cancelled.json()
   assert.deepEqual(
@@ -529,7 +911,8 @@ test('API: role gate, audit of success and refusal, members request on role chan
   assert.deepEqual(
     log.map((e) => [e.actorName, e.action, e.ok, e.error !== null]),
     [
-      ['Moddy', 'cancel', 1, false],
+      ['Adm', 'cancel', 1, false],
+      ['Moddy', 'cancel', 0, true],
       ['Adm', 'role-revoke', 0, true],
       ['Moddy', 'rcon:kick', 0, true],
       ['Moddy', 'rcon:ban', 0, true],
@@ -537,8 +920,8 @@ test('API: role gate, audit of success and refusal, members request on role chan
       ['Adm', 'role-grant', 0, true],
     ],
   )
-  assert.equal(log[4].target, MOD)
-  assert.equal(JSON.parse(log[4].detail).role, 'moderator')
+  assert.equal(log[5].target, MOD)
+  assert.equal(JSON.parse(log[5].detail).role, 'moderator')
 })
 
 test('POST rcon/raw audit: a body that never named a target is logged as unknown, not game', async (t) => {

@@ -17,7 +17,7 @@ import {
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
-import { account, drasl, fail, nickname, readJson, session, token } from './account.ts'
+import { account, drasl, fail, nickname, readJson, session, sessionToken } from './account.ts'
 import { rcon } from './rcon.ts'
 import { eventStream, heartbeat } from './admin-events.ts'
 import {
@@ -61,9 +61,10 @@ import {
 
 export const ROLES = ['builder', 'moderator', 'admin', 'owner'] as const
 export type Role = (typeof ROLES)[number]
-const moderator = ['view', 'map-edit', 'moderate', 'mode', 'message']
+const moderator = ['view', 'map-edit', 'moderate', 'maps', 'message']
 const admin = [
   ...moderator,
+  'mode',
   'ban',
   'maintenance',
   'recover',
@@ -101,6 +102,20 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const COPY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const VERSION_DIGEST = /^[0-9a-f]{64}$/
 const bad = (message: string) => fail(400, message)
+
+/** Per-staff throttle on admin writes: keys are staff UUIDs only, so the map stays tiny. */
+const WRITE_LIMIT = 60,
+  WRITE_WINDOW = 60_000
+const writeHits = new Map<string, number[]>()
+function throttled(uuid: string, now = Date.now()): boolean {
+  const recent = (writeHits.get(uuid) ?? []).filter((at) => now - at < WRITE_WINDOW)
+  if (recent.length >= WRITE_LIMIT) {
+    writeHits.set(uuid, recent)
+    return true
+  }
+  writeHits.set(uuid, [...recent, now])
+  return false
+}
 
 /** Player UUID as Drasl/Minecraft shows it, with or without dashes, to the workshop key: 32 lowercase hex digits. */
 export function playerId(value: unknown): string | null {
@@ -152,7 +167,7 @@ async function currentActor(context: APIContext, store: StatsStore): Promise<Act
   const who =
     dev ??
     (({ uuid, username }) => ({ uuid: playerId(uuid) ?? '', name: String(username) }))(
-      account(await drasl('/user', { token: token(context.cookies) })),
+      account(await drasl('/user', { token: await sessionToken(context.cookies, store) })),
     )
   return { ...who, role: who.uuid ? await roleOf(who.uuid, store) : null }
 }
@@ -167,12 +182,15 @@ export async function siteIdentity(
   const value = cookies.get(session)?.value
   if (!value) return null
   try {
-    const { username, uuid } = account(await drasl('/user', { token: value }))
+    const store = await statsStore()
+    const { username, uuid } = account(
+      await drasl('/user', { token: await sessionToken(cookies, store) }),
+    )
     if (!username) return null
     const id = playerId(uuid)
     return {
       name: String(username),
-      hasAdminAccess: id !== null && (await roleOf(id, await statsStore())) !== null,
+      hasAdminAccess: id !== null && (await roleOf(id, store)) !== null,
     }
   } catch {
     return null
@@ -779,7 +797,7 @@ export function writeRequest(
       ...extra,
     }
   } else if (body?.kind === 'map-create' || body?.kind === 'map-properties') {
-    if (!can(actor.role, 'mode')) throw fail(403, 'Создание и название карты доступны модератору.')
+    if (!can(actor.role, 'maps')) throw fail(403, 'Создание и название карты доступны модератору.')
     if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 0)
       throw bad('Нет ревизии состояния: обновите страницу.')
     const name = mapTitle(body.name)
@@ -1719,6 +1737,8 @@ type Route = {
   handler: Handler
   audit?: (body: any, result: any) => { action: string; target?: string | null; detail?: unknown }
   maxBody?: number
+  /** Effect is a pure DB write: run it in the same transaction as the audit finalize. */
+  tx?: boolean
 }
 const page = (url: URL) => {
   const n = Number(url.searchParams.get('page') || '1')
@@ -2141,7 +2161,7 @@ const routes: Record<string, Route> = {
     }),
   },
   'POST maps/create': {
-    permission: 'mode',
+    permission: 'maps',
     handler: ({ actor, body }) => {
       const catalog = requiredMapCatalog()
       editorRevision(body)
@@ -2175,7 +2195,7 @@ const routes: Record<string, Route> = {
     }),
   },
   'POST maps/properties': {
-    permission: 'mode',
+    permission: 'maps',
     handler: async ({ actor, store, body }) => {
       const { catalog, entry } = await editableMap(actor, store, body?.mapId),
         { copy } = selectedMapBranch(catalog, entry)
@@ -2509,6 +2529,7 @@ const routes: Record<string, Route> = {
     },
   },
   'POST staff': {
+    tx: true,
     permission: 'roles',
     handler: async ({ actor, store, body }) => {
       if (body?.role !== null && !['builder', 'moderator', 'admin'].includes(body?.role))
@@ -2667,6 +2688,7 @@ const routes: Record<string, Route> = {
     handler: async ({ store }) => ({ keys: await store.ingestKeys() }),
   },
   'POST keys': {
+    tx: true,
     permission: 'stats',
     handler: async ({ store, body }) => {
       if (!UUID.test(body?.serverId)) throw bad('ID сервера — UUID.')
@@ -2687,6 +2709,7 @@ const routes: Record<string, Route> = {
     }),
   },
   'POST keys/revoke': {
+    tx: true,
     permission: 'stats',
     handler: async ({ store, body }) => {
       if (!Number.isSafeInteger(body?.id) || !(await store.revokeIngestKey(body.id)))
@@ -2755,8 +2778,34 @@ export async function handleWorkshopSubmit(
     name: row?.name ?? (await knownName(store, actorId)) ?? claimed ?? 'Владелец',
     role,
   }
-  let error: string | null = null,
-    id: string | null = null
+  let error: string | null, id: string | null
+  // The attempt is journaled before the effect, like staff writes: a dead log fails closed.
+  const pendingId = await store
+    .auditPending({
+      actorUuid: actor.uuid,
+      actorName: actor.name,
+      role: role ?? 'none',
+      action: 'workshop-candidate',
+      target: mapId,
+      detail: { from: 'game', request: null },
+      ok: false,
+      error: null,
+    })
+    .catch(() => {
+      throw fail(503, 'Хранилище сайта недоступно: мастерская отключена.')
+    })
+  const finalize = (ok: boolean, error: string | null, request: string | null) =>
+    store.auditFinalize(pendingId, {
+      actorUuid: actor.uuid,
+      actorName: actor.name,
+      role: role ?? 'none',
+      action: 'workshop-candidate',
+      target: mapId,
+      detail: { from: 'game', request },
+      ok,
+      error,
+    })
+  let applied = false
   try {
     const { catalog, entry } = await editableMap(actor, store, mapId),
       { copy, branch } = selectedMapBranch(catalog, entry)
@@ -2779,6 +2828,8 @@ export async function handleWorkshopSubmit(
       },
       new Set(catalog.maps.map((entry) => entry.mapId)),
     )
+    applied = true
+    store.emitAudit(await finalize(true, null, id))
     return Response.json({ id }, { headers: noStore })
   } catch (thrown) {
     error =
@@ -2791,18 +2842,16 @@ export async function handleWorkshopSubmit(
               () => 'error',
             )
         : 'internal error'
-    throw thrown
-  } finally {
-    await store.audit({
-      actorUuid: actor.uuid,
-      actorName: actor.name,
-      role: role ?? 'none',
-      action: 'workshop-candidate',
-      target: mapId,
-      detail: { from: 'game', request: id },
-      ok: error === null,
-      error,
-    })
+    if (!applied) {
+      try {
+        store.emitAudit(await finalize(false, error, null))
+      } catch {
+        console.error('workshop-candidate audit failed; the original error stands')
+      }
+      throw thrown
+    }
+    console.error('workshop-candidate audit finalize failed; the change may have applied')
+    throw fail(503, 'Запрос применён, но журнал недоступен: проверьте состояние перед повтором.')
   }
 }
 
@@ -2832,9 +2881,43 @@ export async function handleWorkshopAccess(
   let actor: Actor = { uuid: actorId, name: claimed ?? 'Владелец', role: null },
     role: Role | null = null,
     target: Awaited<ReturnType<StatsStore['staff']>>[number] | undefined,
-    error: string | null = null,
+    error: string | null,
     result: any = null
   const outer = { actor, role }
+  // The attempt is journaled before the effect, like staff writes: a dead log fails closed.
+  // finalize() always re-reads actor/role/result, so refusals keep their resolved identity too.
+  const finalize = (ok: boolean, error: string | null) =>
+    store.auditFinalize(pendingId, {
+      actorUuid: actor.uuid,
+      actorName: actor.name,
+      role: role ?? 'none',
+      action: 'workshop-map-access',
+      target: mapId,
+      detail: {
+        changed: result ? [result.name] : [],
+        allowed: body.allowed,
+        target: target?.name ?? targetId,
+        from: 'game',
+        sync: result?.sync,
+      },
+      ok,
+      error,
+    })
+  const pendingId = await store
+    .auditPending({
+      actorUuid: actor.uuid,
+      actorName: actor.name,
+      role: 'none',
+      action: 'workshop-map-access',
+      target: mapId,
+      detail: { changed: [], allowed: body.allowed, target: targetId, from: 'game' },
+      ok: false,
+      error: null,
+    })
+    .catch(() => {
+      throw fail(503, 'Хранилище сайта недоступно: мастерская отключена.')
+    })
+  let applied = false
   try {
     // The read and the write bracket awaits, so concurrent grants queue on one chain (see
     // withStaffMapsLock) instead of overwriting each other from the same snapshot.
@@ -2871,6 +2954,8 @@ export async function handleWorkshopAccess(
       }),
     )
     result = { mapId, name: edit.target.name, maps: edit.maps, sync }
+    applied = true
+    store.emitAudit(await finalize(true, null))
     return result instanceof Response ? result : Response.json(result, { headers: noStore })
   } catch (thrown) {
     ;({ actor, role } = outer)
@@ -2884,24 +2969,16 @@ export async function handleWorkshopAccess(
               () => 'error',
             )
         : 'internal error'
-    throw thrown
-  } finally {
-    await store.audit({
-      actorUuid: actor.uuid,
-      actorName: actor.name,
-      role: role ?? 'none',
-      action: 'workshop-map-access',
-      target: mapId,
-      detail: {
-        changed: result ? [result.name] : [],
-        allowed: body.allowed,
-        target: target?.name ?? targetId,
-        from: 'game',
-        sync: result?.sync,
-      },
-      ok: error === null,
-      error,
-    })
+    if (!applied) {
+      try {
+        store.emitAudit(await finalize(false, error))
+      } catch {
+        console.error('workshop-map-access audit failed; the original error stands')
+      }
+      throw thrown
+    }
+    console.error('workshop-map-access audit finalize failed; the change may have applied')
+    throw fail(503, 'Запрос применён, но журнал недоступен: проверьте состояние перед повтором.')
   }
 }
 
@@ -2946,36 +3023,147 @@ export async function handleAdmin(
   if (!route) return fail(404, 'Неизвестный запрос.')
   // Non-staff are refused before the body is read and never reach the audit log, so they cannot grow it.
   if (!actor.role) return fail(403, 'Нет доступа.')
-  let body: any, result: any
+  // A stolen staff session can neither flood the inbox nor spam chat: writes share one throttle.
+  if (method !== 'GET' && throttled(actor.uuid))
+    return fail(429, 'Слишком много попыток. Подождите минуту.')
+  let body: any,
+    result: any,
+    pendingId: number | null = null
   try {
     if (!can(actor.role, route.permission)) throw fail(403, 'Недостаточно прав.')
-    if (method !== 'GET') body = await readJson(context.request, route.maxBody ?? 65_536)
-    result = await route.handler({ context, actor, store, body })
-    if (method !== 'GET') await record(store, actor, route, body, result, null)
-    return result instanceof Response ? result : Response.json(result, { headers: noStore })
-  } catch (thrown) {
-    const error = thrown instanceof StatsError ? fail(thrown.status, thrown.message) : thrown
-    const message =
-      error instanceof Response
-        ? await error
-            .clone()
-            .json()
-            .then(
-              (d) => d.error,
-              () => 'error',
-            )
-        : 'internal error'
-    if (method !== 'GET')
-      await record(
-        store,
-        actor,
-        route,
-        body,
-        result,
-        (error as any)?.internal ? `${message} (${(error as any).internal})` : message,
+    if (method === 'GET') {
+      result = await route.handler({ context, actor, store, body })
+      return result instanceof Response ? result : Response.json(result, { headers: noStore })
+    }
+    body = await readJson(context.request, route.maxBody ?? 65_536)
+    // The attempt is journaled before the effect runs: when the log is down,
+    // nothing runs at all, so nothing goes unaudited.
+    pendingId = await store.auditPending({
+      actorUuid: actor.uuid,
+      actorName: actor.name,
+      role: actor.role,
+      ...((await route.audit?.(body, undefined)) ?? { action: 'unknown' }),
+      ok: false,
+      error: null,
+    })
+    let applied = false
+    const finalize = (ok: boolean, error: string | null) =>
+      store.auditFinalize(pendingId!, {
+        actorUuid: actor.uuid,
+        actorName: actor.name,
+        role: actor.role ?? 'none',
+        ...((route.audit ? route.audit(body, result) : undefined) ?? { action: 'unknown' }),
+        ok,
+        error,
+      })
+    try {
+      // Pure DB effects share one transaction with the finalize; RCON and file
+      // effects cannot, so they finalize right after the handler instead.
+      // applied flips only after the commit: a rolled-back effect never ran.
+      // The live event goes out after the commit too: rolled-back rows never show as ok.
+      if (route.tx) {
+        let row
+        await store.db.transaction(async () => {
+          result = await route.handler({ context, actor, store, body })
+          row = await finalize(true, null)
+        })
+        applied = true
+        store.emitAudit(row)
+      } else {
+        result = await route.handler({ context, actor, store, body })
+        applied = true
+        store.emitAudit(await finalize(true, null))
+      }
+    } catch (inner) {
+      const { response, message } = await adminError(inner)
+      const detail =
+        (inner as any)?.internal != null ? `${message} (${(inner as any).internal})` : message
+      if (!applied) {
+        try {
+          store.emitAudit(await finalize(false, detail))
+        } catch {
+          console.error(`admin audit failed for ${method} ${path}; the original error stands`)
+        }
+        throw response
+      }
+      // The effect ran but the finalize did not: high-risk routes fail closed so
+      // the operator verifies state instead of blindly retrying; the rest warn.
+      console.error(
+        `admin audit finalize failed for ${method} ${path}; the change may have applied`,
       )
-    throw error
+      if (highRisk(method, path, body))
+        throw fail(
+          503,
+          'Изменение, возможно, применено, но журнал недоступен: проверьте состояние перед повтором.',
+        )
+      return respond(result, AUDIT_WARNING)
+    }
+    return respond(result, null)
+  } catch (thrown) {
+    const { response, message } = await adminError(thrown)
+    // Refusals (and anything before the pending row) are journaled once, as before.
+    if (method !== 'GET' && pendingId === null) {
+      try {
+        await record(
+          store,
+          actor,
+          route,
+          body,
+          result,
+          (thrown as any)?.internal ? `${message} (${(thrown as any).internal})` : message,
+        )
+      } catch {
+        console.error(`admin audit failed for ${method} ${path}; the original error stands`)
+      }
+    }
+    throw response
   }
+}
+/** Routes whose retry must never silently re-run: roles, bans, raw console, mode switches. */
+const HIGH_RISK_ROUTES = new Set([
+  'POST staff',
+  'POST staff/maps',
+  'POST staff/map-access',
+  'POST rcon/raw',
+  'POST mode',
+  'POST cancel',
+])
+function highRisk(method: string, path: string, body: any): boolean {
+  const key = `${method} ${path}`
+  if (HIGH_RISK_ROUTES.has(key)) return true
+  return key === 'POST rcon' && (body?.action === 'ban' || body?.action === 'pardon')
+}
+const AUDIT_WARNING =
+  'Изменение применено, но не записано в журнал: не повторяйте запрос вслепую, проверьте состояние.'
+/** Header values must stay ASCII: the human-readable warning travels in the JSON field. */
+const AUDIT_WARNING_HEADER = 'audit-write-failed'
+function respond(result: any, warning: string | null) {
+  if (result instanceof Response) {
+    if (!warning) return result
+    const headers = new Headers(result.headers)
+    headers.set('X-Audit-Warning', AUDIT_WARNING_HEADER)
+    return new Response(result.body, { status: result.status, headers })
+  }
+  return Response.json(
+    warning && result !== null && typeof result === 'object' && !Array.isArray(result)
+      ? { ...result, auditWarning: warning }
+      : result,
+    { headers: warning ? { ...noStore, 'X-Audit-Warning': AUDIT_WARNING_HEADER } : noStore },
+  )
+}
+async function adminError(thrown: unknown): Promise<{ response: Response; message: string }> {
+  const error = thrown instanceof StatsError ? fail(thrown.status, thrown.message) : thrown
+  const message =
+    error instanceof Response
+      ? await error
+          .clone()
+          .json()
+          .then(
+            (d) => d.error,
+            () => 'error',
+          )
+      : 'internal error'
+  return { response: error instanceof Response ? error : fail(500, 'internal error'), message }
 }
 async function record(
   store: StatsStore,

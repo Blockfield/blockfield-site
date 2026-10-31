@@ -1,4 +1,7 @@
 import type { APIContext, APIRoute, AstroCookies } from 'astro'
+import { randomBytes } from 'node:crypto'
+import { openTokenRaw, sealTokenRaw, sessionKeyBytes } from './session-crypto.ts'
+import { statsStore, type StatsStore } from './stats.ts'
 
 export const nickname = /^[A-Za-z0-9_]{3,16}$/
 export const session = 'bf_session'
@@ -156,6 +159,19 @@ export function account(user: any) {
 }
 
 const noMojangSkin = new Map<string, number>()
+const MOJANG_MISS_TTL = 600_000
+/** Miss entries are per login nickname, so the cache is capped: insertion order evicts the oldest. */
+export const MOJANG_MISS_CAP = 5000
+export const mojangMiss = (key: string, now = Date.now()) => (noMojangSkin.get(key) ?? 0) > now
+export function rememberMojangMiss(key: string, now = Date.now()) {
+  if (!noMojangSkin.has(key)) {
+    for (const [known, expiry] of noMojangSkin) {
+      if (noMojangSkin.size < MOJANG_MISS_CAP && expiry > now) break
+      noMojangSkin.delete(known)
+    }
+  }
+  noMojangSkin.set(key, now + MOJANG_MISS_TTL)
+}
 const mojang = (url: string) => fetch(url, { signal: AbortSignal.timeout(5000) })
 
 async function mojangTexture(texture: any, skin: boolean): Promise<string | undefined> {
@@ -173,7 +189,7 @@ async function mojangTexture(texture: any, skin: boolean): Promise<string | unde
 export async function importMojangSkin(token: string, user: any): Promise<any> {
   const { username, uuid, skinUrl } = account(user)
   const key = String(username).toLowerCase()
-  if (!uuid || skinUrl || (noMojangSkin.get(key) ?? 0) > Date.now()) return user
+  if (!uuid || skinUrl || mojangMiss(key)) return user
   try {
     const found = await mojang(
       `https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(username)}`,
@@ -206,26 +222,83 @@ export async function importMojangSkin(token: string, user: any): Promise<any> {
     })
     return await drasl('/user', { token })
   } catch {
-    // ponytail: любой сбой кэшируется как «нет скина» на 10 минут, чтобы не долбить Mojang; перезапуск сайта сбрасывает кэш.
-    noMojangSkin.set(key, Date.now() + 600_000)
+    // Any failure counts as "no skin" for 10 minutes, so Mojang is not hammered; the map itself is capped.
+    rememberMojangMiss(key)
     return user
   }
 }
 
-export function startSession(cookies: AstroCookies, token: string) {
-  cookies.set(session, token, {
+/** Drasl tokens at rest are AES-256-GCM sealed: a DB dump alone leaks nothing usable. */
+export function sessionKey(): Buffer {
+  try {
+    return sessionKeyBytes()
+  } catch {
+    throw fail(503, 'Хранилище сессий не настроено: задайте BLOCKFIELD_SESSION_SECRET.')
+  }
+}
+export function sealToken(token: string): string {
+  return sealTokenRaw(token, sessionKey())
+}
+function openToken(sealed: string): string {
+  const token = openTokenRaw(sealed, sessionKey())
+  // Wrong key, corruption, or a forged row: the session is simply dead.
+  if (token === null) throw fail(401, 'Сессия истекла. Войдите снова.')
+  return token
+}
+/** The cookie holds only a random id; oversized or malformed values never reach the DB. */
+export const SESSION_COOKIE_MAX = 128
+const SESSION_ID = /^[0-9a-f]{32}$/
+/** Sessions per user and their lifetime: the table stays bounded without a sweeper. */
+export const SESSION_USER_CAP = 20
+const SESSION_MAX_AGE = 60 * 86_400_000
+export function sessionId(cookies: Pick<AstroCookies, 'get'>): string {
+  const value = cookies.get(session)?.value ?? ''
+  if (!value || value.length > SESSION_COOKIE_MAX || !SESSION_ID.test(value))
+    throw fail(401, 'Сессия истекла. Войдите снова.')
+  return value
+}
+
+/** Cookie session id resolved to the Drasl token server-side; unknown means expired. */
+export async function sessionToken(
+  cookies: Pick<AstroCookies, 'get'>,
+  store?: StatsStore,
+): Promise<string> {
+  const id = sessionId(cookies)
+  const db = store ?? (await statsStore())
+  const row = await db.getSession(id)
+  if (!row) throw fail(401, 'Сессия истекла. Войдите снова.')
+  const token = openToken(row.token)
+  await db.touchSession(id, Date.now())
+  return token
+}
+
+/** Mint a session id for a Drasl token; old sessions of the user are pruned in the same step. */
+export async function startSession(
+  cookies: AstroCookies,
+  store: StatsStore,
+  token: string,
+  uuid: string,
+): Promise<string> {
+  if (!token || !uuid) throw fail(502, 'Сервер аккаунтов вернул неполные данные.')
+  const id = randomBytes(16).toString('hex'),
+    now = Date.now()
+  await store.insertSession(id, sealToken(token), uuid, now)
+  await store.pruneSessions(uuid, now - SESSION_MAX_AGE, SESSION_USER_CAP)
+  cookies.set(session, id, {
     httpOnly: true,
     secure: true,
     sameSite: 'strict',
     path: '/',
     maxAge: 30 * 86_400,
   })
+  return id
 }
 
-export function token(cookies: AstroCookies): string {
-  const value = cookies.get(session)?.value
-  if (!value) throw fail(401, 'Войдите в аккаунт.')
-  return value
+/** Logout deletes a valid session and always clears the cookie: logging out twice is fine. */
+export async function closeSession(store: StatsStore, cookies: AstroCookies): Promise<void> {
+  const value = cookies.get(session)?.value ?? ''
+  if (value && value.length <= SESSION_COOKIE_MAX && SESSION_ID.test(value))
+    await store.deleteSession(value)
 }
 
 export function route(handler: (context: APIContext) => Promise<Response>): APIRoute {
@@ -248,14 +321,14 @@ export const texture = (kind: 'skin' | 'cape') => ({
     if (kind === 'skin' && model !== 'classic' && model !== 'slim')
       return fail(400, 'Неизвестная модель скина.')
     const base64 = await readPng(request, kind === 'skin')
-    const auth = token(cookies)
+    const auth = await sessionToken(cookies)
     const { uuid } = account(await drasl('/user', { token: auth }))
     const body = kind === 'skin' ? { skinBase64: base64, skinModel: model } : { capeBase64: base64 }
     const player = await drasl(`/players/${uuid}`, { method: 'PATCH', token: auth, body })
     return Response.json(account({ username: player.name, players: [player] }))
   }),
   DELETE: route(async ({ cookies }) => {
-    const auth = token(cookies)
+    const auth = await sessionToken(cookies)
     const { uuid } = account(await drasl('/user', { token: auth }))
     await drasl(`/players/${uuid}`, {
       method: 'PATCH',

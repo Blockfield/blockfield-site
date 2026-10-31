@@ -1,16 +1,25 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  MOJANG_MISS_CAP,
   credentials,
   drasl,
   draslError,
   importMojangSkin,
+  mojangMiss,
   pngError,
   readJson,
   readPng,
+  rememberMojangMiss,
   route,
   sameOrigin,
+  session,
 } from '../src/lib/account.ts'
+import { statsStore } from '../src/lib/stats.ts'
+import { POST as logout } from '../src/pages/api/account/logout.ts'
+import { POST as login } from '../src/pages/api/account/login.ts'
+import { POST as password } from '../src/pages/api/account/password.ts'
+import { GET as me } from '../src/pages/api/account/me.ts'
 
 const png = (width, height, size = 33) => {
   const bytes = new Uint8Array(size)
@@ -222,4 +231,350 @@ test('скин с Mojang подтягивается только в пустой
     stub.restore()
     delete process.env.DRASL_URL
   }
+})
+
+const jar = (value) => {
+  const calls = {}
+  return {
+    calls,
+    get: (name) => (name === session && value !== undefined ? { value } : undefined),
+    set: (name, v, opts) => {
+      calls.set = [name, v, opts]
+    },
+    delete: (name, opts) => {
+      calls.delete = [name, opts]
+    },
+  }
+}
+const sameSite = (url, body) =>
+  new Request(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: new URL(url).origin },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+
+test('boot validates the session secret while sessions exist', async (t) => {
+  const { mkdtempSync, rmSync } = await import('node:fs'),
+    { tmpdir } = await import('node:os'),
+    { join } = await import('node:path')
+  const { StatsStore: Open } = await import('../src/lib/stats.ts')
+  const { sealTokenRaw } = await import('../src/lib/session-crypto.ts')
+  const saved = process.env.BLOCKFIELD_SESSION_SECRET
+  t.after(() => {
+    if (saved === undefined) delete process.env.BLOCKFIELD_SESSION_SECRET
+    else process.env.BLOCKFIELD_SESSION_SECRET = saved
+  })
+  const dir = mkdtempSync(join(tmpdir(), 'bf-session-boot-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'stats.sqlite')
+  process.env.BLOCKFIELD_SESSION_SECRET = 'a'.repeat(64)
+  const first = await Open.open(path)
+  await first.insertSession(
+    '0'.repeat(32),
+    sealTokenRaw('tok', Buffer.from('a'.repeat(64), 'hex')),
+    'u',
+    Date.now(),
+  )
+  await first.close()
+  delete process.env.BLOCKFIELD_SESSION_SECRET
+  await assert.rejects(Open.open(path), /BLOCKFIELD_SESSION_SECRET/, 'missing secret fails fast')
+  process.env.BLOCKFIELD_SESSION_SECRET = 'short'
+  await assert.rejects(Open.open(path), /BLOCKFIELD_SESSION_SECRET/, 'malformed secret fails fast')
+  process.env.BLOCKFIELD_SESSION_SECRET = 'b'.repeat(64)
+  const warn = t.mock.method(console, 'error', () => {})
+  const second = await Open.open(path)
+  t.after(() => second.close())
+  assert.equal(warn.mock.calls.length, 1, 'one rotation notice')
+  assert.match(String(warn.mock.calls[0].arguments[0]), /session secret changed/)
+})
+
+test('middleware fails the deploy, not the first login, without the secret', async (t) => {
+  const { onRequest } = await import('../src/middleware.ts')
+  const saved = process.env.BLOCKFIELD_SESSION_SECRET
+  t.after(() => {
+    if (saved === undefined) delete process.env.BLOCKFIELD_SESSION_SECRET
+    else process.env.BLOCKFIELD_SESSION_SECRET = saved
+  })
+  let next = false
+  delete process.env.BLOCKFIELD_SESSION_SECRET
+  const refused = await onRequest({}, async () => {
+    next = true
+    return new Response('ok')
+  }).then(
+    (r) => r,
+    (e) => e,
+  )
+  assert.equal(next, false)
+  assert.equal(refused.status, 503)
+  process.env.BLOCKFIELD_SESSION_SECRET = 'c'.repeat(64)
+  const ok = await onRequest({}, async () => new Response('ok'))
+  assert.equal(await ok.text(), 'ok')
+})
+
+test('Drasl tokens are encrypted at rest: the DB never holds plaintext', async () => {
+  process.env.BLOCKFIELD_STATS_DB = ':memory:'
+  process.env.BLOCKFIELD_SESSION_SECRET = '2'.repeat(64)
+  process.env.DRASL_URL = 'http://drasl.test'
+  const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
+  const stub = stubFetch(async (url) => {
+    if (String(url).endsWith('/login'))
+      return Response.json({ apiToken: 'stable-drasl-token', user })
+    return Response.json(user)
+  })
+  try {
+    const jarred = jar()
+    await login({
+      request: sameSite('http://site/api/account/login', {
+        username: 'Alex',
+        password: 'password-1',
+      }),
+      cookies: jarred,
+    })
+    const id = jarred.calls.set[1]
+    const db = await statsStore()
+    const row = await db.getSession(id)
+    assert.ok(row && !String(row.token).includes('stable-drasl-token'), 'ciphertext at rest')
+    const meAfter = await me({
+      request: new Request('http://site/api/account/me'),
+      cookies: jar(id),
+    })
+    assert.equal((await meAfter.json()).account.username, 'Alex', 'sealed sessions still work')
+  } finally {
+    stub.restore()
+    delete process.env.DRASL_URL
+  }
+})
+
+test('sessions fail closed without the secret, and die on rotation', async () => {
+  process.env.BLOCKFIELD_STATS_DB = ':memory:'
+  process.env.DRASL_URL = 'http://drasl.test'
+  const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
+  const stub = stubFetch(async (url) => {
+    if (String(url).endsWith('/login'))
+      return Response.json({ apiToken: 'stable-drasl-token', user })
+    return Response.json(user)
+  })
+  const loginAs = async (cookies) =>
+    login({
+      request: sameSite('http://site/api/account/login', {
+        username: 'Alex',
+        password: 'password-1',
+      }),
+      cookies,
+    })
+  try {
+    delete process.env.BLOCKFIELD_SESSION_SECRET
+    assert.equal((await loginAs(jar())).status, 503, 'no secret, no sessions')
+    process.env.BLOCKFIELD_SESSION_SECRET = '3'.repeat(64)
+    const cookies = jar()
+    assert.equal((await loginAs(cookies)).status, 200)
+    const id = cookies.calls.set[1]
+    process.env.BLOCKFIELD_SESSION_SECRET = '4'.repeat(64)
+    const gone = await me({
+      request: new Request('http://site/api/account/me'),
+      cookies: jar(id),
+    })
+    assert.deepEqual(await gone.json(), { account: null }, 'rotation expires old sessions')
+  } finally {
+    process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
+    stub.restore()
+    delete process.env.DRASL_URL
+  }
+})
+process.env.BLOCKFIELD_STATS_DB = ':memory:'
+process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
+process.env.DRASL_URL = 'http://drasl.test'
+test('site sessions: login mints an opaque id per device; logout kills only that device', async () => {
+  process.env.BLOCKFIELD_STATS_DB = ':memory:'
+  process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
+  process.env.DRASL_URL = 'http://drasl.test'
+  const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
+  const stub = stubFetch(async (url, init) => {
+    if (url === 'http://drasl.test/drasl/api/v3/login' && init.method === 'POST')
+      return Response.json({ apiToken: 'stable-drasl-token', user })
+    if (url === 'http://drasl.test/drasl/api/v3/user') return Response.json(user)
+    assert.fail(`неожиданный запрос ${init?.method} ${url}`)
+  })
+  try {
+    const loginAs = async (cookies) =>
+      login({
+        request: sameSite('http://site/api/account/login', {
+          username: 'Alex',
+          password: 'password-1',
+        }),
+        cookies,
+      })
+    const meAs = async (id) =>
+      (await me({ request: new Request('http://site/api/account/me'), cookies: jar(id) })).json()
+    const a = jar(),
+      b = jar()
+    assert.equal((await loginAs(a)).status, 200)
+    assert.equal((await loginAs(b)).status, 200)
+    const [idA, idB] = [a.calls.set[1], b.calls.set[1]]
+    for (const id of [idA, idB]) assert.match(id, /^[0-9a-f]{32}$/)
+    assert.notEqual(idA, idB)
+    assert.notEqual(idA, 'stable-drasl-token', 'cookie must not carry the Drasl token')
+    assert.equal((await meAs(idA)).account.username, 'Alex')
+    assert.equal((await meAs(idB)).account.username, 'Alex')
+    assert.ok(
+      stub.seen
+        .filter(({ url }) => String(url).endsWith('/user'))
+        .every(({ init }) => init.headers.Authorization === 'Bearer stable-drasl-token'),
+      'Drasl sees the mapped token, never the cookie',
+    )
+    assert.equal(
+      (
+        await logout({
+          request: sameSite('http://site/api/account/logout'),
+          cookies: jar(idA),
+        })
+      ).status,
+      204,
+    )
+    assert.equal((await meAs(idA)).account, null, 'device A is dead')
+    assert.equal((await meAs(idB)).account.username, 'Alex', 'device B survives')
+    const c = jar()
+    assert.equal((await loginAs(c)).status, 200, 'logout then login works')
+    assert.equal((await meAs(c.calls.set[1])).account.username, 'Alex')
+  } finally {
+    stub.restore()
+    delete process.env.DRASL_URL
+  }
+})
+
+test('logout always clears the cookie and writes nothing without a valid session', async () => {
+  process.env.BLOCKFIELD_STATS_DB = ':memory:'
+  process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
+  const db = await statsStore()
+  const before = await db.countSessions()
+  for (const value of [undefined, 'nope', 'x'.repeat(200)]) {
+    const cookies = jar(value)
+    const response = await logout({
+      request: sameSite('http://site/api/account/logout'),
+      cookies,
+    })
+    assert.equal(response.status, 204, JSON.stringify(value))
+    assert.deepEqual(cookies.calls.delete, [session, { path: '/' }], 'stale cookies are cleared')
+  }
+  assert.equal(await db.countSessions(), before, 'no unauthenticated inserts')
+  const stub = stubFetch(async () => assert.fail('в Drasl ходить не должны'))
+  try {
+    const response = await me({
+      request: new Request('http://site/api/account/me'),
+      cookies: jar('x'.repeat(200)),
+    })
+    assert.deepEqual(await response.json(), { account: null })
+  } finally {
+    stub.restore()
+  }
+})
+
+test('password change kills every session and re-logs in', async () => {
+  process.env.BLOCKFIELD_STATS_DB = ':memory:'
+  process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
+  process.env.DRASL_URL = 'http://drasl.test'
+  const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
+  const stub = stubFetch(async (url, init) => {
+    if (url === 'http://drasl.test/drasl/api/v3/user' && (!init.method || init.method === 'GET'))
+      return Response.json(user)
+    if (url === 'http://drasl.test/drasl/api/v3/login' && init.method === 'POST') {
+      const body = JSON.parse(init.body)
+      if (body.password === 'current-pass-1')
+        return Response.json({ apiToken: 'stable-drasl-token', user })
+      if (body.password === 'new-pass-22') return Response.json({ apiToken: 'rotated-token', user })
+      return Response.json({ message: 'Incorrect password.' }, { status: 401 })
+    }
+    if (url === 'http://drasl.test/drasl/api/v3/user' && init.method === 'PATCH') {
+      const body = JSON.parse(init.body)
+      assert.equal(body.password, 'new-pass-22')
+      assert.equal(body.resetApiToken, true, 'старый токен должен умереть в Drasl')
+      return Response.json({})
+    }
+    assert.fail(`неожиданный запрос ${init?.method} ${url}`)
+  })
+  try {
+    const loginAs = async (cookies) =>
+      login({
+        request: sameSite('http://site/api/account/login', {
+          username: 'Alex',
+          password: 'current-pass-1',
+        }),
+        cookies,
+      })
+    const meAs = async (id) =>
+      (await me({ request: new Request('http://site/api/account/me'), cookies: jar(id) })).json()
+    const a = jar(),
+      b = jar()
+    await loginAs(a)
+    await loginAs(b)
+    const [idA, idB] = [a.calls.set[1], b.calls.set[1]]
+    const changed = jar(idA)
+    const response = await password({
+      request: sameSite('http://site/api/account/password', {
+        current: 'current-pass-1',
+        password: 'new-pass-22',
+      }),
+      cookies: changed,
+    })
+    assert.equal(response.status, 204)
+    const idNew = changed.calls.set[1]
+    assert.match(idNew, /^[0-9a-f]{32}$/)
+    assert.equal((await meAs(idA)).account, null, 'first device is dead')
+    assert.equal((await meAs(idB)).account, null, 'second device is dead')
+    assert.equal((await meAs(idNew)).account.username, 'Alex', 'fresh session works')
+  } finally {
+    stub.restore()
+    delete process.env.DRASL_URL
+  }
+})
+
+test('site sessions are capped per user', async () => {
+  process.env.BLOCKFIELD_STATS_DB = ':memory:'
+  process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
+  process.env.DRASL_URL = 'http://drasl.test'
+  const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
+  const stub = stubFetch(async (url) => {
+    if (String(url).endsWith('/login')) return Response.json({ apiToken: 't', user })
+    return Response.json(user)
+  })
+  try {
+    const db = await statsStore()
+    const first = jar()
+    await login({
+      request: sameSite('http://site/api/account/login', {
+        username: 'Alex',
+        password: 'password-1',
+      }),
+      cookies: first,
+    })
+    for (let i = 0; i < 25; i++)
+      await login({
+        request: sameSite('http://site/api/account/login', {
+          username: 'Alex',
+          password: 'password-1',
+        }),
+        cookies: jar(),
+      })
+    assert.ok((await db.countSessions()) <= 20, 'table stays bounded')
+    const dead = await me({
+      request: new Request('http://site/api/account/me'),
+      cookies: jar(first.calls.set[1]),
+    })
+    assert.deepEqual((await dead.json()).account, null, 'oldest session was evicted')
+  } finally {
+    stub.restore()
+    delete process.env.DRASL_URL
+  }
+})
+
+test('промахи Mojang не растут без границ: старые вытесняются, TTL живёт', () => {
+  const now = Date.now()
+  for (let i = 0; i < MOJANG_MISS_CAP + 500; i++) rememberMojangMiss(`nick${i}`, now)
+  assert.equal(mojangMiss('nick0', now), false, 'самый старый вытеснен')
+  assert.equal(mojangMiss(`nick${MOJANG_MISS_CAP + 499}`, now), true, 'свежий на месте')
+  assert.equal(
+    mojangMiss(`nick${MOJANG_MISS_CAP + 499}`, now + 600_001),
+    false,
+    'просрочка снова идёт в Mojang',
+  )
 })
