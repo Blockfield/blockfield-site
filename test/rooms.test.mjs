@@ -117,9 +117,11 @@ test('parseRooms tolerates blockfield-mod#28 status fields and drops top-level m
   assert.equal(status.rooms.length, 2)
   assert.equal('maintenance' in status, false)
 })
-test('parseRooms passes only a release-tag build through', () => {
+test('parseRooms passes a release tag or short-SHA build through', () => {
   assert.equal(parseRooms({ checkedAt: Date.now(), build: 'v2.31.6', rooms: [] }).build, 'v2.31.6')
-  for (const build of ['latest', '<b>v1</b>', 7, null])
+  for (const build of ['abc1234', '1'.repeat(7), '1'.repeat(40)])
+    assert.equal(parseRooms({ checkedAt: Date.now(), build, rooms: [] }).build, build)
+  for (const build of ['latest', '<b>v1</b>', 7, null, 'xyz', 'ABC1234', '1'.repeat(6), '1'.repeat(41)])
     assert.equal('build' in parseRooms({ checkedAt: Date.now(), build, rooms: [] }), false)
 })
 test('gate values fail closed with a bounded message', async () => {

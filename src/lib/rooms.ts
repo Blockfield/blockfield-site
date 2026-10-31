@@ -50,7 +50,7 @@ export type Room = {
 // available — игровой сервер отвечает; lobby — прокси с лобби отвечает (при рестарте игрового сервера туда можно зайти).
 export type Maintenance = { message: string; since: number | null }
 // online — игроков на прокси (все серверы за ним), если прокси отдал это число.
-// build — тег релиза пака, на котором запущен игровой сервер (проверка деплоя в blockfield-modpack).
+// build — тег релиза или короткий SHA коммита, на котором запущен игровой сервер.
 export type RoomStatus = {
   available: boolean
   checkedAt: number
@@ -122,7 +122,8 @@ export function parseRooms(value: any): RoomStatus {
     .slice(0, 100)
   if (rooms.length !== value.rooms.length) throw new Error('Invalid room status')
   const build =
-    typeof value.build === 'string' && /^v\d+\.\d+\.\d+$/.test(value.build)
+    typeof value.build === 'string' &&
+    /^(v\d+\.\d+\.\d+|[0-9a-f]{7,40})$/.test(value.build)
       ? { build: value.build }
       : {}
   return { available: true, checkedAt: value.checkedAt, rooms, ...build }
