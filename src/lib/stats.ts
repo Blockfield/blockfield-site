@@ -544,6 +544,13 @@ export class StatsStore {
         await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS pending BIGINT;')
       if (sqlite && !(await columns('admin_audit')).includes('pending'))
         await this.db.exec('ALTER TABLE admin_audit ADD COLUMN pending INTEGER;')
+      // Crash orphans (pending rows from a killed request) are marked interrupted, never hidden.
+      // A live row mis-marked by a concurrent replica still finalizes normally afterwards.
+      await this.db
+        .prepare(
+          "UPDATE admin_audit SET pending=NULL,ok=0,error='Прервано перезапуском: проверьте, применилось ли изменение.' WHERE pending=1",
+        )
+        .run()
       if (sqlite) {
         if (!(await columns('ingest_keys')).includes('id'))
           await this.db.exec(`
@@ -893,7 +900,7 @@ export class StatsStore {
   async audit(entry: AuditEntry) {
     const row = await this.db
       .prepare(
-        'INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error,pending) VALUES (?,?,?,?,?,?,?,?,?,NULL) RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error',
+        'INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error,pending) VALUES (?,?,?,?,?,?,?,?,?,NULL) RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending"',
       )
       .get(...auditArgs(entry, Date.now()))
     publish({ type: 'audit', entry: row })
@@ -911,7 +918,7 @@ export class StatsStore {
   async auditFinalize(id: number, entry: AuditEntry) {
     const row = await this.db
       .prepare(
-        'UPDATE admin_audit SET at=?,actor_uuid=?,actor_name=?,role=?,action=?,target=?,detail=?,ok=?,error=?,pending=NULL WHERE id=? RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error',
+        'UPDATE admin_audit SET at=?,actor_uuid=?,actor_name=?,role=?,action=?,target=?,detail=?,ok=?,error=?,pending=NULL WHERE id=? RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending"',
       )
       .get(...auditArgs(entry, Date.now()), id)
     publish({ type: 'audit', entry: row })
@@ -964,10 +971,10 @@ export class StatsStore {
     )
   }
   async auditLog(limit = 200) {
-    // Unfinished attempts (pending, e.g. a crash between the row and the effect) stay out of the journal.
+    // Pending=1 rows are unfinished attempts; the boot sweep marks orphans as interrupted.
     return await this.db
       .prepare(
-        'SELECT id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error FROM admin_audit WHERE pending IS NULL ORDER BY id DESC LIMIT ?',
+        'SELECT id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending" FROM admin_audit ORDER BY id DESC LIMIT ?',
       )
       .all(limit)
   }

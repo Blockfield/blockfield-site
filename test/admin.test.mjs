@@ -91,6 +91,145 @@ test('mode switch and cancel are admin-only; map create stays with the moderator
   )
 })
 
+test('pending audit rows stay visible as unfinished and are marked at boot', async (t) => {
+  const { mkdtempSync, rmSync } = await import('node:fs'),
+    { tmpdir } = await import('node:os'),
+    { join } = await import('node:path')
+  const { StatsStore: Open } = await import('../src/lib/stats.ts')
+  const dir = mkdtempSync(join(tmpdir(), 'bf-audit-pending-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'stats.sqlite')
+  const entry = {
+    actorUuid: 'a'.repeat(32),
+    actorName: 'Adm',
+    role: 'admin',
+    action: 'mode',
+    target: 'game',
+    ok: false,
+    error: null,
+  }
+  const first = await Open.open(path)
+  const id = await first.auditPending(entry)
+  const shown = (await first.auditLog()).find((e) => e.id === id)
+  assert.equal(shown?.pending, 1, 'unfinished attempts stay visible in the journal')
+  assert.equal(shown?.ok, 0)
+  await first.close()
+  // A crash between the row and the effect: reopening marks the orphan instead of hiding it.
+  const second = await Open.open(path)
+  t.after(() => second.close())
+  const marked = (await second.auditLog()).find((e) => e.id === id)
+  assert.equal(marked?.pending, null)
+  assert.equal(marked?.ok, 0)
+  assert.match(marked?.error ?? '', /Прервано/)
+})
+
+test('workshop tablet flows journal first: dead log fails closed, lost finalize errors', async (t) => {
+  const dirs = {
+    BLOCKFIELD_ADMIN_DIR: temp(t),
+    BLOCKFIELD_INBOX_DIR: temp(t),
+    BLOCKFIELD_SETTINGS_DIR: temp(t),
+  }
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const s = await store(t)
+  await s.setStaff(OTHER, 'Bob', 'builder', 'seed')
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaffMaps(OTHER, ['fields'])
+  const realFetch = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+  globalThis.fetch = async () => new Response('', { status: 404 })
+  const KEY = 'k'.repeat(40)
+  writeFileSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'workshop.key'), `${KEY}\n`)
+  const grant = { actor: ADMIN, target: OTHER, mapId: 'hub', allowed: true }
+  const call = (storage, body) =>
+    handleWorkshopAccess(
+      new Request('http://site/api/workshop/access', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` },
+        body: JSON.stringify(body),
+      }),
+      { BLOCKFIELD_WORKSHOP_KEY: KEY },
+      storage,
+    ).then(
+      (r) => r,
+      (e) => e,
+    )
+  assert.equal((await call(s, grant)).status, 200)
+  const dead = new Proxy(s, {
+    get: (target, prop) =>
+      prop === 'auditPending'
+        ? async () => {
+            throw new StatsError(503, 'audit store is down')
+          }
+        : Reflect.get(target, prop),
+  })
+  assert.equal(
+    (await call(dead, { ...grant, mapId: 'fields', allowed: false })).status,
+    503,
+    'nothing runs unaudited',
+  )
+  assert.deepEqual(
+    (await s.staff()).find((row) => row.uuid === OTHER).maps,
+    ['fields', 'hub'],
+    'the grant never ran',
+  )
+  const flaky = new Proxy(s, {
+    get: (target, prop) =>
+      prop === 'auditFinalize'
+        ? async () => {
+            throw new StatsError(503, 'audit store is down')
+          }
+        : Reflect.get(target, prop),
+  })
+  assert.equal(
+    (await call(flaky, { ...grant, mapId: 'fields', allowed: false })).status,
+    503,
+    'a lost finalize fails closed like staff/map-access',
+  )
+})
+
+test('tx failure is not applied: a rolled-back keys/create errors and shows no key', async (t) => {
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const flaky = new Proxy(s, {
+    get: (target, prop) =>
+      prop === 'auditFinalize'
+        ? async () => {
+            throw new StatsError(503, 'audit store is down')
+          }
+        : Reflect.get(target, prop),
+  })
+  process.env.BLOCKFIELD_ADMIN_DEV_USER = `${ADMIN}:Adm`
+  const url = new URL('http://site/api/admin/keys')
+  const request = new Request(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: 'e10438e4-797b-4971-8cfe-cec6a8fa171b', label: 'producer' }),
+  })
+  const response = await handleAdmin(
+    { request, url, cookies: { get: () => undefined } },
+    'keys',
+    flaky,
+  ).then(
+    (r) => r,
+    (e) => e,
+  )
+  assert.ok(response.status >= 500, `a rolled-back write must error, got ${response.status}`)
+  assert.equal((await s.ingestKeys()).length, 0, 'the key insert rolled back with the finalize')
+})
+
 test('audit leads the effect: a dead log fails everything closed before anything runs', async (t) => {
   const dirs = { BLOCKFIELD_INBOX_DIR: temp(t) }
   const saved = { ...process.env }

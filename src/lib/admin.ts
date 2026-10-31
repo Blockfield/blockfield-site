@@ -2778,8 +2778,34 @@ export async function handleWorkshopSubmit(
     name: row?.name ?? (await knownName(store, actorId)) ?? claimed ?? 'Владелец',
     role,
   }
-  let error: string | null = null,
-    id: string | null = null
+  let error: string | null, id: string | null
+  // The attempt is journaled before the effect, like staff writes: a dead log fails closed.
+  const pendingId = await store
+    .auditPending({
+      actorUuid: actor.uuid,
+      actorName: actor.name,
+      role: role ?? 'none',
+      action: 'workshop-candidate',
+      target: mapId,
+      detail: { from: 'game', request: null },
+      ok: false,
+      error: null,
+    })
+    .catch(() => {
+      throw fail(503, 'Хранилище сайта недоступно: мастерская отключена.')
+    })
+  const finalize = (ok: boolean, error: string | null, request: string | null) =>
+    store.auditFinalize(pendingId, {
+      actorUuid: actor.uuid,
+      actorName: actor.name,
+      role: role ?? 'none',
+      action: 'workshop-candidate',
+      target: mapId,
+      detail: { from: 'game', request },
+      ok,
+      error,
+    })
+  let applied = false
   try {
     const { catalog, entry } = await editableMap(actor, store, mapId),
       { copy, branch } = selectedMapBranch(catalog, entry)
@@ -2802,6 +2828,8 @@ export async function handleWorkshopSubmit(
       },
       new Set(catalog.maps.map((entry) => entry.mapId)),
     )
+    applied = true
+    await finalize(true, null, id)
     return Response.json({ id }, { headers: noStore })
   } catch (thrown) {
     error =
@@ -2814,22 +2842,16 @@ export async function handleWorkshopSubmit(
               () => 'error',
             )
         : 'internal error'
-    throw thrown
-  } finally {
-    try {
-      await store.audit({
-        actorUuid: actor.uuid,
-        actorName: actor.name,
-        role: role ?? 'none',
-        action: 'workshop-candidate',
-        target: mapId,
-        detail: { from: 'game', request: id },
-        ok: error === null,
-        error,
-      })
-    } catch {
-      console.error('workshop-candidate audit failed; the response stands')
+    if (!applied) {
+      try {
+        await finalize(false, error, null)
+      } catch {
+        console.error('workshop-candidate audit failed; the original error stands')
+      }
+      throw thrown
     }
+    console.error('workshop-candidate audit finalize failed; the change may have applied')
+    throw fail(503, 'Запрос применён, но журнал недоступен: проверьте состояние перед повтором.')
   }
 }
 
@@ -2859,9 +2881,43 @@ export async function handleWorkshopAccess(
   let actor: Actor = { uuid: actorId, name: claimed ?? 'Владелец', role: null },
     role: Role | null = null,
     target: Awaited<ReturnType<StatsStore['staff']>>[number] | undefined,
-    error: string | null = null,
+    error: string | null,
     result: any = null
   const outer = { actor, role }
+  // The attempt is journaled before the effect, like staff writes: a dead log fails closed.
+  // finalize() always re-reads actor/role/result, so refusals keep their resolved identity too.
+  const finalize = (ok: boolean, error: string | null) =>
+    store.auditFinalize(pendingId, {
+      actorUuid: actor.uuid,
+      actorName: actor.name,
+      role: role ?? 'none',
+      action: 'workshop-map-access',
+      target: mapId,
+      detail: {
+        changed: result ? [result.name] : [],
+        allowed: body.allowed,
+        target: target?.name ?? targetId,
+        from: 'game',
+        sync: result?.sync,
+      },
+      ok,
+      error,
+    })
+  const pendingId = await store
+    .auditPending({
+      actorUuid: actor.uuid,
+      actorName: actor.name,
+      role: 'none',
+      action: 'workshop-map-access',
+      target: mapId,
+      detail: { changed: [], allowed: body.allowed, target: targetId, from: 'game' },
+      ok: false,
+      error: null,
+    })
+    .catch(() => {
+      throw fail(503, 'Хранилище сайта недоступно: мастерская отключена.')
+    })
+  let applied = false
   try {
     // The read and the write bracket awaits, so concurrent grants queue on one chain (see
     // withStaffMapsLock) instead of overwriting each other from the same snapshot.
@@ -2898,6 +2954,8 @@ export async function handleWorkshopAccess(
       }),
     )
     result = { mapId, name: edit.target.name, maps: edit.maps, sync }
+    applied = true
+    await finalize(true, null)
     return result instanceof Response ? result : Response.json(result, { headers: noStore })
   } catch (thrown) {
     ;({ actor, role } = outer)
@@ -2911,28 +2969,16 @@ export async function handleWorkshopAccess(
               () => 'error',
             )
         : 'internal error'
-    throw thrown
-  } finally {
-    try {
-      await store.audit({
-        actorUuid: actor.uuid,
-        actorName: actor.name,
-        role: role ?? 'none',
-        action: 'workshop-map-access',
-        target: mapId,
-        detail: {
-          changed: result ? [result.name] : [],
-          allowed: body.allowed,
-          target: target?.name ?? targetId,
-          from: 'game',
-          sync: result?.sync,
-        },
-        ok: error === null,
-        error,
-      })
-    } catch {
-      console.error('workshop-map-access audit failed; the response stands')
+    if (!applied) {
+      try {
+        await finalize(false, error)
+      } catch {
+        console.error('workshop-map-access audit failed; the original error stands')
+      }
+      throw thrown
     }
+    console.error('workshop-map-access audit finalize failed; the change may have applied')
+    throw fail(503, 'Запрос применён, но журнал недоступен: проверьте состояние перед повтором.')
   }
 }
 
@@ -3012,14 +3058,20 @@ export async function handleAdmin(
       })
     const run = async () => {
       result = await route.handler({ context, actor, store, body })
-      applied = true
       await finalize(true, null)
     }
     try {
       // Pure DB effects share one transaction with the finalize; RCON and file
       // effects cannot, so they finalize right after the handler instead.
-      if (route.tx) await store.db.transaction(run)
-      else await run()
+      // applied flips only after the commit: a rolled-back effect never ran.
+      if (route.tx) {
+        await store.db.transaction(run)
+        applied = true
+      } else {
+        result = await route.handler({ context, actor, store, body })
+        applied = true
+        await finalize(true, null)
+      }
     } catch (inner) {
       const { response, message } = await adminError(inner)
       const detail =

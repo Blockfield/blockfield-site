@@ -253,8 +253,82 @@ const sameSite = (url, body) =>
     body: body === undefined ? undefined : JSON.stringify(body),
   })
 
+test('Drasl tokens are encrypted at rest: the DB never holds plaintext', async () => {
+  process.env.BLOCKFIELD_STATS_DB = ':memory:'
+  process.env.BLOCKFIELD_SESSION_SECRET = '2'.repeat(64)
+  process.env.DRASL_URL = 'http://drasl.test'
+  const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
+  const stub = stubFetch(async (url) => {
+    if (String(url).endsWith('/login'))
+      return Response.json({ apiToken: 'stable-drasl-token', user })
+    return Response.json(user)
+  })
+  try {
+    const jarred = jar()
+    await login({
+      request: sameSite('http://site/api/account/login', {
+        username: 'Alex',
+        password: 'password-1',
+      }),
+      cookies: jarred,
+    })
+    const id = jarred.calls.set[1]
+    const db = await statsStore()
+    const row = await db.getSession(id)
+    assert.ok(row && !String(row.token).includes('stable-drasl-token'), 'ciphertext at rest')
+    const meAfter = await me({
+      request: new Request('http://site/api/account/me'),
+      cookies: jar(id),
+    })
+    assert.equal((await meAfter.json()).account.username, 'Alex', 'sealed sessions still work')
+  } finally {
+    stub.restore()
+    delete process.env.DRASL_URL
+  }
+})
+
+test('sessions fail closed without the secret, and die on rotation', async () => {
+  process.env.BLOCKFIELD_STATS_DB = ':memory:'
+  process.env.DRASL_URL = 'http://drasl.test'
+  const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
+  const stub = stubFetch(async (url) => {
+    if (String(url).endsWith('/login'))
+      return Response.json({ apiToken: 'stable-drasl-token', user })
+    return Response.json(user)
+  })
+  const loginAs = async (cookies) =>
+    login({
+      request: sameSite('http://site/api/account/login', {
+        username: 'Alex',
+        password: 'password-1',
+      }),
+      cookies,
+    })
+  try {
+    delete process.env.BLOCKFIELD_SESSION_SECRET
+    assert.equal((await loginAs(jar())).status, 503, 'no secret, no sessions')
+    process.env.BLOCKFIELD_SESSION_SECRET = '3'.repeat(64)
+    const cookies = jar()
+    assert.equal((await loginAs(cookies)).status, 200)
+    const id = cookies.calls.set[1]
+    process.env.BLOCKFIELD_SESSION_SECRET = '4'.repeat(64)
+    const gone = await me({
+      request: new Request('http://site/api/account/me'),
+      cookies: jar(id),
+    })
+    assert.deepEqual(await gone.json(), { account: null }, 'rotation expires old sessions')
+  } finally {
+    process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
+    stub.restore()
+    delete process.env.DRASL_URL
+  }
+})
+process.env.BLOCKFIELD_STATS_DB = ':memory:'
+process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
+process.env.DRASL_URL = 'http://drasl.test'
 test('site sessions: login mints an opaque id per device; logout kills only that device', async () => {
   process.env.BLOCKFIELD_STATS_DB = ':memory:'
+  process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
   process.env.DRASL_URL = 'http://drasl.test'
   const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
   const stub = stubFetch(async (url, init) => {
@@ -310,16 +384,19 @@ test('site sessions: login mints an opaque id per device; logout kills only that
   }
 })
 
-test('logout without a valid session is refused and writes nothing', async () => {
+test('logout always clears the cookie and writes nothing without a valid session', async () => {
   process.env.BLOCKFIELD_STATS_DB = ':memory:'
+  process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
   const db = await statsStore()
   const before = await db.countSessions()
   for (const value of [undefined, 'nope', 'x'.repeat(200)]) {
+    const cookies = jar(value)
     const response = await logout({
       request: sameSite('http://site/api/account/logout'),
-      cookies: jar(value),
+      cookies,
     })
-    assert.equal(response.status, 401, JSON.stringify(value))
+    assert.equal(response.status, 204, JSON.stringify(value))
+    assert.deepEqual(cookies.calls.delete, [session, { path: '/' }], 'stale cookies are cleared')
   }
   assert.equal(await db.countSessions(), before, 'no unauthenticated inserts')
   const stub = stubFetch(async () => assert.fail('в Drasl ходить не должны'))
@@ -336,6 +413,7 @@ test('logout without a valid session is refused and writes nothing', async () =>
 
 test('password change kills every session and re-logs in', async () => {
   process.env.BLOCKFIELD_STATS_DB = ':memory:'
+  process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
   process.env.DRASL_URL = 'http://drasl.test'
   const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
   const stub = stubFetch(async (url, init) => {
@@ -394,6 +472,7 @@ test('password change kills every session and re-logs in', async () => {
 
 test('site sessions are capped per user', async () => {
   process.env.BLOCKFIELD_STATS_DB = ':memory:'
+  process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
   process.env.DRASL_URL = 'http://drasl.test'
   const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
   const stub = stubFetch(async (url) => {

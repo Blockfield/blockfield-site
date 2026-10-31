@@ -1,5 +1,5 @@
 import type { APIContext, APIRoute, AstroCookies } from 'astro'
-import { randomBytes } from 'node:crypto'
+import { createDecipheriv, createCipheriv, randomBytes } from 'node:crypto'
 import { statsStore, type StatsStore } from './stats.ts'
 
 export const nickname = /^[A-Za-z0-9_]{3,16}$/
@@ -227,6 +227,36 @@ export async function importMojangSkin(token: string, user: any): Promise<any> {
   }
 }
 
+/** Drasl tokens at rest are AES-256-GCM sealed: a DB dump alone leaks nothing usable. */
+function sessionKey(): Buffer {
+  const raw = process.env.BLOCKFIELD_SESSION_SECRET ?? ''
+  if (!/^[0-9a-f]{64}$/.test(raw))
+    throw fail(503, 'Хранилище сессий не настроено: задайте BLOCKFIELD_SESSION_SECRET.')
+  return Buffer.from(raw, 'hex')
+}
+export function sealToken(token: string): string {
+  const iv = randomBytes(12),
+    cipher = createCipheriv('aes-256-gcm', sessionKey(), iv)
+  const sealed = Buffer.concat([cipher.update(token, 'utf8'), cipher.final(), cipher.getAuthTag()])
+  return `${iv.toString('hex')}.${sealed.toString('hex')}`
+}
+function openToken(sealed: string): string {
+  const key = sessionKey()
+  const [ivHex, dataHex] = sealed.split('.')
+  try {
+    const iv = Buffer.from(ivHex, 'hex'),
+      data = Buffer.from(dataHex, 'hex')
+    if (iv.length !== 12 || data.length < 17) throw new Error('bad seal')
+    const decipher = createDecipheriv('aes-256-gcm', key, iv)
+    decipher.setAuthTag(data.subarray(-16))
+    return Buffer.concat([decipher.update(data.subarray(0, -16)), decipher.final()]).toString(
+      'utf8',
+    )
+  } catch {
+    // Wrong key, corruption, or a forged row: the session is simply dead.
+    throw fail(401, 'Сессия истекла. Войдите снова.')
+  }
+}
 /** The cookie holds only a random id; oversized or malformed values never reach the DB. */
 export const SESSION_COOKIE_MAX = 128
 const SESSION_ID = /^[0-9a-f]{32}$/
@@ -249,8 +279,9 @@ export async function sessionToken(
   const db = store ?? (await statsStore())
   const row = await db.getSession(id)
   if (!row) throw fail(401, 'Сессия истекла. Войдите снова.')
+  const token = openToken(row.token)
   await db.touchSession(id, Date.now())
-  return row.token
+  return token
 }
 
 /** Mint a session id for a Drasl token; old sessions of the user are pruned in the same step. */
@@ -263,7 +294,7 @@ export async function startSession(
   if (!token || !uuid) throw fail(502, 'Сервер аккаунтов вернул неполные данные.')
   const id = randomBytes(16).toString('hex'),
     now = Date.now()
-  await store.insertSession(id, token, uuid, now)
+  await store.insertSession(id, sealToken(token), uuid, now)
   await store.pruneSessions(uuid, now - SESSION_MAX_AGE, SESSION_USER_CAP)
   cookies.set(session, id, {
     httpOnly: true,
@@ -275,10 +306,11 @@ export async function startSession(
   return id
 }
 
-/** Logout deletes only a valid session: garbage cookies change nothing server-side. */
+/** Logout deletes a valid session and always clears the cookie: logging out twice is fine. */
 export async function closeSession(store: StatsStore, cookies: AstroCookies): Promise<void> {
-  if (!(await store.deleteSession(sessionId(cookies))))
-    throw fail(401, 'Сессия истекла. Войдите снова.')
+  const value = cookies.get(session)?.value ?? ''
+  if (value && value.length <= SESSION_COOKIE_MAX && SESSION_ID.test(value))
+    await store.deleteSession(value)
 }
 
 export function route(handler: (context: APIContext) => Promise<Response>): APIRoute {

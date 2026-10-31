@@ -1631,6 +1631,10 @@ const cpGate = cpConfigured()
       color: var(--danger);
       font-weight: 600;
     }
+    .admin-main .log li.pending .run {
+      color: var(--amber);
+      font-weight: 600;
+    }
     .admin-main .log .bad {
       color: var(--danger);
     }
@@ -9822,6 +9826,23 @@ const cpGate = cpConfigured()
     function auditRow(a: any) {
       const [past, attempt, rest] = sentence(a),
         error = friendly(String(a.error ?? '').replace(/\s\(.*\)$/, ''), 400)
+      if (a.pending)
+        return el(
+          'li',
+          { className: 'pending', 'data-audit-id': a.id },
+          el(
+            'span',
+            {},
+            el('strong', { textContent: a.actorName }),
+            ` ${attempt}${rest} — `,
+            el('span', { className: 'run', textContent: 'выполняется…' }),
+          ),
+          el('time', {
+            dateTime: new Date(a.at).toISOString(),
+            title: date(a.at),
+            textContent: ago(a.at),
+          }),
+        )
       return el(
         'li',
         { className: a.ok ? '' : 'failed', 'data-audit-id': a.id },
