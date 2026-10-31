@@ -122,8 +122,7 @@ export function parseRooms(value: any): RoomStatus {
     .slice(0, 100)
   if (rooms.length !== value.rooms.length) throw new Error('Invalid room status')
   const build =
-    typeof value.build === 'string' &&
-    /^(v\d+\.\d+\.\d+|[0-9a-f]{7,40})$/.test(value.build)
+    typeof value.build === 'string' && /^(v\d+\.\d+\.\d+|[0-9a-f]{7,40})$/.test(value.build)
       ? { build: value.build }
       : {}
   return { available: true, checkedAt: value.checkedAt, rooms, ...build }
