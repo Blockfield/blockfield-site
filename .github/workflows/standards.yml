@@ -43,9 +43,10 @@ jobs:
     # the old head). The event head must equal the runtime head, and the
     # bot's latest verdict-bearing review on that SHA must be APPROVED.
     # Anything else (stale event, no verdict yet, REQUEST_CHANGES, DISMISSED,
-    # a verdict on an older SHA) skips `check`, so the gate fails closed.
-    # Always exits 0: denial is expressed through the outputs, and the bot's
-    # own `bot-review` commit status blocks merge.
+    # a verdict on an older SHA) fails this required job and skips `check`,
+    # so the gate fails closed and the PR stays blocked until the bot
+    # approves. The bot's own `bot-review` commit status blocks merge
+    # independently.
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: github.event_name == 'pull_request_review'
@@ -98,6 +99,11 @@ jobs:
             echo "sha_match=$sha_match"
             echo "sha=$HEAD_SHA"
           } >> "$GITHUB_OUTPUT"
+          # Fail closed: a denied or still-awaiting gate must fail this
+          # required job instead of merely skipping `check` (a skipped job
+          # must never read as a green run, and the PR must stay blocked
+          # until the bot approves). Push/dispatch runs never reach this job.
+          [ "$verdict" = permit ] && [ "$sha_match" = true ]
   decide:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
