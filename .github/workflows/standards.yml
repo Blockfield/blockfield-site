@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       reason:
-        description: "Override reason (maintainers only)"
+        description: 'Override reason (maintainers only)'
         required: true
         type: string
 permissions:
