@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  isCustomProviderId,
   isWorkshopAiBaseUrl,
   isWorkshopAiKey,
   isWorkshopAiModel,
@@ -74,6 +75,12 @@ test('settings validate a closed schema with one shape check per model, never a 
   assert.ok(isWorkshopAiProviderId('my-proxy'))
   assert.ok(!isWorkshopAiProviderId('My_Proxy'))
   assert.ok(!isWorkshopAiProviderId('openrouter!'))
+  assert.ok(isCustomProviderId('my-proxy'))
+  assert.ok(!isCustomProviderId('openrouter'))
+  assert.ok(!isCustomProviderId('vercel-gateway'))
+  assert.ok(!isCustomProviderId('ai'))
+  assert.ok(!isCustomProviderId('ai-gateway'))
+  assert.ok(!isCustomProviderId('../x'))
   assert.ok(isWorkshopAiBaseUrl('https://proxy.example.com/v1'))
   assert.ok(!isWorkshopAiBaseUrl('http://proxy.example.com/v1'))
   assert.ok(!isWorkshopAiBaseUrl('https://user@proxy.example.com/v1'))
@@ -591,16 +598,32 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   assert.equal(keyless.status, 400)
   assert.match((await keyless.json()).error, /ключ OpenRouter/)
   // The gateway key lives in a host file, so enabling it needs no site key.
-  const gateway = await call(
+  // A stale form without per-model keys preserves the stored selections instead:
+  // enabling the gateway this way still needs the preserved OpenRouter key.
+  const staleGateway = await call(
     owner,
     'PUT',
     'workshop-ai-settings',
     adminBody({ expectedRevision: 0, enabled: true, provider: 'vercel-gateway' }),
   )
+  assert.equal(staleGateway.status, 400)
+  const gateway = await call(
+    owner,
+    'PUT',
+    'workshop-ai-settings',
+    adminBody({
+      expectedRevision: 0,
+      enabled: true,
+      provider: 'vercel-gateway',
+      generationProvider: 'vercel-gateway',
+      guardProvider: 'vercel-gateway',
+      transcriptionProvider: 'vercel-gateway',
+    }),
+  )
   assert.equal(gateway.status, 200)
   const gatewaySettings = (await gateway.json()).settings
   assert.equal(gatewaySettings.provider, 'vercel-gateway')
-  // A stale form without per-model keys follows the legacy provider.
+  // Explicit per-model keys are stored as sent.
   assert.equal(gatewaySettings.generationProvider, 'vercel-gateway')
   assert.equal(gatewaySettings.cleanupModel, '')
   const saved = await call(owner, 'PUT', 'workshop-ai-settings', adminBody({ expectedRevision: 1 }))
@@ -686,6 +709,23 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   )
   assert.equal(cleanup.status, 200)
   assert.equal((await cleanup.json()).settings.revision, 4)
+  // A stale form that omits per-model/registry/cleanup keys preserves them instead
+  // of rerouting models to the legacy provider or wiping the registry.
+  const stale = await call(
+    owner,
+    'PUT',
+    'workshop-ai-settings',
+    adminBody({ expectedRevision: 4, enabled: false }),
+  )
+  assert.equal(stale.status, 200)
+  const staleSettings = (await stale.json()).settings
+  assert.equal(staleSettings.revision, 5)
+  assert.equal(staleSettings.generationProvider, 'openrouter')
+  assert.equal(staleSettings.guardProvider, 'vercel-gateway')
+  assert.equal(staleSettings.transcriptionProvider, 'my-proxy')
+  assert.equal(staleSettings.cleanupModel, 'other/cleanup-1')
+  assert.equal(staleSettings.cleanupProvider, 'second-proxy')
+  assert.equal(staleSettings.providers.length, 2)
   // Custom provider keys: owner-only, 0600 inbox requests, per-id status files.
   for (const actor of [admin, moderator]) {
     assert.equal(
@@ -750,6 +790,12 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   assert.ok(
     customAudit.some((entry) => entry.ok && JSON.parse(entry.detail).provider === 'my-proxy'),
   )
+  // Rejected provider values never reach the audit: only a validated id or null
+  // (a bad key with a good id still records the id).
+  for (const entry of customAudit.filter((entry) => !entry.ok)) {
+    const provider = JSON.parse(entry.detail).provider
+    assert.ok(provider === null || isCustomProviderId(provider))
+  }
   // Limits, models and tariff ceilings are owner-only and admins read the audit
   // log: settings entries keep the operational switches only, never the values.
   for (const entry of (await store.auditLog(50)).filter(
@@ -865,7 +911,7 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     owner,
     'PUT',
     'workshop-ai-settings',
-    adminBody({ expectedRevision: 4, enabled: true, provider: 'openrouter' }),
+    adminBody({ expectedRevision: 5, enabled: true, provider: 'openrouter' }),
   )
   // With the controller key status set, enabling OpenRouter succeeds.
   assert.equal(enabled.status, 200)

@@ -42,8 +42,7 @@ import {
   validateWorkshopAiSettings,
 } from './workshop-ai-policy.ts'
 import {
-  WORKSHOP_AI_RESERVED_IDS,
-  isWorkshopAiProvider,
+  isCustomProviderId,
   isWorkshopAiProviderId,
   workshopAiKeyStatusFile,
 } from './workshop-ai.ts'
@@ -1027,12 +1026,7 @@ export function writeRequest(
     // the value itself never lands in settings, the DB, logs or responses.
     // Only genuine custom ids pass: preset and colliding ids keep their own endpoints.
     if (!plain(body) || !Object.hasOwn(body, 'key')) throw bad('Укажите ключ или его удаление.')
-    if (
-      !isWorkshopAiProviderId(body.provider) ||
-      isWorkshopAiProvider(body.provider) ||
-      WORKSHOP_AI_RESERVED_IDS.includes(body.provider)
-    )
-      throw bad('Некорректный провайдер.')
+    if (!isCustomProviderId(body.provider)) throw bad('Некорректный провайдер.')
     request = {
       ...base,
       kind: body.kind,
@@ -1483,10 +1477,11 @@ export function saveWorkshopAiSettings(
     revision: current.revision + 1,
     enabled: body.enabled,
     provider: body.provider,
-    generationProvider: body.generationProvider,
-    guardProvider: body.guardProvider,
-    transcriptionProvider: body.transcriptionProvider,
-    // Absent registry/cleanup keys keep the stored values: a stale form must not wipe them.
+    // Absent per-model/registry/cleanup keys keep the stored values: a stale form
+    // must not reroute models or wipe the registry.
+    generationProvider: body.generationProvider ?? current.generationProvider,
+    guardProvider: body.guardProvider ?? current.guardProvider,
+    transcriptionProvider: body.transcriptionProvider ?? current.transcriptionProvider,
     providers: body.providers ?? current.providers,
     generationModel: body.generationModel,
     guardModel: body.guardModel,
@@ -2240,12 +2235,12 @@ const routes: Record<string, Route> = {
       }),
     }),
     // The key itself never reaches the audit log: only its removal and the
-    // (nonsecret) provider id.
+    // (validated, nonsecret) provider id. Anything else could be a pasted secret.
     audit: (body) => ({
       action: 'workshop-ai-provider-key',
       detail: {
         remove: body?.key == null,
-        provider: typeof body?.provider === 'string' ? body.provider : null,
+        provider: isCustomProviderId(body?.provider) ? body.provider : null,
       },
     }),
   },

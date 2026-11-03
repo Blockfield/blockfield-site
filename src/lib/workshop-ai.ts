@@ -47,6 +47,12 @@ export const WORKSHOP_AI_MAX_PROVIDERS = 8
 // `ai` → ai-key.json (OpenRouter), `ai-gateway` → ai-gateway-key.json.
 export const WORKSHOP_AI_RESERVED_IDS: readonly string[] = ['ai', 'ai-gateway']
 
+/** Registry-assignable id: valid shape, not a preset, not a colliding stem. */
+export const isCustomProviderId = (value: unknown): value is string =>
+  isWorkshopAiProviderId(value) &&
+  !isWorkshopAiProvider(value) &&
+  !WORKSHOP_AI_RESERVED_IDS.includes(value)
+
 export const isWorkshopAiProviderId = (value: unknown): value is string =>
   typeof value === 'string' && WORKSHOP_AI_PROVIDER_ID.test(value)
 

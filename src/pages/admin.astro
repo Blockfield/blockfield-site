@@ -2509,12 +2509,7 @@ const cpGate = cpConfigured()
     import { settingsBody, settingsReceipt } from '../lib/settings-form'
     import { bodyPartSummary, renderBodyPartField } from '../lib/body-part-form'
     import { renderAiBudgetForm, type BudgetTarget } from '../lib/ai-budget-form'
-    import {
-      WORKSHOP_AI_RESERVED_IDS,
-      isWorkshopAiModel,
-      isWorkshopAiProviderId,
-      workshopAiKeyLine,
-    } from '../lib/workshop-ai'
+    import { isCustomProviderId, isWorkshopAiModel, workshopAiKeyLine } from '../lib/workshop-ai'
     import { canonicalBudgetUuid } from '../lib/ai-budget'
     import { weaponFields } from '../lib/gun-fields'
     import { finalDamageVsMatchKit } from '../lib/gun-damage'
@@ -7721,12 +7716,7 @@ const cpGate = cpConfigured()
       const id = $<HTMLInputElement>('#workshop-ai-provider-id').value.trim()
       const label = $<HTMLInputElement>('#workshop-ai-provider-label').value.trim()
       const baseUrl = $<HTMLInputElement>('#workshop-ai-provider-url').value.trim()
-      if (
-        !isWorkshopAiProviderId(id) ||
-        id === 'openrouter' ||
-        id === 'vercel-gateway' ||
-        WORKSHOP_AI_RESERVED_IDS.includes(id)
-      )
+      if (!isCustomProviderId(id))
         throw new Error('ID: a-z, 0-9 и дефис; не совпадает со встроенным.')
       if (!label || label.length > 80) throw new Error('Название: 1…80 символов.')
       if (baseUrl.length > 200 || !/^https:\/\/[^/\s?#]+/.test(baseUrl) || /[?#]/.test(baseUrl))
