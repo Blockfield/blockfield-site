@@ -38,7 +38,12 @@ export function eventAllowed(role: Role | null, event: AdminEvent) {
 // `request` events or the `view`-gated generic result route. Owners read the full
 // result through their own key-status routes; everyone else gets this copy.
 export function redactKeyResult(result: any): any {
-  if (result?.kind !== 'ai-key' && result?.kind !== 'ai-gateway-key') return result
+  if (
+    result?.kind !== 'ai-key' &&
+    result?.kind !== 'ai-gateway-key' &&
+    result?.kind !== 'ai-provider-key'
+  )
+    return result
   const redacted = { ...result }
   delete redacted.last4
   delete redacted.sha256Prefix
