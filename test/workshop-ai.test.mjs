@@ -447,6 +447,35 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     (entry) => entry.action === 'workshop-ai-settings' && entry.ok,
   ))
     assert.deepEqual(Object.keys(JSON.parse(entry.detail)).sort(), ['enabled', 'provider'])
+  // Rows written before the redaction still carry full bodies on disk: the audit
+  // feed must project them to the redacted switches for every reader, including admins.
+  const legacyBody = adminBody({ expectedRevision: 2 })
+  const legacyId = await store.auditPending({
+    actorUuid: owner,
+    actorName: 'Tester',
+    role: 'owner',
+    action: 'workshop-ai-settings',
+    target: 'revision 3',
+    detail: legacyBody,
+    ok: false,
+    error: null,
+  })
+  await store.auditFinalize(legacyId, {
+    actorUuid: owner,
+    actorName: 'Tester',
+    role: 'owner',
+    action: 'workshop-ai-settings',
+    target: 'revision 3',
+    detail: legacyBody,
+    ok: true,
+    error: null,
+  })
+  const feed = await call(admin, 'GET', 'audit', undefined)
+  assert.equal(feed.status, 200)
+  const legacyEntry = (await feed.json()).entries.find(
+    (entry) => entry.action === 'workshop-ai-settings' && entry.target === 'revision 3',
+  )
+  assert.deepEqual(legacyEntry.detail, { enabled: false, provider: 'openrouter' })
   assert.equal(
     (await call(owner, 'PUT', 'workshop-ai-settings', adminBody({ expectedRevision: 1 }))).status,
     409,

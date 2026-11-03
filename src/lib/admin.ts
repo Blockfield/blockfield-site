@@ -1785,6 +1785,22 @@ export async function overviewSnapshot() {
   }
 }
 
+// Owner-only amounts/limits must never reach admins through the audit log,
+// including rows written before the write callbacks started redacting them.
+const redactAuditDetail = (action: string, detail: unknown): unknown => {
+  if (action !== 'ai-limits' && action !== 'workshop-ai-settings') return detail
+  let parsed: unknown
+  try {
+    parsed = typeof detail === 'string' ? JSON.parse(detail) : detail
+  } catch {
+    return null
+  }
+  if (!plain(parsed)) return null
+  return action === 'ai-limits'
+    ? { mode: parsed.mode }
+    : { enabled: parsed.enabled, provider: parsed.provider }
+}
+
 const routes: Record<string, Route> = {
   'GET overview': {
     permission: 'view',
@@ -2776,7 +2792,12 @@ const routes: Record<string, Route> = {
   'GET seasons': { permission: 'stats', handler: () => ({ seasons: seasons() }) },
   'GET audit': {
     permission: 'audit',
-    handler: async ({ store }) => ({ entries: await store.auditLog(200) }),
+    handler: async ({ store }) => ({
+      entries: (await store.auditLog(200)).map((entry: any) => ({
+        ...entry,
+        detail: redactAuditDetail(entry.action, entry.detail),
+      })),
+    }),
   },
 }
 routes['POST candidates/rollback'] = routes['POST maps/rollback']

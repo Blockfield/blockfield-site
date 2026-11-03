@@ -219,4 +219,42 @@ test('only the owner can read or raise budgets; admins and below are refused and
   const granted = audit.find((entry) => entry.action === 'ai-limits' && entry.ok)
   // Grant amounts are owner-only and admins read the audit log: entries keep the mode only.
   assert.deepEqual(JSON.parse(granted.detail), { mode: 'builder' })
+  // Rows written before the redaction still carry full bodies on disk: the audit
+  // feed must project them to the redacted shape for every reader, including admins.
+  const legacy = { expectedRevision: 1, mode: 'builder', builders: { [BUILDER]: 1_250_000 } }
+  const legacyId = await store.auditPending({
+    actorUuid: owner,
+    actorName: 'Tester',
+    role: 'owner',
+    action: 'ai-limits',
+    target: 'revision 1',
+    detail: legacy,
+    ok: false,
+    error: null,
+  })
+  await store.auditFinalize(legacyId, {
+    actorUuid: owner,
+    actorName: 'Tester',
+    role: 'owner',
+    action: 'ai-limits',
+    target: 'revision 1',
+    detail: legacy,
+    ok: true,
+    error: null,
+  })
+  process.env.BLOCKFIELD_ADMIN_DEV_USER = `${admin}:Tester`
+  const feed = await handleAdmin(
+    {
+      request: new Request(new URL('http://site/api/admin/audit'), { method: 'GET' }),
+      url: new URL('http://site/api/admin/audit'),
+      cookies: { get: () => undefined },
+    },
+    'audit',
+    store,
+  ).catch((error) => error)
+  assert.equal(feed.status, 200)
+  const legacyEntry = (await feed.json()).entries.find(
+    (entry) => entry.action === 'ai-limits' && entry.target === 'revision 1',
+  )
+  assert.deepEqual(legacyEntry.detail, { mode: 'builder' })
 })
