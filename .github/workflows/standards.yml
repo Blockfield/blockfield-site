@@ -107,6 +107,9 @@ jobs:
           # until the bot approves). Push/dispatch runs never reach this job.
           [ "$verdict" = permit ] && [ "$sha_match" = true ]
   decide:
+    # Same gate as bot-gate: a non-approving or non-bot review must not start
+    # a runner here either. Push and manual-dispatch runs always run.
+    if: github.event_name != 'pull_request_review' || (github.event.review.user.login == 'blockfield-review-bot[bot]' && github.event.review.state == 'approved')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
