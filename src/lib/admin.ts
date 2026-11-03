@@ -19,7 +19,7 @@ import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
 import { account, drasl, fail, nickname, readJson, session, sessionToken } from './account.ts'
 import { rcon } from './rcon.ts'
-import { eventStream, heartbeat } from './admin-events.ts'
+import { eventStream, heartbeat, redactKeyResult } from './admin-events.ts'
 import {
   consoleLogPage,
   consoleSince,
@@ -1808,8 +1808,10 @@ const routes: Record<string, Route> = {
   },
   'GET request': {
     permission: 'view',
+    // Key tails are owner-only: the generic view-gated route serves a redacted
+    // copy, owners read the full result through their key-status routes.
     handler: ({ context }) => ({
-      result: readRequestResult(context.url.searchParams.get('id') ?? ''),
+      result: redactKeyResult(readRequestResult(context.url.searchParams.get('id') ?? '')),
     }),
   },
   'POST mode': {

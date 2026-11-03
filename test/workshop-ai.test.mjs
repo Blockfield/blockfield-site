@@ -509,6 +509,30 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   const done = await call(owner, 'GET', `workshop-ai-key?id=${id}`, undefined)
   assert.equal((await done.json()).result.ok, true)
   assert.equal((await call(owner, 'GET', 'workshop-ai-key?id=nope', undefined)).status, 400)
+  // Key tails are owner-only: the generic view-gated result route redacts them for
+  // every role, while the owner key-status route keeps the full result.
+  writeFileSync(
+    join(adminDir, 'results', `${id}.json`),
+    JSON.stringify({
+      schema: 1,
+      id,
+      kind: 'ai-key',
+      ok: true,
+      set: true,
+      last4: 'ab12',
+      sha256Prefix: 'cd34ef56',
+    }),
+  )
+  for (const actor of [owner, admin, moderator]) {
+    const seen = await call(actor, 'GET', `request?id=${id}`, undefined)
+    assert.equal(seen.status, 200)
+    const generic = (await seen.json()).result
+    assert.ok(!Object.hasOwn(generic, 'last4'))
+    assert.ok(!Object.hasOwn(generic, 'sha256Prefix'))
+    assert.equal(generic.ok, true)
+  }
+  const full = await call(owner, 'GET', `workshop-ai-key?id=${id}`, undefined)
+  assert.equal((await full.json()).result.last4, 'ab12')
   // The key lives only in the inbox file: never in settings, responses, errors or audit.
   assert.ok(LEAK(readFileSync(join(settingsDir, 'workshop-ai-settings.json'), 'utf8')))
   for (const entry of await store.auditLog(50)) assert.ok(LEAK(entry))
