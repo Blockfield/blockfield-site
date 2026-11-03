@@ -150,12 +150,50 @@ test('settings validate a closed schema with one shape check per model, never a 
     (value) => (value.guardProvider = 'ghost'),
     (value) => (value.transcriptionProvider = 'ghost'),
     (value) => (value.cleanupProvider = 'ghost'),
-    (value) => (value.cleanupModel = 'no-slash-here'),
+    (value) => (value.cleanupModel = 'bad model!'),
   ]) {
     const invalid = settings()
     mutate(invalid)
     rejected(() => validateWorkshopAiSettings(invalid))
   }
+  // Native ids stay rejected on presets and on malformed input.
+  for (const mutate of [
+    (value) => (value.generationModel = 'gpt-4o-mini'),
+    (value) => (value.guardModel = 'gpt-4o-mini'),
+    (value) => {
+      value.transcriptionProvider = 'openrouter'
+      value.transcriptionModel = 'gpt-4o-mini'
+    },
+    (value) => {
+      value.cleanupProvider = 'openrouter'
+      value.cleanupModel = 'gpt-4o-mini'
+    },
+    (value) => (value.transcriptionModel = 'has space'),
+    (value) => (value.transcriptionModel = 'bad!chars'),
+    (value) => (value.transcriptionModel = 'x'.repeat(101)),
+  ]) {
+    const native = settings()
+    mutate(native)
+    rejected(() => validateWorkshopAiSettings(native))
+  }
+})
+
+test('custom providers accept native model ids keyed by the selected provider', () => {
+  // The fixture routes transcription and cleanup through the custom registry entry.
+  const transcriptionNative = settings()
+  transcriptionNative.transcriptionModel = 'gpt-4o-mini'
+  assert.equal(validateWorkshopAiSettings(transcriptionNative).transcriptionModel, 'gpt-4o-mini')
+  const cleanupNative = settings()
+  cleanupNative.cleanupModel = 'gpt-4o-mini'
+  assert.equal(validateWorkshopAiSettings(cleanupNative).cleanupModel, 'gpt-4o-mini')
+  const generationNative = settings()
+  generationNative.generationProvider = 'my-proxy'
+  generationNative.generationModel = 'gpt-4o-mini'
+  assert.equal(validateWorkshopAiSettings(generationNative).generationModel, 'gpt-4o-mini')
+  const guardNative = settings()
+  guardNative.guardProvider = 'my-proxy'
+  guardNative.guardModel = 'gpt-4o-mini'
+  assert.equal(validateWorkshopAiSettings(guardNative).guardModel, 'gpt-4o-mini')
 })
 
 test('missing file returns defaults with revision 0; corrupt or oversized files fail closed', (t) => {

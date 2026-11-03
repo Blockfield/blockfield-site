@@ -2482,7 +2482,13 @@ const cpGate = cpConfigured()
     import { settingsBody, settingsReceipt } from '../lib/settings-form'
     import { bodyPartSummary, renderBodyPartField } from '../lib/body-part-form'
     import { renderAiBudgetForm, type BudgetTarget } from '../lib/ai-budget-form'
-    import { isCustomProviderId, isWorkshopAiModel, workshopAiKeyLine } from '../lib/workshop-ai'
+    import {
+      isCustomProviderId,
+      isWorkshopAiModel,
+      isWorkshopAiNativeModel,
+      isWorkshopAiProvider,
+      workshopAiKeyLine,
+    } from '../lib/workshop-ai'
     import { canonicalBudgetUuid } from '../lib/ai-budget'
     import { weaponFields } from '../lib/gun-fields'
     import { finalDamageVsMatchKit } from '../lib/gun-damage'
@@ -7541,10 +7547,14 @@ const cpGate = cpConfigured()
     function checkWorkshopAiGuard() {
       const hint = $('#workshop-ai-guard-hint')
       const value = $<HTMLInputElement>('#workshop-ai-guard').value.trim()
-      const valid = !value || isWorkshopAiModel(value)
+      const provider = $<HTMLSelectElement>('#workshop-ai-guard-provider').value
+      const custom = !!provider && !isWorkshopAiProvider(provider)
+      const valid = !value || (custom ? isWorkshopAiNativeModel(value) : isWorkshopAiModel(value))
       hint.textContent = valid
         ? 'Любая vendor/model; под gateway сторож выключен.'
-        : 'Сторожевая модель: vendor/model.'
+        : custom
+          ? 'Сторожевая модель: название модели.'
+          : 'Сторожевая модель: vendor/model.'
       hint.classList.toggle('error', !valid)
       return valid
     }
@@ -7783,6 +7793,10 @@ const cpGate = cpConfigured()
       say(line, 'Ключ применяется… Обновите состояние AI позже.', 'pending')
     }
     $<HTMLInputElement>('#workshop-ai-guard').addEventListener('input', checkWorkshopAiGuard)
+    $<HTMLSelectElement>('#workshop-ai-guard-provider').addEventListener(
+      'change',
+      checkWorkshopAiGuard,
+    )
     $<HTMLSelectElement>('#workshop-ai-key-provider').addEventListener(
       'change',
       refreshCustomKeyStatus,

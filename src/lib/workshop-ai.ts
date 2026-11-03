@@ -108,10 +108,15 @@ export type WorkshopAiSettings = {
 // Same shape as the server's check: vendor/name with an optional :variant such as :free.
 // Owner input is trusted: every model ID uses this one shape check, no allowlist.
 export const WORKSHOP_AI_MODEL = /^[a-zA-Z0-9._-]{1,64}\/[a-zA-Z0-9._/:-]{1,126}$/
+// Native ids for custom providers (contract): no vendor prefix required.
+export const WORKSHOP_AI_NATIVE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,99}$/
 export const WORKSHOP_AI_KEY = /^[\x21-\x7e]{20,2048}$/
 
 export const isWorkshopAiModel = (value: unknown): value is string =>
   typeof value === 'string' && value.length <= 128 && WORKSHOP_AI_MODEL.test(value)
+
+export const isWorkshopAiNativeModel = (value: unknown): value is string =>
+  typeof value === 'string' && value.length <= 100 && WORKSHOP_AI_NATIVE_MODEL.test(value)
 
 export const isWorkshopAiProvider = (value: unknown): value is WorkshopAiProvider =>
   value === 'openrouter' || value === 'vercel-gateway'
