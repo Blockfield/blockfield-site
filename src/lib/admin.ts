@@ -1509,6 +1509,9 @@ export function saveWorkshopAiSettings(
         `Нет ключа провайдера ${missing.join(', ')}: сохраните ключ и дождитесь статуса «Ключ задан».`,
       )
   }
+  // The reader caps the settings file: refuse a doc that would not fit once serialized.
+  if (Buffer.byteLength(JSON.stringify(settings, null, 2) + '\n') > 8192)
+    throw fail(413, 'Настройки AI превышают доступный размер. Укоротите записи провайдеров.')
   writeAtomic(directory, 'workshop-ai-settings.json', settings)
   return settings
 }

@@ -43,6 +43,10 @@ export type WorkshopAiCustomProvider = {
 export const WORKSHOP_AI_PROVIDER_ID = /^[a-z0-9][a-z0-9-]{0,31}$/
 export const WORKSHOP_AI_MAX_PROVIDERS = 8
 
+// Custom ids whose `<id>-key.json` status file would collide with a preset's:
+// `ai` → ai-key.json (OpenRouter), `ai-gateway` → ai-gateway-key.json.
+export const WORKSHOP_AI_RESERVED_IDS: readonly string[] = ['ai', 'ai-gateway']
+
 export const isWorkshopAiProviderId = (value: unknown): value is string =>
   typeof value === 'string' && WORKSHOP_AI_PROVIDER_ID.test(value)
 

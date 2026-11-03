@@ -4,6 +4,7 @@ import { fail } from './account.ts'
 import {
   WORKSHOP_AI_DEFAULTS,
   WORKSHOP_AI_MAX_PROVIDERS,
+  WORKSHOP_AI_RESERVED_IDS,
   isWorkshopAiBaseUrl,
   isWorkshopAiKey,
   isWorkshopAiModel,
@@ -68,7 +69,12 @@ function providers(value: unknown): WorkshopAiCustomProvider[] {
   const seen = new Set<string>()
   return value.map((entry) => {
     if (!plain(entry)) throw fail(400, 'Провайдер: id, название и https-адрес.')
-    if (!isWorkshopAiProviderId(entry.id) || isWorkshopAiProvider(entry.id) || seen.has(entry.id))
+    if (
+      !isWorkshopAiProviderId(entry.id) ||
+      isWorkshopAiProvider(entry.id) ||
+      WORKSHOP_AI_RESERVED_IDS.includes(entry.id) ||
+      seen.has(entry.id)
+    )
       throw fail(400, 'ID провайдера: a-z, 0-9 и дефис; уникален и не встроенный.')
     seen.add(entry.id)
     if (typeof entry.label !== 'string' || !entry.label.trim() || entry.label.length > 80)

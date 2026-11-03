@@ -121,6 +121,9 @@ test('settings validate a closed schema with one shape check per model, never a 
     (value) => (value.providers = [{ id: 'Bad_Id', label: 'X', baseUrl: 'https://x.example.com' }]),
     (value) =>
       (value.providers = [{ id: 'openrouter', label: 'X', baseUrl: 'https://x.example.com' }]),
+    (value) => (value.providers = [{ id: 'ai', label: 'X', baseUrl: 'https://x.example.com' }]),
+    (value) =>
+      (value.providers = [{ id: 'ai-gateway', label: 'X', baseUrl: 'https://x.example.com' }]),
     (value) =>
       (value.providers = [
         { id: 'a', label: 'A', baseUrl: 'https://a.example.com' },
@@ -331,6 +334,44 @@ test('settings save uses optimistic revision and rejects unknown keys', (t) => {
   assert.equal(
     JSON.parse(readFileSync(join(directory, 'workshop-ai-settings.json'), 'utf8')).revision,
     1,
+  )
+})
+
+test('a doc that would overflow the settings file is refused instead of bricking reads', (t) => {
+  const directory = temp(t)
+  // Field caps fit the request body, but JSON escaping inflates the stored file past 8 KiB.
+  const control = '\u0001'
+  const providers = Array.from({ length: 8 }, (_, index) => ({
+    id: `p${index}`,
+    label: `a${control.repeat(79)}`,
+    baseUrl: `https://x.example.com/${control.repeat(150)}`,
+  }))
+  rejected(
+    () =>
+      saveWorkshopAiSettings(
+        directory,
+        {
+          expectedRevision: 0,
+          enabled: false,
+          provider: 'openrouter',
+          providers,
+          generationModel: 'a/b',
+          guardModel: 'a/c',
+          transcriptionModel: 'a/d',
+          maxBlocks: 1,
+          blocksPerTick: 1,
+          minimumBuildTicks: 40,
+          applyBudgetMs: 1,
+          hourlyRequestLimit: 1,
+          hourlyPlayerRequestLimit: 1,
+          maxHourlyBuilders: 1,
+          generationMaxPricePromptUsdPerM: 0,
+          generationMaxPriceCompletionUsdPerM: 0,
+          inputGuardEnabled: false,
+        },
+        () => true,
+      ),
+    413,
   )
 })
 
