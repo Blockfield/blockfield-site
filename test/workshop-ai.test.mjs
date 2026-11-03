@@ -194,6 +194,13 @@ test('custom providers accept native model ids keyed by the selected provider', 
   guardNative.guardProvider = 'my-proxy'
   guardNative.guardModel = 'gpt-4o-mini'
   assert.equal(validateWorkshopAiSettings(guardNative).guardModel, 'gpt-4o-mini')
+  // Custom providers still accept the previous vendor/name shape, including long ids.
+  const legacyLong = settings()
+  legacyLong.transcriptionModel = `vendor/${'x'.repeat(112)}`
+  assert.equal(
+    validateWorkshopAiSettings(legacyLong).transcriptionModel,
+    `vendor/${'x'.repeat(112)}`,
+  )
 })
 
 test('missing file returns defaults with revision 0; corrupt or oversized files fail closed', (t) => {
