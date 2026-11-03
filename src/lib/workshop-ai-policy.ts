@@ -8,6 +8,7 @@ import {
   isWorkshopAiBaseUrl,
   isWorkshopAiKey,
   isWorkshopAiModel,
+  isWorkshopAiNativeModel,
   isWorkshopAiProvider,
   isWorkshopAiProviderId,
   type WorkshopAiCustomProvider,
@@ -58,8 +59,11 @@ function decimal(value: unknown, min: number, max: number, message: string): num
   return value
 }
 
-function model(value: unknown, message: string): string {
-  if (!isWorkshopAiModel(value)) throw fail(400, message)
+function model(value: unknown, provider: string, customIds: string[], message: string): string {
+  // Presets keep the vendor/name shape; custom providers accept it as well as native ids.
+  if (customIds.includes(provider)) {
+    if (!isWorkshopAiModel(value) && !isWorkshopAiNativeModel(value)) throw fail(400, message)
+  } else if (!isWorkshopAiModel(value)) throw fail(400, message)
   return value
 }
 
@@ -110,36 +114,59 @@ export function validateWorkshopAiSettings(value: unknown): WorkshopAiSettings {
     value.provider,
     'Провайдер расшифровки: выберите из списка.',
   )
+  const generationProvider = ref(
+    value.generationProvider,
+    value.provider,
+    'Провайдер генерации: выберите из списка.',
+  )
+  const guardProvider = ref(
+    value.guardProvider,
+    value.provider,
+    'Провайдер сторожа: выберите из списка.',
+  )
+  const cleanupProvider = ref(
+    value.cleanupProvider,
+    transcriptionProvider,
+    'Провайдер чистки: выберите из списка.',
+  )
   return {
     schema: 1,
     revision: value.revision,
     enabled: value.enabled,
     provider: value.provider,
-    generationProvider: ref(
-      value.generationProvider,
-      value.provider,
-      'Провайдер генерации: выберите из списка.',
-    ),
-    guardProvider: ref(
-      value.guardProvider,
-      value.provider,
-      'Провайдер сторожа: выберите из списка.',
-    ),
+    generationProvider,
+    guardProvider,
     transcriptionProvider,
     providers: custom,
     inputGuardEnabled: value.inputGuardEnabled,
-    generationModel: model(value.generationModel, 'Модель генерации: vendor/model.'),
-    guardModel: model(value.guardModel, 'Сторожевая модель: vendor/model.'),
-    transcriptionModel: model(value.transcriptionModel, 'Модель расшифровки: vendor/model.'),
+    generationModel: model(
+      value.generationModel,
+      generationProvider,
+      customIds,
+      'Модель генерации: vendor/model.',
+    ),
+    guardModel: model(
+      value.guardModel,
+      guardProvider,
+      customIds,
+      'Сторожевая модель: vendor/model.',
+    ),
+    transcriptionModel: model(
+      value.transcriptionModel,
+      transcriptionProvider,
+      customIds,
+      'Модель расшифровки: vendor/model.',
+    ),
     cleanupModel:
       value.cleanupModel === undefined || value.cleanupModel === ''
         ? ''
-        : model(value.cleanupModel, 'Модель чистки: vendor/model или пусто.'),
-    cleanupProvider: ref(
-      value.cleanupProvider,
-      transcriptionProvider,
-      'Провайдер чистки: выберите из списка.',
-    ),
+        : model(
+            value.cleanupModel,
+            cleanupProvider,
+            customIds,
+            'Модель чистки: vendor/model или пусто.',
+          ),
+    cleanupProvider,
     maxBlocks: int(value.maxBlocks, 1, 32768, 'Максимум блоков: 1…32768.'),
     blocksPerTick: int(value.blocksPerTick, 1, 16384, 'Блоков в тик: 1…16384.'),
     minimumBuildTicks: int(value.minimumBuildTicks, 40, 1200, 'Минимум тиков стройки: 40…1200.'),
