@@ -61,10 +61,9 @@ function decimal(value: unknown, min: number, max: number, message: string): num
 
 function model(value: unknown, provider: string, customIds: string[], message: string): string {
   // Native ids are allowed only on custom providers; presets keep the vendor/name shape.
-  const ok = customIds.includes(provider)
-    ? isWorkshopAiNativeModel(value)
-    : isWorkshopAiModel(value)
-  if (!ok) throw fail(400, message)
+  if (customIds.includes(provider)) {
+    if (!isWorkshopAiNativeModel(value)) throw fail(400, message)
+  } else if (!isWorkshopAiModel(value)) throw fail(400, message)
   return value
 }
 
