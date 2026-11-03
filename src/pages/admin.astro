@@ -624,11 +624,11 @@ const cpGate = cpConfigured()
             </header>
             <p class="form-status" id="sync-status" role="status"></p>
           </div>
-          <details class="disclosure" data-perm="settings">
+          <details class="disclosure" data-perm="ai">
             <summary>Бюджет AI</summary>
             <p class="muted">
-              Общий бюджет текущего сеанса или отдельный для участника. Настраивают только
-              администраторы сайта; владение картой или сеансом не даёт дополнительных прав.
+              Общий бюджет текущего сеанса или отдельный для участника. Настраивает только владелец;
+              владение картой или сеансом не даёт дополнительных прав.
             </p>
             <p id="ai-budget-status" class="form-status" role="status">
               Получаем политику бюджета…
@@ -638,11 +638,14 @@ const cpGate = cpConfigured()
               Обновить состояние бюджета
             </button>
           </details>
-          <details class="disclosure" data-perm="settings">
+          <details class="disclosure" data-perm="ai">
             <summary>AI мастерской</summary>
             <p class="muted">
-              Включение AI, модели генерации, сторожа и расшифровки, а также ключ OpenRouter. Ключ
-              хранится только в мастерской и после сохранения никогда не показывается.
+              Включение AI, провайдер, модели генерации, сторожа и расшифровки, темп, квота запросов
+              и потолки тарифа генерации, а также ключ OpenRouter. Лимиты действуют только на модель
+              генерации; проверки-помощники и расшифровка не ограничиваются. Ключ хранится только в
+              мастерской и после сохранения никогда не показывается. Для Vercel AI Gateway ключ
+              задаётся файлом на хосте, форма ключа ниже не нужна.
             </p>
             <p id="workshop-ai-status" class="form-status" role="status">
               Получаем настройки…
@@ -651,6 +654,15 @@ const cpGate = cpConfigured()
               <label class="check" for="workshop-ai-enabled">
                 <input type="checkbox" id="workshop-ai-enabled" />
                 AI включён
+              </label>
+              <label for="workshop-ai-provider">Провайдер</label>
+              <select id="workshop-ai-provider">
+                <option value="openrouter">OpenRouter</option>
+                <option value="vercel-gateway">Vercel AI Gateway</option>
+              </select>
+              <label class="check" for="workshop-ai-input-guard">
+                <input type="checkbox" id="workshop-ai-input-guard" />
+                Проверка входа сторожем
               </label>
               <label for="workshop-ai-generation">Модель генерации</label>
               <input
@@ -670,13 +682,70 @@ const cpGate = cpConfigured()
                 aria-describedby="workshop-ai-guard-hint"
               />
               <small id="workshop-ai-guard-hint" class="muted">
-                Только typesafe/jev-…: сторож ходит в Typesafe API.
+                Любая vendor/model; под gateway сторож выключен.
               </small>
               <label for="workshop-ai-transcription">Модель расшифровки</label>
-              <select id="workshop-ai-transcription">
-                <option value="elevenlabs/scribe-v2">elevenlabs/scribe-v2</option>
-                <option value="openai/whisper-1">openai/whisper-1</option>
-              </select>
+              <input
+                id="workshop-ai-transcription"
+                autocomplete="off"
+                spellcheck="false"
+                maxlength="128"
+                placeholder="openai/whisper-1"
+              />
+              <label for="workshop-ai-max-blocks">Максимум блоков</label>
+              <input id="workshop-ai-max-blocks" type="number" min="1" max="32768" step="1" />
+              <label for="workshop-ai-blocks-per-tick">Блоков в тик</label>
+              <input id="workshop-ai-blocks-per-tick" type="number" min="1" max="16384" step="1" />
+              <label for="workshop-ai-minimum-build-ticks">Минимум тиков стройки</label>
+              <input
+                id="workshop-ai-minimum-build-ticks"
+                type="number"
+                min="40"
+                max="1200"
+                step="1"
+              />
+              <label for="workshop-ai-apply-budget-ms">Бюджет тика, мс</label>
+              <input id="workshop-ai-apply-budget-ms" type="number" min="1" max="20" step="1" />
+              <label for="workshop-ai-hourly-request-limit">Запросов в час, всего</label>
+              <input
+                id="workshop-ai-hourly-request-limit"
+                type="number"
+                min="1"
+                max="1000000"
+                step="1"
+              />
+              <label for="workshop-ai-hourly-player-request-limit">Запросов в час, игрок</label>
+              <input
+                id="workshop-ai-hourly-player-request-limit"
+                type="number"
+                min="1"
+                max="1000000"
+                step="1"
+              />
+              <label for="workshop-ai-max-hourly-builders">Строителей в час</label>
+              <input
+                id="workshop-ai-max-hourly-builders"
+                type="number"
+                min="1"
+                max="4096"
+                step="1"
+              />
+              <label for="workshop-ai-prompt-cap">Потолок входа, USD за млн токенов</label>
+              <input
+                id="workshop-ai-prompt-cap"
+                type="text"
+                inputmode="decimal"
+                maxlength="32"
+                autocomplete="off"
+              />
+              <label for="workshop-ai-completion-cap">Потолок выхода, USD за млн токенов</label>
+              <input
+                id="workshop-ai-completion-cap"
+                type="text"
+                inputmode="decimal"
+                maxlength="32"
+                autocomplete="off"
+              />
               <div class="actions">
                 <button class="primary" type="submit">
                   Сохранить AI мастерской
@@ -685,12 +754,17 @@ const cpGate = cpConfigured()
             </form>
             <div class="group" aria-labelledby="workshop-ai-key-title">
               <header class="stack-head">
-                <h3 id="workshop-ai-key-title">Ключ OpenRouter</h3>
+                <h3 id="workshop-ai-key-title">Ключ провайдера</h3>
               </header>
               <p class="muted">
                 Ключ виден только сейчас: после сохранения поле очищается и значение не
                 подставляется.
               </p>
+              <label for="workshop-ai-key-provider">Провайдер ключа</label>
+              <select id="workshop-ai-key-provider">
+                <option value="openrouter">OpenRouter</option>
+                <option value="vercel-gateway">Vercel AI Gateway</option>
+              </select>
               <label for="workshop-ai-key">Новый ключ</label>
               <input
                 id="workshop-ai-key"
@@ -708,6 +782,9 @@ const cpGate = cpConfigured()
                 </button>
               </div>
               <p id="workshop-ai-key-status" class="form-status" role="status">
+                Проверяем ключ…
+              </p>
+              <p id="workshop-ai-gateway-key-status" class="form-status" role="status">
                 Проверяем ключ…
               </p>
             </div>
@@ -2368,7 +2445,7 @@ const cpGate = cpConfigured()
     import { settingsBody, settingsReceipt } from '../lib/settings-form'
     import { bodyPartSummary, renderBodyPartField } from '../lib/body-part-form'
     import { renderAiBudgetForm, type BudgetTarget } from '../lib/ai-budget-form'
-    import { isWorkshopAiGuardModel, workshopAiKeyLine } from '../lib/workshop-ai'
+    import { isWorkshopAiModel, workshopAiKeyLine } from '../lib/workshop-ai'
     import { canonicalBudgetUuid } from '../lib/ai-budget'
     import { weaponFields } from '../lib/gun-fields'
     import { finalDamageVsMatchKit } from '../lib/gun-damage'
@@ -7429,7 +7506,12 @@ const cpGate = cpConfigured()
 
     // ---------- Workshop AI ----------
     let workshopAiRevision = 0
-    function sayWorkshopAiKey(status: any, result: any, waiting: boolean) {
+    function sayWorkshopAiKey(
+      status: any,
+      result: any,
+      waiting: boolean,
+      line: HTMLElement = $('#workshop-ai-key-status'),
+    ) {
       const error =
         result && !result.ok
           ? typeof result.error === 'string' && result.error
@@ -7437,7 +7519,7 @@ const cpGate = cpConfigured()
             : 'контроллер отклонил запрос.'
           : null
       say(
-        $('#workshop-ai-key-status'),
+        line,
         workshopAiKeyLine(status ?? { set: false }, { waiting, error }, date),
         error ? 'error' : waiting ? 'pending' : 'ok',
       )
@@ -7445,39 +7527,74 @@ const cpGate = cpConfigured()
     function checkWorkshopAiGuard() {
       const hint = $('#workshop-ai-guard-hint')
       const value = $<HTMLInputElement>('#workshop-ai-guard').value.trim()
-      const valid = !value || isWorkshopAiGuardModel(value)
+      const valid = !value || isWorkshopAiModel(value)
       hint.textContent = valid
-        ? 'Только typesafe/jev-…: сторож ходит в Typesafe API.'
-        : 'Сторожевая модель: только typesafe/jev-…'
+        ? 'Любая vendor/model; под gateway сторож выключен.'
+        : 'Сторожевая модель: vendor/model.'
       hint.classList.toggle('error', !valid)
       return valid
     }
+    const keyEndpoint = () =>
+      $<HTMLSelectElement>('#workshop-ai-key-provider').value === 'vercel-gateway'
+        ? 'workshop-ai-gateway-key'
+        : 'workshop-ai-key'
+    const keyLine = () =>
+      $<HTMLSelectElement>('#workshop-ai-key-provider').value === 'vercel-gateway'
+        ? $('#workshop-ai-gateway-key-status')
+        : $('#workshop-ai-key-status')
     async function loadWorkshopAi() {
-      const [{ settings }, key] = await Promise.all([
+      const [{ settings }, key, gatewayKey] = await Promise.all([
         api('workshop-ai-settings'),
         api('workshop-ai-key'),
+        api('workshop-ai-gateway-key'),
       ])
       workshopAiRevision = settings.revision
       $<HTMLInputElement>('#workshop-ai-enabled').checked = settings.enabled
+      $<HTMLSelectElement>('#workshop-ai-provider').value = settings.provider
+      $<HTMLInputElement>('#workshop-ai-input-guard').checked = settings.inputGuardEnabled
       $<HTMLInputElement>('#workshop-ai-generation').value = settings.generationModel
       $<HTMLInputElement>('#workshop-ai-guard').value = settings.guardModel
-      $<HTMLSelectElement>('#workshop-ai-transcription').value = settings.transcriptionModel
+      $<HTMLInputElement>('#workshop-ai-transcription').value = settings.transcriptionModel
+      $<HTMLInputElement>('#workshop-ai-max-blocks').value = String(settings.maxBlocks)
+      $<HTMLInputElement>('#workshop-ai-blocks-per-tick').value = String(settings.blocksPerTick)
+      $<HTMLInputElement>('#workshop-ai-minimum-build-ticks').value = String(
+        settings.minimumBuildTicks,
+      )
+      $<HTMLInputElement>('#workshop-ai-apply-budget-ms').value = String(settings.applyBudgetMs)
+      $<HTMLInputElement>('#workshop-ai-hourly-request-limit').value = String(
+        settings.hourlyRequestLimit,
+      )
+      $<HTMLInputElement>('#workshop-ai-hourly-player-request-limit').value = String(
+        settings.hourlyPlayerRequestLimit,
+      )
+      $<HTMLInputElement>('#workshop-ai-max-hourly-builders').value = String(
+        settings.maxHourlyBuilders,
+      )
+      $<HTMLInputElement>('#workshop-ai-prompt-cap').value = String(
+        settings.generationMaxPricePromptUsdPerM,
+      )
+      $<HTMLInputElement>('#workshop-ai-completion-cap').value = String(
+        settings.generationMaxPriceCompletionUsdPerM,
+      )
       checkWorkshopAiGuard()
       say($('#workshop-ai-status'), `Настройки сохранены в ревизии ${settings.revision}.`)
       sayWorkshopAiKey(key.status, null, false)
+      say(
+        $('#workshop-ai-gateway-key-status'),
+        workshopAiKeyLine(gatewayKey.status ?? { set: false }, { waiting: false }, date),
+      )
     }
-    async function pollWorkshopAiKey(id: string) {
-      const line = $('#workshop-ai-key-status')
+    async function pollWorkshopAiKey(id: string, endpoint: string, line: HTMLElement) {
       for (let attempt = 0; attempt < 10; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 3000))
         try {
-          const key = await api(`workshop-ai-key?id=${id}`)
+          const key = await api(`${endpoint}?id=${id}`)
           if (!key.result) {
             say(line, workshopAiKeyLine(key.status, { waiting: true }, date), 'pending')
             continue
           }
           if (key.result.ok) await loadWorkshopAi()
-          else sayWorkshopAiKey(key.status, key.result, false)
+          else sayWorkshopAiKey(key.status, key.result, false, line)
           return
         } catch {
           // One failed poll must not hide the pending state; the next attempt retries.
@@ -7489,12 +7606,33 @@ const cpGate = cpConfigured()
     $('#workshop-ai-form').onsubmit = (event) => {
       event.preventDefault()
       run($('#workshop-ai-status'), async () => {
+        const int = (id: string) => {
+          const value = Number($<HTMLInputElement>(id).value)
+          if (!Number.isSafeInteger(value)) throw new Error('Целое число вне диапазона.')
+          return value
+        }
+        const decimal = (id: string) => {
+          const value = Number($<HTMLInputElement>(id).value.replace(',', '.'))
+          if (!Number.isFinite(value)) throw new Error('Число вне диапазона.')
+          return value
+        }
         const body = {
           expectedRevision: workshopAiRevision,
           enabled: $<HTMLInputElement>('#workshop-ai-enabled').checked,
+          provider: $<HTMLSelectElement>('#workshop-ai-provider').value,
+          inputGuardEnabled: $<HTMLInputElement>('#workshop-ai-input-guard').checked,
           generationModel: $<HTMLInputElement>('#workshop-ai-generation').value.trim(),
           guardModel: $<HTMLInputElement>('#workshop-ai-guard').value.trim(),
-          transcriptionModel: $<HTMLSelectElement>('#workshop-ai-transcription').value,
+          transcriptionModel: $<HTMLInputElement>('#workshop-ai-transcription').value.trim(),
+          maxBlocks: int('#workshop-ai-max-blocks'),
+          blocksPerTick: int('#workshop-ai-blocks-per-tick'),
+          minimumBuildTicks: int('#workshop-ai-minimum-build-ticks'),
+          applyBudgetMs: int('#workshop-ai-apply-budget-ms'),
+          hourlyRequestLimit: int('#workshop-ai-hourly-request-limit'),
+          hourlyPlayerRequestLimit: int('#workshop-ai-hourly-player-request-limit'),
+          maxHourlyBuilders: int('#workshop-ai-max-hourly-builders'),
+          generationMaxPricePromptUsdPerM: decimal('#workshop-ai-prompt-cap'),
+          generationMaxPriceCompletionUsdPerM: decimal('#workshop-ai-completion-cap'),
         }
         try {
           const { settings } = await api('workshop-ai-settings', 'PUT', body)
@@ -7514,32 +7652,40 @@ const cpGate = cpConfigured()
     $('#workshop-ai-key-save').onclick = () => {
       const field = $<HTMLInputElement>('#workshop-ai-key')
       const key = field.value
+      const endpoint = keyEndpoint()
+      const line = keyLine()
       if (!key) {
-        say($('#workshop-ai-key-status'), 'Вставьте ключ в поле «Новый ключ».', 'error')
+        say(line, 'Вставьте ключ в поле «Новый ключ».', 'error')
         return
       }
-      run($('#workshop-ai-key-status'), async () => {
-        const { id } = await api('workshop-ai-key', 'POST', { key })
+      run(line, async () => {
+        const { id } = await api(endpoint, 'POST', { key })
         field.value = ''
-        say($('#workshop-ai-key-status'), 'Ключ применяется…', 'pending')
-        await pollWorkshopAiKey(id)
+        say(line, 'Ключ применяется…', 'pending')
+        await pollWorkshopAiKey(id, endpoint, line)
       })
     }
     $('#workshop-ai-key-delete').onclick = async () => {
+      const endpoint = keyEndpoint()
+      const line = keyLine()
+      const provider =
+        $<HTMLSelectElement>('#workshop-ai-key-provider').value === 'vercel-gateway'
+          ? 'Vercel AI Gateway'
+          : 'OpenRouter'
       if (
         !(await ask({
-          title: 'Удалить ключ OpenRouter?',
+          title: `Удалить ключ ${provider}?`,
           text: 'Мастерская потеряет доступ к AI, пока не сохраните новый ключ.',
           ok: 'Удалить',
           danger: true,
         }))
       )
         return
-      run($('#workshop-ai-key-status'), async () => {
-        const { id } = await api('workshop-ai-key', 'POST', { key: null })
+      run(line, async () => {
+        const { id } = await api(endpoint, 'POST', { key: null })
         $<HTMLInputElement>('#workshop-ai-key').value = ''
-        say($('#workshop-ai-key-status'), 'Ключ применяется…', 'pending')
-        await pollWorkshopAiKey(id)
+        say(line, 'Ключ применяется…', 'pending')
+        await pollWorkshopAiKey(id, endpoint, line)
       })
     }
     $('#workshop-ai-refresh').onclick = async () => {
@@ -10970,8 +11116,8 @@ const cpGate = cpConfigured()
           ['settings', () => loadSettings(), 'Настройки'],
           ['settings', loadGunBalance, 'Баланс оружия'],
           ['settings', loadKits, 'Наборы'],
-          ['settings', loadAiBudget, 'Бюджет AI'],
-          ['settings', loadWorkshopAi, 'AI мастерской'],
+          ['ai', loadAiBudget, 'Бюджет AI'],
+          ['ai', loadWorkshopAi, 'AI мастерской'],
           ['roles', loadTeam, 'Команда'],
           ['view', loadCandidates, 'Кандидаты'],
           ['view', loadMapHistory, 'Архив карт'],

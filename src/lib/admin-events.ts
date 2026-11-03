@@ -34,6 +34,16 @@ export function eventAllowed(role: Role | null, event: AdminEvent) {
     event.type === 'audit' ? 'audit' : event.type === 'settings' ? 'settings' : 'view',
   )
 }
+// Key results carry identifying tails any viewer could read off the broadcast
+// `request` events or the `view`-gated generic result route. Owners read the full
+// result through their own key-status routes; everyone else gets this copy.
+export function redactKeyResult(result: any): any {
+  if (result?.kind !== 'ai-key' && result?.kind !== 'ai-gateway-key') return result
+  const redacted = { ...result }
+  delete redacted.last4
+  delete redacted.sha256Prefix
+  return redacted
+}
 export function publish(input: Omit<AdminEvent, 'at'> & { type: AdminEvent['type']; at?: number }) {
   const event: AdminEvent = { ...input, at: input.at ?? Date.now() }
   const id = `${epoch}:${++sequence}`
@@ -154,7 +164,8 @@ function watchResults() {
   watchDirectory(directory, (name) => {
     if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.test(name)) return
     const result = readFile(join(directory, name))
-    if (result !== null) publish({ type: 'request', id: name.slice(0, -5), result })
+    if (result !== null)
+      publish({ type: 'request', id: name.slice(0, -5), result: redactKeyResult(result) })
   })
   if (watchers.length > before) resultsDirectory = directory
   else pendingWatches.set(directory, () => watchResults())

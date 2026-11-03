@@ -19,7 +19,7 @@ import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
 import { account, drasl, fail, nickname, readJson, session, sessionToken } from './account.ts'
 import { rcon } from './rcon.ts'
-import { eventStream, heartbeat } from './admin-events.ts'
+import { eventStream, heartbeat, redactKeyResult } from './admin-events.ts'
 import {
   consoleLogPage,
   consoleSince,
@@ -79,7 +79,8 @@ const PERMISSIONS: Record<Role, string[]> = {
   builder: ['view', 'map-edit'],
   moderator,
   admin,
-  owner: [...admin, 'roles-admin', 'rcon-raw'],
+  // Money and every Workshop AI setting are owner-only: admins below owner cannot change them.
+  owner: [...admin, 'roles-admin', 'rcon-raw', 'ai'],
 }
 export const permissions = (role: Role | null) =>
   role && Object.hasOwn(PERMISSIONS, role) ? PERMISSIONS[role] : []
@@ -1010,14 +1011,20 @@ export function writeRequest(
         ? { resolutions: resolutions(body.resolutions) }
         : {}),
     }
-  } else if (body?.kind === 'ai-key') {
-    // The OpenRouter key is write-only: it travels to the controller inbox and never
-    // lands in settings, the DB, logs or responses. Validation errors never echo it.
+  } else if (body?.kind === 'ai-key' || body?.kind === 'ai-gateway-key') {
+    // Keys are write-only: they travel to the controller inbox and never
+    // land in settings, the DB, logs or responses. Validation errors never echo them.
     if (!plain(body) || !Object.hasOwn(body, 'key')) throw bad('Укажите ключ или его удаление.')
-    request = { ...base, key: validateWorkshopAiKey(body.key) }
+    request = { ...base, kind: body.kind, key: validateWorkshopAiKey(body.key) }
   } else throw bad('Неизвестный тип запроса.')
   // The site and the controller's reader share UID 1000; a key request is readable by them only.
-  writeAtomic(directory, `${base.id}.json`, request, request.kind === 'ai-key' ? 0o600 : undefined)
+  const keyKinds = ['ai-key', 'ai-gateway-key']
+  writeAtomic(
+    directory,
+    `${base.id}.json`,
+    request,
+    keyKinds.includes(request.kind as string) ? 0o600 : undefined,
+  )
   return base.id
 }
 
@@ -1415,9 +1422,20 @@ export function saveWorkshopAiSettings(directory: string, body: any, keySet: boo
         ![
           'expectedRevision',
           'enabled',
+          'provider',
           'generationModel',
           'guardModel',
           'transcriptionModel',
+          'maxBlocks',
+          'blocksPerTick',
+          'minimumBuildTicks',
+          'applyBudgetMs',
+          'hourlyRequestLimit',
+          'hourlyPlayerRequestLimit',
+          'maxHourlyBuilders',
+          'generationMaxPricePromptUsdPerM',
+          'generationMaxPriceCompletionUsdPerM',
+          'inputGuardEnabled',
         ].includes(key),
     )
   )
@@ -1431,12 +1449,24 @@ export function saveWorkshopAiSettings(directory: string, body: any, keySet: boo
     schema: 1,
     revision: current.revision + 1,
     enabled: body.enabled,
+    provider: body.provider,
     generationModel: body.generationModel,
     guardModel: body.guardModel,
     transcriptionModel: body.transcriptionModel,
+    maxBlocks: body.maxBlocks,
+    blocksPerTick: body.blocksPerTick,
+    minimumBuildTicks: body.minimumBuildTicks,
+    applyBudgetMs: body.applyBudgetMs,
+    hourlyRequestLimit: body.hourlyRequestLimit,
+    hourlyPlayerRequestLimit: body.hourlyPlayerRequestLimit,
+    maxHourlyBuilders: body.maxHourlyBuilders,
+    generationMaxPricePromptUsdPerM: body.generationMaxPricePromptUsdPerM,
+    generationMaxPriceCompletionUsdPerM: body.generationMaxPriceCompletionUsdPerM,
+    inputGuardEnabled: body.inputGuardEnabled,
   })
-  // Workshop refuses to start an enabled AI without its key; say so here instead of silently.
-  if (settings.enabled && !keySet)
+  // Workshop refuses to start an enabled OpenRouter AI without its key; say so here instead of
+  // silently. The gateway key lives in a host file, which the site cannot verify.
+  if (settings.provider === 'openrouter' && settings.enabled && !keySet)
     throw fail(400, 'Сначала сохраните ключ OpenRouter и дождитесь статуса «Ключ задан».')
   writeAtomic(directory, 'workshop-ai-settings.json', settings)
   return settings
@@ -1755,6 +1785,22 @@ export async function overviewSnapshot() {
   }
 }
 
+// Owner-only amounts/limits must never reach admins through the audit log,
+// including rows written before the write callbacks started redacting them.
+const redactAuditDetail = (action: string, detail: unknown): unknown => {
+  if (action !== 'ai-limits' && action !== 'workshop-ai-settings') return detail
+  let parsed: unknown
+  try {
+    parsed = typeof detail === 'string' ? JSON.parse(detail) : detail
+  } catch {
+    return null
+  }
+  if (!plain(parsed)) return null
+  return action === 'ai-limits'
+    ? { mode: parsed.mode }
+    : { enabled: parsed.enabled, provider: parsed.provider }
+}
+
 const routes: Record<string, Route> = {
   'GET overview': {
     permission: 'view',
@@ -1762,8 +1808,10 @@ const routes: Record<string, Route> = {
   },
   'GET request': {
     permission: 'view',
+    // Key tails are owner-only: the generic view-gated route serves a redacted
+    // copy, owners read the full result through their key-status routes.
     handler: ({ context }) => ({
-      result: readRequestResult(context.url.searchParams.get('id') ?? ''),
+      result: redactKeyResult(readRequestResult(context.url.searchParams.get('id') ?? '')),
     }),
   },
   'POST mode': {
@@ -2034,25 +2082,26 @@ const routes: Record<string, Route> = {
     }),
   },
   'GET ai-limits': {
-    permission: 'settings',
+    permission: 'ai',
     handler: () => ({ policy: readAiLimits(settingsDir()) }),
   },
   'PUT ai-limits': {
-    permission: 'settings',
+    permission: 'ai',
     maxBody: 65_536,
     handler: ({ body }) => ({ policy: saveAiLimits(settingsDir(), body) }),
     audit: (body, result) => ({
       action: 'ai-limits',
       target: result?.policy ? `revision ${result.policy.revision}` : null,
-      detail: body,
+      // Grant amounts are owner-only and admins read the audit log: keep the mode only.
+      detail: { mode: body?.mode },
     }),
   },
   'GET workshop-ai-settings': {
-    permission: 'settings',
+    permission: 'ai',
     handler: () => ({ settings: readWorkshopAiSettings(settingsDir()) }),
   },
   'PUT workshop-ai-settings': {
-    permission: 'settings',
+    permission: 'ai',
     maxBody: 4096,
     handler: ({ body }) => ({
       settings: saveWorkshopAiSettings(
@@ -2064,11 +2113,13 @@ const routes: Record<string, Route> = {
     audit: (body, result) => ({
       action: 'workshop-ai-settings',
       target: result?.settings ? `revision ${result.settings.revision}` : null,
-      detail: body,
+      // Limits, models and tariff ceilings are owner-only and admins read the
+      // audit log: keep the operational switches only, never the values.
+      detail: { enabled: body?.enabled, provider: body?.provider },
     }),
   },
   'GET workshop-ai-key': {
-    permission: 'settings',
+    permission: 'ai',
     handler: ({ context }) => {
       const id = context.url.searchParams.get('id')
       return {
@@ -2078,13 +2129,35 @@ const routes: Record<string, Route> = {
     },
   },
   'POST workshop-ai-key': {
-    permission: 'settings',
+    permission: 'ai',
     maxBody: 4096,
     handler: ({ actor, body }) => ({
       id: writeRequest(inboxDir(), actor, { kind: 'ai-key', key: body?.key }),
     }),
     // The key itself never reaches the audit log: only whether it is set or removed.
     audit: (body) => ({ action: 'workshop-ai-key', detail: { remove: body?.key == null } }),
+  },
+  'GET workshop-ai-gateway-key': {
+    permission: 'ai',
+    handler: ({ context }) => {
+      const id = context.url.searchParams.get('id')
+      return {
+        status: readWorkshopAiKeyStatus(adminDir(), 'ai-gateway-key.json'),
+        result: id === null || id === '' ? null : readRequestResult(id),
+      }
+    },
+  },
+  'POST workshop-ai-gateway-key': {
+    permission: 'ai',
+    maxBody: 4096,
+    handler: ({ actor, body }) => ({
+      id: writeRequest(inboxDir(), actor, { kind: 'ai-gateway-key', key: body?.key }),
+    }),
+    // The key itself never reaches the audit log: only whether it is set or removed.
+    audit: (body) => ({
+      action: 'workshop-ai-gateway-key',
+      detail: { remove: body?.key == null },
+    }),
   },
   'GET gun-balance': {
     permission: 'settings',
@@ -2721,7 +2794,12 @@ const routes: Record<string, Route> = {
   'GET seasons': { permission: 'stats', handler: () => ({ seasons: seasons() }) },
   'GET audit': {
     permission: 'audit',
-    handler: async ({ store }) => ({ entries: await store.auditLog(200) }),
+    handler: async ({ store }) => ({
+      entries: (await store.auditLog(200)).map((entry: any) => ({
+        ...entry,
+        detail: redactAuditDetail(entry.action, entry.detail),
+      })),
+    }),
   },
 }
 routes['POST candidates/rollback'] = routes['POST maps/rollback']
