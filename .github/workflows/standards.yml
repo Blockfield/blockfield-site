@@ -4,8 +4,10 @@ on:
     branches: [main]
   # Bot-gate (enforcing): PR CI runs only when the GitHub App
   # `blockfield-review-bot[bot]` approves the CURRENT head SHA. Pushes to a PR
-  # branch fire no workflow run at all; only the bot's `pull_request_review`
-  # (submitted) on the new head starts CI. A stale approval (push between the
+  # branch fire no workflow run at all; only the bot's APPROVED `pull_request_review`
+  # (submitted) starts a runner. Any other review matches the trigger but skips
+  # every job at the job-level `if:`, so the run is all-skipped and bills
+  # 0 minutes. A stale approval (push between the
   # review and the run) is rejected by the commit_id == head SHA check below.
   # Draft PRs get no bot verdict, so no CI runs until the PR is marked ready.
   # Merge protection pairs this gate with the bot's own `bot-review` commit
@@ -31,11 +33,12 @@ permissions:
   actions: read # decide job looks up the green standards run for this tree
   pull-requests: read # bot-gate reads blockfield-review-bot verdicts on the head SHA
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'pull_request_review' && (github.event.review.user.login != 'blockfield-review-bot[bot]' || github.event.review.state != 'approved')) && 'review-noise' || 'gate' }}
   # A review must never cancel the run it gates.
   cancel-in-progress: false
 jobs:
   bot-gate:
+    name: ${{ (github.event_name == 'pull_request_review' && (github.event.review.user.login != 'blockfield-review-bot[bot]' || github.event.review.state != 'approved')) && 'bot-gate (skipped review)' || 'bot-gate' }}
     # Enforcing: `check` runs on a PR head only when this job reports
     # verdict=permit with sha_match=true for the CURRENT head SHA, resolved
     # from the API at gate runtime (a push may have landed after the
@@ -49,7 +52,7 @@ jobs:
     # independently.
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    if: github.event_name == 'pull_request_review'
+    if: github.event_name == 'pull_request_review' && github.event.review.user.login == 'blockfield-review-bot[bot]' && github.event.review.state == 'approved'
     outputs:
       verdict: ${{ steps.gate.outputs.verdict }}
       sha_match: ${{ steps.gate.outputs.sha_match }}
@@ -105,6 +108,10 @@ jobs:
           # until the bot approves). Push/dispatch runs never reach this job.
           [ "$verdict" = permit ] && [ "$sha_match" = true ]
   decide:
+    name: ${{ (github.event_name == 'pull_request_review' && (github.event.review.user.login != 'blockfield-review-bot[bot]' || github.event.review.state != 'approved')) && 'decide (skipped review)' || 'decide' }}
+    # Same gate as bot-gate: a non-approving or non-bot review must not start
+    # a runner here either. Push and manual-dispatch runs always run.
+    if: github.event_name != 'pull_request_review' || (github.event.review.user.login == 'blockfield-review-bot[bot]' && github.event.review.state == 'approved')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -125,6 +132,7 @@ jobs:
           echo "Same tree already tested: $tested."
           echo "tested=$tested" >> "$GITHUB_OUTPUT"
   check:
+    name: ${{ (github.event_name == 'pull_request_review' && (github.event.review.user.login != 'blockfield-review-bot[bot]' || github.event.review.state != 'approved')) && 'check (skipped review)' || 'check' }}
     needs: [decide, bot-gate]
     # `always()` keeps push CI working even though `bot-gate` is skipped on
     # push; review heads additionally need the gate permit on the exact SHA.
@@ -194,6 +202,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
   postgres:
+    name: ${{ (github.event_name == 'pull_request_review' && (github.event.review.user.login != 'blockfield-review-bot[bot]' || github.event.review.state != 'approved')) && 'postgres (skipped review)' || 'postgres' }}
     needs: [decide, bot-gate]
     if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (needs.bot-gate.outputs.verdict == 'permit' && needs.bot-gate.outputs.sha_match == 'true')) && needs.decide.outputs.tested != 'true'
     runs-on: blacksmith-2vcpu-ubuntu-2404
