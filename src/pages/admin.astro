@@ -67,7 +67,6 @@ const cpGate = cpConfigured()
           <div class="panel group" data-perm="view" aria-labelledby="mode-title">
             <header class="stack-head">
               <h3 id="mode-title">Игра и мастерская</h3>
-              <p class="muted">Игра продолжится, пока команда работает над картами.</p>
             </header>
             <p class="form-status" id="mode-progress" role="status"></p>
             <div id="mode-options" class="options"></div>
@@ -100,7 +99,6 @@ const cpGate = cpConfigured()
             </header>
             <div class="quick-group">
               <h4 id="range-title">Полигон</h4>
-              <p class="muted">Площадка в лобби, где пристреливают оружие.</p>
               <div class="actions">
                 <button type="button" data-range="open">
                   Открыть
@@ -141,15 +139,10 @@ const cpGate = cpConfigured()
                 </button>
               </div>
               <p class="muted">
-                «Не начинать новые» — идущие матчи доиграют, новые не начнутся. «Снова разрешить» —
-                отменяет запрет.{' '}
-                {cpGate
-                  ? '«Начать/Закончить техработы» — закрывает и открывает вход в игру через control-plane.'
-                  : '«Начать/Закончить техработы» недоступны: control-plane не настроен на сайте (BLOCKFIELD_CP_URL).'}
-                «Прервать» — останавливает всё сразу без победителя.{' '}
-                {cpGate
-                  ? 'Вход в игру читается из control-plane, файл — только запасной путь.'
-                  : 'Вход в игру закрывается отдельно на хосте, здесь видно только его состояние.'}
+                «Не начинать новые» — идущие матчи доиграют, новые не начнутся. «Прервать» —
+                останавливает всё сразу без победителя.
+                {!cpGate &&
+                  ' «Начать/Закончить техработы» недоступны: control-plane не настроен на сайте. Вход в игру закрывается отдельно на хосте, здесь видно только его состояние.'}
               </p>
               <p class="form-status" id="maint-status" role="status"></p>
             </div>
@@ -181,7 +174,6 @@ const cpGate = cpConfigured()
           <div class="panel group" aria-labelledby="say-title">
             <header class="stack-head">
               <h3 id="say-title">Объявление всем</h3>
-              <p class="muted">Сообщение сразу появится в чате у всех, кто сейчас на сервере.</p>
             </header>
             <form id="say-form" class="form-stack">
               <label for="say-text">Текст объявления</label>
@@ -198,7 +190,7 @@ const cpGate = cpConfigured()
             <header class="stack-head">
               <h3 id="byname-title">Найти по никнейму</h3>
               <p class="muted" id="byname-about">
-                Для тех, кого сейчас нет на сервере. Начните вводить никнейм — подскажем знакомые.
+                Для тех, кого сейчас нет на сервере.
               </p>
             </header>
             <form id="byname-form" class="form-stack">
@@ -229,7 +221,7 @@ const cpGate = cpConfigured()
           <div class="panel group" data-perm="ban" aria-labelledby="bans-title">
             <header class="stack-head">
               <h3 id="bans-title">Забаненные игроки</h3>
-              <p class="muted">Баны из панели. Бан из игры можно снять по никнейму.</p>
+              <p class="muted">Бан из игры можно снять по никнейму.</p>
             </header>
             <ul id="ban-list" class="rows"></ul>
             <p class="form-status" id="ban-status" role="status"></p>
@@ -246,7 +238,6 @@ const cpGate = cpConfigured()
           <h2 id="matches-title" tabindex="-1">
             Матчи
           </h2>
-          <p class="muted">Текущие бои и набор игроков.</p>
           <p class="form-status" id="room-status" role="status"></p>
           <div id="room-list" class="cards"></div>
         </section>
@@ -404,7 +395,6 @@ const cpGate = cpConfigured()
               <div id="gun-fields" class="fields"></div>
               <details id="gun-advanced" class="gun-advanced" hidden>
                 <summary>Дополнительно</summary>
-                <p class="muted">Редкие и сложные настройки, обычному оружию не нужны.</p>
                 <div id="gun-advanced-fields" class="fields"></div>
               </details>
             </section>
@@ -427,9 +417,7 @@ const cpGate = cpConfigured()
           <h2 id="kits-title" tabindex="-1">
             Наборы снаряжения
           </h2>
-          <p class="muted">
-            Снаряжение для следующих выдач игрокам. Уже выданные предметы останутся у них.
-          </p>
+          <p class="muted">Уже выданные предметы останутся у игроков.</p>
           <p id="kits-status" class="form-status" role="status">
             Получаем каталог наборов…
           </p>
@@ -474,7 +462,6 @@ const cpGate = cpConfigured()
           <h2 id="team-title" tabindex="-1">
             Команда
           </h2>
-          <p class="muted">Команда и её доступ к игре.</p>
           <section class="group" aria-labelledby="role-legend-title">
             <header>
               <h3 id="role-legend-title">Роли</h3>
@@ -502,9 +489,7 @@ const cpGate = cpConfigured()
                 autocomplete="off"
                 aria-describedby="grant-hint"
               />
-              <small id="grant-hint">
-                Начните вводить — подскажем тех, кто уже играл. Нужен аккаунт Blockfield.
-              </small>
+              <small id="grant-hint">Нужен аккаунт Blockfield.</small>
               <fieldset class="plain">
                 <legend>Роль</legend>
                 <div id="grant-roles" class="radios"></div>
@@ -529,9 +514,7 @@ const cpGate = cpConfigured()
           <h2 id="workshop-title" tabindex="-1">
             Мастерская
           </h2>
-          <p class="muted">
-            Отдельный сервер, где команда правит карты. Игра в это время работает как обычно.
-          </p>
+          <p class="muted">Игра в это время работает как обычно.</p>
           <div class="hero" id="ws-card" aria-live="polite">
             <span class="dot" aria-hidden="true"></span>
             <div class="ws-card__body">
@@ -641,10 +624,8 @@ const cpGate = cpConfigured()
           <details class="disclosure" data-perm="ai">
             <summary>AI мастерской</summary>
             <p class="muted">
-              Включение AI, провайдер по умолчанию и отдельно для каждой модели, свои совместимые
-              провайдеры, чистка расшифровки, темп, квота и потолки тарифа генерации. Лимиты
-              действуют только на модель генерации. Ключи хранятся только в мастерской и после
-              сохранения не показываются. Для Vercel AI Gateway ключ задаётся файлом на хосте.
+              Лимиты действуют только на модель генерации. Ключи хранятся только в мастерской и
+              после сохранения не показываются. Для Vercel AI Gateway ключ задаётся файлом на хосте.
             </p>
             <p id="workshop-ai-status" class="form-status" role="status">
               Получаем настройки…
@@ -715,9 +696,7 @@ const cpGate = cpConfigured()
                 <header class="stack-head">
                   <h3 id="workshop-ai-providers-title">Свои провайдеры</h3>
                 </header>
-                <p class="muted">
-                  До 8 адресов, совместимых с OpenAI. Ключ для каждого — в форме ниже.
-                </p>
+                <p class="muted">До 8 адресов, совместимых с OpenAI.</p>
                 <ul id="workshop-ai-providers" class="rows"></ul>
                 <label for="workshop-ai-provider-id">ID</label>
                 <input
@@ -902,8 +881,8 @@ const cpGate = cpConfigured()
           <details class="disclosure">
             <summary>Ключи для игровых серверов</summary>
             <p class="muted">
-              Игровой сервер отправляет результаты матчей с секретным ключом. Заведите ключ, когда
-              подключаете новый сервер, и отзовите, если он мог утечь. Ключ показывается один раз.
+              Заведите ключ, когда подключаете новый сервер, и отзовите, если он мог утечь. Ключ
+              показывается один раз.
             </p>
             <form id="key-form" class="form-stack">
               <label for="key-server">ID игрового сервера</label>
@@ -1003,10 +982,7 @@ const cpGate = cpConfigured()
           <h2 id="console-title" tabindex="-1">
             Консоль
           </h2>
-          <p class="muted">
-            Команды основного сервера и мастерской, как в их консоли. Каждая команда попадает в
-            журнал.
-          </p>
+          <p class="muted">Каждая команда попадает в журнал.</p>
           <form id="console-form" class="form-stack console-plate group">
             <div class="scope">
               <label for="console-target">Цель консоли</label>
@@ -1044,9 +1020,7 @@ const cpGate = cpConfigured()
           <div class="console-logs group">
             <header>
               <h3>Журнал сервера</h3>
-              <p class="hint">
-                Прямой эфир и ответы выполненных команд. Память — последние 500 строк.
-              </p>
+              <p class="hint">Память — последние 500 строк.</p>
             </header>
             <div class="console-log-controls">
               <label for="console-level">Уровень</label>
@@ -1097,7 +1071,6 @@ const cpGate = cpConfigured()
           <h2 id="journal-title" tabindex="-1">
             Журнал действий
           </h2>
-          <p class="muted">Что команда делала здесь в последнее время.</p>
           <div class="group" aria-labelledby="audit-list-title">
             <header>
               <h3 id="audit-list-title">Действия</h3>
@@ -3936,35 +3909,10 @@ const cpGate = cpConfigured()
         cooling_multiplier: 'Скорость остывания',
       }
       const GUN_HINTS: Record<string, string> = {
-        rpm: 'Сколько выстрелов в минуту делает оружие.',
-        ammo: 'Какие патроны использует оружие.',
-        ammo_amount: 'Сколько патронов в полном магазине.',
-        extended_mag_ammo_amount: 'Сколько патронов с увеличенным магазином.',
-        draw_time: 'Сколько секунд доставать оружие.',
-        put_away_time: 'Сколько секунд убирать оружие.',
-        sprint_time: 'Сколько секунд выходить из спринта.',
-        aim_time: 'Сколько секунд целиться.',
-        bolt_action_time: 'Сколько секунд передёргивать затвор.',
-        bolt_feed_time: 'Сколько секунд подавать патрон.',
-        damage: 'Урон одного попадания.',
         armor_ignore:
           'Какая доля урона проходит сквозь броню: 0 — вся режется бронёй, 1 — броня не мешает.',
-        head_shot: 'Во сколько раз больше урона при попадании в голову.',
-        head_shot_multiplier: 'Во сколько раз больше урона при попадании в голову.',
-        reload: 'Сколько секунд занимает перезарядка.',
         inaccuracy: 'Разброс при стрельбе: больше число — кучность хуже.',
-        bullet: 'Пуля и её урон.',
-        bullet_amount: 'Сколько дробин вылетает за один выстрел.',
-        pierce: 'Сколько целей пробивает пуля подряд.',
-        life: 'Сколько секунд живёт пуля.',
-        speed: 'Начальная скорость пули.',
-        gravity: 'Как сильно пуля падает в полёте.',
-        knockback: 'Как сильно попадание отбрасывает.',
-        friction: 'Как быстро пуля теряет скорость.',
-        ignite: 'Поджигает ли пуля.',
-        ignite_entity_time: 'Сколько секунд горит подожжённый.',
         tracer_count_interval: 'Каждая какая пуля трассирующая (0 — все).',
-        explosion: 'Взрыв при попадании.',
         extra_damage: 'Доп. правила урона: броня, голова, дистанции.',
         damage_adjust: 'Урон по дистанциям: чем дальше, тем меньше.',
       }
