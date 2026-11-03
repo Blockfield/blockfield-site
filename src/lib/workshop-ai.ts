@@ -7,9 +7,15 @@
 export const WORKSHOP_AI_DEFAULTS = {
   enabled: false,
   provider: 'openrouter',
+  generationProvider: 'openrouter',
+  guardProvider: 'openrouter',
+  transcriptionProvider: 'openrouter',
+  providers: [],
   generationModel: 'meta/muse-spark-1.3-contributor',
   guardModel: 'typesafe/jev-1.13',
   transcriptionModel: 'openai/whisper-1',
+  cleanupModel: '',
+  cleanupProvider: 'openrouter',
   maxBlocks: 16384,
   blocksPerTick: 2048,
   minimumBuildTicks: 80,
@@ -26,14 +32,57 @@ export const WORKSHOP_AI_PROVIDERS = ['openrouter', 'vercel-gateway'] as const
 
 export type WorkshopAiProvider = (typeof WORKSHOP_AI_PROVIDERS)[number]
 
+/** Custom registry entry: an OpenAI-compatible endpoint the owner adds. */
+export type WorkshopAiCustomProvider = {
+  id: string
+  label: string
+  baseUrl: string
+}
+
+/** Registry id shape, shared with the workshop gate; at most 8 custom entries. */
+export const WORKSHOP_AI_PROVIDER_ID = /^[a-z0-9][a-z0-9-]{0,31}$/
+export const WORKSHOP_AI_MAX_PROVIDERS = 8
+
+export const isWorkshopAiProviderId = (value: unknown): value is string =>
+  typeof value === 'string' && WORKSHOP_AI_PROVIDER_ID.test(value)
+
+// shortcut: https-only; revisit when cliproxy is connected (it may be local http).
+export function isWorkshopAiBaseUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 200) return false
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+  return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash
+}
+
+/**
+ * Controller key-status file per provider id. Presets keep their current names;
+ * custom ids use `<id>-key.json`. Validate the id before joining paths.
+ */
+export const workshopAiKeyStatusFile = (provider: string): string =>
+  provider === 'openrouter'
+    ? 'ai-key.json'
+    : provider === 'vercel-gateway'
+      ? 'ai-gateway-key.json'
+      : `${provider}-key.json`
+
 export type WorkshopAiSettings = {
   schema: 1
   revision: number
   enabled: boolean
   provider: WorkshopAiProvider
+  generationProvider: string
+  guardProvider: string
+  transcriptionProvider: string
+  providers: WorkshopAiCustomProvider[]
   generationModel: string
   guardModel: string
   transcriptionModel: string
+  cleanupModel: string
+  cleanupProvider: string
   maxBlocks: number
   blocksPerTick: number
   minimumBuildTicks: number

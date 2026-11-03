@@ -41,6 +41,7 @@ import {
   validateWorkshopAiKey,
   validateWorkshopAiSettings,
 } from './workshop-ai-policy.ts'
+import { isWorkshopAiProviderId, workshopAiKeyStatusFile } from './workshop-ai.ts'
 import { parseKitCatalog, validateKitChanges } from './kit-schema.ts'
 import {
   resolveNames,
@@ -1016,9 +1017,20 @@ export function writeRequest(
     // land in settings, the DB, logs or responses. Validation errors never echo them.
     if (!plain(body) || !Object.hasOwn(body, 'key')) throw bad('Укажите ключ или его удаление.')
     request = { ...base, kind: body.kind, key: validateWorkshopAiKey(body.key) }
+  } else if (body?.kind === 'ai-provider-key') {
+    // Custom registry provider key: the provider id travels alongside (nonsecret),
+    // the value itself never lands in settings, the DB, logs or responses.
+    if (!plain(body) || !Object.hasOwn(body, 'key')) throw bad('Укажите ключ или его удаление.')
+    if (!isWorkshopAiProviderId(body.provider)) throw bad('Некорректный провайдер.')
+    request = {
+      ...base,
+      kind: body.kind,
+      provider: body.provider,
+      key: validateWorkshopAiKey(body.key),
+    }
   } else throw bad('Неизвестный тип запроса.')
   // The site and the controller's reader share UID 1000; a key request is readable by them only.
-  const keyKinds = ['ai-key', 'ai-gateway-key']
+  const keyKinds = ['ai-key', 'ai-gateway-key', 'ai-provider-key']
   writeAtomic(
     directory,
     `${base.id}.json`,
@@ -1414,7 +1426,11 @@ export function saveAiLimits(directory: string, body: any) {
   return policy
 }
 
-export function saveWorkshopAiSettings(directory: string, body: any, keySet: boolean) {
+export function saveWorkshopAiSettings(
+  directory: string,
+  body: any,
+  hasKey: (provider: string) => boolean,
+) {
   if (
     !plain(body) ||
     Object.keys(body).some(
@@ -1423,9 +1439,15 @@ export function saveWorkshopAiSettings(directory: string, body: any, keySet: boo
           'expectedRevision',
           'enabled',
           'provider',
+          'generationProvider',
+          'guardProvider',
+          'transcriptionProvider',
+          'providers',
           'generationModel',
           'guardModel',
           'transcriptionModel',
+          'cleanupModel',
+          'cleanupProvider',
           'maxBlocks',
           'blocksPerTick',
           'minimumBuildTicks',
@@ -1450,9 +1472,16 @@ export function saveWorkshopAiSettings(directory: string, body: any, keySet: boo
     revision: current.revision + 1,
     enabled: body.enabled,
     provider: body.provider,
+    generationProvider: body.generationProvider,
+    guardProvider: body.guardProvider,
+    transcriptionProvider: body.transcriptionProvider,
+    // Absent registry/cleanup keys keep the stored values: a stale form must not wipe them.
+    providers: body.providers ?? current.providers,
     generationModel: body.generationModel,
     guardModel: body.guardModel,
     transcriptionModel: body.transcriptionModel,
+    cleanupModel: body.cleanupModel ?? current.cleanupModel,
+    cleanupProvider: body.cleanupProvider ?? current.cleanupProvider,
     maxBlocks: body.maxBlocks,
     blocksPerTick: body.blocksPerTick,
     minimumBuildTicks: body.minimumBuildTicks,
@@ -1464,10 +1493,22 @@ export function saveWorkshopAiSettings(directory: string, body: any, keySet: boo
     generationMaxPriceCompletionUsdPerM: body.generationMaxPriceCompletionUsdPerM,
     inputGuardEnabled: body.inputGuardEnabled,
   })
-  // Workshop refuses to start an enabled OpenRouter AI without its key; say so here instead of
-  // silently. The gateway key lives in a host file, which the site cannot verify.
-  if (settings.provider === 'openrouter' && settings.enabled && !keySet)
-    throw fail(400, 'Сначала сохраните ключ OpenRouter и дождитесь статуса «Ключ задан».')
+  // Enabled AI needs a key for every referenced provider. The gateway key lives in a host
+  // file, which the site cannot verify; cleanup counts only when set.
+  if (settings.enabled) {
+    const needed = new Set([settings.generationProvider, settings.transcriptionProvider])
+    if (settings.inputGuardEnabled) needed.add(settings.guardProvider)
+    if (settings.cleanupModel) needed.add(settings.cleanupProvider)
+    needed.delete('vercel-gateway')
+    const missing = [...needed].filter((id) => !hasKey(id))
+    if (missing.length === 1 && missing[0] === 'openrouter')
+      throw fail(400, 'Сначала сохраните ключ OpenRouter и дождитесь статуса «Ключ задан».')
+    if (missing.length > 0)
+      throw fail(
+        400,
+        `Нет ключа провайдера ${missing.join(', ')}: сохраните ключ и дождитесь статуса «Ключ задан».`,
+      )
+  }
   writeAtomic(directory, 'workshop-ai-settings.json', settings)
   return settings
 }
@@ -2102,12 +2143,12 @@ const routes: Record<string, Route> = {
   },
   'PUT workshop-ai-settings': {
     permission: 'ai',
-    maxBody: 4096,
+    maxBody: 8192,
     handler: ({ body }) => ({
       settings: saveWorkshopAiSettings(
         settingsDir(),
         body,
-        readWorkshopAiKeyStatus(adminDir()).set,
+        (provider) => readWorkshopAiKeyStatus(adminDir(), workshopAiKeyStatusFile(provider)).set,
       ),
     }),
     audit: (body, result) => ({
@@ -2157,6 +2198,41 @@ const routes: Record<string, Route> = {
     audit: (body) => ({
       action: 'workshop-ai-gateway-key',
       detail: { remove: body?.key == null },
+    }),
+  },
+  // Custom registry provider keys. The controller side (per-provider `<id>.key`
+  // files and `<id>-key.json` statuses) lands with the workshop gate; until then
+  // these routes queue inbox `ai-provider-key` requests the same 0600 way.
+  'GET workshop-ai-provider-key': {
+    permission: 'ai',
+    handler: ({ context }) => {
+      const provider = context.url.searchParams.get('provider')
+      if (!isWorkshopAiProviderId(provider)) throw bad('Некорректный провайдер.')
+      const id = context.url.searchParams.get('id')
+      return {
+        status: readWorkshopAiKeyStatus(adminDir(), workshopAiKeyStatusFile(provider)),
+        result: id === null || id === '' ? null : readRequestResult(id),
+      }
+    },
+  },
+  'POST workshop-ai-provider-key': {
+    permission: 'ai',
+    maxBody: 4096,
+    handler: ({ actor, body }) => ({
+      id: writeRequest(inboxDir(), actor, {
+        kind: 'ai-provider-key',
+        provider: body?.provider,
+        key: body?.key,
+      }),
+    }),
+    // The key itself never reaches the audit log: only its removal and the
+    // (nonsecret) provider id.
+    audit: (body) => ({
+      action: 'workshop-ai-provider-key',
+      detail: {
+        remove: body?.key == null,
+        provider: typeof body?.provider === 'string' ? body.provider : null,
+      },
     }),
   },
   'GET gun-balance': {

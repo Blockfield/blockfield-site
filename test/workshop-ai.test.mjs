@@ -12,10 +12,13 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  isWorkshopAiBaseUrl,
   isWorkshopAiKey,
   isWorkshopAiModel,
   isWorkshopAiProvider,
+  isWorkshopAiProviderId,
   workshopAiKeyLine,
+  workshopAiKeyStatusFile,
 } from '../src/lib/workshop-ai.ts'
 import {
   readWorkshopAiKeyStatus,
@@ -33,10 +36,16 @@ const settings = () => ({
   revision: 2,
   enabled: true,
   provider: 'vercel-gateway',
+  generationProvider: 'openrouter',
+  guardProvider: 'vercel-gateway',
+  transcriptionProvider: 'my-proxy',
+  providers: [{ id: 'my-proxy', label: 'Мой прокси', baseUrl: 'https://proxy.example.com/v1' }],
   inputGuardEnabled: true,
   generationModel: 'other/custom-model',
   guardModel: 'other/guard-9',
   transcriptionModel: 'other/stt-9',
+  cleanupModel: 'other/cleanup-1',
+  cleanupProvider: 'my-proxy',
   maxBlocks: 1024,
   blocksPerTick: 512,
   minimumBuildTicks: 60,
@@ -62,6 +71,18 @@ test('settings validate a closed schema with one shape check per model, never a 
   assert.ok(isWorkshopAiProvider('openrouter'))
   assert.ok(isWorkshopAiProvider('vercel-gateway'))
   assert.ok(!isWorkshopAiProvider('direct'))
+  assert.ok(isWorkshopAiProviderId('my-proxy'))
+  assert.ok(!isWorkshopAiProviderId('My_Proxy'))
+  assert.ok(!isWorkshopAiProviderId('openrouter!'))
+  assert.ok(isWorkshopAiBaseUrl('https://proxy.example.com/v1'))
+  assert.ok(!isWorkshopAiBaseUrl('http://proxy.example.com/v1'))
+  assert.ok(!isWorkshopAiBaseUrl('https://user@proxy.example.com/v1'))
+  assert.ok(!isWorkshopAiBaseUrl('https://proxy.example.com/v1?key=1'))
+  assert.ok(!isWorkshopAiBaseUrl('https://proxy.example.com/v1#frag'))
+  assert.ok(!isWorkshopAiBaseUrl(`https://proxy.example.com/${'x'.repeat(200)}`))
+  assert.equal(workshopAiKeyStatusFile('openrouter'), 'ai-key.json')
+  assert.equal(workshopAiKeyStatusFile('vercel-gateway'), 'ai-gateway-key.json')
+  assert.equal(workshopAiKeyStatusFile('my-proxy'), 'my-proxy-key.json')
   // Any well-shaped model works, including ones no old allowlist knew.
   assert.ok(isWorkshopAiModel('typesafe/jev-1.13'))
   assert.ok(isWorkshopAiModel('other/guard-9'))
@@ -96,6 +117,30 @@ test('settings validate a closed schema with one shape check per model, never a 
     (value) => (value.generationMaxPricePromptUsdPerM = -0.1),
     (value) => (value.generationMaxPriceCompletionUsdPerM = '0.2'),
     (value) => (value.generationModel = 'vendor:x/model'),
+    (value) => (value.providers = 'nope'),
+    (value) => (value.providers = [{ id: 'Bad_Id', label: 'X', baseUrl: 'https://x.example.com' }]),
+    (value) =>
+      (value.providers = [{ id: 'openrouter', label: 'X', baseUrl: 'https://x.example.com' }]),
+    (value) =>
+      (value.providers = [
+        { id: 'a', label: 'A', baseUrl: 'https://a.example.com' },
+        { id: 'a', label: 'B', baseUrl: 'https://b.example.com' },
+      ]),
+    (value) => (value.providers = [{ id: 'a', label: '', baseUrl: 'https://a.example.com' }]),
+    (value) => (value.providers = [{ id: 'a', label: 'A', baseUrl: 'http://a.example.com' }]),
+    (value) =>
+      (value.providers = [{ id: 'a', label: 'A', baseUrl: 'https://a.example.com/?key=1' }]),
+    (value) =>
+      (value.providers = Array.from({ length: 9 }, (_, index) => ({
+        id: `p${index}`,
+        label: `P${index}`,
+        baseUrl: 'https://x.example.com',
+      }))),
+    (value) => (value.generationProvider = 'ghost'),
+    (value) => (value.guardProvider = 'ghost'),
+    (value) => (value.transcriptionProvider = 'ghost'),
+    (value) => (value.cleanupProvider = 'ghost'),
+    (value) => (value.cleanupModel = 'no-slash-here'),
   ]) {
     const invalid = settings()
     mutate(invalid)
@@ -110,10 +155,16 @@ test('missing file returns defaults with revision 0; corrupt or oversized files 
     revision: 0,
     enabled: false,
     provider: 'openrouter',
+    generationProvider: 'openrouter',
+    guardProvider: 'openrouter',
+    transcriptionProvider: 'openrouter',
+    providers: [],
     inputGuardEnabled: false,
     generationModel: 'meta/muse-spark-1.3-contributor',
     guardModel: 'typesafe/jev-1.13',
     transcriptionModel: 'openai/whisper-1',
+    cleanupModel: '',
+    cleanupProvider: 'openrouter',
     maxBlocks: 16384,
     blocksPerTick: 2048,
     minimumBuildTicks: 80,
@@ -142,7 +193,7 @@ test('missing file returns defaults with revision 0; corrupt or oversized files 
             guardModel: 'typesafe/jev-1',
             transcriptionModel: 'openai/whisper-1',
           },
-          false,
+          () => false,
         ),
       503,
     )
@@ -166,6 +217,12 @@ test('old files without provider/limits/caps load with defaults filled in', (t) 
   const loaded = readWorkshopAiSettings(directory)
   assert.equal(loaded.revision, 3)
   assert.equal(loaded.provider, 'openrouter')
+  assert.equal(loaded.generationProvider, 'openrouter')
+  assert.equal(loaded.guardProvider, 'openrouter')
+  assert.equal(loaded.transcriptionProvider, 'openrouter')
+  assert.deepEqual(loaded.providers, [])
+  assert.equal(loaded.cleanupModel, '')
+  assert.equal(loaded.cleanupProvider, 'openrouter')
   assert.equal(loaded.maxBlocks, 16384)
   assert.equal(loaded.hourlyRequestLimit, 360)
   assert.equal(loaded.generationMaxPricePromptUsdPerM, 0.1)
@@ -177,6 +234,56 @@ test('old files without provider/limits/caps load with defaults filled in', (t) 
     JSON.stringify({ schema: 1, revision: 4, enabled: false, frobnicator: true }),
   )
   assert.equal(readWorkshopAiSettings(directory).revision, 4)
+})
+
+test('pre-registry files follow the legacy provider; cleanup follows transcription', (t) => {
+  const directory = temp(t)
+  writeFileSync(
+    join(directory, 'workshop-ai-settings.json'),
+    JSON.stringify({ ...settings(), revision: 5, provider: 'vercel-gateway' }),
+  )
+  // A stored doc that predates per-model fields resolves them from the legacy provider.
+  const stored = JSON.parse(readFileSync(join(directory, 'workshop-ai-settings.json'), 'utf8'))
+  for (const key of [
+    'generationProvider',
+    'guardProvider',
+    'transcriptionProvider',
+    'providers',
+    'cleanupModel',
+    'cleanupProvider',
+  ])
+    delete stored[key]
+  writeFileSync(join(directory, 'workshop-ai-settings.json'), JSON.stringify(stored))
+  const loaded = readWorkshopAiSettings(directory)
+  assert.equal(loaded.generationProvider, 'vercel-gateway')
+  assert.equal(loaded.guardProvider, 'vercel-gateway')
+  assert.equal(loaded.transcriptionProvider, 'vercel-gateway')
+  assert.equal(loaded.cleanupProvider, 'vercel-gateway')
+  assert.equal(loaded.cleanupModel, '')
+  // Direct validation fills the same fallbacks for callers without stored values.
+  const direct = validateWorkshopAiSettings({
+    schema: 1,
+    revision: 0,
+    enabled: false,
+    provider: 'openrouter',
+    inputGuardEnabled: false,
+    generationModel: 'a/b',
+    guardModel: 'a/c',
+    transcriptionModel: 'a/d',
+    maxBlocks: 1,
+    blocksPerTick: 1,
+    minimumBuildTicks: 40,
+    applyBudgetMs: 1,
+    hourlyRequestLimit: 1,
+    hourlyPlayerRequestLimit: 1,
+    maxHourlyBuilders: 1,
+    generationMaxPricePromptUsdPerM: 0,
+    generationMaxPriceCompletionUsdPerM: 0,
+  })
+  assert.equal(direct.generationProvider, 'openrouter')
+  assert.equal(direct.cleanupProvider, 'openrouter')
+  assert.equal(direct.cleanupModel, '')
+  assert.deepEqual(direct.providers, [])
 })
 
 test('settings save uses optimistic revision and rejects unknown keys', (t) => {
@@ -199,20 +306,27 @@ test('settings save uses optimistic revision and rejects unknown keys', (t) => {
     generationMaxPricePromptUsdPerM: 0.5,
     generationMaxPriceCompletionUsdPerM: 1.5,
   }
-  rejected(() => saveWorkshopAiSettings(directory, body, false), 400)
-  const saved = saveWorkshopAiSettings(directory, body, true)
+  rejected(() => saveWorkshopAiSettings(directory, body, () => false), 400)
+  const saved = saveWorkshopAiSettings(directory, body, () => true)
   assert.equal(saved.revision, 1)
   assert.equal(saved.enabled, true)
   assert.equal(saved.provider, 'openrouter')
   assert.deepEqual(JSON.parse(readFileSync(join(directory, 'workshop-ai-settings.json'), 'utf8')), {
     ...saved,
   })
-  rejected(() => saveWorkshopAiSettings(directory, { ...body, expectedRevision: 0 }, true), 409)
-  rejected(() =>
-    saveWorkshopAiSettings(directory, { ...body, expectedRevision: 1, extra: 1 }, true),
+  rejected(
+    () => saveWorkshopAiSettings(directory, { ...body, expectedRevision: 0 }, () => true),
+    409,
   )
   rejected(() =>
-    saveWorkshopAiSettings(directory, { ...body, expectedRevision: 1, provider: 'direct' }, true),
+    saveWorkshopAiSettings(directory, { ...body, expectedRevision: 1, extra: 1 }, () => true),
+  )
+  rejected(() =>
+    saveWorkshopAiSettings(
+      directory,
+      { ...body, expectedRevision: 1, provider: 'direct' },
+      () => true,
+    ),
   )
   assert.equal(
     JSON.parse(readFileSync(join(directory, 'workshop-ai-settings.json'), 'utf8')).revision,
@@ -407,10 +521,16 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     revision: 0,
     enabled: false,
     provider: 'openrouter',
+    generationProvider: 'openrouter',
+    guardProvider: 'openrouter',
+    transcriptionProvider: 'openrouter',
+    providers: [],
     inputGuardEnabled: false,
     generationModel: 'meta/muse-spark-1.3-contributor',
     guardModel: 'typesafe/jev-1.13',
     transcriptionModel: 'openai/whisper-1',
+    cleanupModel: '',
+    cleanupProvider: 'openrouter',
     maxBlocks: 16384,
     blocksPerTick: 2048,
     minimumBuildTicks: 80,
@@ -437,10 +557,148 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     adminBody({ expectedRevision: 0, enabled: true, provider: 'vercel-gateway' }),
   )
   assert.equal(gateway.status, 200)
-  assert.equal((await gateway.json()).settings.provider, 'vercel-gateway')
+  const gatewaySettings = (await gateway.json()).settings
+  assert.equal(gatewaySettings.provider, 'vercel-gateway')
+  // A stale form without per-model keys follows the legacy provider.
+  assert.equal(gatewaySettings.generationProvider, 'vercel-gateway')
+  assert.equal(gatewaySettings.cleanupModel, '')
   const saved = await call(owner, 'PUT', 'workshop-ai-settings', adminBody({ expectedRevision: 1 }))
   assert.equal(saved.status, 200)
   assert.equal((await saved.json()).settings.revision, 2)
+  // Mixed registry: generation on OpenRouter, guard on the gateway, transcription
+  // on a custom endpoint; enabling refuses while the custom key is missing.
+  const registry = (overrides) =>
+    adminBody({
+      expectedRevision: 2,
+      enabled: true,
+      provider: 'openrouter',
+      generationProvider: 'openrouter',
+      guardProvider: 'vercel-gateway',
+      transcriptionProvider: 'my-proxy',
+      providers: [{ id: 'my-proxy', label: 'Proxy', baseUrl: 'https://proxy.example.com/v1' }],
+      inputGuardEnabled: true,
+      ...overrides,
+    })
+  const mixedKeyless = await call(owner, 'PUT', 'workshop-ai-settings', registry({}))
+  assert.equal(mixedKeyless.status, 400)
+  assert.match((await mixedKeyless.json()).error, /my-proxy/)
+  // Unknown referenced providers and bad registry entries fail closed.
+  for (const bad of [
+    registry({ transcriptionProvider: 'ghost' }),
+    registry({ providers: [] }),
+    registry({
+      providers: [{ id: 'my-proxy', label: 'Proxy', baseUrl: 'http://proxy.example.com/v1' }],
+    }),
+    registry({ expectedRevision: 2, cleanupModel: 'other/cleanup-1' }),
+  ]) {
+    const response = await call(owner, 'PUT', 'workshop-ai-settings', bad)
+    assert.equal(response.status, 400)
+    assert.ok(LEAK(await response.clone().json()))
+  }
+  // With both referenced keys set, the mixed doc saves; cleanup needs its key too.
+  writeFileSync(
+    join(adminDir, 'ai-key.json'),
+    JSON.stringify({ schema: 1, set: true, last4: 'ab12' }),
+  )
+  writeFileSync(
+    join(adminDir, 'my-proxy-key.json'),
+    JSON.stringify({ schema: 1, set: true, last4: 'cd34' }),
+  )
+  const mixed = await call(owner, 'PUT', 'workshop-ai-settings', registry({}))
+  assert.equal(mixed.status, 200)
+  const mixedSettings = (await mixed.json()).settings
+  assert.equal(mixedSettings.revision, 3)
+  assert.equal(mixedSettings.transcriptionProvider, 'my-proxy')
+  assert.deepEqual(mixedSettings.providers, [
+    { id: 'my-proxy', label: 'Proxy', baseUrl: 'https://proxy.example.com/v1' },
+  ])
+  const cleanupKeyless = await call(
+    owner,
+    'PUT',
+    'workshop-ai-settings',
+    registry({
+      expectedRevision: 3,
+      cleanupModel: 'other/cleanup-1',
+      cleanupProvider: 'second-proxy',
+      providers: [
+        { id: 'my-proxy', label: 'Proxy', baseUrl: 'https://proxy.example.com/v1' },
+        { id: 'second-proxy', label: 'Second', baseUrl: 'https://second.example.com' },
+      ],
+    }),
+  )
+  assert.equal(cleanupKeyless.status, 400)
+  assert.match((await cleanupKeyless.json()).error, /second-proxy/)
+  writeFileSync(join(adminDir, 'second-proxy-key.json'), JSON.stringify({ schema: 1, set: true }))
+  const cleanup = await call(
+    owner,
+    'PUT',
+    'workshop-ai-settings',
+    registry({
+      expectedRevision: 3,
+      cleanupModel: 'other/cleanup-1',
+      cleanupProvider: 'second-proxy',
+      providers: [
+        { id: 'my-proxy', label: 'Proxy', baseUrl: 'https://proxy.example.com/v1' },
+        { id: 'second-proxy', label: 'Second', baseUrl: 'https://second.example.com' },
+      ],
+    }),
+  )
+  assert.equal(cleanup.status, 200)
+  assert.equal((await cleanup.json()).settings.revision, 4)
+  // Custom provider keys: owner-only, 0600 inbox requests, per-id status files.
+  for (const actor of [admin, moderator]) {
+    assert.equal(
+      (await call(actor, 'GET', 'workshop-ai-provider-key?provider=my-proxy')).status,
+      403,
+    )
+    assert.equal(
+      (await call(actor, 'POST', 'workshop-ai-provider-key', { provider: 'my-proxy', key: SECRET }))
+        .status,
+      403,
+    )
+  }
+  assert.equal((await call(owner, 'GET', 'workshop-ai-provider-key?provider=Bad_Id')).status, 400)
+  assert.equal((await call(owner, 'GET', 'workshop-ai-provider-key')).status, 400)
+  const customPosted = await call(owner, 'POST', 'workshop-ai-provider-key', {
+    provider: 'my-proxy',
+    key: SECRET,
+  })
+  assert.equal(customPosted.status, 200)
+  const { id: customId } = await customPosted.json()
+  const customRequest = JSON.parse(readFileSync(join(inbox, `${customId}.json`), 'utf8'))
+  assert.equal(customRequest.kind, 'ai-provider-key')
+  assert.equal(customRequest.provider, 'my-proxy')
+  assert.equal(customRequest.key, SECRET)
+  assert.equal(statSync(join(inbox, `${customId}.json`)).mode & 0o777, 0o600)
+  const customStatus = await call(owner, 'GET', 'workshop-ai-provider-key?provider=my-proxy')
+  assert.equal(customStatus.status, 200)
+  assert.deepEqual((await customStatus.json()).status, {
+    set: true,
+    last4: 'cd34',
+  })
+  const customShort = await call(owner, 'POST', 'workshop-ai-provider-key', {
+    provider: 'my-proxy',
+    key: 'short',
+  })
+  assert.equal(customShort.status, 400)
+  assert.ok(LEAK(await customShort.clone().json()))
+  const customBadProvider = await call(owner, 'POST', 'workshop-ai-provider-key', {
+    provider: '../x',
+    key: SECRET,
+  })
+  assert.equal(customBadProvider.status, 400)
+  assert.ok(LEAK(await customBadProvider.clone().json()))
+  const customAudit = (await store.auditLog(100)).filter(
+    (entry) => entry.action === 'workshop-ai-provider-key',
+  )
+  assert.ok(customAudit.length >= 1)
+  for (const entry of customAudit) {
+    assert.ok(LEAK(entry))
+    assert.deepEqual(Object.keys(JSON.parse(entry.detail)).sort(), ['provider', 'remove'])
+  }
+  assert.ok(
+    customAudit.some((entry) => entry.ok && JSON.parse(entry.detail).provider === 'my-proxy'),
+  )
   // Limits, models and tariff ceilings are owner-only and admins read the audit
   // log: settings entries keep the operational switches only, never the values.
   for (const entry of (await store.auditLog(50)).filter(
@@ -485,17 +743,21 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   const { id } = await posted.json()
   assert.deepEqual(Object.keys({ id }), ['id'])
   const inboxFiles = readdirSync(inbox)
-  assert.equal(inboxFiles.length, 1)
-  assert.equal(JSON.parse(readFileSync(join(inbox, inboxFiles[0]), 'utf8')).key, SECRET)
+  assert.ok(inboxFiles.includes(`${id}.json`))
+  assert.equal(JSON.parse(readFileSync(join(inbox, `${id}.json`), 'utf8')).key, SECRET)
   const bad = await call(owner, 'POST', 'workshop-ai-key', { key: 'short' })
   assert.equal(bad.status, 400)
   assert.ok(LEAK(await bad.clone().json()))
   // Pending while the controller has no result yet; corrupt results fail closed.
+  // (ai-key.json was written earlier in this test, so the status reads set.)
   const pending = await call(owner, 'GET', 'workshop-ai-key', undefined)
   assert.equal(pending.status, 200)
-  assert.deepEqual(await pending.json(), { status: { set: false }, result: null })
+  assert.deepEqual(await pending.json(), { status: { set: true, last4: 'ab12' }, result: null })
   const pendingId = await call(owner, 'GET', `workshop-ai-key?id=${id}`, undefined)
-  assert.deepEqual(await pendingId.json(), { status: { set: false }, result: null })
+  assert.deepEqual(await pendingId.json(), {
+    status: { set: true, last4: 'ab12' },
+    result: null,
+  })
   mkdirSync(join(adminDir, 'results'), { recursive: true })
   writeFileSync(
     join(adminDir, 'results', `${id}.json`),
@@ -552,7 +814,7 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     owner,
     'PUT',
     'workshop-ai-settings',
-    adminBody({ expectedRevision: 2, enabled: true, provider: 'openrouter' }),
+    adminBody({ expectedRevision: 4, enabled: true, provider: 'openrouter' }),
   )
   // With the controller key status set, enabling OpenRouter succeeds.
   assert.equal(enabled.status, 200)
