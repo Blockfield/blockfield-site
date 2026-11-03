@@ -41,7 +41,12 @@ import {
   validateWorkshopAiKey,
   validateWorkshopAiSettings,
 } from './workshop-ai-policy.ts'
-import { isWorkshopAiProviderId, workshopAiKeyStatusFile } from './workshop-ai.ts'
+import {
+  WORKSHOP_AI_RESERVED_IDS,
+  isWorkshopAiProvider,
+  isWorkshopAiProviderId,
+  workshopAiKeyStatusFile,
+} from './workshop-ai.ts'
 import { parseKitCatalog, validateKitChanges } from './kit-schema.ts'
 import {
   resolveNames,
@@ -1020,8 +1025,14 @@ export function writeRequest(
   } else if (body?.kind === 'ai-provider-key') {
     // Custom registry provider key: the provider id travels alongside (nonsecret),
     // the value itself never lands in settings, the DB, logs or responses.
+    // Only genuine custom ids pass: preset and colliding ids keep their own endpoints.
     if (!plain(body) || !Object.hasOwn(body, 'key')) throw bad('Укажите ключ или его удаление.')
-    if (!isWorkshopAiProviderId(body.provider)) throw bad('Некорректный провайдер.')
+    if (
+      !isWorkshopAiProviderId(body.provider) ||
+      isWorkshopAiProvider(body.provider) ||
+      WORKSHOP_AI_RESERVED_IDS.includes(body.provider)
+    )
+      throw bad('Некорректный провайдер.')
     request = {
       ...base,
       kind: body.kind,

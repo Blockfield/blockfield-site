@@ -7630,24 +7630,24 @@ const cpGate = cpConfigured()
       return id === 'openrouter' ? 'OpenRouter' : id === 'vercel-gateway' ? 'Vercel AI Gateway' : id
     }
     function fillProviderSelect(select: HTMLSelectElement, value: string) {
-      const fallback = $<HTMLSelectElement>('#workshop-ai-provider').value
-      select.replaceChildren()
+      const previous = select.value
       const choices = [
         ['openrouter', 'OpenRouter'],
         ['vercel-gateway', 'Vercel AI Gateway'],
         ...draftProviders.map((entry) => [entry.id, entry.label]),
       ]
+      select.replaceChildren()
       for (const [id, label] of choices) {
         const option = document.createElement('option')
         option.value = id
         option.textContent = label
         select.append(option)
       }
-      select.value = choices.some(([id]) => id === value)
-        ? value
-        : choices.some(([id]) => id === select.value)
-          ? select.value
-          : fallback
+      // A removed provider stays unselected instead of silently falling back:
+      // the owner picks a replacement explicitly, otherwise the save fails closed.
+      if (value && choices.some(([id]) => id === value)) select.value = value
+      else if (previous && choices.some(([id]) => id === previous)) select.value = previous
+      else select.value = ''
     }
     function refreshProviderSelects() {
       for (const id of [

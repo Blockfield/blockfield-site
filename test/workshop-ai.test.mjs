@@ -729,6 +729,16 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   })
   assert.equal(customBadProvider.status, 400)
   assert.ok(LEAK(await customBadProvider.clone().json()))
+  // Preset and colliding ids keep their own endpoints: the custom route refuses them,
+  // so no inbox request can ever target a preset status file.
+  for (const provider of ['openrouter', 'vercel-gateway', 'ai', 'ai-gateway']) {
+    const response = await call(owner, 'POST', 'workshop-ai-provider-key', {
+      provider,
+      key: SECRET,
+    })
+    assert.equal(response.status, 400)
+    assert.ok(LEAK(await response.clone().json()))
+  }
   const customAudit = (await store.auditLog(100)).filter(
     (entry) => entry.action === 'workshop-ai-provider-key',
   )
