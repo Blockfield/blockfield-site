@@ -2234,13 +2234,17 @@ const routes: Record<string, Route> = {
         key: body?.key,
       }),
     }),
-    // The key itself never reaches the audit log: only its removal and the
-    // (validated, nonsecret) provider id. Anything else could be a pasted secret.
+    // The key itself never reaches the audit log: only its removal and the provider
+    // id when it is already registered. A pasted key can match the id shape.
     audit: (body) => ({
       action: 'workshop-ai-provider-key',
       detail: {
         remove: body?.key == null,
-        provider: isCustomProviderId(body?.provider) ? body.provider : null,
+        provider: readWorkshopAiSettings(settingsDir()).providers.some(
+          (entry) => entry.id === body?.provider,
+        )
+          ? body.provider
+          : null,
       },
     }),
   },

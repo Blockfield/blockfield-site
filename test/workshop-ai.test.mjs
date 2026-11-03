@@ -779,6 +779,10 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     assert.equal(response.status, 400)
     assert.ok(LEAK(await response.clone().json()))
   }
+  // An id-shaped value that is not a registered provider (e.g. a key pasted into the
+  // provider field) is never recorded.
+  const idShapedSecret = 'sk-or-v1-0123456789abcdef0123'
+  await call(owner, 'POST', 'workshop-ai-provider-key', { provider: idShapedSecret, key: SECRET })
   const customAudit = (await store.auditLog(100)).filter(
     (entry) => entry.action === 'workshop-ai-provider-key',
   )
@@ -796,6 +800,7 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     const provider = JSON.parse(entry.detail).provider
     assert.ok(provider === null || isCustomProviderId(provider))
   }
+  assert.ok(!customAudit.some((entry) => entry.detail.includes(idShapedSecret)))
   // Limits, models and tariff ceilings are owner-only and admins read the audit
   // log: settings entries keep the operational switches only, never the values.
   for (const entry of (await store.auditLog(50)).filter(
