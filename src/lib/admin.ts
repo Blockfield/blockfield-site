@@ -2074,7 +2074,8 @@ const routes: Record<string, Route> = {
     audit: (body, result) => ({
       action: 'ai-limits',
       target: result?.policy ? `revision ${result.policy.revision}` : null,
-      detail: body,
+      // Grant amounts are owner-only and admins read the audit log: keep the mode only.
+      detail: { mode: body?.mode },
     }),
   },
   'GET workshop-ai-settings': {
@@ -2094,7 +2095,9 @@ const routes: Record<string, Route> = {
     audit: (body, result) => ({
       action: 'workshop-ai-settings',
       target: result?.settings ? `revision ${result.settings.revision}` : null,
-      detail: body,
+      // Limits, models and tariff ceilings are owner-only and admins read the
+      // audit log: keep the operational switches only, never the values.
+      detail: { enabled: body?.enabled, provider: body?.provider },
     }),
   },
   'GET workshop-ai-key': {

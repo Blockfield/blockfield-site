@@ -216,4 +216,7 @@ test('only the owner can read or raise budgets; admins and below are refused and
   const audit = await store.auditLog(20)
   assert.equal(audit.filter((entry) => entry.action === 'ai-limits' && !entry.ok).length, 5)
   assert.equal(audit.filter((entry) => entry.action === 'ai-limits' && entry.ok).length, 1)
+  const granted = audit.find((entry) => entry.action === 'ai-limits' && entry.ok)
+  // Grant amounts are owner-only and admins read the audit log: entries keep the mode only.
+  assert.deepEqual(JSON.parse(granted.detail), { mode: 'builder' })
 })

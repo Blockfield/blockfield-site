@@ -441,6 +441,12 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   const saved = await call(owner, 'PUT', 'workshop-ai-settings', adminBody({ expectedRevision: 1 }))
   assert.equal(saved.status, 200)
   assert.equal((await saved.json()).settings.revision, 2)
+  // Limits, models and tariff ceilings are owner-only and admins read the audit
+  // log: settings entries keep the operational switches only, never the values.
+  for (const entry of (await store.auditLog(50)).filter(
+    (entry) => entry.action === 'workshop-ai-settings' && entry.ok,
+  ))
+    assert.deepEqual(Object.keys(JSON.parse(entry.detail)).sort(), ['enabled', 'provider'])
   assert.equal(
     (await call(owner, 'PUT', 'workshop-ai-settings', adminBody({ expectedRevision: 1 }))).status,
     409,
