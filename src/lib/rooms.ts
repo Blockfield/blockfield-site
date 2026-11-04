@@ -1,5 +1,7 @@
 import net from 'node:net'
 import { open } from 'node:fs/promises'
+import { join } from 'node:path'
+import { switchView } from './switch-status.ts'
 
 export type CapturePoint = {
   id: string
@@ -59,6 +61,10 @@ export type RoomStatus = {
   lobby?: boolean
   online?: number
   maintenance?: Maintenance
+  // deploying/stale come from the controller while the game is down mid-deploy;
+  // additive top-level fields the launcher ignores, like the mod#28 room fields.
+  deploying?: boolean
+  stale?: boolean
 }
 export const maintenanceMessage =
   'На сервере проводятся технические работы. Обычный вход временно недоступен.'
@@ -73,21 +79,57 @@ export function maintenanceFrom(value: any): Maintenance | null {
     since: valid && Number.isSafeInteger(value.since) ? value.since : null,
   }
 }
+async function readJsonFile(path: string, limit: number): Promise<any> {
+  const file = await open(path)
+  try {
+    const buffer = Buffer.alloc(limit + 1)
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
+    if (bytesRead === buffer.length) throw new Error('File too large')
+    return JSON.parse(buffer.subarray(0, bytesRead).toString())
+  } finally {
+    await file.close()
+  }
+}
 export async function readGate(path: string | undefined): Promise<Maintenance | null> {
   if (!path) return null
   try {
-    const file = await open(path)
-    try {
-      const buffer = Buffer.alloc(16_385)
-      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
-      if (bytesRead === buffer.length) throw new Error('Gate file too large')
-      return maintenanceFrom(JSON.parse(buffer.subarray(0, bytesRead).toString()))
-    } finally {
-      await file.close()
-    }
+    return maintenanceFrom(await readJsonFile(path, 16_384))
   } catch {
     return maintenanceFrom(null)
   }
+}
+const controllerDir = () => process.env.BLOCKFIELD_ADMIN_DIR || '/workshop-admin'
+// Controller status.json (schema 1, read-only mount): the single entry for deploy state.
+// Fail closed: absent, too large, or malformed means "no deploy known", never "deploying".
+async function readControllerStatus(): Promise<any | null> {
+  try {
+    const value = await readJsonFile(join(controllerDir(), 'status.json'), 65_536)
+    return value && typeof value === 'object' ? value : null
+  } catch {
+    return null
+  }
+}
+// A deploy is running while the controller is switching (REQUESTED/DRAINING/SAVING/STARTING,
+// the same busy definition as the admin switch view) or observes the game container starting.
+// ERROR fails closed: a failed switch is dead, not deploying.
+export function deployingFromStatus(status: any): boolean {
+  // A phaseless document is malformed: fail closed even when its game part looks live.
+  if (!status || typeof status !== 'object' || typeof status.phase !== 'string') return false
+  if (status.phase === 'ERROR') return false
+  if (switchView(status).busy) return true
+  const game = status.game
+  return !!game && typeof game === 'object' && game.phase === 'STARTING'
+}
+const buildPattern = /^(v\d+\.\d+\.\d+|[0-9a-f]{7,40})$/
+export function validBuild(value: any): value is string {
+  return typeof value === 'string' && buildPattern.test(value)
+}
+// "What version is running" comes from the controller's observed game release;
+// live status only fills the gap when the controller exports none.
+export function buildFromStatus(status: any): string | undefined {
+  const game = status?.game
+  const release = game && typeof game === 'object' ? game.release : undefined
+  return validBuild(release) ? release : undefined
 }
 export const phases: Record<string, string> = {
   IDLE: 'Ожидание игроков',
@@ -121,10 +163,7 @@ export function parseRooms(value: any): RoomStatus {
     )
     .slice(0, 100)
   if (rooms.length !== value.rooms.length) throw new Error('Invalid room status')
-  const build =
-    typeof value.build === 'string' && /^(v\d+\.\d+\.\d+|[0-9a-f]{7,40})$/.test(value.build)
-      ? { build: value.build }
-      : {}
+  const build = validBuild(value.build) ? { build: value.build } : {}
   return { available: true, checkedAt: value.checkedAt, rooms, ...build }
 }
 export function varint(value: number): Buffer {
@@ -198,6 +237,9 @@ export function queryStatus(host: string, port: number): Promise<any> {
   })
 }
 let cache: RoomStatus = { available: false, checkedAt: 0, rooms: [] }
+// Last live rooms for the mid-deploy fallback: only successful queries write it,
+// deploying snapshots never do. Bounded: parseRooms caps rooms at 100, build is a tag.
+let lastKnown: { rooms: Room[]; build?: string } | null = null
 let until = 0
 let inflight: Promise<RoomStatus> | undefined
 export function currentRooms(): Promise<RoomStatus> {
@@ -228,14 +270,39 @@ export function currentRooms(): Promise<RoomStatus> {
           (status) => status,
           () => null,
         ),
+        readControllerStatus(),
       ]),
     )
-    .then(([rooms, status]) => {
+    .then(([rooms, status, controller]) => {
       const online = status?.players?.online
-      const value = {
-        ...rooms,
+      const lobby = {
         lobby: status !== null,
         ...(Number.isSafeInteger(online) && online >= 0 ? { online } : {}),
+      }
+      // U5: the running version is controller state; live status only fills the gap.
+      const build = buildFromStatus(controller) ?? (rooms as RoomStatus).build
+      if (!rooms.available && !('maintenance' in rooms) && deployingFromStatus(controller)) {
+        // U4: game down mid-deploy serves the last-known rooms as stale, not bare unavailable.
+        const fallbackBuild = build ?? lastKnown?.build
+        const value: RoomStatus = {
+          available: false,
+          checkedAt: Date.now(),
+          rooms: lastKnown?.rooms ?? [],
+          ...(fallbackBuild ? { build: fallbackBuild } : {}),
+          ...lobby,
+          deploying: true,
+          stale: true,
+        }
+        cache = value
+        until = Date.now() + 5000
+        return value
+      }
+      if (rooms.available)
+        lastKnown = { rooms: (rooms as RoomStatus).rooms, ...(build ? { build } : {}) }
+      const value = {
+        ...rooms,
+        ...lobby,
+        ...(build ? { build } : {}),
       }
       cache = value
       until = Date.now() + 5000
