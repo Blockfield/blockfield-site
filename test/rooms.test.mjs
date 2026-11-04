@@ -386,3 +386,40 @@ test('running version comes from the controller, live status only fills the gap'
     if (game.listening) await new Promise((resolve) => game.close(resolve))
   }
 })
+test('missing or unreadable controller status keeps live rooms and build', async () => {
+  const game = statusServer({
+    blockfield: { checkedAt: Date.now(), build: 'v1.2.3', rooms: [room] },
+  })
+  await new Promise((resolve) => game.listen(0, '127.0.0.1', resolve))
+  const dir = await mkdtemp(join(tmpdir(), 'bf-controller-'))
+  delete process.env.BLOCKFIELD_GATE_FILE
+  delete process.env.BLOCKFIELD_GATE_SOURCE
+  Object.assign(process.env, {
+    BLOCKFIELD_SERVER_HOST: '127.0.0.1',
+    BLOCKFIELD_SERVER_PORT: String(game.address().port),
+    BLOCKFIELD_LOBBY_HOST: '127.0.0.1',
+    BLOCKFIELD_LOBBY_PORT: '1',
+    BLOCKFIELD_ADMIN_DIR: dir,
+  })
+  try {
+    const absent = await import('../src/lib/rooms.ts?controller-absent')
+    const live = await absent.currentRooms()
+    assert.equal(live.available, true)
+    assert.deepEqual(live.rooms, [room])
+    assert.equal(live.build, 'v1.2.3')
+    assert.equal('deploying' in live, false)
+    assert.equal('stale' in live, false)
+    await writeFile(join(dir, 'status.json'), '{"schema":')
+    const broken = await import('../src/lib/rooms.ts?controller-broken')
+    const fallback = await broken.currentRooms()
+    assert.equal(fallback.available, true)
+    assert.deepEqual(fallback.rooms, [room])
+    assert.equal(fallback.build, 'v1.2.3')
+    assert.equal('deploying' in fallback, false)
+    assert.equal('stale' in fallback, false)
+  } finally {
+    delete process.env.BLOCKFIELD_ADMIN_DIR
+    await rm(dir, { recursive: true, force: true })
+    if (game.listening) await new Promise((resolve) => game.close(resolve))
+  }
+})
