@@ -285,4 +285,4 @@ in `.env` as `BLOCKFIELD_STATS_DB`, `BLOCKFIELD_ADMIN_DIR`, `BLOCKFIELD_INBOX_DI
 
 A recognized account with no admin access is not necessarily a lost login. Check the effective `BLOCKFIELD_OWNER_UUIDS` and selected database first. Owner access is deliberately environment-only; restoring a database does not restore this variable. Persist it in Dokploy and preserve it when updating the application environment.
 
-Repository boundaries and shared files are mapped in [ARCHITECTURE](https://github.com/Blockfield/blockfield-workspace-private/blob/main/docs/ARCHITECTURE.md). Update this contract and that map when their relationship changes.
+Repository boundaries and shared files are mapped in [ARCHITECTURE](https://github.com/Blockfield/blockfield-workspace/blob/main/docs/ARCHITECTURE.md). Update this contract and that map when their relationship changes.
