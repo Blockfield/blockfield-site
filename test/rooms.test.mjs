@@ -237,3 +237,189 @@ test('currentRooms skips the game server unless the gate is in game mode', async
     await new Promise((resolve) => game.close(resolve))
   }
 })
+test('deployingFromStatus reports controller deploys, never stable or broken status', async () => {
+  const { deployingFromStatus } = await import('../src/lib/rooms.ts?deploying')
+  for (const phase of ['REQUESTED', 'DRAINING', 'SAVING', 'STARTING'])
+    assert.equal(deployingFromStatus({ schema: 1, phase, desired: { profile: 'workshop' } }), true)
+  assert.equal(
+    deployingFromStatus({
+      schema: 1,
+      phase: 'game',
+      game: { phase: 'STARTING', gate: 'closed', release: null },
+    }),
+    true,
+    'game image rollout with a stable controller phase',
+  )
+  for (const status of [
+    null,
+    undefined,
+    {},
+    { phase: 'game', game: { phase: 'game', gate: 'public', release: 'v1.2.3' } },
+    {
+      phase: 'ERROR',
+      game: { phase: 'STARTING', gate: 'closed', release: null },
+    },
+    { phase: 'sleeping' },
+    { phase: 5 },
+    { phase: null, game: { phase: 'STARTING' } },
+  ])
+    assert.equal(deployingFromStatus(status), false)
+})
+test('game down mid-deploy serves deploying with last-known rooms', async () => {
+  const game = statusServer({ blockfield: { checkedAt: Date.now(), rooms: [room] } })
+  await new Promise((resolve) => game.listen(0, '127.0.0.1', resolve))
+  const dir = await mkdtemp(join(tmpdir(), 'bf-controller-'))
+  const statusFile = join(dir, 'status.json')
+  await writeFile(
+    statusFile,
+    JSON.stringify({
+      schema: 1,
+      revision: 1,
+      phase: 'game',
+      game: { phase: 'game', gate: 'public', release: 'v1.2.3' },
+    }),
+  )
+  delete process.env.BLOCKFIELD_GATE_FILE
+  Object.assign(process.env, {
+    BLOCKFIELD_SERVER_HOST: '127.0.0.1',
+    BLOCKFIELD_SERVER_PORT: String(game.address().port),
+    BLOCKFIELD_LOBBY_HOST: '127.0.0.1',
+    BLOCKFIELD_LOBBY_PORT: '1',
+    BLOCKFIELD_ADMIN_DIR: dir,
+  })
+  try {
+    const { currentRooms } = await import('../src/lib/rooms.ts?deploy-fallback')
+    assert.deepEqual((await currentRooms()).rooms, [room])
+    await new Promise((resolve) => game.close(resolve))
+    await writeFile(
+      statusFile,
+      JSON.stringify({
+        schema: 1,
+        revision: 2,
+        phase: 'STARTING',
+        desired: { profile: 'game' },
+        game: { phase: 'STARTING', gate: 'closed', release: null },
+      }),
+    )
+    await new Promise((resolve) => setTimeout(resolve, 5100))
+    const status = await currentRooms()
+    assert.equal(status.available, false)
+    assert.equal(status.deploying, true)
+    assert.equal(status.stale, true)
+    assert.deepEqual(status.rooms, [room])
+  } finally {
+    delete process.env.BLOCKFIELD_ADMIN_DIR
+    await rm(dir, { recursive: true, force: true })
+    if (game.listening) await new Promise((resolve) => game.close(resolve))
+  }
+})
+test('game down with no deploy stays bare unavailable', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bf-controller-'))
+  await writeFile(
+    join(dir, 'status.json'),
+    JSON.stringify({
+      schema: 1,
+      revision: 1,
+      phase: 'game',
+      game: { phase: 'game', gate: 'public', release: 'v1.2.3' },
+    }),
+  )
+  delete process.env.BLOCKFIELD_GATE_FILE
+  Object.assign(process.env, {
+    BLOCKFIELD_SERVER_HOST: '127.0.0.1',
+    BLOCKFIELD_SERVER_PORT: '1',
+    BLOCKFIELD_LOBBY_HOST: '127.0.0.1',
+    BLOCKFIELD_LOBBY_PORT: '1',
+    BLOCKFIELD_ADMIN_DIR: dir,
+  })
+  try {
+    const { currentRooms } = await import('../src/lib/rooms.ts?deploy-dead')
+    const status = await currentRooms()
+    assert.equal(status.available, false)
+    assert.deepEqual(status.rooms, [])
+    assert.equal('deploying' in status, false)
+    assert.equal('stale' in status, false)
+  } finally {
+    delete process.env.BLOCKFIELD_ADMIN_DIR
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+test('running version comes from the controller, live status only fills the gap', async () => {
+  const game = statusServer({ blockfield: { checkedAt: Date.now(), build: 'v1.2.3', rooms: [] } })
+  await new Promise((resolve) => game.listen(0, '127.0.0.1', resolve))
+  const dir = await mkdtemp(join(tmpdir(), 'bf-controller-'))
+  const statusFile = join(dir, 'status.json')
+  await writeFile(
+    statusFile,
+    JSON.stringify({
+      schema: 1,
+      revision: 1,
+      phase: 'game',
+      game: { phase: 'game', gate: 'public', release: 'v9.9.9' },
+    }),
+  )
+  delete process.env.BLOCKFIELD_GATE_FILE
+  Object.assign(process.env, {
+    BLOCKFIELD_SERVER_HOST: '127.0.0.1',
+    BLOCKFIELD_SERVER_PORT: String(game.address().port),
+    BLOCKFIELD_LOBBY_HOST: '127.0.0.1',
+    BLOCKFIELD_LOBBY_PORT: '1',
+    BLOCKFIELD_ADMIN_DIR: dir,
+  })
+  try {
+    const first = await import('../src/lib/rooms.ts?deploy-build')
+    assert.equal((await first.currentRooms()).build, 'v9.9.9')
+    await writeFile(
+      statusFile,
+      JSON.stringify({
+        schema: 1,
+        revision: 2,
+        phase: 'game',
+        game: { phase: 'game', gate: 'public', release: 'latest' },
+      }),
+    )
+    const second = await import('../src/lib/rooms.ts?deploy-build-fallback')
+    assert.equal((await second.currentRooms()).build, 'v1.2.3')
+  } finally {
+    delete process.env.BLOCKFIELD_ADMIN_DIR
+    await rm(dir, { recursive: true, force: true })
+    if (game.listening) await new Promise((resolve) => game.close(resolve))
+  }
+})
+test('missing or unreadable controller status keeps live rooms and build', async () => {
+  const game = statusServer({
+    blockfield: { checkedAt: Date.now(), build: 'v1.2.3', rooms: [room] },
+  })
+  await new Promise((resolve) => game.listen(0, '127.0.0.1', resolve))
+  const dir = await mkdtemp(join(tmpdir(), 'bf-controller-'))
+  delete process.env.BLOCKFIELD_GATE_FILE
+  delete process.env.BLOCKFIELD_GATE_SOURCE
+  Object.assign(process.env, {
+    BLOCKFIELD_SERVER_HOST: '127.0.0.1',
+    BLOCKFIELD_SERVER_PORT: String(game.address().port),
+    BLOCKFIELD_LOBBY_HOST: '127.0.0.1',
+    BLOCKFIELD_LOBBY_PORT: '1',
+    BLOCKFIELD_ADMIN_DIR: dir,
+  })
+  try {
+    const absent = await import('../src/lib/rooms.ts?controller-absent')
+    const live = await absent.currentRooms()
+    assert.equal(live.available, true)
+    assert.deepEqual(live.rooms, [room])
+    assert.equal(live.build, 'v1.2.3')
+    assert.equal('deploying' in live, false)
+    assert.equal('stale' in live, false)
+    await writeFile(join(dir, 'status.json'), '{"schema":')
+    const broken = await import('../src/lib/rooms.ts?controller-broken')
+    const fallback = await broken.currentRooms()
+    assert.equal(fallback.available, true)
+    assert.deepEqual(fallback.rooms, [room])
+    assert.equal(fallback.build, 'v1.2.3')
+    assert.equal('deploying' in fallback, false)
+    assert.equal('stale' in fallback, false)
+  } finally {
+    delete process.env.BLOCKFIELD_ADMIN_DIR
+    await rm(dir, { recursive: true, force: true })
+    if (game.listening) await new Promise((resolve) => game.close(resolve))
+  }
+})
