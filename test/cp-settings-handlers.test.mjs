@@ -8,6 +8,7 @@ import {
   saveSettingsCp,
   saveMapAvailabilityCp,
   saveAiLimitsCp,
+  saveWorkshopAiSettingsCp,
   readSettingsCpView,
 } from '../src/lib/admin.ts'
 
@@ -149,6 +150,11 @@ function fakeCp(opts = {}) {
           value: candidate,
           history: [...current.history, JSON.parse(JSON.stringify(candidate))],
         })
+        if (opts.commitThenHang === namespace) {
+          opts.commitThenHang = ''
+          req.socket.destroy()
+          return
+        }
         return answer(202, receipt)
       }
       return answer(405, { error: 'method_not_allowed' })
@@ -157,8 +163,8 @@ function fakeCp(opts = {}) {
   return { server, seen }
 }
 
-async function withCp(t, fn) {
-  const { server, seen } = fakeCp()
+async function withCp(t, fn, opts = {}) {
+  const { server, seen } = fakeCp(opts)
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const dir = temp(t)
   try {
@@ -396,8 +402,8 @@ test('CP gun-only path PATCHes only gunBalance', async (t) => {
     assert.equal(saved.settings.revision, 1)
     assert.deepEqual(
       seen.map(([ns]) => ns),
-      ['gunBalance', 'gunBalance'],
-      'gun-only save touches no other namespace (anchor empty revision, then the patch)',
+      ['gunBalance'],
+      'gun-only save touches no other namespace (single PATCH, no anchor revision)',
     )
     const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
     assert.deepEqual(mirror.gunBalance, { 'tacz:m4a1': { draw_time: 0.5 } })
@@ -405,7 +411,7 @@ test('CP gun-only path PATCHes only gunBalance', async (t) => {
   })
 })
 
-test('CP reset-all gun overrides rolls back to the empty revision (real merge)', async (t) => {
+test('CP reset-all gun overrides is refused: removal needs CP null-delete', async (t) => {
   await withCp(t, async (dir, seen) => {
     seed(dir, 'settings.json', { schema: 1, revision: 0 })
     seed(dir, 'gun-balance.json', {
@@ -436,20 +442,25 @@ test('CP reset-all gun overrides rolls back to the empty revision (real merge)',
         cpRevisions: {},
       }),
     )
-    const view = await readSettingsCpView(dir)
-    assert.deepEqual(view.settings.gunBalance, { 'tacz:m4a1': { draw_time: 0.5 } })
-    const saved = await saveSettingsCp(
-      ...args({ expectedRevision: 1, gunBalance: {}, cpRevisions: { gunBalance: 2 } }),
+    const patches = seen.length
+    const error = await saveSettingsCp(
+      ...args({ expectedRevision: 1, gunBalance: {}, cpRevisions: { gunBalance: 1 } }),
+    ).then(
+      () => assert.fail('expected a removal refusal'),
+      (e) => e,
     )
-    assert.equal(saved.settings.revision, 2)
-    assert.ok(
-      seen.some(([, body]) => body && body.revision === 1 && !body.patch),
-      'reset goes through rollback to the empty revision, not a no-op merge',
-    )
+    assert.equal(status(error), 409)
+    assert.match(await error.text(), /null-delete/, 'names the missing CP capability')
+    assert.equal(seen.length, patches, 'refused reset sends no CP write')
     const after = await readSettingsCpView(dir)
-    assert.equal(after.settings.gunBalance, undefined, 'stored overrides are cleared')
+    assert.deepEqual(
+      after.settings.gunBalance,
+      { 'tacz:m4a1': { draw_time: 0.5 } },
+      'stored overrides are untouched',
+    )
     const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
-    assert.equal(mirror.gunBalance, undefined, 'mirror keeps the file empty-reset shape')
+    assert.equal(mirror.revision, 1, 'mirror untouched')
+    assert.deepEqual(mirror.gunBalance, { 'tacz:m4a1': { draw_time: 0.5 } })
   })
 })
 
@@ -554,4 +565,124 @@ test('CP GET settings view carries per-namespace base revisions', async (t) => {
     const view = await readSettingsCpView(dir)
     assert.deepEqual(view.cpRevisions, { rooms: 1 })
   })
+})
+
+test('CP classLocks-only save keeps stored classCosts (absent CP key)', async (t) => {
+  await withCp(t, async (dir) => {
+    seed(dir, 'settings.json', {
+      schema: 1,
+      revision: 0,
+      classLocks: ['tech'],
+      classCosts: { tech: 5 },
+    })
+    const saved = await saveSettingsCp(
+      dir,
+      { expectedRevision: 0, classLocks: ['tech', 'sniper'], cpRevisions: {} },
+      'A',
+    )
+    assert.equal(saved.settings.revision, 1)
+    assert.deepEqual(saved.settings.classLocks, ['tech', 'sniper'])
+    const view = await readSettingsCpView(dir)
+    assert.deepEqual(view.settings.classLocks, ['tech', 'sniper'])
+    assert.deepEqual(
+      view.settings.classCosts,
+      { tech: 5 },
+      'the CP value has no classCosts; the mirror value survives',
+    )
+    const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
+    assert.deepEqual(mirror.classCosts, { tech: 5 }, 'mirror keeps the stored costs')
+  })
+})
+
+test('CP AI saves persist no transport metadata in the files', async (t) => {
+  await withCp(t, async (dir) => {
+    seed(dir, 'ai-limits.json', {
+      schema: 1,
+      revision: 0,
+      currency: 'USD',
+      mode: 'session',
+      sessions: {},
+      builders: {},
+    })
+    const policy = await saveAiLimitsCp(
+      dir,
+      { expectedRevision: 0, mode: 'builder', sessions: {}, builders: {} },
+      'owner',
+    )
+    assert.equal(policy.policy.revision, 1)
+    assert.deepEqual(policy.cpRevisions, { 'ai-limits': 1 }, 'UI still gets its base revision')
+    assert.ok(!('cpRevisions' in policy.policy), 'response policy carries no transport key')
+    const limitsFile = JSON.parse(readFileSync(join(dir, 'ai-limits.json')))
+    assert.ok(!('cpRevisions' in limitsFile), 'ai-limits.json carries no transport key')
+    seed(dir, 'workshop-ai-settings.json', {
+      schema: 1,
+      revision: 0,
+      enabled: false,
+      provider: 'openrouter',
+      generationProvider: 'openrouter',
+      guardProvider: 'openrouter',
+      transcriptionProvider: 'openrouter',
+      providers: [],
+      generationModel: 'a/b',
+      guardModel: 'typesafe/jev-1',
+      transcriptionModel: 'openai/whisper-1',
+      cleanupModel: '',
+      cleanupProvider: 'openrouter',
+      maxBlocks: 1024,
+      blocksPerTick: 512,
+      minimumBuildTicks: 60,
+      applyBudgetMs: 4,
+      hourlyRequestLimit: 100,
+      hourlyPlayerRequestLimit: 10,
+      maxHourlyBuilders: 32,
+      generationMaxPricePromptUsdPerM: 0.5,
+      generationMaxPriceCompletionUsdPerM: 1.5,
+      inputGuardEnabled: false,
+    })
+    const workshop = await saveWorkshopAiSettingsCp(
+      dir,
+      {
+        expectedRevision: 0,
+        enabled: false,
+        provider: 'openrouter',
+        generationModel: 'a/b',
+        guardModel: 'typesafe/jev-1',
+        transcriptionModel: 'openai/whisper-1',
+        maxBlocks: 1024,
+        blocksPerTick: 512,
+        minimumBuildTicks: 60,
+        applyBudgetMs: 4,
+        hourlyRequestLimit: 100,
+        hourlyPlayerRequestLimit: 10,
+        maxHourlyBuilders: 32,
+        generationMaxPricePromptUsdPerM: 0.5,
+        generationMaxPriceCompletionUsdPerM: 1.5,
+        inputGuardEnabled: false,
+      },
+      () => true,
+    )
+    assert.ok(!('cpRevisions' in workshop.settings), 'response settings carry no transport key')
+    const workshopFile = JSON.parse(readFileSync(join(dir, 'workshop-ai-settings.json')))
+    assert.ok(!('cpRevisions' in workshopFile), 'workshop-ai-settings.json is clean')
+  })
+})
+
+test('CP commit-then-timeout is treated as applied, not rejected', async (t) => {
+  await withCp(
+    t,
+    async (dir) => {
+      seed(dir, 'settings.json', { schema: 1, revision: 0 })
+      const saved = await saveSettingsCp(
+        dir,
+        { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} },
+        'A',
+      )
+      assert.equal(saved.settings.revision, 1)
+      assert.deepEqual(saved.settings.rooms, { maxRooms: 2 }, 'committed value is returned')
+      const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
+      assert.equal(mirror.revision, 1)
+      assert.deepEqual(mirror.rooms, { maxRooms: 2 }, 'mirror reflects the committed value')
+    },
+    { commitThenHang: 'rooms' },
+  )
 })

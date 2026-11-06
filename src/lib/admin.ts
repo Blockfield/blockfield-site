@@ -3462,23 +3462,19 @@ async function record(
  * Active only when cpConfigured(); otherwise the file writers above stay
  * authoritative. The namespaces (rooms, deathmatch, classLocks, campaign,
  * parcool, gunBalance, kits, disabledMapIds, ai-limits, workshop-ai, plus the
- * gameplay/gate core) come from control-plane PR #21: the contract for these
- * writers is control-plane main after #21 merges (the coordinator orders the
- * merges), not the old gameplay+gate-only core. CP is the source of truth:
- * after the PATCH jobs the settings mirror is rebuilt from a fresh CP GET,
- * never from the request body, so omitted sections and concurrent saves cannot
- * drop each other; CP-mode saves are serialized on one in-process mutex.
- * Failure classes: 409/4xx means not applied (report it); a timeout, network
- * error or 5xx means outcome unknown (say so, never claim not-applied, ask for
- * a reload before retrying); the mirror is still refreshed whenever CP
- * answers. Verified against control-plane main: PATCH merges
- * (cpv2/settings.py merge, core.py settings_change), dict values recurse so
- * `{overrides: {}}` is a no-op and per-key null fails validation
- * (invalid_settings, 422); only lists, nullable fields and whole-value
- * rollback clear state. Whole-dict resets (gunBalance, kits, campaign) roll
- * back to revision 1, which the site guarantees empty by writing `{}` on its
- * first touch of a fresh namespace; per-item removals that merge cannot
- * express fail closed with a 422 naming the gap. */
+ * gameplay core) come from control-plane PR #21. CP is the source of truth:
+ * after the PATCH jobs the settings mirror is rebuilt from a fresh CP GET
+ * (via mirrorFromCp, never from the request body), so omitted sections and
+ * concurrent saves cannot drop each other; CP-mode saves are serialized on
+ * one in-process mutex. Failure classes: 409/4xx means not applied (report
+ * it); a timeout, network error or 5xx means outcome unknown — re-read CP
+ * and, if it shows the intended value, treat the job as applied, else report
+ * unknown and ask for a reload before retrying. The mirror is still refreshed
+ * whenever CP answers. CP merge recurses into dicts, so entry removal has no
+ * PATCH expression: reset-all and per-item removals fail closed with a 409
+ * naming CP null-delete support (one-line switch once control-plane#25
+ * lands RFC 7396 null-delete). Verified against control-plane main
+ * (cpv2/settings.py merge, core.py settings_change). */
 const cpSettingsTarget = '*'
 
 const stable = (value: unknown): string => {
@@ -3494,9 +3490,6 @@ const stable = (value: unknown): string => {
 
 const pick = (value: Record<string, unknown>, keys: string[]) =>
   Object.fromEntries(keys.filter((key) => key in value).map((key) => [key, value[key]]))
-
-const isObjEmpty = (value: unknown) =>
-  !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0
 
 type CpSectionView = { initialized: boolean; revision: number; value: unknown }
 
@@ -3525,25 +3518,13 @@ async function cpSaving<T>(job: () => Promise<T>): Promise<T> {
   return run
 }
 
-type CpJob =
-  | {
-      kind: 'patch'
-      namespace: string
-      patch: Record<string, unknown>
-      conflict: string
-      base: number
-      anchor?: boolean
-    }
-  | {
-      kind: 'rollback'
-      namespace: string
-      rev: number
-      conflict: string
-      base: number
-      preRev: number
-      preValue: unknown
-      emptyCheck: (value: unknown) => boolean
-    }
+type CpJob = {
+  kind: 'patch'
+  namespace: string
+  patch: Record<string, unknown>
+  conflict: string
+  base: number
+}
 
 /** Failure classes: 4xx was never applied; anything else is unknown. */
 function cpClassify(error: unknown): {
@@ -3597,48 +3578,35 @@ function cpChangedJob(
   return { kind: 'patch', namespace, patch, conflict, base }
 }
 
-const emptyOverrides = (value: unknown) => {
-  const overrides = (value as any)?.overrides
-  return !!overrides && typeof overrides === 'object' && Object.keys(overrides).length === 0
-}
-const emptyKits = (value: unknown) => {
-  const kits = (value as any)?.kits ?? {}
-  const fixed = (value as any)?.fixedModeKits ?? {}
-  return isObjEmpty(kits) && isObjEmpty(fixed)
-}
-const emptyCampaign = (value: unknown) => isObjEmpty((value as any)?.campaignBalance)
-
 /**
- * Whole-dict reset job. An uninitialized namespace takes a plain empty PATCH
- * (which stores the empty value as revision 1); an initialized one rolls back
- * to revision 1, which the site keeps empty by writing `{}` on its first
- * touch of a fresh namespace. A failed emptiness check restores the pre-reset
- * revision, so a namespace that predates site writes can never be corrupted.
+ * CP merge recurses into dicts, so a dropped map entry has no PATCH
+ * expression until control-plane#25 lands RFC 7396 null-delete. Every
+ * map-namespace save passes its patch through here first; switching to
+ * null-delete later is a one-line change inside this function.
  */
-function cpResetJob(
-  body: any,
-  views: Map<string, CpSectionView | null>,
-  namespace: string,
-  emptyPatch: Record<string, unknown>,
-  emptyCheck: (value: unknown) => boolean,
-  conflict: string,
-): CpJob | null {
-  const view = views.get(namespace) ?? null
-  if (!view) throw fail(503, 'Control-plane недоступен. Настройки не изменены.')
-  if (!view.initialized || emptyCheck(view.value))
-    return cpChangedJob(body, views, namespace, emptyPatch, view.value ?? {}, conflict)
-  const base = body?.cpRevisions?.[namespace]
-  if (!Number.isSafeInteger(base)) throw fail(409, conflict)
-  return {
-    kind: 'rollback',
-    namespace,
-    rev: 1,
-    conflict,
-    base,
-    preRev: view.revision,
-    preValue: view.value,
-    emptyCheck,
+function cpRefuseDroppedKeys(
+  label: string,
+  patch: Record<string, unknown>,
+  current: unknown,
+) {
+  const kept = (current ?? {}) as Record<string, unknown>
+  for (const [key, fragment] of Object.entries(patch)) {
+    if (!fragment || typeof fragment !== 'object' || Array.isArray(fragment)) continue
+    const have = kept[key]
+    if (!have || typeof have !== 'object' || Array.isArray(have)) continue
+    if (Object.keys(have).some((id) => !Object.hasOwn(fragment, id)))
+      throw fail(
+        409,
+        `${label}: removal needs CP null-delete support (control-plane#25). Reload before retrying.`,
+      )
   }
+}
+
+/** Intended patch keys already visible in a fresh CP read: the job applied. */
+function cpPatchApplied(view: CpSectionView | null, patch: Record<string, unknown>): boolean {
+  if (!view?.initialized) return false
+  const current = pick((view.value ?? {}) as Record<string, unknown>, Object.keys(patch))
+  return stable(patch) === stable(current)
 }
 
 async function cpReadOne(cp: any, namespace: string): Promise<CpSectionView | null> {
@@ -3649,134 +3617,40 @@ async function cpReadOne(cp: any, namespace: string): Promise<CpSectionView | nu
   }
 }
 
-type CpExecError = {
-  failed: CpJob
-  failedIndex: number
-  kind: 'conflict' | 'rejected' | 'unknown'
-  status: number
-  code: string
-}
-
-/** Executes jobs in order with deterministic idempotency keys; classifies failures. */
-async function cpExecuteJobs(cp: any, jobs: CpJob[], fileRev: number): Promise<void> {
-  const revs = new Map<string, number>()
-  for (let index = 0; index < jobs.length; index++) {
-    const job = jobs[index]
-    const base = job.base === 0 && revs.has(job.namespace) ? revs.get(job.namespace)! : job.base
-    const key = `site:${fileRev}:${job.namespace}:${job.kind}:${index}`
-    try {
-      let receipt: { operationId: string; revision: number }
-      if (job.kind === 'patch')
-        receipt = (await cp.patchSettingsCp(job.namespace, cpSettingsTarget, {
-          expectedRevision: base,
-          idempotencyKey: key,
-          patch: job.patch,
-        })) as { operationId: string; revision: number }
-      else
-        receipt = (await cp.rollbackSettingsCp(job.namespace, cpSettingsTarget, {
-          expectedRevision: base,
-          idempotencyKey: key,
-          revision: job.rev,
-        })) as { operationId: string; revision: number }
-      revs.set(job.namespace, receipt.revision)
-    } catch (error) {
-      throw { failed: job, failedIndex: index, ...cpClassify(error) }
-    }
-  }
-}
-async function cpVerifyJob(
-  cp: any,
-  views: Map<string, CpSectionView | null>,
-  job: CpJob,
-  fileRev: number,
-  index: number,
-): Promise<'ok' | 'gap' | 'unknown'> {
-  // Anchor PATCHes establish the empty base revision for a later job in the
-  // same save; the later job's own verify covers the namespace end state.
-  if (job.kind === 'patch' && job.anchor) return 'ok'
-  const view = views.get(job.namespace) ?? null
-  if (!view) return 'unknown'
-  if (job.kind === 'rollback') {
-    if (job.emptyCheck(view.value)) return 'ok'
-    const restored = await cpRestoreReset(cp, job, view.revision, fileRev, index)
-    return restored ? 'gap' : 'unknown'
-  }
-  if (!view.initialized) return 'unknown'
-  const current = pick((view.value ?? {}) as Record<string, unknown>, Object.keys(job.patch))
-  return stable(job.patch) === stable(current) ? 'ok' : 'gap'
-}
-
 /**
- * A rollback that did not clear restores the pre-reset revision, so a
- * namespace that predates site writes can never be corrupted by a blind
- * rollback to revision 1.
+ * Best-effort mirror rebuild from CP (never from the request body), so the
+ * mirror always reflects what CP confirms. Transport keys (cpRevisions) are
+ * stripped before stamping: they belong to the response, not to the files.
  */
-async function cpRestoreReset(
-  cp: any,
-  job: Extract<CpJob, { kind: 'rollback' }>,
-  headRev: number,
-  fileRev: number,
-  index: number,
-): Promise<boolean> {
+async function cpRebuildMirror(args: {
+  directory: string
+  fileName: string
+  revision: number
+  actorName: string
+  rebuild: () => Promise<{ value: any; cpRevisions: Record<string, number> }>
+}): Promise<{ value: any; cpRevisions: Record<string, number> } | null> {
   try {
-    await cp.rollbackSettingsCp(job.namespace, cpSettingsTarget, {
-      expectedRevision: headRev,
-      idempotencyKey: `site:${fileRev}:${job.namespace}:rollback-restore:${index}`,
-      revision: job.preRev,
-    })
-    const back = await cpReadOne(cp, job.namespace)
-    return !!back?.initialized && stable(back.value) === stable(job.preValue)
+    const view = await args.rebuild()
+    const stamped = {
+      ...(view.value as Record<string, unknown>),
+      schema: 1,
+      revision: args.revision + 1,
+      updatedAt: Date.now(),
+      updatedBy: args.actorName,
+    }
+    delete (stamped as Record<string, unknown>).cpRevisions
+    writeAtomic(args.directory, args.fileName, stamped)
+    return { value: stamped, cpRevisions: view.cpRevisions }
   } catch {
-    return false
+    return null
   }
-}
-
-function cpThrowPartial(
-  jobs: CpJob[],
-  execError: CpExecError | null,
-  gapJob: CpJob | null,
-  unknownJob: CpJob | null,
-  wroteMirror: boolean,
-): never {
-  const joined = (list: CpJob[]) =>
-    list.length ? ` (${list.map((job) => labelOf(job.namespace)).join(', ')})` : ''
-  if (unknownJob)
-    throw fail(
-      503,
-      `Неизвестный итог (${labelOf(unknownJob.namespace)}): control-plane не подтвердил изменение. Обновите страницу перед повтором.${wroteMirror ? ' Зеркало обновлено.' : ''}`,
-    )
-  if (execError) {
-    if (execError.kind === 'conflict')
-      throw fail(
-        409,
-        `${execError.failed.conflict} Сохранено${joined(jobs.slice(0, execError.failedIndex))}; не применено${joined(jobs.slice(execError.failedIndex))}.`,
-      )
-    throw fail(
-      execError.status || 503,
-      `Control-plane отклонил запрос (${execError.code || 'unknown'}).${joined(jobs.slice(0, execError.failedIndex)) ? ` Сохранено${joined(jobs.slice(0, execError.failedIndex))}.` : ' Ничего не сохранено.'}${joined(jobs.slice(execError.failedIndex)) ? ` Не применено${joined(jobs.slice(execError.failedIndex))}.` : ''}`,
-    )
-  }
-  if (gapJob) {
-    if (gapJob.kind === 'rollback')
-      throw fail(
-        422,
-        `${labelOf(gapJob.namespace)}: control-plane has no empty revision to clear to (state predates site writes); reset is not supported there.`,
-      )
-    throw fail(
-      422,
-      `${labelOf(gapJob.namespace)}: control-plane did not store the change (merge kept the previous value); removal is not supported by the merge contract.`,
-    )
-  }
-  throw fail(
-    503,
-    'Control-plane saved, but the local mirror could not be written; reload before retrying.',
-  )
 }
 
 /**
- * Shared settle: execute, verify against a fresh read, rebuild the mirror
- * from CP (never from the body), then report. The mirror always reflects
- * what CP confirms, so omitted sections and concurrent saves cannot drop it.
+ * Shared settle: run the jobs in order with deterministic idempotency keys,
+ * then rebuild the mirror from CP. 409/4xx means not applied (report what was
+ * saved vs pending); timeout/network/5xx means unknown — re-read CP, and if
+ * it shows the intended value treat the job as applied, else report unknown.
  */
 async function cpSettleSave(args: {
   cp: any
@@ -3787,56 +3661,49 @@ async function cpSettleSave(args: {
   jobs: CpJob[]
   rebuild: () => Promise<{ value: any; cpRevisions: Record<string, number> }>
 }): Promise<{ value: any; cpRevisions: Record<string, number> }> {
-  const { cp, jobs, revision, directory, fileName, actorName } = args
-  let execError: CpExecError | null = null
-  try {
-    await cpExecuteJobs(cp, jobs, revision)
-  } catch (error: any) {
-    execError =
-      error?.failed !== undefined
-        ? (error as CpExecError)
-        : { failed: jobs[0], failedIndex: 0, kind: 'unknown', status: 0, code: '' }
-  }
-  const fresh: Map<string, CpSectionView | null> | null = await cpReadViews([
-    ...new Set(jobs.map((job) => job.namespace)),
-  ])
-    .then((r) => r.views)
-    .catch(() => null)
-  let gapJob: CpJob | null = null
-  let unknownJob: CpJob | null = null
-  const executed = execError ? jobs.slice(0, execError.failedIndex + 1) : jobs
-  if (fresh) {
-    for (const job of executed) {
-      if (execError && job === execError.failed && execError.kind !== 'unknown') continue
-      const verdict = await cpVerifyJob(cp, fresh, job, revision, jobs.indexOf(job))
-      if (verdict === 'gap' && !gapJob) gapJob = job
-      else if (verdict === 'unknown' && !unknownJob) unknownJob = job
+  const { cp, jobs, revision } = args
+  const joined = (list: CpJob[]) =>
+    list.length ? ` (${list.map((job) => labelOf(job.namespace)).join(', ')})` : ''
+  const revs = new Map<string, number>()
+  for (let index = 0; index < jobs.length; index++) {
+    const job = jobs[index]
+    const base = job.base === 0 && revs.has(job.namespace) ? revs.get(job.namespace)! : job.base
+    try {
+      const receipt = (await cp.patchSettingsCp(job.namespace, cpSettingsTarget, {
+        expectedRevision: base,
+        idempotencyKey: `site:${revision}:${job.namespace}:${job.kind}:${index}`,
+        patch: job.patch,
+      })) as { operationId: string; revision: number }
+      revs.set(job.namespace, receipt.revision)
+    } catch (error) {
+      const problem = cpClassify(error)
+      if (problem.kind === 'unknown' && cpPatchApplied(await cpReadOne(cp, job.namespace), job.patch))
+        continue
+      const built = await cpRebuildMirror(args)
+      const mirrorNote = built ? ' Зеркало обновлено.' : ''
+      if (problem.kind === 'unknown')
+        throw fail(
+          503,
+          `Неизвестный итог (${labelOf(job.namespace)}): control-plane не подтвердил изменение. Обновите страницу перед повтором.${mirrorNote}`,
+        )
+      if (problem.kind === 'conflict')
+        throw fail(
+          409,
+          `${job.conflict} Сохранено${joined(jobs.slice(0, index))}; не применено${joined(jobs.slice(index))}.${mirrorNote}`,
+        )
+      throw fail(
+        problem.status || 503,
+        `Control-plane отклонил запрос (${problem.code || 'unknown'}).${jobs.slice(0, index).length ? ` Сохранено${joined(jobs.slice(0, index))}.` : ' Ничего не сохранено.'}${jobs.slice(index).length ? ` Не применено${joined(jobs.slice(index))}.` : ''}${mirrorNote}`,
+      )
     }
-  } else if (executed.length) unknownJob = executed[0]
-  let built: { value: any; cpRevisions: Record<string, number> } | null = null
-  try {
-    const view = await args.rebuild()
-    const stamped = {
-      ...view.value,
-      schema: 1,
-      revision: revision + 1,
-      updatedAt: Date.now(),
-      updatedBy: actorName,
-    }
-    writeAtomic(directory, fileName, stamped)
-    built = { value: stamped, cpRevisions: view.cpRevisions }
-  } catch {
-    // Mirror refresh failed; the report below still reflects CP-confirmed state.
   }
-  const wrote = built !== null
-  if (unknownJob || gapJob || execError) cpThrowPartial(jobs, execError, gapJob, unknownJob, wrote)
-  if (!built || !wrote) cpThrowPartial(jobs, null, null, null, wrote)
-  return built as { value: any; cpRevisions: Record<string, number> }
-}
-const ANCHOR_EMPTY: Record<string, Record<string, unknown>> = {
-  gunBalance: { overrides: {} },
-  kits: { kits: {}, fixedModeKits: {} },
-  campaign: { campaignBalance: {} },
+  const built = await cpRebuildMirror(args)
+  if (!built)
+    throw fail(
+      503,
+      'Control-plane saved, but the local mirror could not be written; reload before retrying.',
+    )
+  return built
 }
 const CP_LOBBY_FIELDS = ['pvpEnabled']
 
@@ -3904,17 +3771,6 @@ export async function saveSettingsCp(
     }
     const viewValue = (namespace: string) =>
       (views.get(namespace)?.value ?? {}) as Record<string, unknown>
-    const anchorIfFresh = (namespace: string, hasWork: boolean) => {
-      if (hasWork && !views.get(namespace)?.initialized && ANCHOR_EMPTY[namespace])
-        jobs.push({
-          kind: 'patch',
-          namespace,
-          patch: ANCHOR_EMPTY[namespace],
-          conflict,
-          base: 0,
-          anchor: true,
-        })
-    }
     if (!gunBalanceOnly) {
       if (Object.hasOwn(body, 'lobby')) {
         const lobby = values.lobby as Record<string, unknown>
@@ -3945,30 +3801,9 @@ export async function saveSettingsCp(
         )
       }
       if (Object.hasOwn(body, 'campaignBalance')) {
-        const empty = isObjEmpty(values.campaignBalance)
-        const view = views.get('campaign') ?? null
-        if (!view) throw fail(503, 'Control-plane недоступен. Настройки не изменены.')
-        if (empty && view.initialized && !emptyCampaign(view.value)) {
-          const base = (body as any)?.cpRevisions?.campaign
-          if (!Number.isSafeInteger(base)) throw fail(409, conflict)
-          jobs.push({
-            kind: 'rollback',
-            namespace: 'campaign',
-            rev: 1,
-            conflict,
-            base,
-            preRev: view.revision,
-            preValue: view.value,
-            emptyCheck: emptyCampaign,
-          })
-        } else {
-          anchorIfFresh('campaign', true)
-          queue(
-            'campaign',
-            { campaignBalance: values.campaignBalance },
-            { campaignBalance: viewValue('campaign').campaignBalance },
-          )
-        }
+        const patch = { campaignBalance: values.campaignBalance }
+        cpRefuseDroppedKeys('campaignBalance', patch, viewValue('campaign'))
+        queue('campaign', patch, { campaignBalance: viewValue('campaign').campaignBalance })
       }
       if (Object.hasOwn(body, 'parcool'))
         queue(
@@ -3979,27 +3814,9 @@ export async function saveSettingsCp(
     }
     if (editingGuns) {
       const gunValue = (values.gunBalance ?? {}) as Record<string, unknown>
-      const view = views.get('gunBalance') ?? null
-      if (!view) throw fail(503, 'Control-plane недоступен. Настройки не изменены.')
-      if (isObjEmpty(gunValue)) {
-        const reset = cpResetJob(
-          body,
-          views,
-          'gunBalance',
-          { overrides: {} },
-          emptyOverrides,
-          conflict,
-        )
-        if (reset) jobs.push(reset)
-        else anchorIfFresh('gunBalance', true)
-      } else {
-        anchorIfFresh('gunBalance', true)
-        queue(
-          'gunBalance',
-          { overrides: gunValue },
-          { overrides: viewValue('gunBalance').overrides ?? {} },
-        )
-      }
+      const patch = { overrides: gunValue }
+      cpRefuseDroppedKeys('gunBalance', patch, viewValue('gunBalance'))
+      queue('gunBalance', patch, { overrides: viewValue('gunBalance').overrides ?? {} })
     }
     const built = await cpSettleSave({
       cp,
@@ -4060,35 +3877,11 @@ export async function saveKitSettingsCp(directory: string, body: any, actorName:
       fixedModeKits: (view.value as any)?.fixedModeKits ?? {},
     }
     const jobs: CpJob[] = []
-    const freshStart = !view.initialized && (hasKits || hasFixed)
-    if (freshStart)
-      jobs.push({
-        kind: 'patch',
-        namespace: 'kits',
-        patch: { kits: {}, fixedModeKits: {} },
-        conflict,
-        base: 0,
-        anchor: true,
-      })
-    if (isObjEmpty(desired.kits) && isObjEmpty(desired.fixedModeKits)) {
-      if (view.initialized && !emptyKits(view.value)) {
-        const base = (body as any)?.cpRevisions?.kits
-        if (!Number.isSafeInteger(base)) throw fail(409, conflict)
-        jobs.push({
-          kind: 'rollback',
-          namespace: 'kits',
-          rev: 1,
-          conflict,
-          base,
-          preRev: view.revision,
-          preValue: view.value,
-          emptyCheck: emptyKits,
-        })
-      }
-    } else if (stable(desired) !== stable(currentShape)) {
+    if (stable(desired) !== stable(currentShape)) {
       const patch: Record<string, unknown> = {}
       if (hasKits) patch.kits = desired.kits
       if (hasFixed) patch.fixedModeKits = desired.fixedModeKits
+      cpRefuseDroppedKeys('kits', patch, view.value)
       if (!view.initialized)
         jobs.push({ kind: 'patch', namespace: 'kits', patch, conflict, base: 0 })
       else {
@@ -4198,6 +3991,7 @@ export async function saveAiLimitsCp(directory: string, body: any, actorRole: Ro
     }
     const jobs: CpJob[] = []
     if (stable(patch) !== stable(currentShape)) {
+      cpRefuseDroppedKeys('ai-limits', patch, value)
       if (!view.initialized)
         jobs.push({ kind: 'patch', namespace: 'ai-limits', patch, conflict, base: 0 })
       else {
@@ -4342,66 +4136,64 @@ const nonNullSection = (value: unknown) =>
     Object.entries((value ?? {}) as Record<string, unknown>).filter(([, item]) => item !== null),
   )
 
-/** GET settings in CP mode: CP namespaces overlaid on the file mirror (shape authority). */
-export async function readSettingsCpView(directory: string) {
-  const mirror = readSettings(directory)
-  const settings = { ...(mirror.settings as Record<string, unknown>) }
-  const namespaces = [
-    'gameplay',
-    'rooms',
-    'deathmatch',
-    'classLocks',
-    'campaign',
-    'parcool',
-    'gunBalance',
-    'kits',
-    'disabledMapIds',
-  ]
-  const { views } = await cpReadViews(namespaces)
-  const cpRevisions: Record<string, number> = {}
+const CP_SETTINGS_NAMESPACES = [
+  'gameplay',
+  'rooms',
+  'deathmatch',
+  'classLocks',
+  'campaign',
+  'parcool',
+  'gunBalance',
+  'kits',
+  'disabledMapIds',
+]
+
+/**
+ * Pure CP->mirror projection: copies ONLY known settings fields that are
+ * present in the views (absent/undefined keys keep the mirror value; transport
+ * keys like cpRevisions never enter the mirror). Every CP-mode mirror write
+ * goes through here, so no overlay can drop a field it does not own.
+ */
+function mirrorFromCp(
+  mirror: unknown,
+  views: Map<string, CpSectionView | null>,
+): Record<string, unknown> {
+  const settings = { ...(mirror as Record<string, unknown>) }
   const view = (namespace: string) => views.get(namespace) ?? null
   const gameplay = view('gameplay')
   if (gameplay?.initialized) {
-    cpRevisions.gameplay = gameplay.revision
     const lobby = (gameplay.value as Record<string, unknown>).lobby
     if (lobby && typeof lobby === 'object')
       settings.lobby = { ...((settings.lobby ?? {}) as object), ...(lobby as object) }
   }
   const rooms = view('rooms')
   if (rooms?.initialized) {
-    cpRevisions.rooms = rooms.revision
     const section = nonNullSection(rooms.value)
     if (Object.keys(section).length > 0) settings.rooms = section
   }
   const deathmatch = view('deathmatch')
   if (deathmatch?.initialized) {
-    cpRevisions.deathmatch = deathmatch.revision
     const section = nonNullSection(deathmatch.value)
     if (Object.keys(section).length > 0) settings.deathmatch = section
   }
   const classLocks = view('classLocks')
   if (classLocks?.initialized && classLocks.value && typeof classLocks.value === 'object') {
-    cpRevisions.classLocks = classLocks.revision
     const value = classLocks.value as Record<string, unknown>
-    settings.classLocks = value.classLocks
-    settings.classCosts = value.classCosts
+    if (value.classLocks !== undefined) settings.classLocks = value.classLocks
+    if (value.classCosts !== undefined) settings.classCosts = value.classCosts
   }
   const campaign = view('campaign')
   if (campaign?.initialized && campaign.value && typeof campaign.value === 'object') {
-    cpRevisions.campaign = campaign.revision
     const balance = (campaign.value as Record<string, unknown>).campaignBalance
     if (balance && typeof balance === 'object' && Object.keys(balance).length > 0)
       settings.campaignBalance = balance
     else delete settings.campaignBalance
   }
   const parcool = view('parcool')
-  if (parcool?.initialized && parcool.value && typeof parcool.value === 'object') {
-    cpRevisions.parcool = parcool.revision
+  if (parcool?.initialized && parcool.value && typeof parcool.value === 'object')
     settings.parcool = parcool.value
-  }
   const gunBalance = view('gunBalance')
   if (gunBalance?.initialized && gunBalance.value && typeof gunBalance.value === 'object') {
-    cpRevisions.gunBalance = gunBalance.revision
     const overrides = (gunBalance.value as Record<string, unknown>).overrides
     if (overrides && typeof overrides === 'object' && Object.keys(overrides).length > 0)
       settings.gunBalance = overrides
@@ -4409,7 +4201,6 @@ export async function readSettingsCpView(directory: string) {
   }
   const kits = view('kits')
   if (kits?.initialized && kits.value && typeof kits.value === 'object') {
-    cpRevisions.kits = kits.revision
     const value = kits.value as Record<string, unknown>
     if (value.kits && typeof value.kits === 'object' && Object.keys(value.kits).length > 0)
       settings.kits = value.kits
@@ -4423,11 +4214,21 @@ export async function readSettingsCpView(directory: string) {
     else delete settings.fixedModeKits
   }
   const maps = view('disabledMapIds')
-  if (maps?.initialized && maps.value && typeof maps.value === 'object') {
-    cpRevisions.disabledMapIds = maps.revision
+  if (maps?.initialized && maps.value && typeof maps.value === 'object')
     settings.disabledMapIds = (maps.value as Record<string, unknown>).disabledMapIds ?? []
+  return settings
+}
+
+/** GET settings in CP mode: CP namespaces overlaid on the file mirror (shape authority). */
+export async function readSettingsCpView(directory: string) {
+  const mirror = readSettings(directory)
+  const { views } = await cpReadViews(CP_SETTINGS_NAMESPACES)
+  const cpRevisions: Record<string, number> = {}
+  for (const namespace of CP_SETTINGS_NAMESPACES) {
+    const seen = views.get(namespace) ?? null
+    if (seen?.initialized) cpRevisions[namespace] = seen.revision
   }
-  return { settings, applied: mirror.applied, cpRevisions }
+  return { settings: mirrorFromCp(mirror.settings, views), applied: mirror.applied, cpRevisions }
 }
 
 export async function readAiLimitsCpView(directory: string) {
