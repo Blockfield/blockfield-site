@@ -15,6 +15,7 @@ const MOD = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 const OTHER = 'cccccccccccccccccccccccccccccccc'
 const GHOST = 'ffffffffffffffffffffffffffffffff'
 const BERT = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+const POISON = '12345678901234567890123456789012'
 const dashed = (id) =>
   `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`
 
@@ -188,6 +189,10 @@ async function staffFake(t, roles) {
       const id = (url.searchParams.get('accountId') ?? '').replaceAll('-', '').toLowerCase()
       const entry = roles.get(id)
       res.setHeader('Content-Type', 'application/json')
+      if (entry?.poison) {
+        res.statusCode = 500
+        return res.end(JSON.stringify({ error: 'boom' }))
+      }
       if (!entry) {
         res.statusCode = 404
         return res.end(JSON.stringify({ error: 'account_not_found' }))
@@ -557,6 +562,107 @@ test('CP mode write-path syncs push CP roles, not stale replica rows', async (t)
   const accessBody = await access.json()
   assert.deepEqual(accessBody.changed, ['Ber'])
   assert.ok(!membersOf(accessBody).some((m) => m.draslId === OTHER))
+})
+
+test('CP mode map-access snapshots inside the lock', async (t) => {
+  // 30 filler builders stretch the roster read; BERT sorts second, so its
+  // snapshot is taken while a concurrent maps edit can still land.
+  const roles = new Map([
+    [ADMIN, { roles: ['admin'], epoch: 7 }],
+    [BERT, { roles: ['builder'], epoch: 1 }],
+  ])
+  const fillers = []
+  for (let i = 0; i < 30; i++) {
+    const uuid = `${String(i).padStart(30, '0')}ff`
+    fillers.push(uuid)
+    roles.set(uuid, { roles: ['builder'], epoch: 1 })
+  }
+  const { server, seen } = await staffFake(t, roles)
+  cpEnv(t, server)
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(BERT, 'Ber', 'builder', 'seed')
+  for (const [i, uuid] of fillers.entries())
+    await s.setStaff(uuid, `M${String(i).padStart(2, '0')}`, 'builder', 'seed')
+  await s.setStaffMaps(BERT, null)
+  const pending = callCp(s, `${ADMIN}:Adm`, 'POST', 'staff/map-access', {
+    mapId: 'fields',
+    uuids: [],
+  })
+  // Wait until the access read is past BERT: its snapshot predates the edit below.
+  const start = Date.now()
+  while (seen.filter(([method]) => method === 'GET').length < 12) {
+    if (Date.now() - start > 5000) throw new Error('roster read stalled')
+    await new Promise((r) => setTimeout(r, 5))
+  }
+  const edited = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff/maps', {
+    uuid: BERT,
+    maps: ['hub'],
+  })
+  assert.equal(edited.status, 200)
+  const access = await pending
+  assert.equal(access.status, 200)
+  assert.ok((await access.json()).changed.includes('Ber'))
+  assert.deepEqual(
+    (await s.staff()).find((row) => row.uuid === BERT).maps,
+    ['hub'],
+    'the later maps edit wins; a stale snapshot must not overwrite it',
+  )
+})
+
+test('CP mode role changes ignore non-site grants', async (t) => {
+  const roles = new Map([
+    [ADMIN, { roles: ['admin'], epoch: 7 }],
+    [OTHER, { roles: ['moderator', 'auditor'], epoch: 3 }],
+  ])
+  const { server, seen } = await staffFake(t, roles)
+  cpEnv(t, server)
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(OTHER, 'Oth', 'moderator', 'seed')
+  const granted = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff', {
+    uuid: OTHER,
+    role: 'builder',
+  })
+  assert.equal(granted.status, 200)
+  const posts = seen.filter(([method]) => method === 'POST')
+  assert.equal(posts.length, 2, 'only the leftover site role is revoked')
+  assert.equal(posts[1][2].role, 'moderator')
+  assert.deepEqual(
+    [...roles.get(OTHER).roles].sort(),
+    ['auditor', 'builder'],
+    'auditor stays untouched',
+  )
+  assert.equal((await granted.json()).role, 'builder')
+})
+
+test('CP mode sync-list failure lands in the sync error field', async (t) => {
+  const roles = new Map([
+    [ADMIN, { roles: ['admin'], epoch: 7 }],
+    [OTHER, { roles: ['moderator'], epoch: 3 }],
+    [POISON, { roles: ['builder'], epoch: 1, poison: true }],
+  ])
+  const { server } = await staffFake(t, roles)
+  cpEnv(t, server)
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(OTHER, 'Oth', 'moderator', 'seed')
+  await s.setStaff(POISON, 'Poi', 'builder', 'seed')
+  const res = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff', {
+    uuid: OTHER,
+    role: 'builder',
+  })
+  assert.equal(res.status, 200, 'the applied grant is reported, not thrown away')
+  const body = await res.json()
+  assert.equal(body.role, 'builder')
+  assert.ok(body.operationId)
+  assert.ok(typeof body.sync.error === 'string', 'sync failure is a field, not a throw')
+  assert.deepEqual(roles.get(OTHER).roles, ['builder'])
+  assert.equal(
+    (await s.staff()).find((row) => row.uuid === OTHER).role,
+    'builder',
+    'the grant is mirrored despite the sync failure',
+  )
 })
 
 test('CP outage fails staff routes closed', async (t) => {

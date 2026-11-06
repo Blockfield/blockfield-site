@@ -2954,8 +2954,9 @@ const routes: Record<string, Route> = {
           }),
         )
         // CP keeps every granted role, so remove the target's other in-scope
-        // grants one by one with a fresh revision each. At most the three site
-        // roles can be left over; anything else means concurrent CP writes.
+        // site roles one by one with a fresh revision each. Foreign grants are
+        // not site authority and stay untouched; leftovers past the three site
+        // roles mean concurrent CP writes.
         for (let i = 0; i < 3; i++) {
           const reread = await cpCall(() => cp.readStaffGrantsCp(target.uuid as string))
           const leftover = reread.grants
@@ -2964,6 +2965,7 @@ const routes: Record<string, Route> = {
                 g.environment === scope.environment &&
                 g.backend === scope.backend &&
                 g.resource === scope.resource &&
+                ['builder', 'moderator', 'admin'].includes(g.role) &&
                 (finalRole === null || g.role !== finalRole),
             )
             .map((g) => g.role)
@@ -2980,20 +2982,19 @@ const routes: Record<string, Route> = {
           )
         }
         await store.setStaff(target.uuid, target.name, finalRole, actor.name)
-        const sync = await syncWorkshop(
-          store,
-          actor,
-          ownerName,
-          await cpCall(() => cpTeamList(cp, store)),
-        ).then(
-          ({ id }) => ({ id }),
-          (error: unknown) => ({
-            error:
-              error instanceof Response
-                ? 'Не удалось отправить список в мастерскую.'
-                : String((error as Error).message),
-          }),
-        )
+        // The grant above is applied; a roster read that fails here must not
+        // throw it away — it lands in the sync error field instead.
+        const sync = await cpCall(() => cpTeamList(cp, store))
+          .then((team) => syncWorkshop(store, actor, ownerName, team))
+          .then(
+            ({ id }) => ({ id }),
+            (error: unknown) => ({
+              error:
+                error instanceof Response
+                  ? 'Не удалось отправить список в мастерскую.'
+                  : String((error as Error).message),
+            }),
+          )
         return {
           uuid: target.uuid,
           name: target.name,
@@ -3079,24 +3080,25 @@ const routes: Record<string, Route> = {
         )
           throw bad('Некорректный список карт.')
         // Same chain as the tablet grants: concurrent map edits queue per process.
+        // Snapshot and write are one locked step, like the non-CP branch:
+        // the row is re-read inside for the name.
         const row = await withStaffMapsLock(async () => {
+          const fresh = (await store.staff()).find((s) => s.uuid === uuid)
+          if (!fresh) throw fail(404, 'Участник не найден.')
           await store.setStaffMaps(uuid, maps)
-          return replica
+          return fresh
         })
-        const sync = await syncWorkshop(
-          store,
-          actor,
-          ownerName,
-          await cpCall(() => cpTeamList(cp, store)),
-        ).then(
-          ({ id }) => ({ id }),
-          (error: unknown) => ({
-            error:
-              error instanceof Response
-                ? 'Не удалось отправить список в мастерскую.'
-                : String((error as Error).message),
-          }),
-        )
+        const sync = await cpCall(() => cpTeamList(cp, store))
+          .then((team) => syncWorkshop(store, actor, ownerName, team))
+          .then(
+            ({ id }) => ({ id }),
+            (error: unknown) => ({
+              error:
+                error instanceof Response
+                  ? 'Не удалось отправить список в мастерскую.'
+                  : String((error as Error).message),
+            }),
+          )
         return { uuid, name: row.name, maps: body?.maps, sync }
       }
       const uuid = playerId(body?.uuid)
@@ -3147,17 +3149,20 @@ const routes: Record<string, Route> = {
         if (typeof mapId !== 'string' || !workshopMapIds().has(mapId))
           throw bad('Неизвестная карта.')
         // Builder set is CP authority; the per-builder map lists stay site-local.
-        const builders = (await cpCall(() => cpTeamList(cp, store))).filter(
-          (s) => s.role === 'builder',
-        )
-        const ids = Array.isArray(uuids) ? uuids.map(playerId) : null
-        if (
-          !ids ||
-          ids.some((id) => !id || !builders.some((b) => b.uuid === id)) ||
-          new Set(ids).size !== ids.length
-        )
-          throw bad('Некорректный список строителей.')
+        // Snapshot, filter and writes are one locked step, like the non-CP
+        // branch: CP reads inside the lock keep a concurrent maps edit from
+        // slipping between the snapshot and the write.
         const changed = await withStaffMapsLock(async () => {
+          const builders = (await cpCall(() => cpTeamList(cp, store))).filter(
+            (s) => s.role === 'builder',
+          )
+          const ids = Array.isArray(uuids) ? uuids.map(playerId) : null
+          if (
+            !ids ||
+            ids.some((id) => !id || !builders.some((b) => b.uuid === id)) ||
+            new Set(ids).size !== ids.length
+          )
+            throw bad('Некорректный список строителей.')
           const changed = []
           for (const b of builders) {
             const maps = withMapAccess(
@@ -3173,20 +3178,17 @@ const routes: Record<string, Route> = {
           return changed
         })
         const sync = changed.length
-          ? await syncWorkshop(
-              store,
-              actor,
-              ownerName,
-              await cpCall(() => cpTeamList(cp, store)),
-            ).then(
-              ({ id }) => ({ id }),
-              (error: unknown) => ({
-                error:
-                  error instanceof Response
-                    ? 'Не удалось отправить список в мастерскую.'
-                    : String((error as Error).message),
-              }),
-            )
+          ? await cpCall(() => cpTeamList(cp, store))
+              .then((team) => syncWorkshop(store, actor, ownerName, team))
+              .then(
+                ({ id }) => ({ id }),
+                (error: unknown) => ({
+                  error:
+                    error instanceof Response
+                      ? 'Не удалось отправить список в мастерскую.'
+                      : String((error as Error).message),
+                }),
+              )
           : null
         return { mapId, changed, sync }
       }
