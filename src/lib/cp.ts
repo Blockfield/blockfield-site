@@ -286,6 +286,17 @@ export type CpProblem = Error & { status: number; code: string }
 
 const staffMessages: Record<string, [number, string]> = {
   self_role_edit: [403, 'Свою роль менять нельзя.'],
+  service_actor_required: [500, 'Сайт не передал автора изменения. Обратитесь к координатору.'],
+  actor_forbidden: [
+    500,
+    'Сайт не вправе подтверждать автора изменения. Обратитесь к координатору.',
+  ],
+  owner_approval_required: [
+    403,
+    'Назначение администратора требует шага владельца, недоступного на сайте. Обратитесь к координатору.',
+  ],
+  invalid_owner_assertion: [403, 'Подтверждение владельца отклонено. Обратитесь к координатору.'],
+  forbidden: [403, 'У сайта нет доступа к штату в control-plane. Обратитесь к координатору.'],
   peer_role_edit: [403, 'Чужую административную роль меняет только владелец.'],
   protected_owner: [403, 'Владельцы задаются только переменной окружения сервера.'],
   ineligible_account: [403, 'Этот аккаунт не может получить роль.'],
@@ -357,6 +368,35 @@ function validMe(data: any): data is CpMe {
   )
 }
 
+/** Ростер одного участника в CP: живые гранты и ревизия для CAS-записей. Отказ несёт код CP. */
+export type CpRosterRead = { accountId: string; expectedRevision: number; grants: CpGrant[] }
+
+function validRosterRead(data: any): data is CpRosterRead {
+  return (
+    typeof data?.accountId === 'string' &&
+    Number.isSafeInteger(data?.expectedRevision) &&
+    Array.isArray(data?.grants) &&
+    data.grants.every(validGrant)
+  )
+}
+
+export async function readStaffGrantsCp(
+  accountUuid: string,
+  token: string = staffConfig().token,
+  fetchImpl: FetchImpl = (url, init) => fetch(url, init),
+): Promise<CpRosterRead> {
+  const compact = accountUuid.replaceAll('-', '').toLowerCase()
+  if (!/^[0-9a-f]{32}$/.test(compact)) throw new Error('Некорректный запрос.')
+  const scope = cpScope()
+  const dashed = compact.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5')
+  const query =
+    `accountId=${dashed}&environment=${encodeURIComponent(scope.environment)}` +
+    `&backend=${encodeURIComponent(scope.backend)}`
+  const data = await cpStaff(`/v2/staff/grants?${query}`, token, undefined, fetchImpl)
+  if (!validRosterRead(data)) throw new Error('Control-plane отдал неверное состояние.')
+  return data
+}
+
 /** Своя сессия в CP: кто я и какие права у меня есть. Отказ несёт код CP (status + code). */
 export async function readMeCp(
   token: string = staffConfig().token,
@@ -390,6 +430,7 @@ export type StaffGrant = {
   role: 'builder' | 'moderator' | 'admin'
   revoke?: boolean
   expectedRevision: number
+  actorAccountId: string
   idempotencyKey?: string
   scope?: CpScope
 }
@@ -402,6 +443,8 @@ export async function postStaffGrantCp(
 ): Promise<{ operationId: string; status: string; authorizationEpoch: number | null }> {
   const compact = grant.accountUuid.replaceAll('-', '').toLowerCase()
   if (!/^[0-9a-f]{32}$/.test(compact)) throw new Error('Некорректный запрос.')
+  const actor = grant.actorAccountId.replaceAll('-', '').toLowerCase()
+  if (!/^[0-9a-f]{32}$/.test(actor)) throw new Error('Некорректный запрос.')
   if (!['builder', 'moderator', 'admin'].includes(grant.role)) throw new Error('Неизвестная роль.')
   if (!Number.isSafeInteger(grant.expectedRevision))
     throw new Error('Нет ревизии: обновите страницу.')
@@ -416,6 +459,7 @@ export async function postStaffGrantCp(
         environment: scope.environment,
         backend: scope.backend,
         accountId: compact.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
+        actorAccountId: actor.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
         expectedRevision: grant.expectedRevision,
         role: grant.role,
         resource: scope.resource,

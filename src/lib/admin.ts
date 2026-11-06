@@ -176,6 +176,23 @@ async function currentActor(context: APIContext, store: StatsStore): Promise<Act
       account(await drasl('/user', { token: await sessionToken(context.cookies, store) })),
     )
   const role = who.uuid ? await roleOf(who.uuid, store) : null
+  if (!role && who.uuid && (await import('./cp.ts')).cpStaffConfigured()) {
+    // CP mode: the replica is not authority, so an operator-provisioned member
+    // may have no local row. Anything CP denies stays unauthenticated here.
+    try {
+      const cp = await import('./cp.ts')
+      const read = await cp.readStaffGrantsCp(who.uuid)
+      return {
+        ...who,
+        role: cp.roleFromCpMe(
+          { accountId: read.accountId, owner: false, grants: read.grants },
+          cp.cpScope(),
+        ),
+      }
+    } catch {
+      return { ...who, role: null }
+    }
+  }
   return { ...who, role }
 }
 
@@ -1775,7 +1792,12 @@ async function ownerName(uuid: string): Promise<string> {
   ownerNames.set(uuid, data.name)
   return data.name
 }
-async function syncWorkshop(store: StatsStore, actor: Actor, resolve = ownerName) {
+async function syncWorkshop(
+  store: StatsStore,
+  actor: Actor,
+  resolve = ownerName,
+  staffOverride?: { uuid: string; name: string; role: string; maps?: string[] | null }[],
+) {
   const names = new Map<string, string>()
   for (const uuid of owners())
     names.set(
@@ -1784,7 +1806,7 @@ async function syncWorkshop(store: StatsStore, actor: Actor, resolve = ownerName
         async (error) => (await knownName(store, uuid)) ?? Promise.reject(error),
       ),
     )
-  const members = workshopMembers(await store.staff(), names)
+  const members = workshopMembers(staffOverride ?? (await store.staff()), names)
   const id = writeRequest(inboxDir(), actor, { kind: 'members', members }, workshopMapIds())
   return { id, members }
 }
@@ -1860,15 +1882,73 @@ const redactAuditDetail = (action: string, detail: unknown): unknown => {
     : { enabled: parsed.enabled, provider: parsed.provider }
 }
 
-/** CP mode has no service-token grant read (verified on control-plane main: no
-staff roster route; /v2/me is self-only and audit is self-restricted for
-non-owners), so no staff route may decide from the local replica. Fail closed
-until CP gains a roster-read route. */
+/** CP mode staff routes read GET /v2/staff/grants and write POST /v2/staff/grants.
+The replica below is only a name/maps book, never authority. When CP itself is
+unreachable the routes fail closed instead of deciding from stale rows. */
 const cpStaffClosed = () =>
-  fail(
-    503,
-    'Штат через CP недоступен: сервисному токену CP не отдаёт гранты. Нужен ростер-роут CP — обратитесь к координатору.',
-  )
+  fail(503, 'Штат через CP недоступен: control-plane не отвечает. Обратитесь к координатору.')
+
+type CpLib = typeof import('./cp.ts')
+
+/** CP Problem carries {status, code}; fetch outages are TypeErrors/TimeoutErrors. */
+async function cpCall<T>(work: () => Promise<T>): Promise<T> {
+  try {
+    return await work()
+  } catch (error) {
+    if (error instanceof Response) throw error
+    const status = (error as { status?: unknown })?.status
+    if (typeof status === 'number' && typeof (error as { code?: unknown })?.code === 'string')
+      throw fail(status, (error as Error).message)
+    if (
+      error instanceof TypeError ||
+      (error as { name?: unknown })?.name === 'TimeoutError' ||
+      (error as { name?: unknown })?.name === 'AbortError'
+    )
+      throw cpStaffClosed()
+    throw error
+  }
+}
+
+/** One roster read; accounts unknown to CP are null, anything else throws mapped. */
+async function cpGrantsOrNull(cp: CpLib, uuid: string) {
+  try {
+    return await cp.readStaffGrantsCp(uuid)
+  } catch (error) {
+    if ((error as { code?: unknown })?.code === 'account_not_found') return null
+    throw error
+  }
+}
+
+/** The acting admin's role from CP (owner env wins); null authorizes nothing. */
+async function cpActorRole(cp: CpLib, actor: Actor): Promise<Role | null> {
+  if (owners().has(actor.uuid)) return 'owner'
+  if (!playerId(actor.uuid)) return null
+  const read = await cpCall(() => cpGrantsOrNull(cp, actor.uuid))
+  return read
+    ? cp.roleFromCpMe(
+        { accountId: read.accountId, owner: false, grants: read.grants },
+        cp.cpScope(),
+      )
+    : null
+}
+
+/** Team list: replica rows are the name/maps book, CP grants are role authority. */
+async function cpTeamList(cp: CpLib, store: StatsStore) {
+  const scope = cp.cpScope()
+  const staff = []
+  // Serial reads keep the fake-CP request order deterministic in tests.
+  for (const row of await store.staff()) {
+    const read = await cpCall(() => cpGrantsOrNull(cp, row.uuid))
+    if (!read) continue
+    const role = cp.roleFromCpMe(
+      { accountId: read.accountId, owner: false, grants: read.grants },
+      scope,
+    )
+    if (!role) continue
+    staff.push({ ...row, role, expectedRevision: read.expectedRevision })
+  }
+  return staff
+}
 
 const routes: Record<string, Route> = {
   'GET overview': {
@@ -2746,7 +2826,48 @@ const routes: Record<string, Route> = {
   'GET staff': {
     permission: 'roles',
     handler: async ({ actor, store }) => {
-      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
+      if ((await import('./cp.ts')).cpStaffConfigured()) {
+        const cp = await import('./cp.ts')
+        const actorRole = await cpActorRole(cp, actor)
+        if (!can(actorRole, 'roles')) throw fail(403, 'Недостаточно прав.')
+        const team = await cpCall(() => cpTeamList(cp, store))
+        const ids = owners()
+        await Promise.all([...ids].map(async (uuid) => ownerName(uuid).catch(() => null)))
+        const last = ((await store.auditLog(200)) as any[]).find(
+          (e) => e.action === 'workshop-sync' && e.ok && e.target,
+        )
+        const lastSync = last
+          ? {
+              id: last.target,
+              at: last.at,
+              result: readFile(join(adminDir(), 'results', `${last.target}.json`)),
+            }
+          : null
+        const names = new Map(
+          await Promise.all(
+            [...ids].map(
+              async (uuid) =>
+                [
+                  uuid,
+                  ownerNames.get(uuid) ??
+                    (await knownName(store, uuid)) ??
+                    (uuid === actor.uuid ? actor.name : null),
+                ] as const,
+            ),
+          ),
+        )
+        const name = (uuid: string) => names.get(uuid)
+        return {
+          owners: [...ids].map((uuid) => ({ uuid, name: name(uuid) ?? UNKNOWN_PLAYER })),
+          staff: team,
+          workshop: readFile(join(adminDir(), 'members.json')),
+          expected: workshopMembers(
+            team,
+            new Map([...ids].map((uuid) => [uuid, name(uuid) ?? ''])),
+          ),
+          lastSync,
+        }
+      }
       const ids = owners()
       await Promise.all([...ids].map(async (uuid) => ownerName(uuid).catch(() => null)))
       const last = ((await store.auditLog(200)) as any[]).find(
@@ -2791,7 +2912,56 @@ const routes: Record<string, Route> = {
     handler: async ({ actor, store, body }) => {
       if (body?.role !== null && !['builder', 'moderator', 'admin'].includes(body?.role))
         throw bad('Неизвестная роль.')
-      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
+      if ((await import('./cp.ts')).cpStaffConfigured()) {
+        const cp = await import('./cp.ts')
+        const uuid = playerId(body?.uuid)
+        const target = body?.uuid
+          ? {
+              uuid,
+              name: uuid ? (await store.staff()).find((s) => s.uuid === uuid)?.name : undefined,
+            }
+          : await lookupName(body?.name)
+        if (!target.uuid || !target.name) throw fail(404, 'Участник не найден.')
+        if (target.uuid === actor.uuid) throw fail(403, 'Свою роль менять нельзя.')
+        if (owners().has(target.uuid))
+          throw fail(403, 'Владельцы задаются только переменной окружения сервера.')
+        const actorRole = await cpActorRole(cp, actor)
+        if (!can(actorRole, 'roles')) throw fail(403, 'Недостаточно прав.')
+        const scope = cp.cpScope()
+        const read = await cpCall(() => cp.readStaffGrantsCp(target.uuid as string))
+        const from = cp.roleFromCpMe(
+          { accountId: read.accountId, owner: false, grants: read.grants },
+          scope,
+        )
+        if ((from === 'admin' || body?.role === 'admin') && !can(actorRole, 'roles-admin'))
+          throw fail(403, 'Администраторов назначает только владелец.')
+        const receipt = await cpCall(() =>
+          cp.postStaffGrantCp({
+            accountUuid: target.uuid as string,
+            role: (body?.role ?? from ?? 'builder') as 'builder' | 'moderator' | 'admin',
+            revoke: body?.role === null,
+            expectedRevision: read.expectedRevision,
+            actorAccountId: actor.uuid,
+          }),
+        )
+        await store.setStaff(target.uuid, target.name, body?.role ?? null, actor.name)
+        const sync = await syncWorkshop(store, actor).then(
+          ({ id }) => ({ id }),
+          (error: unknown) => ({
+            error:
+              error instanceof Response
+                ? 'Не удалось отправить список в мастерскую.'
+                : String((error as Error).message),
+          }),
+        )
+        return {
+          uuid: target.uuid,
+          name: target.name,
+          role: body?.role,
+          sync,
+          operationId: receipt.operationId,
+        }
+      }
       const target = body?.uuid
         ? {
             uuid: playerId(body.uuid),
@@ -2827,7 +2997,12 @@ const routes: Record<string, Route> = {
   'POST staff/sync': {
     permission: 'workshop',
     handler: async ({ actor, store }) => {
-      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
+      if ((await import('./cp.ts')).cpStaffConfigured()) {
+        const cp = await import('./cp.ts')
+        const actorRole = await cpActorRole(cp, actor)
+        if (!can(actorRole, 'workshop')) throw fail(403, 'Недостаточно прав.')
+        return syncWorkshop(store, actor, ownerName, await cpCall(() => cpTeamList(cp, store)))
+      }
       return syncWorkshop(store, actor)
     },
     audit: (_, result) => ({
@@ -2840,7 +3015,45 @@ const routes: Record<string, Route> = {
   'POST staff/maps': {
     permission: 'roles',
     handler: async ({ actor, store, body }) => {
-      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
+      if ((await import('./cp.ts')).cpStaffConfigured()) {
+        const cp = await import('./cp.ts')
+        const actorRole = await cpActorRole(cp, actor)
+        if (!can(actorRole, 'roles')) throw fail(403, 'Недостаточно прав.')
+        const uuid = playerId(body?.uuid)
+        const replica = uuid ? (await store.staff()).find((s) => s.uuid === uuid) : undefined
+        if (!uuid || !replica) throw fail(404, 'Участник не найден.')
+        const read = await cpCall(() => cpGrantsOrNull(cp, uuid))
+        if (
+          cp.roleFromCpMe(
+            { accountId: read?.accountId ?? uuid, owner: false, grants: read?.grants ?? [] },
+            cp.cpScope(),
+          ) !== 'builder'
+        )
+          throw bad('Список карт задаётся только строителям.')
+        const maps = body?.maps
+        if (
+          maps !== null &&
+          (!Array.isArray(maps) ||
+            new Set(maps).size !== maps.length ||
+            !maps.every((id: unknown) => typeof id === 'string' && workshopMapIds().has(id)))
+        )
+          throw bad('Некорректный список карт.')
+        // Same chain as the tablet grants: concurrent map edits queue per process.
+        const row = await withStaffMapsLock(async () => {
+          await store.setStaffMaps(uuid, maps)
+          return replica
+        })
+        const sync = await syncWorkshop(store, actor).then(
+          ({ id }) => ({ id }),
+          (error: unknown) => ({
+            error:
+              error instanceof Response
+                ? 'Не удалось отправить список в мастерскую.'
+                : String((error as Error).message),
+          }),
+        )
+        return { uuid, name: row.name, maps: body?.maps, sync }
+      }
       const uuid = playerId(body?.uuid)
       // A full-list write racing a grant must not slip between them: same chain as the grants.
       const row = await withStaffMapsLock(async () => {
@@ -2880,7 +3093,53 @@ const routes: Record<string, Route> = {
   'POST staff/map-access': {
     permission: 'roles',
     handler: async ({ actor, store, body }) => {
-      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
+      if ((await import('./cp.ts')).cpStaffConfigured()) {
+        const cp = await import('./cp.ts')
+        const actorRole = await cpActorRole(cp, actor)
+        if (!can(actorRole, 'roles')) throw fail(403, 'Недостаточно прав.')
+        const mapId = body?.mapId,
+          uuids = body?.uuids
+        if (typeof mapId !== 'string' || !workshopMapIds().has(mapId))
+          throw bad('Неизвестная карта.')
+        // Builder set is CP authority; the per-builder map lists stay site-local.
+        const builders = (await cpCall(() => cpTeamList(cp, store))).filter(
+          (s) => s.role === 'builder',
+        )
+        const ids = Array.isArray(uuids) ? uuids.map(playerId) : null
+        if (
+          !ids ||
+          ids.some((id) => !id || !builders.some((b) => b.uuid === id)) ||
+          new Set(ids).size !== ids.length
+        )
+          throw bad('Некорректный список строителей.')
+        const changed = await withStaffMapsLock(async () => {
+          const changed = []
+          for (const b of builders) {
+            const maps = withMapAccess(
+              b.maps ?? null,
+              mapId,
+              ids.includes(b.uuid),
+              workshopMapIds(),
+            )
+            if (JSON.stringify(maps) === JSON.stringify(b.maps ?? null)) continue
+            await store.setStaffMaps(b.uuid, maps)
+            changed.push(b.name)
+          }
+          return changed
+        })
+        const sync = changed.length
+          ? await syncWorkshop(store, actor).then(
+              ({ id }) => ({ id }),
+              (error: unknown) => ({
+                error:
+                  error instanceof Response
+                    ? 'Не удалось отправить список в мастерскую.'
+                    : String((error as Error).message),
+              }),
+            )
+          : null
+        return { mapId, changed, sync }
+      }
       const mapId = body?.mapId,
         uuids = body?.uuids
       if (typeof mapId !== 'string' || !workshopMapIds().has(mapId)) throw bad('Неизвестная карта.')
