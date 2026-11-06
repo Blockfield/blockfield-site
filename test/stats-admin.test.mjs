@@ -240,7 +240,7 @@ test('review: voiding a campaign that ends minutes ahead, in the next season, re
   )
 })
 
-test('review: audit detail is capped at 2 KB and the table keeps the newest 10 000 rows', async (t) => {
+test('review: audit detail is capped at 2 KB and rows are never count-pruned', async (t) => {
   const db = await database(t)
   await db.audit({
     actorUuid: 'a',
@@ -255,6 +255,7 @@ test('review: audit detail is capped at 2 KB and the table keeps the newest 10 0
     "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10005) INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,ok) SELECT i,'a','A','admin','seed',1 FROM n",
   )
   await db.audit({ actorUuid: 'a', actorName: 'Adm', role: 'admin', action: 'last', ok: true })
-  assert.equal((await db.db.prepare('SELECT COUNT(*) n FROM admin_audit').get()).n, 10000)
+  // E5: no count-based pruning; retention deletion requires a verified export (see stats-audit.test.mjs).
+  assert.equal((await db.db.prepare('SELECT COUNT(*) n FROM admin_audit').get()).n, 10007)
   assert.equal((await db.auditLog(1))[0].action, 'last')
 })
