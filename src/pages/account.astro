@@ -1,9 +1,7 @@
 ---
 import Site from '../layouts/Site.astro'
 import SectionRule from '../components/SectionRule.astro'
-import { cpStaffConfigured } from '../lib/cp.ts'
 Astro.response.headers.set('Cache-Control', 'no-store')
-const cpLink = cpStaffConfigured()
 ---
 
 <Site
@@ -169,27 +167,6 @@ const cpLink = cpStaffConfigured()
           </button>
           <p class="form-status" role="status"></p>
         </form>
-
-        {cpLink && (
-          <form id="cp-link-form" class="panel form-grid">
-            <h3>Центр управления</h3>
-            <small>
-              Вставьте токен центральной сессии из файла операциониста — роль в панели будет браться
-              из центра, а выход отзовёт и её.
-            </small>
-            <label>
-              Токен центра
-              <input name="token" type="password" autocomplete="off" required minlength="8" />
-            </label>
-            <button class="primary" type="submit">
-              Привязать
-            </button>
-            <button type="button" id="cp-unlink">
-              Отвязать
-            </button>
-            <p class="form-status" role="status"></p>
-          </form>
-        )}
       </div>
     </section>
   </main>
@@ -479,24 +456,6 @@ const cpLink = cpStaffConfigured()
         return 'Пароль изменён. В лаунчере войдите заново.'
       })
     })
-
-    const cpLinkForm = document.querySelector<HTMLFormElement>('#cp-link-form')
-    if (cpLinkForm) {
-      cpLinkForm.addEventListener('submit', (event) => {
-        event.preventDefault()
-        submit(cpLinkForm, async () => {
-          await api('/api/account/cp-link', json('POST', { token: cpLinkForm.token.value }))
-          cpLinkForm.reset()
-          return 'Центр привязан: роль теперь из центра.'
-        })
-      })
-      cpLinkForm.querySelector('#cp-unlink')!.addEventListener('click', () => {
-        submit(cpLinkForm, async () => {
-          await api('/api/account/cp-link', { method: 'DELETE' })
-          return 'Центр отвязан.'
-        })
-      })
-    }
 
     api('/api/account/me').then(
       (data) => show(data.account),

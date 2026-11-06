@@ -17,17 +17,7 @@ import {
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
-import {
-  account,
-  drasl,
-  fail,
-  linkedCpToken,
-  nickname,
-  readJson,
-  session,
-  sessionToken,
-} from './account.ts'
-import type { CpMe } from './cp.ts'
+import { account, drasl, fail, nickname, readJson, session, sessionToken } from './account.ts'
 import { rcon } from './rcon.ts'
 import { eventStream, heartbeat, redactKeyResult } from './admin-events.ts'
 import {
@@ -151,14 +141,8 @@ export async function roleOf(
   uuid: string,
   store: StatsStore,
   ownerIds = owners(),
-  cpMe?: CpMe | null,
 ): Promise<Role | null> {
   if (ownerIds.has(uuid)) return 'owner'
-  if (cpMe && (cpMe.accountId ?? '').replaceAll('-', '').toLowerCase() === uuid) {
-    // Своя CP-сессия: роль из центра, локальная таблица не читается.
-    const { roleFromCpMe } = await import('./cp.ts')
-    return roleFromCpMe(cpMe)
-  }
   const role = (await store.staff()).find((s) => s.uuid === uuid)?.role
   return role === 'builder' || role === 'moderator' || role === 'admin' ? role : null
 }
@@ -192,21 +176,6 @@ async function currentActor(context: APIContext, store: StatsStore): Promise<Act
       account(await drasl('/user', { token: await sessionToken(context.cookies, store) })),
     )
   const role = who.uuid ? await roleOf(who.uuid, store) : null
-  // Привязанная центральная сессия важнее реплики: роль — из CP. Центр недоступен —
-  // чтение по реплике, а запись всё равно закроется.
-  if (who.uuid) {
-    const linked = await linkedCpToken(store, context.cookies)
-    if (linked) {
-      const { cpStaffConfigured, readMeCp, roleFromCpMe } = await import('./cp.ts')
-      if (cpStaffConfigured()) {
-        try {
-          return { ...who, role: roleFromCpMe(await readMeCp(linked)) }
-        } catch {
-          return { ...who, role }
-        }
-      }
-    }
-  }
   return { ...who, role }
 }
 
@@ -226,24 +195,9 @@ export async function siteIdentity(
     )
     if (!username) return null
     const id = playerId(uuid)
-    if (id === null) return { name: String(username), hasAdminAccess: false }
-    const linked = await linkedCpToken(store, cookies)
-    if (linked) {
-      const { cpStaffConfigured, readMeCp, roleFromCpMe } = await import('./cp.ts')
-      if (cpStaffConfigured()) {
-        try {
-          return {
-            name: String(username),
-            hasAdminAccess: roleFromCpMe(await readMeCp(linked)) !== null,
-          }
-        } catch {
-          // ниже — чтение по реплике
-        }
-      }
-    }
     return {
       name: String(username),
-      hasAdminAccess: (await roleOf(id, store)) !== null,
+      hasAdminAccess: id !== null && (await roleOf(id, store)) !== null,
     }
   } catch {
     return null

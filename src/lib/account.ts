@@ -294,33 +294,9 @@ export async function startSession(
   return id
 }
 
-/** Central bearer linked to this session: sealed at rest, a bad key reads as unlinked. */
-export async function linkedCpToken(
-  store: StatsStore,
-  cookies: Pick<AstroCookies, 'get'>,
-): Promise<string | null> {
-  try {
-    const sealed = await store.getSessionCp(sessionId(cookies))
-    if (!sealed) return null
-    return openTokenRaw(sealed, sessionKey())
-  } catch {
-    return null
-  }
-}
-
 /** Logout deletes a valid session and always clears the cookie: logging out twice is fine. */
-export async function closeSession(
-  store: StatsStore,
-  cookies: AstroCookies,
-  opts?: { cpToken?: string },
-): Promise<void> {
+export async function closeSession(store: StatsStore, cookies: AstroCookies): Promise<void> {
   const value = cookies.get(session)?.value ?? ''
-  if (opts?.cpToken) {
-    // Центральная сессия умирает первой, но выход не ждёт центр: сессии CP ограничены
-    // по времени, а застрявший локальный вход хуже, чем отзыв по TTL.
-    const { revokeSessionCp } = await import('./cp.ts')
-    await revokeSessionCp(opts.cpToken).catch(() => undefined)
-  }
   if (value && value.length <= SESSION_COOKIE_MAX && SESSION_ID.test(value))
     await store.deleteSession(value)
 }
