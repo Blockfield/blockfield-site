@@ -1,0 +1,66 @@
+name: Roll back the site without rebuild
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit SHA whose image re-points :latest (no rebuild)
+        required: true
+        type: string
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: blockfield-site
+  cancel-in-progress: false
+jobs:
+  rollback:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Re-point :latest at an already-built image: no docker build step.
+      - name: Move :latest to the requested build
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          set -eu
+          image="ghcr.io/blockfield/blockfield-site"
+          if ! printf "%s" "$SHA" | grep -Eq "^[0-9a-f]{40}$"; then
+            echo "::error::sha must be the full 40-hex commit SHA whose image tag already exists"
+            exit 1
+          fi
+          digest="$(docker buildx imagetools inspect "${image}:${SHA}" --format "{{json .Manifest}}" | jq -r ".digest // empty")"
+          if [ -z "$digest" ]; then
+            echo "::error::no image ${image}:${SHA}; pushed nothing, check the SHA"
+            exit 1
+          fi
+          docker buildx imagetools create --tag "${image}:latest" "${image}@${digest}"
+          {
+            echo "### Site rollback"
+            echo ""
+            # shellcheck disable=SC2086
+            echo "${image}:latest now points at \`${image}@${digest}\` (commit \`${SHA}\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Deploy through the Dokploy webhook
+        env:
+          WEBHOOK: ${{ secrets.DOKPLOY_SITE_WEBHOOK }}
+        run: curl -fsS --retry 3 --retry-delay 5 -X POST "$WEBHOOK"
+      # The webhook only queues a Dokploy deploy; fail the job if the site never switches to this build.
+      - name: Wait until blockfield.pro serves the rollback commit
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          deadline=$((SECONDS + 600))
+          until [ "$(curl -fsS --max-time 10 https://blockfield.pro/api/version | jq -r .commit)" = "$SHA" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::blockfield.pro did not serve $SHA within 10 minutes"
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "blockfield.pro serves $SHA after ${SECONDS}s"
