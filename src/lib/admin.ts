@@ -2115,16 +2115,29 @@ const routes: Record<string, Route> = {
   },
   'GET settings': {
     permission: 'settings',
-    handler: () => ({
-      ...readSettings(settingsDir()),
-      balance: BALANCE,
-      gunBalance: readGunBalance(settingsDir()),
-    }),
+    handler: async () => {
+      const { cpConfigured } = await import('./cp.ts')
+      if (!cpConfigured())
+        return {
+          ...readSettings(settingsDir()),
+          balance: BALANCE,
+          gunBalance: readGunBalance(settingsDir()),
+        }
+      return {
+        ...(await readSettingsCpView(settingsDir())),
+        balance: BALANCE,
+        gunBalance: readGunBalance(settingsDir()),
+      }
+    },
   },
   'PUT settings': {
     permission: 'settings',
     maxBody: 1_048_576,
-    handler: ({ actor, body }) => ({ settings: saveSettings(settingsDir(), body, actor.name) }),
+    handler: async ({ actor, body }) => {
+      const { cpConfigured } = await import('./cp.ts')
+      if (cpConfigured()) return { settings: await saveSettingsCp(settingsDir(), body, actor.name) }
+      return { settings: saveSettings(settingsDir(), body, actor.name) }
+    },
     audit: (body, result) => ({
       action: 'settings',
       target: result?.settings ? `revision ${result.settings.revision}` : null,
@@ -2133,12 +2146,20 @@ const routes: Record<string, Route> = {
   },
   'GET ai-limits': {
     permission: 'ai',
-    handler: () => ({ policy: readAiLimits(settingsDir()) }),
+    handler: async () => {
+      const { cpConfigured } = await import('./cp.ts')
+      if (cpConfigured()) return { policy: await readAiLimitsCpView(settingsDir()) }
+      return { policy: readAiLimits(settingsDir()) }
+    },
   },
   'PUT ai-limits': {
     permission: 'ai',
     maxBody: 65_536,
-    handler: ({ body }) => ({ policy: saveAiLimits(settingsDir(), body) }),
+    handler: async ({ actor, body }) => {
+      const { cpConfigured } = await import('./cp.ts')
+      if (cpConfigured()) return { policy: await saveAiLimitsCp(settingsDir(), body, actor.role) }
+      return { policy: saveAiLimits(settingsDir(), body) }
+    },
     audit: (body, result) => ({
       action: 'ai-limits',
       target: result?.policy ? `revision ${result.policy.revision}` : null,
@@ -2148,18 +2169,23 @@ const routes: Record<string, Route> = {
   },
   'GET workshop-ai-settings': {
     permission: 'ai',
-    handler: () => ({ settings: readWorkshopAiSettings(settingsDir()) }),
+    handler: async () => {
+      const { cpConfigured } = await import('./cp.ts')
+      if (cpConfigured()) return { settings: await readWorkshopAiSettingsCpView(settingsDir()) }
+      return { settings: readWorkshopAiSettings(settingsDir()) }
+    },
   },
   'PUT workshop-ai-settings': {
     permission: 'ai',
     maxBody: 8192,
-    handler: ({ body }) => ({
-      settings: saveWorkshopAiSettings(
-        settingsDir(),
-        body,
-        (provider) => readWorkshopAiKeyStatus(adminDir(), workshopAiKeyStatusFile(provider)).set,
-      ),
-    }),
+    handler: async ({ body }) => {
+      const hasKey = (provider) =>
+        readWorkshopAiKeyStatus(adminDir(), workshopAiKeyStatusFile(provider)).set
+      const { cpConfigured } = await import('./cp.ts')
+      if (cpConfigured())
+        return { settings: await saveWorkshopAiSettingsCp(settingsDir(), body, hasKey) }
+      return { settings: saveWorkshopAiSettings(settingsDir(), body, hasKey) }
+    },
     audit: (body, result) => ({
       action: 'workshop-ai-settings',
       target: result?.settings ? `revision ${result.settings.revision}` : null,
@@ -2259,7 +2285,12 @@ const routes: Record<string, Route> = {
   'PUT kits': {
     permission: 'settings',
     maxBody: 1_048_576,
-    handler: ({ actor, body }) => ({ settings: saveKitSettings(settingsDir(), body, actor.name) }),
+    handler: async ({ actor, body }) => {
+      const { cpConfigured } = await import('./cp.ts')
+      if (cpConfigured())
+        return { settings: await saveKitSettingsCp(settingsDir(), body, actor.name) }
+      return { settings: saveKitSettings(settingsDir(), body, actor.name) }
+    },
     audit: (body, result) => ({
       action: 'kits',
       target: result?.settings ? `revision ${result.settings.revision}` : null,
@@ -2269,9 +2300,12 @@ const routes: Record<string, Route> = {
   'PUT gun-balance': {
     permission: 'settings',
     maxBody: 1_048_576,
-    handler: ({ actor, body }) => ({
-      settings: saveSettings(settingsDir(), body, actor.name, true),
-    }),
+    handler: async ({ actor, body }) => {
+      const { cpConfigured } = await import('./cp.ts')
+      if (cpConfigured())
+        return { settings: await saveSettingsCp(settingsDir(), body, actor.name, true) }
+      return { settings: saveSettings(settingsDir(), body, actor.name, true) }
+    },
     audit: (body, result) => ({
       action: 'gun-balance',
       target: result?.settings ? `revision ${result.settings.revision}` : null,
@@ -2343,11 +2377,14 @@ const routes: Record<string, Route> = {
   },
   'PUT maps/availability': {
     permission: 'workshop',
-    handler: ({ actor, body }) => {
+    handler: async ({ actor, body }) => {
       const catalog = requiredMapCatalog(),
         entry = catalog.maps.find((map) => map.mapId === body?.mapId)
       if (!entry || entry.kind !== 'arena' || !entry.head)
         throw bad('Доступность меняется только для опубликованной арены.')
+      const { cpConfigured } = await import('./cp.ts')
+      if (cpConfigured())
+        return { settings: await saveMapAvailabilityCp(settingsDir(), body, actor.name) }
       return { settings: saveMapAvailability(settingsDir(), body, actor.name) }
     },
     audit: (body, result) => ({
@@ -3349,4 +3386,438 @@ async function record(
     ok: error === null,
     error,
   })
+}
+
+/** Control-plane settings path (CP-S3b): one file section = one v2 namespace.
+ * Active only when cpConfigured(); otherwise the file writers above stay
+ * authoritative. Every CP write mirrors to the settings file, so the game
+ * (typed consumer lands in S4a) and the file fallback keep working. The file
+ * mirror revision stays the single expectedRevision the UI sends; per-namespace
+ * CP revisions are read fresh inside each PATCH, so a concurrent writer fails
+ * with 409 instead of silently winning. Preambles mirror the file writers on
+ * purpose: the file path is frozen legacy until S9b removes it. */
+const cpSettingsTarget = '*'
+
+async function cpPatchSettingsNamespace(
+  namespace: string,
+  patch: Record<string, unknown>,
+  conflictMessage: string,
+) {
+  const cp = await import('./cp.ts')
+  try {
+    const view = await cp.readSettingsCp(namespace)
+    await cp.patchSettingsCp(namespace, cpSettingsTarget, {
+      expectedRevision: view.revision,
+      idempotencyKey: randomUUID(),
+      patch,
+    })
+  } catch (error) {
+    if (cp.isRevisionConflict(error)) throw fail(409, conflictMessage)
+    throw fail(503, 'Control-plane недоступен. Настройки не изменены.')
+  }
+}
+
+/** PATCH every present section to its v2 namespace; absent sections are left alone on CP. */
+async function cpPatchGeneralSections(values: Record<string, unknown>) {
+  const conflict = 'Настройки уже изменил кто-то другой. Обновите страницу.'
+  if (values.lobby !== undefined) {
+    const lobby = values.lobby as Record<string, unknown>
+    await cpPatchSettingsNamespace(
+      'gameplay',
+      { lobby: { pvpEnabled: lobby.pvpEnabled } },
+      conflict,
+    )
+  }
+  if (values.rooms !== undefined)
+    await cpPatchSettingsNamespace('rooms', values.rooms as Record<string, unknown>, conflict)
+  if (values.deathmatch !== undefined)
+    await cpPatchSettingsNamespace(
+      'deathmatch',
+      values.deathmatch as Record<string, unknown>,
+      conflict,
+    )
+  if (values.classLocks !== undefined || values.classCosts !== undefined) {
+    const patch: Record<string, unknown> = {}
+    if (values.classLocks !== undefined) patch.classLocks = values.classLocks
+    if (values.classCosts !== undefined) patch.classCosts = values.classCosts
+    await cpPatchSettingsNamespace('classLocks', patch, conflict)
+  }
+  if (values.campaignBalance !== undefined)
+    await cpPatchSettingsNamespace(
+      'campaign',
+      { campaignBalance: values.campaignBalance },
+      conflict,
+    )
+  if (values.parcool !== undefined)
+    await cpPatchSettingsNamespace('parcool', values.parcool as Record<string, unknown>, conflict)
+  if (values.gunBalance !== undefined)
+    await cpPatchSettingsNamespace('gunBalance', { overrides: values.gunBalance }, conflict)
+}
+
+export async function saveSettingsCp(
+  directory: string,
+  body: any,
+  actorName: string,
+  gunBalanceOnly = false,
+) {
+  if (!plain(body)) throw bad('Некорректные настройки.')
+  const current = readSettings(directory).settings
+  const revision = Number.isSafeInteger(current?.revision) ? current.revision : 0
+  if (body.expectedRevision !== revision)
+    throw fail(409, 'Настройки уже изменил кто-то другой. Обновите страницу.')
+  const editingGuns = gunBalanceOnly || Object.hasOwn(body, 'gunBalance')
+  const availability = editingGuns ? readGunBalance(directory) : null
+  if (editingGuns && !availability?.available) throw fail(503, 'Каталог баланса оружия недоступен.')
+  const catalog = availability?.available ? availability.catalog : undefined
+  let values: Record<string, unknown>
+  if (gunBalanceOnly) {
+    if (Object.keys(body).some((key) => !['expectedRevision', 'gunBalance'].includes(key)))
+      throw bad('Некорректные настройки оружия.')
+    values = {
+      ...current,
+      gunBalance: validateGunOverrides(
+        Object.hasOwn(body, 'gunBalance') ? body.gunBalance : {},
+        catalog!,
+      ),
+    }
+  } else {
+    values = validateSettings(body, catalog)
+    for (const key of ['gunBalance', 'kits', 'fixedModeKits', 'disabledMapIds'])
+      if (!Object.hasOwn(body, key) && Object.hasOwn(current, key)) values[key] = current[key]
+  }
+  if (editingGuns && Object.keys(values.gunBalance as object).length === 0) delete values.gunBalance
+  await cpPatchGeneralSections(values)
+  const settings = {
+    ...values,
+    schema: 1,
+    revision: revision + 1,
+    updatedAt: Date.now(),
+    updatedBy: actorName,
+  }
+  writeAtomic(directory, 'settings.json', settings)
+  return settings
+}
+
+export async function saveKitSettingsCp(directory: string, body: any, actorName: string) {
+  if (
+    !plain(body) ||
+    Object.keys(body).some((key) => !['expectedRevision', 'kits', 'fixedModeKits'].includes(key))
+  )
+    throw bad('Некорректные настройки наборов.')
+  const current = storedSettings(directory)
+  if (current.schema !== 1 || !Number.isSafeInteger(current.revision) || current.revision < 0)
+    throw fail(503, 'Текущие настройки повреждены. Сохранение недоступно.')
+  if (body.expectedRevision !== current.revision)
+    throw fail(409, 'Настройки уже изменил кто-то другой. Обновите страницу.')
+  const availability = readKits(directory)
+  if (!availability.available) throw fail(503, availability.error)
+  let changes: ReturnType<typeof validateKitChanges>
+  try {
+    changes = validateKitChanges(
+      body.kits,
+      body.fixedModeKits,
+      availability.catalog,
+      current.classCosts ?? {},
+    )
+  } catch (error) {
+    throw bad((error as Error).message)
+  }
+  const patch: Record<string, unknown> = {}
+  if (changes.kits !== undefined) patch.kits = changes.kits
+  if (changes.fixedModeKits !== undefined) patch.fixedModeKits = changes.fixedModeKits
+  if (Object.keys(patch).length > 0)
+    await cpPatchSettingsNamespace(
+      'kits',
+      patch,
+      'Настройки уже изменил кто-то другой. Обновите страницу.',
+    )
+  const settings = {
+    ...current,
+    ...changes,
+    schema: 1,
+    revision: current.revision + 1,
+    updatedAt: Date.now(),
+    updatedBy: actorName,
+  }
+  writeAtomic(directory, 'settings.json', settings)
+  return settings
+}
+
+export async function saveMapAvailabilityCp(directory: string, body: any, actorName: string) {
+  if (
+    !plain(body) ||
+    !mapId(body.mapId) ||
+    typeof body.enabled !== 'boolean' ||
+    !Number.isSafeInteger(body.expectedRevision)
+  )
+    throw bad('Укажите карту и её доступность для новых матчей.')
+  const availability = mapAvailability(directory)
+  if (!availability.available) throw fail(503, availability.error)
+  if (body.expectedRevision !== availability.revision)
+    throw fail(409, 'Настройки уже изменил кто-то другой. Обновите историю; черновики сохранены.')
+  const current = readSettings(directory).settings,
+    disabled = new Set(availability.disabledMapIds)
+  if (body.enabled) disabled.delete(body.mapId)
+  else disabled.add(body.mapId)
+  if (disabled.size > 4096) throw bad('Слишком много отключённых карт.')
+  await cpPatchSettingsNamespace(
+    'disabledMapIds',
+    { disabledMapIds: [...disabled].sort() },
+    'Настройки уже изменил кто-то другой. Обновите историю; черновики сохранены.',
+  )
+  const settings = {
+    ...current,
+    disabledMapIds: [...disabled].sort(),
+    schema: 1,
+    revision: availability.revision + 1,
+    updatedAt: Date.now(),
+    updatedBy: actorName,
+  }
+  writeAtomic(directory, 'settings.json', settings)
+  return settings
+}
+
+export async function saveAiLimitsCp(directory: string, body: any, actorRole: Role | null) {
+  // All ai-limits fields are CP-protected (owner subtree): refuse below owner
+  // before any CP call, the same way the `ai` route permission does.
+  if (actorRole !== 'owner') throw fail(403, 'Недостаточно прав.')
+  if (
+    !plain(body) ||
+    Object.keys(body).some(
+      (key) => !['expectedRevision', 'mode', 'sessions', 'builders'].includes(key),
+    ) ||
+    (body.mode !== 'session' && body.mode !== 'builder')
+  )
+    throw bad('Бюджет AI: некорректные настройки.')
+  const current = readAiLimits(directory)
+  if (body.expectedRevision !== current.revision)
+    throw fail(409, 'Бюджет AI уже изменил кто-то другой. Обновите состояние; черновик сохранён.')
+  if (current.revision === Number.MAX_SAFE_INTEGER)
+    throw fail(503, 'Ревизия бюджета AI исчерпана. Сохранение отключено.')
+  const sessions = Object.hasOwn(body, 'sessions')
+    ? validateAiAccounts(body.sessions)
+    : current.sessions
+  const builders = Object.hasOwn(body, 'builders')
+    ? validateAiAccounts(body.builders)
+    : current.builders
+  await cpPatchSettingsNamespace(
+    'ai-limits',
+    { currency: 'USD', mode: body.mode, sessions, builders },
+    'Бюджет AI уже изменил кто-то другой. Обновите состояние; черновик сохранён.',
+  )
+  const policy = { ...current, revision: current.revision + 1, mode: body.mode, sessions, builders }
+  writeAtomic(directory, 'ai-limits.json', policy)
+  return policy
+}
+
+export async function saveWorkshopAiSettingsCp(
+  directory: string,
+  body: any,
+  hasKey: (provider: string) => boolean,
+) {
+  if (
+    !plain(body) ||
+    Object.keys(body).some(
+      (key) =>
+        ![
+          'expectedRevision',
+          'enabled',
+          'provider',
+          'generationProvider',
+          'guardProvider',
+          'transcriptionProvider',
+          'providers',
+          'generationModel',
+          'guardModel',
+          'transcriptionModel',
+          'cleanupModel',
+          'cleanupProvider',
+          'maxBlocks',
+          'blocksPerTick',
+          'minimumBuildTicks',
+          'applyBudgetMs',
+          'hourlyRequestLimit',
+          'hourlyPlayerRequestLimit',
+          'maxHourlyBuilders',
+          'generationMaxPricePromptUsdPerM',
+          'generationMaxPriceCompletionUsdPerM',
+          'inputGuardEnabled',
+        ].includes(key),
+    )
+  )
+    throw bad('AI мастерской: некорректные настройки.')
+  const current = readWorkshopAiSettings(directory)
+  if (body.expectedRevision !== current.revision)
+    throw fail(409, 'Настройки AI мастерской уже изменил кто-то другой. Обновите страницу.')
+  if (current.revision === Number.MAX_SAFE_INTEGER)
+    throw fail(503, 'Ревизия настроек AI исчерпана. Сохранение отключено.')
+  const settings = validateWorkshopAiSettings({
+    schema: 1,
+    revision: current.revision + 1,
+    enabled: body.enabled,
+    provider: body.provider,
+    generationProvider: body.generationProvider ?? current.generationProvider,
+    guardProvider: body.guardProvider ?? current.guardProvider,
+    transcriptionProvider: body.transcriptionProvider ?? current.transcriptionProvider,
+    providers: body.providers ?? current.providers,
+    generationModel: body.generationModel,
+    guardModel: body.guardModel,
+    transcriptionModel: body.transcriptionModel,
+    cleanupModel: body.cleanupModel ?? current.cleanupModel,
+    cleanupProvider: body.cleanupProvider ?? current.cleanupProvider,
+    maxBlocks: body.maxBlocks,
+    blocksPerTick: body.blocksPerTick,
+    minimumBuildTicks: body.minimumBuildTicks,
+    applyBudgetMs: body.applyBudgetMs,
+    hourlyRequestLimit: body.hourlyRequestLimit,
+    hourlyPlayerRequestLimit: body.hourlyPlayerRequestLimit,
+    maxHourlyBuilders: body.maxHourlyBuilders,
+    generationMaxPricePromptUsdPerM: body.generationMaxPricePromptUsdPerM,
+    generationMaxPriceCompletionUsdPerM: body.generationMaxPriceCompletionUsdPerM,
+    inputGuardEnabled: body.inputGuardEnabled,
+  })
+  if (settings.enabled) {
+    const needed = new Set([settings.generationProvider, settings.transcriptionProvider])
+    if (settings.inputGuardEnabled) needed.add(settings.guardProvider)
+    if (settings.cleanupModel) needed.add(settings.cleanupProvider)
+    needed.delete('vercel-gateway')
+    const missing = [...needed].filter((id) => !hasKey(id))
+    if (missing.length === 1 && missing[0] === 'openrouter')
+      throw fail(400, 'Сначала сохраните ключ OpenRouter и дождитесь статуса «Ключ задан».')
+    if (missing.length > 0)
+      throw fail(
+        400,
+        `Нет ключа провайдера ${missing.join(', ')}: сохраните ключ и дождитесь статуса «Ключ задан».`,
+      )
+  }
+  if (Buffer.byteLength(JSON.stringify(settings, null, 2) + '\n') > 8192)
+    throw fail(413, 'Настройки AI превышают доступный размер. Укоротите записи провайдеров.')
+  const { schema: _schema, revision: _revision, ...patch } = settings as Record<string, unknown>
+  await cpPatchSettingsNamespace(
+    'workshop-ai',
+    patch,
+    'Настройки AI мастерской уже изменил кто-то другой. Обновите страницу.',
+  )
+  writeAtomic(directory, 'workshop-ai-settings.json', settings)
+  return settings
+}
+
+const nonNullSection = (value: unknown) =>
+  Object.fromEntries(
+    Object.entries((value ?? {}) as Record<string, unknown>).filter(([, v]) => v !== null),
+  )
+
+/** GET settings in CP mode: CP namespaces overlaid on the file mirror (shape authority). */
+export async function readSettingsCpView(directory: string) {
+  const mirror = readSettings(directory)
+  const settings = { ...(mirror.settings as Record<string, unknown>) }
+  const cp = await import('./cp.ts')
+  const get = async (namespace: string) => {
+    try {
+      return await cp.readSettingsCp(namespace)
+    } catch {
+      return null
+    }
+  }
+  const [gameplay, rooms, deathmatch, classLocks, campaign, parcool, gunBalance, kits, maps] =
+    await Promise.all(
+      [
+        'gameplay',
+        'rooms',
+        'deathmatch',
+        'classLocks',
+        'campaign',
+        'parcool',
+        'gunBalance',
+        'kits',
+        'disabledMapIds',
+      ].map(get),
+    )
+  if (gameplay?.initialized && gameplay.value && typeof gameplay.value === 'object') {
+    const lobby = (gameplay.value as Record<string, unknown>).lobby
+    if (lobby && typeof lobby === 'object')
+      settings.lobby = { ...((settings.lobby ?? {}) as object), ...(lobby as object) }
+  }
+  if (rooms?.initialized) {
+    const section = nonNullSection(rooms.value)
+    if (Object.keys(section).length > 0) settings.rooms = section
+  }
+  if (deathmatch?.initialized) {
+    const section = nonNullSection(deathmatch.value)
+    if (Object.keys(section).length > 0) settings.deathmatch = section
+  }
+  if (classLocks?.initialized && classLocks.value && typeof classLocks.value === 'object') {
+    const value = classLocks.value as Record<string, unknown>
+    settings.classLocks = value.classLocks
+    settings.classCosts = value.classCosts
+  }
+  if (campaign?.initialized && campaign.value && typeof campaign.value === 'object') {
+    const balance = (campaign.value as Record<string, unknown>).campaignBalance
+    if (balance && typeof balance === 'object' && Object.keys(balance).length > 0)
+      settings.campaignBalance = balance
+    else delete settings.campaignBalance
+  }
+  if (parcool?.initialized && parcool.value && typeof parcool.value === 'object')
+    settings.parcool = parcool.value
+  if (gunBalance?.initialized && gunBalance.value && typeof gunBalance.value === 'object') {
+    const overrides = (gunBalance.value as Record<string, unknown>).overrides
+    if (overrides && typeof overrides === 'object' && Object.keys(overrides).length > 0)
+      settings.gunBalance = overrides
+    else delete settings.gunBalance
+  }
+  if (kits?.initialized && kits.value && typeof kits.value === 'object') {
+    const value = kits.value as Record<string, unknown>
+    if (value.kits && typeof value.kits === 'object' && Object.keys(value.kits).length > 0)
+      settings.kits = value.kits
+    else delete settings.kits
+    if (
+      value.fixedModeKits &&
+      typeof value.fixedModeKits === 'object' &&
+      Object.keys(value.fixedModeKits).length > 0
+    )
+      settings.fixedModeKits = value.fixedModeKits
+    else delete settings.fixedModeKits
+  }
+  if (maps?.initialized && maps.value && typeof maps.value === 'object')
+    settings.disabledMapIds = (maps.value as Record<string, unknown>).disabledMapIds ?? []
+  return { settings, applied: mirror.applied }
+}
+
+export async function readAiLimitsCpView(directory: string) {
+  const mirror = readAiLimits(directory)
+  try {
+    const cp = await import('./cp.ts')
+    const view = await cp.readSettingsCp('ai-limits')
+    if (view.initialized && view.value && typeof view.value === 'object') {
+      const value = view.value as Record<string, unknown>
+      return {
+        schema: 1,
+        revision: mirror.revision,
+        currency: 'USD',
+        mode: value.mode,
+        sessions: value.sessions,
+        builders: value.builders,
+      }
+    }
+  } catch {
+    // CP read failure keeps the file mirror, like rooms.ts readGateCp.
+  }
+  return mirror
+}
+
+export async function readWorkshopAiSettingsCpView(directory: string) {
+  const mirror = readWorkshopAiSettings(directory)
+  try {
+    const cp = await import('./cp.ts')
+    const view = await cp.readSettingsCp('workshop-ai')
+    if (view.initialized && view.value && typeof view.value === 'object')
+      return {
+        schema: 1,
+        revision: (mirror as Record<string, unknown>).revision,
+        ...(view.value as object),
+      }
+  } catch {
+    // CP read failure keeps the file mirror, like rooms.ts readGateCp.
+  }
+  return mirror
 }
