@@ -93,6 +93,172 @@ export async function postGateCp(
   })
 }
 
+export type CpSettingsView = {
+  initialized: boolean
+  revision: number
+  value: unknown
+  hash: string
+}
+
+export type CpSettingsPatch = {
+  expectedRevision: number
+  idempotencyKey: string
+  patch: Record<string, unknown>
+}
+
+const settingsSegment = (value: string, name: string) => {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_*-]{1,64}$/.test(value))
+    throw new Error(`Некорректный ${name} настроек control-plane.`)
+  return value
+}
+
+/** Stale expectedRevision (or a reused idempotency key with a changed body): re-read before retrying. */
+export function isRevisionConflict(error: unknown) {
+  return (
+    !!error &&
+    typeof error === 'object' &&
+    (error as { code?: unknown }).code === 'revision_conflict'
+  )
+}
+
+function settingsError(status: number, data: any): Error {
+  const code = typeof data?.error === 'string' ? data.error : `http_${status}`
+  const error = new Error(
+    code === 'revision_conflict' || code === 'idempotency_conflict'
+      ? 'Настройки уже изменил кто-то другой. Обновите страницу.'
+      : `Control-plane отклонил запрос (${code}).`,
+  )
+  ;(error as { code?: string }).code = code
+  ;(error as { status?: number }).status = status
+  return error
+}
+
+async function settingsRequest(
+  namespace: string,
+  target: string,
+  token: string | undefined,
+  init?: RequestInit,
+  suffix = '',
+): Promise<any> {
+  const url = config()
+  if (!token) throw new Error('Control-plane не настроен на сайте (токен).')
+  const response = await fetch(
+    `${url}/v2/settings/${settingsSegment(namespace, 'раздел')}/${settingsSegment(target, 'адресат')}${suffix}`,
+    {
+      ...init,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    },
+  )
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw settingsError(response.status, data)
+  return data
+}
+
+function validSettingsView(data: any): data is CpSettingsView {
+  return (
+    typeof data?.initialized === 'boolean' &&
+    Number.isSafeInteger(data?.revision) &&
+    data.revision >= 0 &&
+    !!data?.value &&
+    typeof data.value === 'object' &&
+    typeof data?.hash === 'string'
+  )
+}
+
+/**
+ * v2 settings transport. Namespaces (gameplay, gate, rooms, deathmatch,
+ * classLocks, campaign, parcool, gunBalance, kits, disabledMapIds, ai-limits,
+ * workshop-ai) come from control-plane PR #21: the contract is CP main after
+ * #21 merges (coordinator-ordered), not the old gameplay+gate-only core.
+ * Fails closed: no file fallback on CP errors.
+ */
+export async function readSettingsCp(
+  namespace: string,
+  target = '*',
+  token: string | undefined = process.env.BLOCKFIELD_CP_SETTINGS_TOKEN,
+): Promise<CpSettingsView> {
+  const data = await settingsRequest(namespace, target, token)
+  if (!validSettingsView(data)) throw new Error('Control-plane отдал неверное состояние.')
+  return {
+    initialized: data.initialized,
+    revision: data.revision,
+    value: data.value,
+    hash: data.hash,
+  }
+}
+
+export async function patchSettingsCp(
+  namespace: string,
+  target: string,
+  patch: CpSettingsPatch,
+  token: string | undefined = process.env.BLOCKFIELD_CP_SETTINGS_TOKEN,
+): Promise<{ operationId: string; revision: number }> {
+  if (
+    !patch ||
+    typeof patch !== 'object' ||
+    !Number.isSafeInteger(patch.expectedRevision) ||
+    typeof patch.idempotencyKey !== 'string' ||
+    patch.idempotencyKey.length < 1 ||
+    patch.idempotencyKey.length > 128 ||
+    !patch.patch ||
+    typeof patch.patch !== 'object'
+  )
+    throw new Error('Некорректный патч настроек control-plane.')
+  const data = await settingsRequest(namespace, target, token, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      expectedRevision: patch.expectedRevision,
+      idempotencyKey: patch.idempotencyKey,
+      patch: patch.patch,
+    }),
+  })
+  if (typeof data?.operationId !== 'string' || !Number.isSafeInteger(data?.revision))
+    throw new Error('Control-plane отдал неверное состояние.')
+  return { operationId: data.operationId, revision: data.revision }
+}
+
+export type CpSettingsRollback = Pick<CpSettingsPatch, 'expectedRevision' | 'idempotencyKey'> & {
+  revision: number
+}
+
+/** Rollback to a stored revision (used to clear merge-only dict state). */
+export async function rollbackSettingsCp(
+  namespace: string,
+  target: string,
+  rollback: CpSettingsRollback,
+  token: string | undefined = process.env.BLOCKFIELD_CP_SETTINGS_TOKEN,
+): Promise<{ operationId: string; revision: number }> {
+  if (
+    !rollback ||
+    typeof rollback !== 'object' ||
+    !Number.isSafeInteger(rollback.expectedRevision) ||
+    typeof rollback.idempotencyKey !== 'string' ||
+    rollback.idempotencyKey.length < 1 ||
+    rollback.idempotencyKey.length > 128 ||
+    !Number.isSafeInteger(rollback.revision) ||
+    rollback.revision < 1
+  )
+    throw new Error('Некорректный откат настроек control-plane.')
+  const data = await settingsRequest(
+    namespace,
+    target,
+    token,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        expectedRevision: rollback.expectedRevision,
+        idempotencyKey: rollback.idempotencyKey,
+        revision: rollback.revision,
+      }),
+    },
+    '/rollback',
+  )
+  if (typeof data?.operationId !== 'string' || !Number.isSafeInteger(data?.revision))
+    throw new Error('Control-plane отдал неверное состояние.')
+  return { operationId: data.operationId, revision: data.revision }
+}
+
 export type CpScope = { environment: string; backend: string; resource: string }
 
 /** v2 staff scope: game backend; environment follows the deployment, default prod. */

@@ -31,6 +31,7 @@ export function settingsBody(
   expectedRevision: number,
   form: SettingsForm,
   defaults: Record<string, string> = {},
+  cpRevisions: Record<string, number> = {},
 ) {
   const numbers = (values: Record<string, string>) =>
     Object.fromEntries(
@@ -51,6 +52,7 @@ export function settingsBody(
   )
   return {
     expectedRevision,
+    ...(Object.keys(cpRevisions).length ? { cpRevisions } : {}),
     ...(form.classCosts
       ? {
           classCosts: Object.fromEntries(

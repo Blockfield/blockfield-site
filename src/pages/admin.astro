@@ -3631,6 +3631,7 @@ const cpGate = cpConfigured()
         try {
           const result = await api('gun-balance', 'PUT', {
             expectedRevision: settingsRevision,
+            cpRevisions: typeof settingsCpRevisions !== 'undefined' ? settingsCpRevisions : {},
             gunBalance: overrides,
           })
           settingsRevision = Math.max(settingsRevision, result.settings.revision)
@@ -6255,6 +6256,7 @@ const cpGate = cpConfigured()
             try {
               const result = await api('gun-balance', 'PUT', {
                 expectedRevision: settingsRevision,
+                cpRevisions: typeof settingsCpRevisions !== 'undefined' ? settingsCpRevisions : {},
                 gunBalance: overrides,
               })
               settingsRevision = Math.max(settingsRevision, result.settings.revision)
@@ -6726,6 +6728,7 @@ const cpGate = cpConfigured()
             try {
               const result = await api('kits', 'PUT', {
                 expectedRevision: fresh.settings.revision,
+                cpRevisions: fresh.cpRevisions ?? {},
                 ...body,
               })
               if (result.settings.revision >= observedSettingsRevision) {
@@ -6801,6 +6804,7 @@ const cpGate = cpConfigured()
     type Rule = { type: 'int' | 'double' | 'bool'; min?: number; max?: number }
     let rules: Record<string, Rule> = {},
       settingsRevision = 0,
+      settingsCpRevisions: Record<string, number> = {},
       balance: Record<string, Record<string, number | boolean>> = {},
       scope = '*',
       extraLocks: string[] = [],
@@ -6997,6 +7001,7 @@ const cpGate = cpConfigured()
         settings,
         applied: incomingApplied,
         balance: balanceRules,
+        cpRevisions: incomingCpRevisions,
       } = data ?? (await api('settings'))
       if ((settings.revision ?? 0) < observedSettingsRevision) return
       remoteSettingsName =
@@ -7009,6 +7014,8 @@ const cpGate = cpConfigured()
       if (balanceRules) rules = balanceRules
       settingsRevision = Math.max(settingsRevision, settings.revision ?? 0)
       gunRevision = settingsRevision
+      if (incomingCpRevisions && typeof settingsCpRevisions !== 'undefined')
+        settingsCpRevisions = incomingCpRevisions
       if (!statusOnly) {
         const form = $<HTMLFormElement>('#settings-form')
         defaults = Object.fromEntries(
@@ -7192,6 +7199,7 @@ const cpGate = cpConfigured()
           },
         },
         defaults,
+        typeof settingsCpRevisions !== 'undefined' ? settingsCpRevisions : {},
       )
     }
     function settingsMeta() {
@@ -7503,8 +7511,12 @@ const cpGate = cpConfigured()
           $('#ai-budget-status'),
           async () => {
             const body = control.read()
-            const { policy: saved } = await api('ai-limits', 'PUT', body)
-            control.saved(saved.revision)
+            const { policy: saved, cpRevisions: savedCpRevisions } = await api(
+              'ai-limits',
+              'PUT',
+              body,
+            )
+            control.saved(saved.revision, savedCpRevisions)
             return `Бюджет сохранён, ревизия ${saved.revision}. Подтверждение применения и расход появятся отдельно.`
           },
           control.node,
@@ -7524,6 +7536,7 @@ const cpGate = cpConfigured()
 
     // ---------- Workshop AI ----------
     let workshopAiRevision = 0
+    let workshopAiCpRevisions: Record<string, number> = {}
     let draftProviders: { id: string; label: string; baseUrl: string }[] = []
     let editingProvider: string | null = null
     function sayWorkshopAiKey(
@@ -7711,6 +7724,7 @@ const cpGate = cpConfigured()
         api('workshop-ai-gateway-key'),
       ])
       workshopAiRevision = settings.revision
+      workshopAiCpRevisions = settings.cpRevisions ?? {}
       $<HTMLInputElement>('#workshop-ai-enabled').checked = settings.enabled
       $<HTMLSelectElement>('#workshop-ai-provider').value = settings.provider
       $<HTMLInputElement>('#workshop-ai-input-guard').checked = settings.inputGuardEnabled
@@ -7834,6 +7848,7 @@ const cpGate = cpConfigured()
         }
         const body = {
           expectedRevision: workshopAiRevision,
+          cpRevisions: workshopAiCpRevisions,
           enabled: $<HTMLInputElement>('#workshop-ai-enabled').checked,
           provider: $<HTMLSelectElement>('#workshop-ai-provider').value,
           generationProvider: $<HTMLSelectElement>('#workshop-ai-generation-provider').value,
@@ -7857,8 +7872,13 @@ const cpGate = cpConfigured()
           generationMaxPriceCompletionUsdPerM: decimal('#workshop-ai-completion-cap'),
         }
         try {
-          const { settings } = await api('workshop-ai-settings', 'PUT', body)
+          const { settings, cpRevisions: savedWorkshopAiCp } = await api(
+            'workshop-ai-settings',
+            'PUT',
+            body,
+          )
           workshopAiRevision = settings.revision
+          workshopAiCpRevisions = savedWorkshopAiCp ?? {}
           return `Настройки сохранены, ревизия ${settings.revision}.`
         } catch (error) {
           if ((error as Error & { status?: number }).status === 409) {
@@ -8123,7 +8143,8 @@ const cpGate = cpConfigured()
     }
     let mapCatalog: MapCatalogEntry[] | undefined,
       mapSession: MapSession | undefined,
-      mapAvailability: any
+      mapAvailability: any,
+      mapCpRevisions: Record<string, number> = {}
     let editableMaps = new Set<string>(),
       savedMapSessions: MapSession[] = [],
       savedSessionsNext: number | null = null,
@@ -8225,6 +8246,7 @@ const cpGate = cpConfigured()
                     mapId: map.mapId,
                     enabled: disabled,
                     expectedRevision: mapAvailability.revision,
+                    cpRevisions: mapCpRevisions,
                   })
                   say(line, 'Сохранено. Применяем доступность…', 'pending')
                   const confirmed = await waitMapAvailability(
@@ -9283,6 +9305,7 @@ const cpGate = cpConfigured()
       }
       mapCatalog = data.maps
       mapAvailability = data.availability
+      mapCpRevisions = data.cpRevisions ?? {}
       mapSession = data.session
       editableMaps = new Set(data.editableMaps ?? [])
       savedMapSessions = data.sessions ?? []
