@@ -1,11 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { cpStaffConfigured, readMeCp, roleFromCpMe, postStaffGrantCp } from '../src/lib/cp.ts'
-import { handleAdmin } from '../src/lib/admin.ts'
+import { handleAdmin, handleWorkshopAccess, refreshRole } from '../src/lib/admin.ts'
 import { exportStaff } from '../scripts/cp-staff-export.mjs'
 import { database as store } from './storage.mjs'
 
@@ -181,11 +181,19 @@ test('staff grant denial matrix: every CP refusal maps to a site status', async 
 })
 
 async function staffFake(t, roles) {
+  if (roles.writes === undefined) roles.writes = 0
   const seen = []
   const server = await fakeCp(t, (req, res) => {
     const url = new URL(req.url, 'http://cp')
     if (req.method === 'GET' && url.pathname === '/v2/staff/grants') {
       seen.push(['GET', req.url])
+      if (
+        typeof roles.failReadsFromWrites === 'number' &&
+        roles.writes >= roles.failReadsFromWrites
+      ) {
+        res.statusCode = 500
+        return res.end(JSON.stringify({ error: 'boom' }))
+      }
       const id = (url.searchParams.get('accountId') ?? '').replaceAll('-', '').toLowerCase()
       const entry = roles.get(id)
       res.setHeader('Content-Type', 'application/json')
@@ -241,6 +249,7 @@ async function staffFake(t, roles) {
         if (payload.revoke) entry.roles = entry.roles.filter((r) => r !== payload.role)
         else if (!entry.roles.includes(payload.role)) entry.roles.push(payload.role)
         entry.epoch += 1
+        roles.writes += 1
         res.statusCode = 202
         res.end(
           JSON.stringify({
@@ -663,6 +672,157 @@ test('CP mode sync-list failure lands in the sync error field', async (t) => {
     'builder',
     'the grant is mirrored despite the sync failure',
   )
+})
+
+test('CP mode partial reconcile still mirrors and names held roles', async (t) => {
+  const roles = new Map([
+    [ADMIN, { roles: ['admin'], epoch: 7 }],
+    [OTHER, { roles: ['moderator'], epoch: 3 }],
+  ])
+  roles.failReadsFromWrites = 1
+  const { server } = await staffFake(t, roles)
+  cpEnv(t, server)
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(OTHER, 'Oth', 'moderator', 'seed')
+  // Demote: the main grant applies, the reconcile re-read fails.
+  const demoted = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff', {
+    uuid: OTHER,
+    role: 'builder',
+  })
+  assert.equal(demoted.status, 200, 'the applied grant is reported, not thrown away')
+  const demotedBody = await demoted.json()
+  assert.equal(demotedBody.role, 'builder')
+  assert.ok(demotedBody.operationId)
+  assert.deepEqual(
+    [...demotedBody.partialApply].sort(),
+    ['builder', 'moderator'],
+    'the failed reconcile names what CP still holds',
+  )
+  assert.ok(typeof demotedBody.sync.error === 'string', 'sync failure is a field too')
+  assert.equal(
+    (await s.staff()).find((row) => row.uuid === OTHER).role,
+    'builder',
+    'the grant is mirrored despite the reconcile failure',
+  )
+  // Revoke: the same holds when the leftover cannot even be re-read.
+  roles.failReadsFromWrites = 2
+  const revoked = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff', {
+    uuid: OTHER,
+    role: null,
+  })
+  assert.equal(revoked.status, 200)
+  const revokedBody = await revoked.json()
+  assert.deepEqual(revokedBody.partialApply, ['builder'])
+  assert.equal(revokedBody.role, null)
+  assert.equal(
+    (await s.staff()).find((row) => row.uuid === OTHER),
+    undefined,
+    'the revoke is mirrored despite the reconcile failure',
+  )
+})
+
+test('CP mode editable maps follow the replica row maps, not its role', async (t) => {
+  const roles = new Map([
+    [ADMIN, { roles: ['admin'], epoch: 7 }],
+    [MOD, { roles: ['builder'], epoch: 2 }],
+    [OTHER, { roles: ['builder'], epoch: 1 }],
+  ])
+  const { server } = await staffFake(t, roles)
+  cpEnv(t, server)
+  const adminDir = mkdtempSync(join(tmpdir(), 'bf-maps-'))
+  t.after(() => rmSync(adminDir, { recursive: true, force: true }))
+  writeFileSync(
+    join(adminDir, 'maps.json'),
+    JSON.stringify({
+      schema: 1,
+      maps: [
+        {
+          mapId: 'fields',
+          kind: 'arena',
+          mapJson: { id: 'fields' },
+          head: null,
+          versions: [
+            {
+              schema: 1,
+              mapId: 'fields',
+              kind: 'arena',
+              versionDigest: 'a'.repeat(64),
+              parent: null,
+              createdAt: 1,
+              author: { name: 'Bob' },
+              source: 'commit',
+              note: 'Layout update',
+              worldDigest: 'b'.repeat(64),
+              changed: ['world/region/r.0.0.mca'],
+              deleted: [],
+              fileCount: 2,
+            },
+          ],
+        },
+      ],
+    }),
+  )
+  Object.assign(process.env, { BLOCKFIELD_ADMIN_DIR: adminDir })
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(MOD, 'Mod', 'moderator', 'seed')
+  await s.setStaffMaps(MOD, ['fields'])
+  const res = await callCp(s, `${MOD}:Mod`, 'GET', 'maps')
+  assert.equal(res.status, 200)
+  assert.deepEqual((await res.json()).editableMaps, ['fields'])
+  const norow = await callCp(s, `${OTHER}:Oth`, 'GET', 'maps')
+  assert.equal(norow.status, 200)
+  assert.deepEqual((await norow.json()).editableMaps, [], 'no row means no maps')
+})
+
+test('CP mode tablet access authorizes from CP', async (t) => {
+  const KEY = 'k'.repeat(40)
+  const roles = new Map([
+    [ADMIN, { roles: ['admin'], epoch: 7 }],
+    [OTHER, { roles: ['builder'], epoch: 2 }],
+  ])
+  const { server } = await staffFake(t, roles)
+  cpEnv(t, server)
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(OTHER, 'Oth', 'builder', 'seed')
+  const tablet = (actor, target) =>
+    handleWorkshopAccess(
+      new Request('http://site/api/workshop/access', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` },
+        body: JSON.stringify({ actor, target, mapId: 'hub', allowed: true }),
+      }),
+      { BLOCKFIELD_WORKSHOP_KEY: KEY },
+      s,
+    ).then(
+      (r) => r,
+      (e) => e,
+    )
+  // A replica admin revoked in CP is refused.
+  roles.get(ADMIN).roles = []
+  assert.equal((await tablet(ADMIN, OTHER)).status, 403)
+  roles.get(ADMIN).roles = ['admin']
+  // A CP builder target passes even though the replica agrees here.
+  const ok = await tablet(ADMIN, OTHER)
+  assert.equal(ok.status, 200)
+  // A CP-revoked target is not a builder, even with a replica row.
+  roles.get(OTHER).roles = []
+  assert.equal((await tablet(ADMIN, OTHER)).status, 400)
+})
+
+test('CP mode event refresh ignores stale replica roles', async (t) => {
+  const roles = new Map([[OTHER, { roles: [], epoch: 3 }]])
+  const { server } = await staffFake(t, roles)
+  cpEnv(t, server)
+  const s = await store(t)
+  await s.setStaff(OTHER, 'Oth', 'admin', 'seed')
+  assert.equal(await refreshRole({ uuid: OTHER, name: 'Oth', role: 'admin' }, s), null)
+  roles.get(OTHER).roles = ['moderator']
+  assert.equal(await refreshRole({ uuid: OTHER, name: 'Oth', role: null }, s), 'moderator')
+  delete process.env.BLOCKFIELD_CP_STAFF_TOKEN
+  assert.equal(await refreshRole({ uuid: OTHER, name: 'Oth', role: null }, s), 'admin')
 })
 
 test('CP outage fails staff routes closed', async (t) => {

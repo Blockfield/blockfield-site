@@ -638,9 +638,9 @@ async function editableMapIds(
   if (!catalog.available || !can(actor.role, 'map-edit')) return []
   const ids = catalog.maps.map((entry) => entry.mapId)
   if (actor.role !== 'builder') return ids
-  const grant = (await store.staff()).find(
-    (row) => row.uuid === actor.uuid && row.role === 'builder',
-  )
+  // The replica is only a names/maps book: match by uuid alone (any role).
+  // The caller already checked the CP-derived actor role above.
+  const grant = (await store.staff()).find((row) => row.uuid === actor.uuid)
   return grant ? ids.filter((id) => grant.maps == null || grant.maps.includes(id)) : []
 }
 async function editableMap(actor: Actor, store: StatsStore, id: unknown) {
@@ -1898,6 +1898,15 @@ const cpStaffClosed = () =>
 
 type CpLib = typeof import('./cp.ts')
 
+/** Role refresh for the admin event stream: CP authority in CP mode, replica otherwise. */
+export async function refreshRole(actor: Actor, store: StatsStore): Promise<Role | null> {
+  if ((await import('./cp.ts')).cpStaffConfigured()) {
+    const cp = await import('./cp.ts')
+    return cpActorRole(cp, actor)
+  }
+  return roleOf(actor.uuid, store)
+}
+
 /** CP Problem carries {status, code}; fetch outages are TypeErrors/TimeoutErrors. */
 async function cpCall<T>(work: () => Promise<T>): Promise<T> {
   try {
@@ -2944,42 +2953,58 @@ const routes: Record<string, Route> = {
         if ((from === 'admin' || body?.role === 'admin') && !can(actorRole, 'roles-admin'))
           throw fail(403, 'Администраторов назначает только владелец.')
         const finalRole = body?.role ?? null
+        const grantedRole = (finalRole ?? from ?? 'builder') as 'builder' | 'moderator' | 'admin'
         const receipt = await cpCall(() =>
           cp.postStaffGrantCp({
             accountUuid: target.uuid as string,
-            role: (finalRole ?? from ?? 'builder') as 'builder' | 'moderator' | 'admin',
+            role: grantedRole,
             revoke: finalRole === null,
             expectedRevision: read.expectedRevision,
             actorAccountId: actor.uuid,
           }),
         )
-        // CP keeps every granted role, so remove the target's other in-scope
-        // site roles one by one with a fresh revision each. Foreign grants are
-        // not site authority and stay untouched; leftovers past the three site
-        // roles mean concurrent CP writes.
-        for (let i = 0; i < 3; i++) {
-          const reread = await cpCall(() => cp.readStaffGrantsCp(target.uuid as string))
-          const leftover = reread.grants
-            .filter(
-              (g) =>
-                g.environment === scope.environment &&
-                g.backend === scope.backend &&
-                g.resource === scope.resource &&
-                ['builder', 'moderator', 'admin'].includes(g.role) &&
-                (finalRole === null || g.role !== finalRole),
+        // The primary write above applied: later failures must not skip the
+        // mirror. `held` always names the last-known in-scope site remainder
+        // so a failure still reports it instead of throwing the grant away.
+        const siteRole = (role: string) => ['builder', 'moderator', 'admin'].includes(role)
+        const inScope = (g: {
+          environment: string
+          backend: string
+          resource: string
+          role: string
+        }) =>
+          g.environment === scope.environment &&
+          g.backend === scope.backend &&
+          g.resource === scope.resource &&
+          siteRole(g.role)
+        let held = read.grants.filter(inScope).map((g) => g.role)
+        if (finalRole === null) held = held.filter((r) => r !== grantedRole)
+        else if (!held.includes(finalRole)) held.push(finalRole)
+        try {
+          // CP keeps every granted role, so remove the target's other in-scope
+          // site roles one by one with a fresh revision each. Foreign grants are
+          // not site authority and stay untouched; leftovers past the three site
+          // roles mean concurrent CP writes.
+          for (let i = 0; i < 3; i++) {
+            const reread = await cpCall(() => cp.readStaffGrantsCp(target.uuid as string))
+            const leftover = reread.grants
+              .filter((g) => inScope(g) && (finalRole === null || g.role !== finalRole))
+              .map((g) => g.role)
+            held = [...leftover]
+            if (!leftover.length) break
+            if (i === 2) throw new Error('Control-plane не сошёлся: повторные гранты.')
+            await cpCall(() =>
+              cp.postStaffGrantCp({
+                accountUuid: target.uuid as string,
+                role: leftover[0] as 'builder' | 'moderator' | 'admin',
+                revoke: true,
+                expectedRevision: reread.expectedRevision,
+                actorAccountId: actor.uuid,
+              }),
             )
-            .map((g) => g.role)
-          if (!leftover.length) break
-          if (i === 2) throw new Error('Control-plane не сошёлся: повторные гранты.')
-          await cpCall(() =>
-            cp.postStaffGrantCp({
-              accountUuid: target.uuid as string,
-              role: leftover[0] as 'builder' | 'moderator' | 'admin',
-              revoke: true,
-              expectedRevision: reread.expectedRevision,
-              actorAccountId: actor.uuid,
-            }),
-          )
+          }
+        } catch {
+          // held already names the remainder; mirror and report below.
         }
         await store.setStaff(target.uuid, target.name, finalRole, actor.name)
         // The grant above is applied; a roster read that fails here must not
@@ -3001,6 +3026,7 @@ const routes: Record<string, Route> = {
           role: body?.role,
           sync,
           operationId: receipt.operationId,
+          ...(held.length ? { partialApply: held } : {}),
         }
       }
       const target = body?.uuid
@@ -3032,6 +3058,7 @@ const routes: Record<string, Route> = {
         role: body?.role,
         sync: result?.sync,
         operationId: result?.operationId ?? null,
+        partialApply: result?.partialApply ?? null,
       },
     }),
   },
@@ -3354,8 +3381,15 @@ export async function handleWorkshopSubmit(
     return fail(400, 'Некорректный запрос.')
   const store = storage ?? (await statsStore())
   const staff = await store.staff(),
-    role = await roleOf(actorId, store),
     row = staff.find((s) => s.uuid === actorId)
+  // Workshop-key callers assert identity; CP is the role authority in CP mode.
+  let role: Role | null
+  if ((await import('./cp.ts')).cpStaffConfigured()) {
+    const cp = await import('./cp.ts')
+    role = await cpCall(() => cpActorRole(cp, { uuid: actorId, name: '', role: null }))
+  } else {
+    role = await roleOf(actorId, store)
+  }
   const claimed =
     typeof body?.actorName === 'string' && nickname.test(body.actorName) ? body.actorName : null
   const actor: Actor = {
@@ -3507,8 +3541,28 @@ export async function handleWorkshopAccess(
     // The read and the write bracket awaits, so concurrent grants queue on one chain (see
     // withStaffMapsLock) instead of overwriting each other from the same snapshot.
     const edit = await withStaffMapsLock(async () => {
-      const staff = await store.staff(),
+      const staff = await store.staff()
+      // Workshop-key callers assert identity; CP is the role authority in CP
+      // mode. Snapshot, checks and write are one locked step.
+      let role: Role | null
+      let targetIsBuilder: boolean
+      if ((await import('./cp.ts')).cpStaffConfigured()) {
+        const cp = await import('./cp.ts')
+        role = await cpCall(() => cpActorRole(cp, { uuid: actorId, name: '', role: null }))
+        const targetRead = await cpCall(() => cpGrantsOrNull(cp, targetId))
+        targetIsBuilder =
+          cp.roleFromCpMe(
+            {
+              accountId: targetRead?.accountId ?? targetId,
+              owner: false,
+              grants: targetRead?.grants ?? [],
+            },
+            cp.cpScope(),
+          ) === 'builder'
+      } else {
         role = await roleOf(actorId, store)
+        targetIsBuilder = staff.find((s) => s.uuid === targetId)?.role === 'builder'
+      }
       const actor: Actor = {
         uuid: actorId,
         name:
@@ -3523,13 +3577,21 @@ export async function handleWorkshopAccess(
       outer.role = role
       const target = staff.find((s) => s.uuid === targetId)
       if (!role || !can(role, 'roles')) throw fail(403, 'Менять права может только администратор.')
-      if (target?.role !== 'builder') throw fail(400, 'Права по картам задаются только строителям.')
+      if (!target || !targetIsBuilder)
+        throw fail(400, 'Права по картам задаются только строителям.')
       const maps = withMapAccess(target.maps ?? null, mapId, body.allowed)
       await store.setStaffMaps(targetId, maps)
       return { actor, role, target, maps }
     })
     ;({ actor, role, target } = edit)
-    const sync = await syncWorkshop(store, actor).then(
+    const cp = (await import('./cp.ts')).cpStaffConfigured() ? await import('./cp.ts') : null
+    const sync = await (
+      cp
+        ? cpCall(() => cpTeamList(cp, store)).then((team) =>
+            syncWorkshop(store, actor, ownerName, team),
+          )
+        : syncWorkshop(store, actor)
+    ).then(
       ({ id }) => ({ id }),
       (e: unknown) => ({
         error:
@@ -3597,7 +3659,7 @@ export async function handleAdmin(
   if ((method === 'GET' && path === 'events') || (method === 'POST' && path === 'presence')) {
     if (!can(actor.role, 'view')) return fail(403, 'Нет доступа.')
     if (path === 'events')
-      return eventStream(context.request, actor, () => roleOf(actor.uuid, store))
+      return eventStream(context.request, actor, () => refreshRole(actor, store))
     // Heartbeats describe transient presence, not administrative changes.
     const body = await readJson(context.request, 4096)
     if (typeof body?.tab !== 'string' || !/^[a-z-]{1,24}$/.test(body.tab))
