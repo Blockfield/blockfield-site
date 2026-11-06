@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { cpStaffConfigured, readMeCp, roleFromCpMe, postStaffGrantCp } from '../src/lib/cp.ts'
@@ -14,6 +14,7 @@ const ADMIN = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 const MOD = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 const OTHER = 'cccccccccccccccccccccccccccccccc'
 const GHOST = 'ffffffffffffffffffffffffffffffff'
+const BERT = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
 const dashed = (id) =>
   `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`
 
@@ -195,18 +196,14 @@ async function staffFake(t, roles) {
         JSON.stringify({
           accountId: url.searchParams.get('accountId'),
           expectedRevision: entry.epoch,
-          grants: entry.role
-            ? [
-                {
-                  role: entry.role,
-                  environment: url.searchParams.get('environment') ?? 'prod',
-                  backend: url.searchParams.get('backend') ?? 'game',
-                  resource: '*',
-                  revision: entry.epoch,
-                  expires_at: null,
-                },
-              ]
-            : [],
+          grants: entry.roles.map((role) => ({
+            role,
+            environment: url.searchParams.get('environment') ?? 'prod',
+            backend: url.searchParams.get('backend') ?? 'game',
+            resource: '*',
+            revision: entry.epoch,
+            expires_at: null,
+          })),
         }),
       )
     }
@@ -234,10 +231,10 @@ async function staffFake(t, roles) {
         const entry = roles.get(id)
         if (!entry) return deny('account_not_found', 404)
         if (entry.epoch !== payload.expectedRevision) return deny('revision_conflict', 409)
-        if (payload.role === 'admin' || entry.role === 'admin')
+        if (payload.role === 'admin' || entry.roles.includes('admin'))
           return deny('owner_approval_required')
-        if (payload.revoke) entry.role = null
-        else entry.role = payload.role
+        if (payload.revoke) entry.roles = entry.roles.filter((r) => r !== payload.role)
+        else if (!entry.roles.includes(payload.role)) entry.roles.push(payload.role)
         entry.epoch += 1
         res.statusCode = 202
         res.end(
@@ -272,8 +269,8 @@ async function callCp(s, as, method, path, body) {
 
 test('CP mode lists the roster from CP grants, not the replica', async (t) => {
   const roles = new Map([
-    [ADMIN, { role: 'admin', epoch: 7 }],
-    [OTHER, { role: 'builder', epoch: 3 }],
+    [ADMIN, { roles: ['admin'], epoch: 7 }],
+    [OTHER, { roles: ['builder'], epoch: 3 }],
   ])
   const { server, seen } = await staffFake(t, roles)
   cpEnv(t, server)
@@ -310,23 +307,24 @@ test('CP mode lists the roster from CP grants, not the replica', async (t) => {
   )
 })
 
-test('CP mode grants and revokes with the actor and the roster revision', async (t) => {
+test('CP mode role changes replace the other in-scope grants', async (t) => {
   const roles = new Map([
-    [ADMIN, { role: 'admin', epoch: 7 }],
-    [OTHER, { role: 'moderator', epoch: 3 }],
+    [ADMIN, { roles: ['admin'], epoch: 7 }],
+    [OTHER, { roles: ['moderator'], epoch: 3 }],
   ])
   const { server, seen } = await staffFake(t, roles)
   cpEnv(t, server)
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
   await s.setStaff(OTHER, 'Oth', 'moderator', 'seed')
+  // Demote: moderator -> builder leaves only builder.
   const granted = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff', {
     uuid: OTHER,
     role: 'builder',
   })
   assert.equal(granted.status, 200)
   const posts = seen.filter(([method]) => method === 'POST')
-  assert.equal(posts.length, 1)
+  assert.equal(posts.length, 2, 'the leftover moderator grant is revoked too')
   const payload = posts[0][2]
   assert.equal(payload.accountId, dashed(OTHER))
   assert.equal(payload.expectedRevision, 3, 'the revision comes from the roster read')
@@ -337,8 +335,11 @@ test('CP mode grants and revokes with the actor and the roster revision', async 
   assert.equal(payload.backend, 'game')
   assert.equal(payload.resource, '*')
   assert.match(payload.idempotencyKey, /^[0-9a-f-]{36}$/)
+  assert.equal(posts[1][2].role, 'moderator')
+  assert.equal(posts[1][2].revoke, true)
+  assert.equal(posts[1][2].expectedRevision, 4, 'reconcile re-reads the revision between writes')
+  assert.deepEqual(roles.get(OTHER).roles, ['builder'])
   const receipt = await granted.json()
-  assert.equal(receipt.uuid, OTHER)
   assert.equal(receipt.role, 'builder')
   assert.equal(receipt.operationId, '66666666-6666-4336-8666-666666666666')
   assert.ok(receipt.sync.id, 'workshop sync still runs')
@@ -347,6 +348,13 @@ test('CP mode grants and revokes with the actor and the roster revision', async 
     'builder',
     'the replica mirrors the receipt',
   )
+  // Promote, then the leftover builder grant goes with it.
+  const promoted = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff', {
+    uuid: OTHER,
+    role: 'moderator',
+  })
+  assert.equal(promoted.status, 200)
+  assert.deepEqual(roles.get(OTHER).roles, ['moderator'])
   const realFetch = globalThis.fetch
   t.after(() => {
     globalThis.fetch = realFetch
@@ -363,10 +371,14 @@ test('CP mode grants and revokes with the actor and the roster revision', async 
     role: null,
   })
   assert.equal(revoked.status, 200)
-  const revokePayload = seen.filter(([method]) => method === 'POST')[1][2]
-  assert.equal(revokePayload.revoke, true)
-  assert.equal(revokePayload.role, 'builder', 'revoke carries the live role for scope')
-  assert.equal(revokePayload.expectedRevision, 4, 'the second write chains on the first receipt')
+  const all = seen.filter(([method]) => method === 'POST')
+  assert.equal(all.length, 5)
+  assert.equal(all[2][2].expectedRevision, 5)
+  assert.equal(all[3][2].expectedRevision, 6)
+  assert.equal(all[4][2].revoke, true)
+  assert.equal(all[4][2].role, 'moderator', 'revoke carries the live role for scope')
+  assert.equal(all[4][2].expectedRevision, 7, 'every write chains on the previous receipt')
+  assert.deepEqual(roles.get(OTHER).roles, [], 'revoke leaves nothing in scope')
   assert.equal((await revoked.json()).role, null)
   assert.equal(
     (await s.staff()).find((row) => row.uuid === OTHER),
@@ -377,8 +389,8 @@ test('CP mode grants and revokes with the actor and the roster revision', async 
 
 test('CP mode refuses self-edits, peers and unknown members before any grant POST', async (t) => {
   const roles = new Map([
-    [ADMIN, { role: 'admin', epoch: 7 }],
-    [MOD, { role: 'admin', epoch: 4 }],
+    [ADMIN, { roles: ['admin'], epoch: 7 }],
+    [MOD, { roles: ['admin'], epoch: 4 }],
   ])
   const { server, seen } = await staffFake(t, roles)
   cpEnv(t, server)
@@ -392,7 +404,11 @@ test('CP mode refuses self-edits, peers and unknown members before any grant POS
   })
   assert.equal(self.status, 403)
   assert.match(await self.text(), /Свою роль/)
-  assert.deepEqual(seen, [], 'self-edit refuses before any CP call')
+  assert.deepEqual(
+    seen,
+    [['GET', `/v2/staff/grants?accountId=${dashed(ADMIN)}&environment=prod&backend=game`]],
+    'self-edit needs only the actor roster read, never a grant POST',
+  )
   const peer = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff', {
     uuid: MOD,
     role: 'moderator',
@@ -417,7 +433,7 @@ test('CP mode refuses self-edits, peers and unknown members before any grant POS
 })
 
 test('CP mode owner step-up fails closed with a clear message', async (t) => {
-  const roles = new Map([[OTHER, { role: 'moderator', epoch: 3 }]])
+  const roles = new Map([[OTHER, { roles: ['moderator'], epoch: 3 }]])
   const { server, seen } = await staffFake(t, roles)
   cpEnv(t, server)
   const s = await store(t)
@@ -441,8 +457,8 @@ test('CP mode owner step-up fails closed with a clear message', async (t) => {
 
 test('CP mode maps and sync follow CP roles', async (t) => {
   const roles = new Map([
-    [ADMIN, { role: 'admin', epoch: 7 }],
-    [MOD, { role: 'builder', epoch: 2 }],
+    [ADMIN, { roles: ['admin'], epoch: 7 }],
+    [MOD, { roles: ['builder'], epoch: 2 }],
   ])
   const { server } = await staffFake(t, roles)
   cpEnv(t, server)
@@ -456,7 +472,7 @@ test('CP mode maps and sync follow CP roles', async (t) => {
   })
   assert.equal(maps.status, 200)
   assert.deepEqual((await maps.json()).maps, ['fields'])
-  roles.get(MOD).role = 'moderator'
+  roles.get(MOD).roles = ['moderator']
   const demoted = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff/maps', {
     uuid: MOD,
     maps: null,
@@ -468,7 +484,7 @@ test('CP mode maps and sync follow CP roles', async (t) => {
     uuids: [MOD],
   })
   assert.equal(access.status, 400, 'a CP moderator is no builder for map access')
-  roles.get(MOD).role = 'builder'
+  roles.get(MOD).roles = ['builder']
   const repaired = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff/map-access', {
     mapId: 'fields',
     uuids: [MOD],
@@ -482,6 +498,65 @@ test('CP mode maps and sync follow CP roles', async (t) => {
     members.some((m) => m.draslId === MOD && m.role === 'builder'),
     'sync pushes CP roles, not stale replica rows',
   )
+})
+
+test('CP mode ignores a stale replica admin on every route', async (t) => {
+  const roles = new Map([[OTHER, { roles: [], epoch: 3 }]])
+  const { server } = await staffFake(t, roles)
+  cpEnv(t, server)
+  const s = await store(t)
+  await s.setStaff(OTHER, 'Oth', 'admin', 'seed')
+  const me = await callCp(s, `${OTHER}:Oth`, 'GET', 'me')
+  assert.equal(me.status, 200)
+  const identity = await me.json()
+  assert.equal(identity.role, null, 'CP grants decide, not the replica row')
+  assert.deepEqual(identity.permissions, [])
+  assert.equal((await callCp(s, `${OTHER}:Oth`, 'GET', 'staff')).status, 403)
+})
+
+test('CP mode write-path syncs push CP roles, not stale replica rows', async (t) => {
+  const roles = new Map([
+    [ADMIN, { roles: ['admin'], epoch: 7 }],
+    [MOD, { roles: ['builder'], epoch: 2 }],
+    [OTHER, { roles: ['builder'], epoch: 3 }],
+    [BERT, { roles: ['builder'], epoch: 1 }],
+  ])
+  const { server } = await staffFake(t, roles)
+  cpEnv(t, server)
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(MOD, 'Mod', 'builder', 'seed')
+  await s.setStaff(OTHER, 'Oth', 'builder', 'seed')
+  await s.setStaff(BERT, 'Ber', 'builder', 'seed')
+  // Direct-CP revoke: the replica keeps a stale builder row.
+  roles.get(OTHER).roles = []
+  const inbox = process.env.BLOCKFIELD_INBOX_DIR
+  const membersOf = (result) => {
+    const file = join(inbox, `${result.sync.id}.json`)
+    return JSON.parse(readFileSync(file, 'utf8')).members
+  }
+  const granted = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff', {
+    uuid: MOD,
+    role: 'moderator',
+  })
+  assert.equal(granted.status, 200)
+  const afterGrant = membersOf(await granted.json())
+  assert.ok(afterGrant.some((m) => m.draslId === MOD && m.role === 'lead'))
+  assert.ok(!afterGrant.some((m) => m.draslId === OTHER), 'direct-CP revokes leave the pushed list')
+  const maps = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff/maps', {
+    uuid: BERT,
+    maps: ['hub'],
+  })
+  assert.equal(maps.status, 200)
+  assert.ok(!membersOf(await maps.json()).some((m) => m.draslId === OTHER))
+  const access = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff/map-access', {
+    mapId: 'fields',
+    uuids: [BERT],
+  })
+  assert.equal(access.status, 200)
+  const accessBody = await access.json()
+  assert.deepEqual(accessBody.changed, ['Ber'])
+  assert.ok(!membersOf(accessBody).some((m) => m.draslId === OTHER))
 })
 
 test('CP outage fails staff routes closed', async (t) => {
@@ -504,7 +579,7 @@ test('CP outage fails staff routes closed', async (t) => {
 })
 
 test('CP-known actor without a replica row passes the gate', async (t) => {
-  const roles = new Map([[ADMIN, { role: 'admin', epoch: 7 }]])
+  const roles = new Map([[ADMIN, { roles: ['admin'], epoch: 7 }]])
   const { server } = await staffFake(t, roles)
   cpEnv(t, server)
   const s = await store(t)

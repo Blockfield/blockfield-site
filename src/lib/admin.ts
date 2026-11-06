@@ -175,10 +175,10 @@ async function currentActor(context: APIContext, store: StatsStore): Promise<Act
     (({ uuid, username }) => ({ uuid: playerId(uuid) ?? '', name: String(username) }))(
       account(await drasl('/user', { token: await sessionToken(context.cookies, store) })),
     )
-  const role = who.uuid ? await roleOf(who.uuid, store) : null
-  if (!role && who.uuid && (await import('./cp.ts')).cpStaffConfigured()) {
-    // CP mode: the replica is not authority, so an operator-provisioned member
-    // may have no local row. Anything CP denies stays unauthenticated here.
+  if ((await import('./cp.ts')).cpStaffConfigured()) {
+    // CP mode: the roster read is the only role authority. A replica row may
+    // linger after a direct-CP revoke, so it is never consulted for roles here.
+    if (owners().has(who.uuid)) return { ...who, role: 'owner' }
     try {
       const cp = await import('./cp.ts')
       const read = await cp.readStaffGrantsCp(who.uuid)
@@ -189,10 +189,18 @@ async function currentActor(context: APIContext, store: StatsStore): Promise<Act
           cp.cpScope(),
         ),
       }
-    } catch {
+    } catch (error) {
+      // Unknown accounts stay unauthenticated; a CP outage fails closed.
+      if (
+        error instanceof TypeError ||
+        (error as { name?: unknown })?.name === 'TimeoutError' ||
+        (error as { name?: unknown })?.name === 'AbortError'
+      )
+        throw cpStaffClosed()
       return { ...who, role: null }
     }
   }
+  const role = who.uuid ? await roleOf(who.uuid, store) : null
   return { ...who, role }
 }
 
@@ -2935,17 +2943,49 @@ const routes: Record<string, Route> = {
         )
         if ((from === 'admin' || body?.role === 'admin') && !can(actorRole, 'roles-admin'))
           throw fail(403, 'Администраторов назначает только владелец.')
+        const finalRole = body?.role ?? null
         const receipt = await cpCall(() =>
           cp.postStaffGrantCp({
             accountUuid: target.uuid as string,
-            role: (body?.role ?? from ?? 'builder') as 'builder' | 'moderator' | 'admin',
-            revoke: body?.role === null,
+            role: (finalRole ?? from ?? 'builder') as 'builder' | 'moderator' | 'admin',
+            revoke: finalRole === null,
             expectedRevision: read.expectedRevision,
             actorAccountId: actor.uuid,
           }),
         )
-        await store.setStaff(target.uuid, target.name, body?.role ?? null, actor.name)
-        const sync = await syncWorkshop(store, actor).then(
+        // CP keeps every granted role, so remove the target's other in-scope
+        // grants one by one with a fresh revision each. At most the three site
+        // roles can be left over; anything else means concurrent CP writes.
+        for (let i = 0; i < 3; i++) {
+          const reread = await cpCall(() => cp.readStaffGrantsCp(target.uuid as string))
+          const leftover = reread.grants
+            .filter(
+              (g) =>
+                g.environment === scope.environment &&
+                g.backend === scope.backend &&
+                g.resource === scope.resource &&
+                (finalRole === null || g.role !== finalRole),
+            )
+            .map((g) => g.role)
+          if (!leftover.length) break
+          if (i === 2) throw new Error('Control-plane не сошёлся: повторные гранты.')
+          await cpCall(() =>
+            cp.postStaffGrantCp({
+              accountUuid: target.uuid as string,
+              role: leftover[0] as 'builder' | 'moderator' | 'admin',
+              revoke: true,
+              expectedRevision: reread.expectedRevision,
+              actorAccountId: actor.uuid,
+            }),
+          )
+        }
+        await store.setStaff(target.uuid, target.name, finalRole, actor.name)
+        const sync = await syncWorkshop(
+          store,
+          actor,
+          ownerName,
+          await cpCall(() => cpTeamList(cp, store)),
+        ).then(
           ({ id }) => ({ id }),
           (error: unknown) => ({
             error:
@@ -3043,7 +3083,12 @@ const routes: Record<string, Route> = {
           await store.setStaffMaps(uuid, maps)
           return replica
         })
-        const sync = await syncWorkshop(store, actor).then(
+        const sync = await syncWorkshop(
+          store,
+          actor,
+          ownerName,
+          await cpCall(() => cpTeamList(cp, store)),
+        ).then(
           ({ id }) => ({ id }),
           (error: unknown) => ({
             error:
@@ -3128,7 +3173,12 @@ const routes: Record<string, Route> = {
           return changed
         })
         const sync = changed.length
-          ? await syncWorkshop(store, actor).then(
+          ? await syncWorkshop(
+              store,
+              actor,
+              ownerName,
+              await cpCall(() => cpTeamList(cp, store)),
+            ).then(
               ({ id }) => ({ id }),
               (error: unknown) => ({
                 error:
