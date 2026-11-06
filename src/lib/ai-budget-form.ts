@@ -118,8 +118,10 @@ export function renderAiBudgetForm(
       collect()
       return {
         expectedRevision: draft.revision,
-        cpRevisions:
-          (draft as unknown as { cpRevisions?: Record<string, number> }).cpRevisions ?? {},
+        ...(() => {
+          const carried = (draft as unknown as { cpRevisions?: Record<string, number> }).cpRevisions
+          return carried && Object.keys(carried).length ? { cpRevisions: carried } : {}
+        })(),
         mode: draft.mode,
         sessions: { ...draft.sessions },
         builders: { ...draft.builders },
