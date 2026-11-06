@@ -99,10 +99,44 @@ export type AuditEntry = {
   detail?: unknown
   ok: boolean
   error?: string | null
+  /** Transport that delivered the action; the API fixes it, callers never trust the body. */
+  via?: string | null
+  client?: string | null
+  correlation?: string | null
 }
+/** Fixed transports per central-api-design §7.1: a human client cannot spoof another one. */
+const AUDIT_VIA = ['ui', 'mcp', 'cli', 'discord', 'game', 'release', 'recovery']
+/** Manifest anchoring an audit export: deletion only accepts a manifest that still verifies. */
+export type AuditExportManifest = {
+  version: 1
+  exportedAt: number
+  firstId: number | null
+  lastId: number | null
+  count: number
+  sha256: string
+}
+/** Columns hashed into an audit export, in fixed order. */
+const AUDIT_EXPORT_COLUMNS = [
+  'id',
+  'at',
+  'actor_uuid',
+  'actor_name',
+  'role',
+  'action',
+  'target',
+  'detail',
+  'ok',
+  'error',
+  'pending',
+  'via',
+  'client',
+  'correlation',
+]
 function auditArgs(entry: AuditEntry, at: number): any[] {
   const json = entry.detail === undefined ? null : JSON.stringify(entry.detail)
   const detail = json !== null && json.length > 2048 ? `${json.slice(0, 2048)}…` : json
+  const via = entry.via ?? 'ui'
+  if (!AUDIT_VIA.includes(via)) throw new StatsError(422, `Unknown audit via: ${via}`)
   return [
     at,
     entry.actorUuid,
@@ -113,6 +147,9 @@ function auditArgs(entry: AuditEntry, at: number): any[] {
     detail,
     entry.ok ? 1 : 0,
     entry.error?.slice(0, 500) ?? null,
+    via,
+    entry.client?.slice(0, 200) ?? null,
+    entry.correlation?.slice(0, 200) ?? null,
   ]
 }
 function integer(value: unknown, max = 1_000_000_000): boolean {
@@ -496,7 +533,8 @@ export class StatsStore {
       CREATE INDEX IF NOT EXISTS rating_changes_uuid ON rating_changes(uuid,rated_at);
       CREATE TABLE IF NOT EXISTS admin_audit (
         id INTEGER PRIMARY KEY, at INTEGER NOT NULL, actor_uuid TEXT NOT NULL, actor_name TEXT NOT NULL, role TEXT NOT NULL,
-        action TEXT NOT NULL, target TEXT, detail TEXT, ok INTEGER NOT NULL, error TEXT, pending INTEGER
+        action TEXT NOT NULL, target TEXT, detail TEXT, ok INTEGER NOT NULL, error TEXT, pending INTEGER,
+        via TEXT NOT NULL DEFAULT 'ui', client TEXT, correlation TEXT
       );
       CREATE TABLE IF NOT EXISTS staff_roles (uuid TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL, maps TEXT);
       CREATE TABLE IF NOT EXISTS ingest_keys (id INTEGER PRIMARY KEY, server_id TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
@@ -541,10 +579,23 @@ export class StatsStore {
       if (sqlite && !(await columns('staff_roles')).includes('maps'))
         await this.db.exec('ALTER TABLE staff_roles ADD COLUMN maps TEXT;')
       // v6 -> v7: token-hash revocations are replaced by server-side sessions; audit rows gain a pending flag.
-      if (this.db.postgres)
+      if (this.db.postgres) {
         await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS pending BIGINT;')
+        await this.db.exec(
+          "ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS via TEXT NOT NULL DEFAULT 'ui';",
+        )
+        await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS client TEXT;')
+        await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS correlation TEXT;')
+      }
       if (sqlite && !(await columns('admin_audit')).includes('pending'))
         await this.db.exec('ALTER TABLE admin_audit ADD COLUMN pending INTEGER;')
+      // E5: every audit row carries its fixed transport; retention deletes only after a verified export.
+      if (sqlite && !(await columns('admin_audit')).includes('via'))
+        await this.db.exec("ALTER TABLE admin_audit ADD COLUMN via TEXT NOT NULL DEFAULT 'ui';")
+      if (sqlite && !(await columns('admin_audit')).includes('client'))
+        await this.db.exec('ALTER TABLE admin_audit ADD COLUMN client TEXT;')
+      if (sqlite && !(await columns('admin_audit')).includes('correlation'))
+        await this.db.exec('ALTER TABLE admin_audit ADD COLUMN correlation TEXT;')
       // Crash orphans (pending rows from a killed request) are marked interrupted, never hidden.
       // A live row mis-marked by a concurrent replica still finalizes normally afterwards.
       await this.db
@@ -912,17 +963,16 @@ export class StatsStore {
   async audit(entry: AuditEntry) {
     const row = await this.db
       .prepare(
-        'INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error,pending) VALUES (?,?,?,?,?,?,?,?,?,NULL) RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending"',
+        'INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error,pending,via,client,correlation) VALUES (?,?,?,?,?,?,?,?,?,NULL,?,?,?) RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending",via,client,correlation "correlation"',
       )
       .get(...auditArgs(entry, Date.now()))
     publish({ type: 'audit', entry: row })
-    await this.pruneAudit()
   }
   /** The attempt is journaled before the effect runs, so nothing goes unaudited; finalize updates the same row. */
   async auditPending(entry: AuditEntry): Promise<number> {
     const row = (await this.db
       .prepare(
-        'INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error,pending) VALUES (?,?,?,?,?,?,?,?,?,1) RETURNING id',
+        'INSERT INTO admin_audit (at,actor_uuid,actor_name,role,action,target,detail,ok,error,pending,via,client,correlation) VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?) RETURNING id',
       )
       .get(...auditArgs(entry, Date.now()))) as { id: number }
     return row.id
@@ -932,22 +982,82 @@ export class StatsStore {
     // so a rolled-back write never shows as ok in the feed.
     const row = await this.db
       .prepare(
-        'UPDATE admin_audit SET at=?,actor_uuid=?,actor_name=?,role=?,action=?,target=?,detail=?,ok=?,error=?,pending=NULL WHERE id=? RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending"',
+        'UPDATE admin_audit SET at=?,actor_uuid=?,actor_name=?,role=?,action=?,target=?,detail=?,ok=?,error=?,pending=NULL,via=?,client=?,correlation=? WHERE id=? RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending",via,client,correlation "correlation"',
       )
       .get(...auditArgs(entry, Date.now()), id)
-    await this.pruneAudit()
     return row
   }
   emitAudit(entry: any) {
     publish({ type: 'audit', entry })
   }
-  private async pruneAudit() {
-    // ponytail: keeps the newest 10 000 entries; export them elsewhere first if a longer history is ever required.
-    await this.db
-      .prepare(
-        'DELETE FROM admin_audit WHERE id <= (SELECT id FROM admin_audit ORDER BY id DESC LIMIT 1 OFFSET 10000)',
+  /** Export finalized audit rows for owner-controlled archival. The hash anchors the
+  export; retention deletion only accepts a manifest that still verifies (E5). */
+  async exportAudit(): Promise<{ manifest: AuditExportManifest; jsonl: string }> {
+    const rows = (await this.exportedRows(null, null)) as Record<string, unknown>[]
+    const lines = rows.map((r) => JSON.stringify(AUDIT_EXPORT_COLUMNS.map((c) => r[c] ?? null)))
+    const manifest: AuditExportManifest = {
+      version: 1,
+      exportedAt: Date.now(),
+      firstId: rows.length ? (rows[0].id as number) : null,
+      lastId: rows.length ? (rows[rows.length - 1].id as number) : null,
+      count: rows.length,
+      sha256: createHash('sha256').update(lines.join('\n')).digest('hex'),
+    }
+    return { manifest, jsonl: lines.join('\n') }
+  }
+  /** Recompute the manifest over the live table: count and hash must still match. */
+  async verifyAuditExport(manifest: AuditExportManifest): Promise<boolean> {
+    if (
+      manifest?.version !== 1 ||
+      !Number.isSafeInteger(manifest?.count) ||
+      manifest.count < 0 ||
+      typeof manifest?.sha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(manifest.sha256)
+    )
+      return false
+    if (!manifest.count)
+      return (
+        (
+          (await this.db
+            .prepare('SELECT COUNT(*) n FROM admin_audit WHERE pending IS NULL')
+            .get()) as {
+            n: number
+          }
+        ).n === 0
       )
-      .run()
+    if (!Number.isSafeInteger(manifest.firstId) || !Number.isSafeInteger(manifest.lastId))
+      return false
+    const rows = (await this.exportedRows(manifest.firstId, manifest.lastId)) as Record<
+      string,
+      unknown
+    >[]
+    if (rows.length !== manifest.count) return false
+    const sha256 = createHash('sha256')
+      .update(
+        rows.map((r) => JSON.stringify(AUDIT_EXPORT_COLUMNS.map((c) => r[c] ?? null))).join('\n'),
+      )
+      .digest('hex')
+    return sha256 === manifest.sha256
+  }
+  /** Delete only rows covered by a verified export; pending rows always survive. */
+  async deleteAuditExported(manifest: AuditExportManifest): Promise<number> {
+    if (!(await this.verifyAuditExport(manifest)))
+      throw new StatsError(409, 'Audit retention deletion requires a verified export.')
+    if (!manifest.count || manifest.firstId == null || manifest.lastId == null) return 0
+    return (
+      (await this.db
+        .prepare('DELETE FROM admin_audit WHERE id>=? AND id<=? AND pending IS NULL')
+        .run(manifest.firstId, manifest.lastId)) as { changes: number }
+    ).changes
+  }
+  private async exportedRows(firstId: number | null, lastId: number | null) {
+    return await this.db
+      .prepare(
+        `SELECT ${AUDIT_EXPORT_COLUMNS.join(',')} FROM admin_audit WHERE pending IS NULL` +
+          (firstId == null || lastId == null ? '' : ' AND id>=? AND id<=?') +
+          ' ORDER BY id',
+      )
+      .all(...(firstId == null || lastId == null ? [] : [firstId, lastId]))
   }
   async staff(): Promise<
     {
@@ -991,7 +1101,7 @@ export class StatsStore {
     // Pending=1 rows are unfinished attempts; the boot sweep marks orphans as interrupted.
     return await this.db
       .prepare(
-        'SELECT id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending" FROM admin_audit ORDER BY id DESC LIMIT ?',
+        'SELECT id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending",via,client,correlation "correlation" FROM admin_audit ORDER BY id DESC LIMIT ?',
       )
       .all(limit)
   }
