@@ -66,8 +66,11 @@ GitHub, а релиз меняется редко — так что почти �
 ## CI
 
 Ручной Deploy после подтверждения владельца: тесты (в том числе на PostgreSQL) на Blacksmith, образ `ghcr.io/blockfield/blockfield-site:<sha>` и `:latest`,
-затем вебхук Dokploy. Приложение Dokploy `blockfield-site` разворачивает `:latest`; откат — указать в нём тег `<sha>`
-предыдущего коммита. Старые образы `ghcr.io/netherg-io/blockfield-site` сохранены для отката на переходный период.
+затем вебхук Dokploy. Приложение Dokploy `blockfield-site` разворачивает `:latest`; откат без пересборки — ручной запуск
+workflow `Roll back the site without rebuild` с `sha` предыдущего коммита: он переставляет тег `:latest` на уже собранный
+образ этого коммита, дёргает вебхук Dokploy и ждёт `/api/version`. Запасной путь — указать тег `<sha>` в приложении
+Dokploy вручную. Откат через обновление схемы статистики требует восстановления дампа: старый код новую схему не открывает.
+Старые образы `ghcr.io/netherg-io/blockfield-site` сохранены для отката на переходный период.
 
 - `DOKPLOY_SITE_WEBHOOK` — вебхук деплоя приложения сайта в Dokploy.
 
