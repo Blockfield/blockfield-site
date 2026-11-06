@@ -128,6 +128,7 @@ function settingsError(status: number, data: any): Error {
       : `Control-plane отклонил запрос (${code}).`,
   )
   ;(error as { code?: string }).code = code
+  ;(error as { status?: number }).status = status
   return error
 }
 
@@ -136,11 +137,12 @@ async function settingsRequest(
   target: string,
   token: string | undefined,
   init?: RequestInit,
+  suffix = '',
 ): Promise<any> {
   const url = config()
   if (!token) throw new Error('Control-plane не настроен на сайте (токен).')
   const response = await fetch(
-    `${url}/v2/settings/${settingsSegment(namespace, 'раздел')}/${settingsSegment(target, 'адресат')}`,
+    `${url}/v2/settings/${settingsSegment(namespace, 'раздел')}/${settingsSegment(target, 'адресат')}${suffix}`,
     {
       ...init,
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -210,6 +212,47 @@ export async function patchSettingsCp(
       patch: patch.patch,
     }),
   })
+  if (typeof data?.operationId !== 'string' || !Number.isSafeInteger(data?.revision))
+    throw new Error('Control-plane отдал неверное состояние.')
+  return { operationId: data.operationId, revision: data.revision }
+}
+
+export type CpSettingsRollback = Pick<CpSettingsPatch, 'expectedRevision' | 'idempotencyKey'> & {
+  revision: number
+}
+
+/** Rollback to a stored revision (used to clear merge-only dict state). */
+export async function rollbackSettingsCp(
+  namespace: string,
+  target: string,
+  rollback: CpSettingsRollback,
+  token: string | undefined = process.env.BLOCKFIELD_CP_SETTINGS_TOKEN,
+): Promise<{ operationId: string; revision: number }> {
+  if (
+    !rollback ||
+    typeof rollback !== 'object' ||
+    !Number.isSafeInteger(rollback.expectedRevision) ||
+    typeof rollback.idempotencyKey !== 'string' ||
+    rollback.idempotencyKey.length < 1 ||
+    rollback.idempotencyKey.length > 128 ||
+    !Number.isSafeInteger(rollback.revision) ||
+    rollback.revision < 1
+  )
+    throw new Error('Некорректный откат настроек control-plane.')
+  const data = await settingsRequest(
+    namespace,
+    target,
+    token,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        expectedRevision: rollback.expectedRevision,
+        idempotencyKey: rollback.idempotencyKey,
+        revision: rollback.revision,
+      }),
+    },
+    '/rollback',
+  )
   if (typeof data?.operationId !== 'string' || !Number.isSafeInteger(data?.revision))
     throw new Error('Control-plane отдал неверное состояние.')
   return { operationId: data.operationId, revision: data.revision }

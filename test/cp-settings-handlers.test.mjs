@@ -20,6 +20,13 @@ const temp = (t) => {
 }
 const seed = (dir, name, value) => writeFileSync(join(dir, name), JSON.stringify(value))
 
+/**
+ * Deep merge with the exact semantics of control-plane main
+ * cpv2/settings.py `merge` (consumed via core.settings_change): dict values
+ * recurse, everything else replaces. Consequences the tests rely on:
+ * `{overrides: {}}` is a no-op (it cannot clear), and per-key null fails the
+ * Strict models below with 422 instead of deleting.
+ */
 function merge(base, patch) {
   const out = { ...base }
   for (const [key, value] of Object.entries(patch))
@@ -35,8 +42,34 @@ function merge(base, patch) {
   return out
 }
 
-/** Fake of the CP v2 settings contract on the feat/cp-settings-namespaces branch. */
-function fakeCp() {
+/**
+ * Narrow mirror of the cpv2/settings.py Strict validators that matter here
+ * (control-plane main): gameplay.lobby allows only pvpEnabled; gunBalance,
+ * kits and campaign values must be objects (null fails like the real 422).
+ */
+function validateNs(namespace, value) {
+  if (namespace === 'gameplay') {
+    for (const key of Object.keys(value.lobby ?? {}))
+      if (key !== 'pvpEnabled') return `gameplay.lobby: unknown key ${key}`
+  }
+  if (namespace === 'gunBalance') {
+    for (const [id, override] of Object.entries(value.overrides ?? {}))
+      if (!override || typeof override !== 'object' || Array.isArray(override))
+        return `gunBalance.${id}: expected override object`
+  }
+  if (namespace === 'kits') {
+    for (const [id, kit] of Object.entries(value.kits ?? {}))
+      if (!kit || typeof kit !== 'object') return `kits.${id}: expected object`
+  }
+  if (namespace === 'campaign') {
+    for (const [id, balance] of Object.entries(value.campaignBalance ?? {}))
+      if (!balance || typeof balance !== 'object') return `campaignBalance.${id}: expected object`
+  }
+  return null
+}
+
+/** Fake of the CP v2 settings contract on control-plane main (post-#21). */
+function fakeCp(opts = {}) {
   const known = new Set([
     'gameplay',
     'rooms',
@@ -52,6 +85,7 @@ function fakeCp() {
   ])
   const state = new Map()
   const seen = []
+  const idem = new Map()
   const server = http.createServer((req, res) => {
     const answer = (code, data) => {
       res.statusCode = code
@@ -60,14 +94,15 @@ function fakeCp() {
     }
     if (req.headers.authorization !== 'Bearer settings-t')
       return answer(401, { error: 'unauthenticated' })
-    const match = req.url.match(/^\/v2\/settings\/([^/]+)\/([^/?]+)/)
+    const match = req.url.match(/^\/v2\/settings\/([^/]+)\/([^/?]+)(\/rollback)?/)
     if (!match) return answer(404, { error: 'not_found' })
-    const [, namespace, target] = match.map(decodeURIComponent)
+    const [, namespace, target, rollback] = match.map((s) => (s ? decodeURIComponent(s) : s))
     if (!known.has(namespace)) return answer(404, { error: 'unknown_namespace' })
     let body = ''
     req.on('data', (c) => (body += c))
     req.on('end', () => {
       const key = `${namespace}/${target}`
+      const payload = body ? JSON.parse(body) : {}
       if (req.method === 'GET') {
         const current = state.get(key)
         if (!current)
@@ -79,15 +114,44 @@ function fakeCp() {
           hash: 'hash',
         })
       }
-      if (req.method !== 'PATCH') return answer(405, { error: 'method_not_allowed' })
-      seen.push([namespace, JSON.parse(body)])
-      const payload = JSON.parse(body)
-      const current = state.get(key) ?? { revision: 0, value: {} }
-      if (payload.expectedRevision !== current.revision)
-        return answer(409, { error: 'revision_conflict' })
-      const receipt = { operationId: `op-${seen.length}`, revision: current.revision + 1 }
-      state.set(key, { revision: receipt.revision, value: merge(current.value, payload.patch) })
-      return answer(202, receipt)
+      seen.push([namespace, payload])
+      if (opts.failPatch === 500 && !rollback) return answer(500, { error: 'internal' })
+      const idemKey = `${key}/${payload.idempotencyKey ?? ''}`
+      if (req.method === 'PATCH' || (req.method === 'POST' && rollback)) {
+        if (payload.patch && payload.patch.$fail === '500')
+          return answer(500, { error: 'internal' })
+        if (payload.patch && payload.patch.$fail === 'timeout') {
+          req.socket.destroy()
+          return
+        }
+        const current = state.get(key) ?? { revision: 0, value: {}, history: [] }
+        if (idem.has(idemKey)) {
+          const prev = idem.get(idemKey)
+          if (JSON.stringify(prev.body) === body) return answer(202, prev.receipt)
+          return answer(409, { error: 'idempotency_conflict' })
+        }
+        if (payload.expectedRevision !== current.revision)
+          return answer(409, { error: 'revision_conflict' })
+        let candidate
+        if (rollback) {
+          candidate = current.history[payload.revision - 1]
+          if (candidate === undefined) return answer(404, { error: 'revision_not_found' })
+          candidate = JSON.parse(JSON.stringify(candidate))
+        } else {
+          candidate = merge(current.value, payload.patch)
+          const invalid = validateNs(namespace, candidate)
+          if (invalid) return answer(422, { error: 'invalid_settings', detail: invalid })
+        }
+        const receipt = { operationId: `op-${seen.length}`, revision: current.revision + 1 }
+        idem.set(idemKey, { body, receipt })
+        state.set(key, {
+          revision: receipt.revision,
+          value: candidate,
+          history: [...current.history, JSON.parse(JSON.stringify(candidate))],
+        })
+        return answer(202, receipt)
+      }
+      return answer(405, { error: 'method_not_allowed' })
     })
   })
   return { server, seen }
@@ -182,7 +246,7 @@ test('CP GET view overlays CP namespaces on the file mirror', async (t) => {
       'A',
     )
     const view = await readSettingsCpView(dir)
-    assert.deepEqual(view.settings.lobby, { pvpEnabled: true })
+    assert.deepEqual(view.settings.lobby, { pvpCooldownSeconds: 30, pvpEnabled: true })
     assert.deepEqual(view.settings.rooms, { maxRooms: 2 })
   })
 })
@@ -307,13 +371,23 @@ test('CP gun-only path PATCHes only gunBalance', async (t) => {
         nullable: false,
         fields: { draw_time: { type: 'number', nullable: false, min: 0, max: 60 } },
       },
-      guns: [],
+      guns: [
+        {
+          id: 'tacz:m4a1',
+          data: 'tacz:m4a1',
+          name: 'gun',
+          type: 'rifle',
+          defaults: { draw_time: 0.32 },
+          effective: { draw_time: 0.32 },
+          warnings: [],
+        },
+      ],
     })
     const saved = await saveSettingsCp(
       dir,
       {
         expectedRevision: 0,
-        gunBalance: {},
+        gunBalance: { 'tacz:m4a1': { draw_time: 0.5 } },
         cpRevisions: {},
       },
       'A',
@@ -322,13 +396,154 @@ test('CP gun-only path PATCHes only gunBalance', async (t) => {
     assert.equal(saved.settings.revision, 1)
     assert.deepEqual(
       seen.map(([ns]) => ns),
-      ['gunBalance'],
-      'gun-only save touches no other namespace',
+      ['gunBalance', 'gunBalance'],
+      'gun-only save touches no other namespace (anchor empty revision, then the patch)',
     )
-    assert.deepEqual(seen[0][1].patch, { overrides: {} }, 'empty reset is sent, not dropped')
+    const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
+    assert.deepEqual(mirror.gunBalance, { 'tacz:m4a1': { draw_time: 0.5 } })
+    assert.deepEqual(mirror.lobby, { pvpEnabled: true }, 'mirror keeps untouched sections')
+  })
+})
+
+test('CP reset-all gun overrides rolls back to the empty revision (real merge)', async (t) => {
+  await withCp(t, async (dir, seen) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    seed(dir, 'gun-balance.json', {
+      schema: 1,
+      revision: 0,
+      fields: {
+        type: 'object',
+        nullable: false,
+        fields: { draw_time: { type: 'number', nullable: false, min: 0, max: 60 } },
+      },
+      guns: [
+        {
+          id: 'tacz:m4a1',
+          data: 'tacz:m4a1',
+          name: 'gun',
+          type: 'rifle',
+          defaults: { draw_time: 0.32 },
+          effective: { draw_time: 0.32 },
+          warnings: [],
+        },
+      ],
+    })
+    const args = (body) => [dir, body, 'A', true]
+    await saveSettingsCp(
+      ...args({
+        expectedRevision: 0,
+        gunBalance: { 'tacz:m4a1': { draw_time: 0.5 } },
+        cpRevisions: {},
+      }),
+    )
+    const view = await readSettingsCpView(dir)
+    assert.deepEqual(view.settings.gunBalance, { 'tacz:m4a1': { draw_time: 0.5 } })
+    const saved = await saveSettingsCp(
+      ...args({ expectedRevision: 1, gunBalance: {}, cpRevisions: { gunBalance: 2 } }),
+    )
+    assert.equal(saved.settings.revision, 2)
+    assert.ok(
+      seen.some(([, body]) => body && body.revision === 1 && !body.patch),
+      'reset goes through rollback to the empty revision, not a no-op merge',
+    )
+    const after = await readSettingsCpView(dir)
+    assert.equal(after.settings.gunBalance, undefined, 'stored overrides are cleared')
     const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
     assert.equal(mirror.gunBalance, undefined, 'mirror keeps the file empty-reset shape')
-    assert.deepEqual(mirror.lobby, { pvpEnabled: true }, 'mirror keeps untouched sections')
+  })
+})
+
+test('CP mirror is rebuilt from CP: sequential section saves keep each other', async (t) => {
+  await withCp(t, async (dir) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    await saveSettingsCp(dir, { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} }, 'A')
+    const view = await readSettingsCpView(dir)
+    await saveSettingsCp(
+      dir,
+      {
+        expectedRevision: 1,
+        lobby: { pvpEnabled: false },
+        cpRevisions: { rooms: view.cpRevisions.rooms },
+      },
+      'B',
+    )
+    const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
+    assert.deepEqual(mirror.rooms, { maxRooms: 2 }, 'earlier section survives')
+    assert.deepEqual(mirror.lobby, { pvpEnabled: false }, 'later section lands')
+    assert.equal(mirror.revision, 2)
+  })
+})
+
+test('CP concurrent saves on disjoint sections both win without dropping', async (t) => {
+  await withCp(t, async (dir) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    const [first, second] = await Promise.allSettled([
+      saveSettingsCp(dir, { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} }, 'A'),
+      saveSettingsCp(
+        dir,
+        { expectedRevision: 0, lobby: { pvpEnabled: false }, cpRevisions: {} },
+        'B',
+      ),
+    ])
+    assert.equal(first.status, 'fulfilled', 'rooms save commits')
+    assert.equal(second.status, 'fulfilled', 'disjoint lobby save commits too')
+    const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
+    assert.deepEqual(mirror.rooms, { maxRooms: 2 }, 'no section dropped from the mirror')
+    assert.deepEqual(mirror.lobby, { pvpEnabled: false }, 'no section dropped from the mirror')
+  })
+})
+
+test('CP 500 is unknown, not "not applied"', async (t) => {
+  const { server } = fakeCp({ failPatch: 500 })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const dir = temp(t)
+  try {
+    process.env.BLOCKFIELD_CP_URL = `http://127.0.0.1:${server.address().port}`
+    process.env.BLOCKFIELD_CP_SETTINGS_TOKEN = 'settings-t'
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    const error = await saveSettingsCp(
+      dir,
+      { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} },
+      'A',
+    ).then(
+      () => assert.fail('expected an unknown-outcome failure'),
+      (e) => e,
+    )
+    assert.equal(status(error), 503)
+    const text = await error.text()
+    assert.match(text, /Неизвестный итог/, 'unknown is reported, not success')
+    assert.match(text, /перед повтором/, 'admin is told to reload before retrying')
+    assert.doesNotMatch(
+      text,
+      /не изменены|не применено|Ничего не сохранено/,
+      'never claims not-applied',
+    )
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+    delete process.env.BLOCKFIELD_CP_URL
+    delete process.env.BLOCKFIELD_CP_SETTINGS_TOKEN
+  }
+})
+
+test('CP rejects an unmapped lobby field with 422 and touches nothing', async (t) => {
+  await withCp(t, async (dir, seen) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    await assert.rejects(
+      saveSettingsCp(
+        dir,
+        {
+          expectedRevision: 0,
+          lobby: { pvpEnabled: true, pvpCooldownSeconds: 30 },
+          cpRevisions: {},
+        },
+        'A',
+      ),
+      (e) => status(e) === 422,
+    )
+    assert.equal(seen.length, 0, 'no CP write on 422')
+    const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
+    assert.equal(mirror.revision, 0, 'mirror untouched')
+    assert.equal(mirror.lobby, undefined, 'nothing mirrored')
   })
 })
 
