@@ -500,8 +500,9 @@ export class StatsStore {
       );
       CREATE TABLE IF NOT EXISTS staff_roles (uuid TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL, maps TEXT);
       CREATE TABLE IF NOT EXISTS ingest_keys (id INTEGER PRIMARY KEY, server_id TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
-      CREATE TABLE IF NOT EXISTS site_sessions (id TEXT PRIMARY KEY, drasl_token TEXT NOT NULL, uuid TEXT NOT NULL, created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS site_sessions (id TEXT PRIMARY KEY, drasl_token TEXT NOT NULL, uuid TEXT NOT NULL, created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL, cp_token TEXT);
       CREATE INDEX IF NOT EXISTS site_sessions_uuid ON site_sessions(uuid,last_seen);
+      CREATE TABLE IF NOT EXISTS cp_grant_epochs (account_uuid TEXT PRIMARY KEY, epoch INTEGER NOT NULL, updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS server_samples (
         server_id TEXT NOT NULL, at INTEGER NOT NULL, tps REAL NOT NULL, mspt_avg REAL NOT NULL, mspt_p95 REAL, mspt_max REAL NOT NULL,
         players INTEGER, heap_used_mb INTEGER, heap_max_mb INTEGER, gc_pause_ms INTEGER, started_at INTEGER, PRIMARY KEY(server_id,at)
@@ -540,6 +541,12 @@ export class StatsStore {
       // v4 -> v5: workshop map access per builder (null = every map).
       if (sqlite && !(await columns('staff_roles')).includes('maps'))
         await this.db.exec('ALTER TABLE staff_roles ADD COLUMN maps TEXT;')
+      // Central-session bearer sealed next to the Drasl token; null unlinks.
+      // cp_grant_epochs is a plain CREATE TABLE above: receipt bookkeeping, never authority.
+      if (sqlite && !(await columns('site_sessions')).includes('cp_token'))
+        await this.db.exec('ALTER TABLE site_sessions ADD COLUMN cp_token TEXT;')
+      if (this.db.postgres)
+        await this.db.exec('ALTER TABLE site_sessions ADD COLUMN IF NOT EXISTS cp_token TEXT;')
       // v6 -> v7: token-hash revocations are replaced by server-side sessions; audit rows gain a pending flag.
       if (this.db.postgres)
         await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS pending BIGINT;')
@@ -884,6 +891,36 @@ export class StatsStore {
   }
   async touchSession(id: string, now: number) {
     await this.db.prepare('UPDATE site_sessions SET last_seen=? WHERE id=?').run(now, id)
+  }
+  /** Sealed central bearer for this session; null unlinks. Wrong-key rows read as unlinked. */
+  async setSessionCp(id: string, sealed: string | null) {
+    await this.db.prepare('UPDATE site_sessions SET cp_token=? WHERE id=?').run(sealed, id)
+  }
+  async getSessionCp(id: string): Promise<string | null> {
+    const row = (await this.db
+      .prepare('SELECT cp_token "cp" FROM site_sessions WHERE id=?')
+      .get(id)) as { cp: string | null } | undefined
+    return row?.cp ?? null
+  }
+  /** Last-known CP authorization epoch per account: CAS receipt bookkeeping, never authority. */
+  async setCpEpoch(accountUuid: string, epoch: number, now = Date.now()) {
+    await this.db
+      .prepare(
+        'INSERT INTO cp_grant_epochs (account_uuid,epoch,updated_at) VALUES (?,?,?) ON CONFLICT(account_uuid) DO UPDATE SET epoch=excluded.epoch,updated_at=excluded.updated_at',
+      )
+      .run(accountUuid, epoch, now)
+  }
+  async getCpEpoch(accountUuid: string): Promise<number | null> {
+    const row = (await this.db
+      .prepare('SELECT epoch FROM cp_grant_epochs WHERE account_uuid=?')
+      .get(accountUuid)) as { epoch: number } | undefined
+    return row?.epoch ?? null
+  }
+  async getCpEpochs(): Promise<Map<string, number>> {
+    const rows = (await this.db
+      .prepare('SELECT account_uuid "uuid",epoch FROM cp_grant_epochs')
+      .all()) as { uuid: string; epoch: number }[]
+    return new Map(rows.map((row) => [row.uuid, row.epoch]))
   }
   async deleteSession(id: string): Promise<boolean> {
     return (await this.db.prepare('DELETE FROM site_sessions WHERE id=?').run(id)).changes === 1

@@ -294,6 +294,20 @@ export async function startSession(
   return id
 }
 
+/** Central bearer linked to this session: sealed at rest, a bad key reads as unlinked. */
+export async function linkedCpToken(
+  store: StatsStore,
+  cookies: Pick<AstroCookies, 'get'>,
+): Promise<string | null> {
+  try {
+    const sealed = await store.getSessionCp(sessionId(cookies))
+    if (!sealed) return null
+    return openTokenRaw(sealed, sessionKey())
+  } catch {
+    return null
+  }
+}
+
 /** Logout deletes a valid session and always clears the cookie: logging out twice is fine. */
 export async function closeSession(
   store: StatsStore,

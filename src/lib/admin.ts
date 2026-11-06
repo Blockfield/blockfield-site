@@ -17,7 +17,16 @@ import {
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
-import { account, drasl, fail, nickname, readJson, session, sessionToken } from './account.ts'
+import {
+  account,
+  drasl,
+  fail,
+  linkedCpToken,
+  nickname,
+  readJson,
+  session,
+  sessionToken,
+} from './account.ts'
 import type { CpMe } from './cp.ts'
 import { rcon } from './rcon.ts'
 import { eventStream, heartbeat, redactKeyResult } from './admin-events.ts'
@@ -182,7 +191,23 @@ async function currentActor(context: APIContext, store: StatsStore): Promise<Act
     (({ uuid, username }) => ({ uuid: playerId(uuid) ?? '', name: String(username) }))(
       account(await drasl('/user', { token: await sessionToken(context.cookies, store) })),
     )
-  return { ...who, role: who.uuid ? await roleOf(who.uuid, store) : null }
+  const role = who.uuid ? await roleOf(who.uuid, store) : null
+  // Привязанная центральная сессия важнее реплики: роль — из CP. Центр недоступен —
+  // чтение по реплике, а запись всё равно закроется.
+  if (who.uuid) {
+    const linked = await linkedCpToken(store, context.cookies)
+    if (linked) {
+      const { cpStaffConfigured, readMeCp, roleFromCpMe } = await import('./cp.ts')
+      if (cpStaffConfigured()) {
+        try {
+          return { ...who, role: roleFromCpMe(await readMeCp(linked)) }
+        } catch {
+          return { ...who, role }
+        }
+      }
+    }
+  }
+  return { ...who, role }
 }
 
 /** For the site header (SSR, no client round trip): the signed-in player's name and whether `/admin` would let them in. Never throws. */
@@ -201,9 +226,24 @@ export async function siteIdentity(
     )
     if (!username) return null
     const id = playerId(uuid)
+    if (id === null) return { name: String(username), hasAdminAccess: false }
+    const linked = await linkedCpToken(store, cookies)
+    if (linked) {
+      const { cpStaffConfigured, readMeCp, roleFromCpMe } = await import('./cp.ts')
+      if (cpStaffConfigured()) {
+        try {
+          return {
+            name: String(username),
+            hasAdminAccess: roleFromCpMe(await readMeCp(linked)) !== null,
+          }
+        } catch {
+          // ниже — чтение по реплике
+        }
+      }
+    }
     return {
       name: String(username),
-      hasAdminAccess: id !== null && (await roleOf(id, store)) !== null,
+      hasAdminAccess: (await roleOf(id, store)) !== null,
     }
   } catch {
     return null
@@ -2685,9 +2725,14 @@ const routes: Record<string, Route> = {
         ),
       )
       const name = (uuid: string) => names.get(uuid)
+      // Ревизии для CAS — из чеков CP; null = ещё ни одной записи от сайта.
+      const epochs = await store.getCpEpochs()
       return {
         owners: [...ids].map((uuid) => ({ uuid, name: name(uuid) ?? UNKNOWN_PLAYER })),
-        staff: await store.staff(),
+        staff: (await store.staff()).map((row) => ({
+          ...row,
+          expectedRevision: epochs.get(row.uuid) ?? null,
+        })),
         workshop: readFile(join(adminDir(), 'members.json')),
         expected: workshopMembers(
           await store.staff(),
@@ -2715,14 +2760,20 @@ const routes: Record<string, Route> = {
       const { cpStaffConfigured, postStaffGrantCp } = await import('./cp.ts')
       if (cpStaffConfigured()) {
         // CP — единственный писатель штата: локальная таблица больше не пишется.
-        if (!Number.isSafeInteger(body?.expectedRevision))
-          throw bad('Нет ревизии: обновите страницу.')
+        // Ревизию шлёт панель (из списка), явная всегда побеждает кэш: так выходят
+        // из рассинхрона после правок мимо сайта. Пусто — свежая учётка (эпоха 1).
+        const expectedRevision = Number.isSafeInteger(body?.expectedRevision)
+          ? body.expectedRevision
+          : ((await store.getCpEpoch(target.uuid)) ?? 1)
+        const noteEpoch = async (epoch: number | null) => {
+          if (epoch !== null) await store.setCpEpoch(target.uuid, epoch)
+        }
         const grant = (role: 'builder' | 'moderator' | 'admin', revoke: boolean) =>
           postStaffGrantCp({
             accountUuid: target.uuid,
             role,
             revoke,
-            expectedRevision: body.expectedRevision,
+            expectedRevision,
           }).catch((error: Error & { status?: number }) => {
             // CP отказы с кодом — в статусы сайта; обрыв до центра — 502, а не 403.
             if (typeof error?.status === 'number')
@@ -2740,9 +2791,15 @@ const routes: Record<string, Route> = {
             from === 'builder' || from === 'moderator' || from === 'admin'
               ? [from]
               : ['builder', 'moderator', 'admin']
-          for (const role of targets) operationId ??= (await grant(role, true)).operationId
+          for (const role of targets) {
+            const receipt = await grant(role, true)
+            operationId ??= receipt.operationId
+            await noteEpoch(receipt.authorizationEpoch)
+          }
         } else {
-          operationId = (await grant(body.role, false)).operationId
+          const receipt = await grant(body.role, false)
+          operationId = receipt.operationId
+          await noteEpoch(receipt.authorizationEpoch)
         }
         const sync = await syncWorkshop(store, actor).then(
           ({ id }) => ({ id }),

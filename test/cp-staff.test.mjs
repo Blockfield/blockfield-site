@@ -12,7 +12,10 @@ import {
   revokeSessionCp,
 } from '../src/lib/cp.ts'
 import { handleAdmin, roleOf } from '../src/lib/admin.ts'
-import { closeSession } from '../src/lib/account.ts'
+import { closeSession, linkedCpToken, sealToken, session } from '../src/lib/account.ts'
+import { POST as cpLinkPost, DELETE as cpUnlink } from '../src/pages/api/account/cp-link.ts'
+import { POST as logoutPost } from '../src/pages/api/account/logout.ts'
+import { exportStaff } from '../scripts/cp-staff-export.mjs'
 import { database as store } from './storage.mjs'
 
 const OWNER = 'e10438e4797b49718cfecec6a8fa171b'
@@ -201,7 +204,7 @@ test('staff grant posts the v2 GrantChange shape and fences the local write', as
   t.after(() => {
     globalThis.fetch = realFetch
   })
-  globalThis.fetch = (url, init) =>
+  globalThis.fetch = async (url, init) =>
     String(url).startsWith(cpBase)
       ? realFetch(url, init)
       : String(url).endsWith(`/session/minecraft/profile/${OWNER}`)
@@ -263,9 +266,10 @@ test('staff grant posts the v2 GrantChange shape and fences the local write', as
   )
   assert.equal(
     (await call(`${ADMIN}:Adm`, 'staff', { uuid: OTHER, role: 'moderator' })).status,
-    400,
-    'CP mode needs the revision: blind writes have no CAS',
+    200,
+    'no revision sent: the receipt converged the cache to epoch 2',
   )
+  assert.equal(seen[1][3].expectedRevision, 2)
 })
 
 test('roleOf trusts an injected CP me without touching the store', async () => {
@@ -316,6 +320,222 @@ test('logout revokes the linked CP session and still clears the local one', asyn
   await s.insertSession(id, sealToken('drasl-t'), MOD, Date.now())
   const cookies = { get: (name) => (name === session ? { value: id } : undefined) }
   await closeSession(s, cookies, { cpToken: 'user-cp-t' })
+  assert.deepEqual(seen, [['DELETE', '/v2/sessions/current', 'Bearer user-cp-t']])
+  assert.equal(await s.getSession(id), undefined)
+})
+
+test('link flow: bearer verified, sealed at rest, role then read from CP', async (t) => {
+  const me = {
+    accountId: dashed(MOD),
+    client: { id: 'site', via: 'ui' },
+    owner: false,
+    grants: [
+      {
+        role: 'moderator',
+        environment: 'prod',
+        backend: 'game',
+        resource: '*',
+        revision: 3,
+        expires_at: null,
+      },
+    ],
+    ceiling: [],
+  }
+  const server = await fakeCp(t, (req, res) => {
+    res.setHeader('Content-Type', 'application/json')
+    if (req.url === '/v2/me' && req.headers.authorization === 'Bearer user-cp-t')
+      return res.end(JSON.stringify(me))
+    res.statusCode = 403
+    res.end(JSON.stringify({ error: 'forbidden' }))
+  })
+  cpEnv(t, server)
+  // Pages routes use the global singleton: one file DB for the whole file is fine,
+  // ids are unique per test and the singleton outlives per-test env restores.
+  if (!process.env.BLOCKFIELD_STATS_DB)
+    process.env.BLOCKFIELD_STATS_DB = join(
+      mkdtempSync(join(tmpdir(), 'bf-cpstaff-db-')),
+      'stats.sqlite',
+    )
+  const { statsStore } = await import('../src/lib/stats.ts')
+  const s = await statsStore()
+  const id = 'e'.repeat(32)
+  await s.insertSession(id, sealToken('drasl-t'), MOD, Date.now())
+  const realFetch = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+  const cpBase = `http://127.0.0.1:${server.address().port}`
+  globalThis.fetch = async (url, init) =>
+    String(url).startsWith(cpBase)
+      ? realFetch(url, init)
+      : String(url).endsWith('/drasl/api/v3/user')
+        ? Response.json({ username: 'Moddy', players: [{ uuid: MOD, name: 'Moddy' }] })
+        : new Response('', { status: 404 })
+  const cookies = { get: (name) => (name === session ? { value: id } : undefined) }
+  const post = (body) =>
+    cpLinkPost({
+      request: new Request('http://site/api/account/cp-link', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://site' },
+        body: JSON.stringify(body),
+      }),
+      cookies,
+    })
+  assert.equal((await post({ token: 'short' })).status, 400)
+  assert.equal((await post({ token: 'wrong-token' })).status, 403)
+  assert.equal(await s.getSessionCp(id), null, 'nothing stored until CP accepts the bearer')
+  const linked = await post({ token: 'user-cp-t' })
+  assert.equal(linked.status, 200)
+  assert.equal((await linked.json()).accountId, dashed(MOD))
+  const sealed = await s.getSessionCp(id)
+  assert.ok(sealed && !sealed.includes('user-cp-t'), 'sealed at rest, not plaintext')
+  assert.equal(await linkedCpToken(s, cookies), 'user-cp-t')
+  // The session role now comes from CP even though the replica knows nobody.
+  const meResponse = await handleAdmin(
+    {
+      request: new Request('http://site/api/admin/me', { method: 'GET' }),
+      url: new URL('http://site/api/admin/me'),
+      cookies,
+    },
+    'me',
+    s,
+  )
+  assert.equal((await meResponse.json()).role, 'moderator')
+  const gone = await cpUnlink({
+    request: new Request('http://site/api/account/cp-link', {
+      method: 'DELETE',
+      headers: { origin: 'http://site' },
+    }),
+    cookies,
+  })
+  assert.equal(gone.status, 204)
+  assert.equal(await s.getSessionCp(id), null)
+  assert.equal(await linkedCpToken(s, cookies), null)
+})
+
+test('epoch cache: receipts converge the list, stale 409s', async (t) => {
+  const server = await fakeCp(t, (req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      const payload = JSON.parse(body)
+      res.setHeader('Content-Type', 'application/json')
+      if (payload.expectedRevision === 999) {
+        res.statusCode = 409
+        return res.end(JSON.stringify({ error: 'revision_conflict' }))
+      }
+      res.statusCode = 202
+      res.end(
+        JSON.stringify({
+          operationId: '22222222-2222-4222-8222-222222222222',
+          revision: payload.expectedRevision + 1,
+          status: 'accepted',
+          result: { authorizationEpoch: payload.expectedRevision + 1 },
+        }),
+      )
+    })
+  })
+  cpEnv(t, server)
+  const cpBase = `http://127.0.0.1:${server.address().port}`
+  const realFetch = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+  globalThis.fetch = async (url, init) =>
+    String(url).startsWith(cpBase)
+      ? realFetch(url, init)
+      : String(url).endsWith(`/session/minecraft/profile/${OWNER}`)
+        ? Response.json({ id: OWNER, name: 'Nether' })
+        : new Response('', { status: 404 })
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(OTHER, 'Oth', 'builder', 'seed')
+  const call = async (as, method, path, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL(`http://site/api/admin/${path}`)
+    const request = new Request(url, {
+      method,
+      headers: {
+        'content-type': 'application/json',
+        ...(method === 'POST' ? { origin: 'http://site' } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  const list = async () => (await (await call(`${ADMIN}:Adm`, 'GET', 'staff')).json()).staff
+  assert.equal(
+    (await list()).find((row) => row.uuid === OTHER).expectedRevision,
+    null,
+    'no receipt yet: the panel sends nothing and the server defaults',
+  )
+  assert.equal(
+    (await call(`${ADMIN}:Adm`, 'POST', 'staff', { uuid: OTHER, role: 'moderator' })).status,
+    200,
+  )
+  assert.equal((await list()).find((row) => row.uuid === OTHER).expectedRevision, 2)
+  assert.equal(
+    (
+      await call(`${ADMIN}:Adm`, 'POST', 'staff', {
+        uuid: OTHER,
+        role: 'builder',
+        expectedRevision: 999,
+      })
+    ).status,
+    409,
+    'a stale explicit epoch surfaces as 409, never a blind overwrite',
+  )
+})
+
+test('staff export: rows become operator import references, never accountIds', async (t) => {
+  const s = await store(t)
+  await s.setStaff(MOD, 'Mod', 'moderator', 'seed')
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const spec = await exportStaff(s)
+  assert.equal(spec.scope.backend, 'game')
+  assert.deepEqual(spec.staff, [
+    { draslUuid: ADMIN, name: 'Adm', role: 'admin', maps: null },
+    { draslUuid: MOD, name: 'Mod', role: 'moderator', maps: null },
+  ])
+  assert.ok(!JSON.stringify(spec).includes('accountId'), 'no invented CP identity')
+})
+
+test('logout route revokes the linked bearer before forgetting the cookie', async (t) => {
+  const seen = []
+  const server = await fakeCp(t, (req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      seen.push([req.method, req.url, req.headers.authorization])
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ revoked: true }))
+    })
+  })
+  cpEnv(t, server)
+  if (!process.env.BLOCKFIELD_STATS_DB)
+    process.env.BLOCKFIELD_STATS_DB = join(
+      mkdtempSync(join(tmpdir(), 'bf-cpstaff-db-')),
+      'stats.sqlite',
+    )
+  const { statsStore } = await import('../src/lib/stats.ts')
+  const s = await statsStore()
+  const id = 'f'.repeat(32)
+  await s.insertSession(id, sealToken('drasl-t'), MOD, Date.now())
+  await s.setSessionCp(id, sealToken('user-cp-t'))
+  const out = await logoutPost({
+    request: new Request('http://site/api/account/logout', {
+      method: 'POST',
+      headers: { origin: 'http://site' },
+    }),
+    cookies: {
+      get: (name) => (name === session ? { value: id } : undefined),
+      delete: () => {},
+    },
+  })
+  assert.equal(out.status, 204)
   assert.deepEqual(seen, [['DELETE', '/v2/sessions/current', 'Bearer user-cp-t']])
   assert.equal(await s.getSession(id), undefined)
 })

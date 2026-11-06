@@ -230,7 +230,7 @@ export async function postStaffGrantCp(
   grant: StaffGrant,
   token: string = staffConfig().token,
   fetchImpl: FetchImpl = (url, init) => fetch(url, init),
-): Promise<{ operationId: string; status: string }> {
+): Promise<{ operationId: string; status: string; authorizationEpoch: number | null }> {
   const compact = grant.accountUuid.replaceAll('-', '').toLowerCase()
   if (!/^[0-9a-f]{32}$/.test(compact)) throw new Error('Некорректный запрос.')
   if (!['builder', 'moderator', 'admin'].includes(grant.role)) throw new Error('Неизвестная роль.')
@@ -257,7 +257,9 @@ export async function postStaffGrantCp(
   )
   if (typeof data?.operationId !== 'string')
     throw new Error('Control-plane отдал неверное состояние.')
-  return { operationId: data.operationId, status: data.status ?? 'accepted' }
+  const authorizationEpoch =
+    typeof data?.result?.authorizationEpoch === 'number' ? data.result.authorizationEpoch : null
+  return { operationId: data.operationId, status: data.status ?? 'accepted', authorizationEpoch }
 }
 
 /** Выход и в CP: отзывает текущую центральную сессию и её потомков. */

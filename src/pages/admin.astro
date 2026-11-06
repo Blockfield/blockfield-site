@@ -7991,7 +7991,7 @@ const cpGate = cpConfigured()
               return
             }
             changeRole(
-              { uuid: s.uuid, role },
+              { uuid: s.uuid, role, expectedRevision: s.expectedRevision ?? undefined },
               `${s.name} теперь ${ROLES[role].name.toLowerCase()}.`,
               line,
             )
@@ -8018,7 +8018,11 @@ const cpGate = cpConfigured()
                     danger: true,
                   })
                 )
-                  changeRole({ uuid: s.uuid, role: null }, `${s.name} больше не в команде.`, line)
+                  changeRole(
+                    { uuid: s.uuid, role: null, expectedRevision: s.expectedRevision ?? undefined },
+                    `${s.name} больше не в команде.`,
+                    line,
+                  )
               },
               'small danger',
               `Убрать ${s.name} из команды`,
@@ -8502,7 +8506,13 @@ const cpGate = cpConfigured()
         await loadMapHistory()
       })
     }
-    type StaffRow = { uuid: string; name: string; role: string; maps: string[] | null }
+    type StaffRow = {
+      uuid: string
+      name: string
+      role: string
+      maps: string[] | null
+      expectedRevision: number | null
+    }
     // Only roles-permitted staff can read the team; without it map cards show no builders.
     let teamStaff: StaffRow[] | undefined,
       candidateList: any[] = [],
