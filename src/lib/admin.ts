@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
 import { account, drasl, fail, nickname, readJson, session, sessionToken } from './account.ts'
+import type { CpMe } from './cp.ts'
 import { rcon } from './rcon.ts'
 import { eventStream, heartbeat, redactKeyResult } from './admin-events.ts'
 import {
@@ -141,8 +142,14 @@ export async function roleOf(
   uuid: string,
   store: StatsStore,
   ownerIds = owners(),
+  cpMe?: CpMe | null,
 ): Promise<Role | null> {
   if (ownerIds.has(uuid)) return 'owner'
+  if (cpMe && (cpMe.accountId ?? '').replaceAll('-', '').toLowerCase() === uuid) {
+    // Своя CP-сессия: роль из центра, локальная таблица не читается.
+    const { roleFromCpMe } = await import('./cp.ts')
+    return roleFromCpMe(cpMe)
+  }
   const role = (await store.staff()).find((s) => s.uuid === uuid)?.role
   return role === 'builder' || role === 'moderator' || role === 'admin' ? role : null
 }
@@ -2703,7 +2710,51 @@ const routes: Record<string, Route> = {
           }
         : await lookupName(body?.name)
       if (!target.uuid || !target.name) throw fail(404, 'Участник не найден.')
-      checkRoleChange(actor, target.uuid, await roleOf(target.uuid, store), body.role)
+      const from = await roleOf(target.uuid, store)
+      checkRoleChange(actor, target.uuid, from, body.role)
+      const { cpStaffConfigured, postStaffGrantCp } = await import('./cp.ts')
+      if (cpStaffConfigured()) {
+        // CP — единственный писатель штата: локальная таблица больше не пишется.
+        if (!Number.isSafeInteger(body?.expectedRevision))
+          throw bad('Нет ревизии: обновите страницу.')
+        const grant = (role: 'builder' | 'moderator' | 'admin', revoke: boolean) =>
+          postStaffGrantCp({
+            accountUuid: target.uuid,
+            role,
+            revoke,
+            expectedRevision: body.expectedRevision,
+          }).catch((error: Error & { status?: number }) => {
+            // CP отказы с кодом — в статусы сайта; обрыв до центра — 502, а не 403.
+            if (typeof error?.status === 'number')
+              throw fail(
+                error.status === 404 ? 404 : error.status === 409 ? 409 : 403,
+                error.message,
+              )
+            throw fail(502, 'Control-plane недоступен. Попробуйте позже.')
+          })
+        let operationId: string | null = null
+        if (body.role === null) {
+          // Отзыв бьёт по каждой возможной роли: CP хранит гранты построчно, а
+          // локальная строка в этом режиме уже не авторитетна.
+          const targets: ('builder' | 'moderator' | 'admin')[] =
+            from === 'builder' || from === 'moderator' || from === 'admin'
+              ? [from]
+              : ['builder', 'moderator', 'admin']
+          for (const role of targets) operationId ??= (await grant(role, true)).operationId
+        } else {
+          operationId = (await grant(body.role, false)).operationId
+        }
+        const sync = await syncWorkshop(store, actor).then(
+          ({ id }) => ({ id }),
+          (error: unknown) => ({
+            error:
+              error instanceof Response
+                ? 'Не удалось отправить список в мастерскую.'
+                : String((error as Error).message),
+          }),
+        )
+        return { uuid: target.uuid, name: target.name, role: body.role, sync, operationId }
+      }
       await store.setStaff(target.uuid, target.name, body.role, actor.name)
       const sync = await syncWorkshop(store, actor).then(
         ({ id }) => ({ id }),
@@ -2719,7 +2770,12 @@ const routes: Record<string, Route> = {
     audit: (body, result) => ({
       action: body?.role === null ? 'role-revoke' : 'role-grant',
       target: result?.uuid ?? body?.uuid ?? body?.name ?? null,
-      detail: { name: result?.name ?? body?.name, role: body?.role, sync: result?.sync },
+      detail: {
+        name: result?.name ?? body?.name,
+        role: body?.role,
+        sync: result?.sync,
+        operationId: result?.operationId ?? null,
+      },
     }),
   },
   'POST staff/sync': {
