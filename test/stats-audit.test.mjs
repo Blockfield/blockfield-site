@@ -70,6 +70,15 @@ test('retention deletion requires the archived export, not just its manifest', a
   await assert.rejects(store.deleteAuditExported(manifest, jsonl), /verified export/)
 })
 
+test('retention deletion works past the engine bind limit', async (t) => {
+  const store = await database(t)
+  await write(store, 40_000)
+  const { manifest, jsonl } = await store.exportAudit()
+  assert.equal(manifest.count, 40_000)
+  assert.equal(await store.deleteAuditExported(manifest, jsonl), 40_000)
+  assert.equal((await store.auditLog(1)).length, 0)
+})
+
 test('rows finalized after the export are not deleted with the exported range', async (t) => {
   const store = await database(t)
   await write(store, 2)

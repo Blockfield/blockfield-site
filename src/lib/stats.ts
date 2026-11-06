@@ -119,6 +119,8 @@ export type AuditExportManifest = {
 function failDelete(): never {
   throw new StatsError(409, 'Audit retention deletion requires a verified export.')
 }
+/** Max ids per verification/deletion statement: one bind parameter per row. */
+const AUDIT_DELETE_CHUNK = 500
 /** Columns hashed into an audit export, in fixed order. */
 const AUDIT_EXPORT_COLUMNS = [
   'id',
@@ -1044,7 +1046,9 @@ export class StatsStore {
     return archived
   }
   /** Delete only archived rows whose live content still matches the archive, in one
-  transaction. The DELETE targets the verified id set, never a re-evaluated range. */
+  transaction. The DELETE targets the verified id set, never a re-evaluated range.
+  Statements bind at most AUDIT_DELETE_CHUNK ids: one parameter per row would
+  exceed the engine bind limit (32766 SQLite, 65535 Postgres) on large exports. */
   async deleteAuditExported(manifest: AuditExportManifest, jsonl: string): Promise<number> {
     const archived = this.archiveRows(manifest, jsonl)
     if (!manifest.count) {
@@ -1056,12 +1060,18 @@ export class StatsStore {
     }
     const ids = [...archived.keys()].sort((a, b) => a - b)
     return await this.db.transaction(async () => {
-      const inList = ids.map(() => '?').join(',')
-      const live = (await this.db
-        .prepare(
-          `SELECT ${AUDIT_EXPORT_COLUMNS.join(',')} FROM admin_audit WHERE id IN (${inList})`,
+      const live: Record<string, unknown>[] = []
+      for (let i = 0; i < ids.length; i += AUDIT_DELETE_CHUNK) {
+        const chunk = ids.slice(i, i + AUDIT_DELETE_CHUNK)
+        const inList = chunk.map(() => '?').join(',')
+        live.push(
+          ...((await this.db
+            .prepare(
+              `SELECT ${AUDIT_EXPORT_COLUMNS.join(',')} FROM admin_audit WHERE id IN (${inList})`,
+            )
+            .all(...chunk)) as Record<string, unknown>[]),
         )
-        .all(...ids)) as Record<string, unknown>[]
+      }
       const matched = live
         .filter(
           (r) =>
@@ -1069,12 +1079,19 @@ export class StatsStore {
             JSON.stringify(AUDIT_EXPORT_COLUMNS.map((c) => r[c] ?? null)),
         )
         .map((r) => r.id as number)
+        .sort((a, b) => a - b)
       if (matched.length !== manifest.count) failDelete()
-      const deleted = (await this.db
-        .prepare(`DELETE FROM admin_audit WHERE id IN (${matched.map(() => '?').join(',')})`)
-        .run(...matched)) as { changes: number }
-      if (deleted.changes !== manifest.count) failDelete()
-      return deleted.changes
+      let deleted = 0
+      for (let i = 0; i < matched.length; i += AUDIT_DELETE_CHUNK) {
+        const chunk = matched.slice(i, i + AUDIT_DELETE_CHUNK)
+        deleted += (
+          (await this.db
+            .prepare(`DELETE FROM admin_audit WHERE id IN (${chunk.map(() => '?').join(',')})`)
+            .run(...chunk)) as { changes: number }
+        ).changes
+      }
+      if (deleted !== manifest.count) failDelete()
+      return deleted
     })
   }
   private async exportedRows(firstId: number | null, lastId: number | null) {
