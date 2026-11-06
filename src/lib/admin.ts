@@ -2713,16 +2713,27 @@ const routes: Record<string, Route> = {
       checkRoleChange(actor, target.uuid, from, body.role)
       const { cpStaffConfigured, postStaffGrantCp } = await import('./cp.ts')
       if (cpStaffConfigured()) {
-        // CP — единственный писатель штата: локальная таблица больше не пишется.
-        // Ревизию шлёт панель (из списка), явная всегда побеждает кэш: так выходят
-        // из рассинхрона после правок мимо сайта. Пусто — свежая учётка (эпоха 1).
-        const expectedRevision = Number.isSafeInteger(body?.expectedRevision)
-          ? body.expectedRevision
-          : ((await store.getCpEpoch(target.uuid)) ?? 1)
+        // CP — авторитет, локальная таблица — его реплика: после чека CP зеркалим
+        // изменение той же транзакцией маршрута (tx: true), чтобы roleOf, from,
+        // syncWorkshop и список команды читали свежее. Отказ CP бросает выше —
+        // реплика не показывает неподтверждённое.
+        // Ревизия на каждый вызов читается заново: явная из панели побеждает кэш
+        // только в первом вызове (выход из рассинхрона), дальше — свежий кэш из
+        // чеков. Пусто — свежая учётка: эпохи CP стартуют с 1 (control-plane
+        // migrations/001_core.sql: authorization_epoch DEFAULT 1); чужой 409
+        // отдаём громко с путём восстановления, в кэш его не пишем.
+        const resolveRevision = async (first: boolean) =>
+          first && Number.isSafeInteger(body?.expectedRevision)
+            ? body.expectedRevision
+            : ((await store.getCpEpoch(target.uuid)) ?? 1)
         const noteEpoch = async (epoch: number | null) => {
           if (epoch !== null) await store.setCpEpoch(target.uuid, epoch)
         }
-        const grant = (role: 'builder' | 'moderator' | 'admin', revoke: boolean) =>
+        const grant = (
+          role: 'builder' | 'moderator' | 'admin',
+          revoke: boolean,
+          expectedRevision: number,
+        ) =>
           postStaffGrantCp({
             accountUuid: target.uuid,
             role,
@@ -2738,23 +2749,18 @@ const routes: Record<string, Route> = {
             throw fail(502, 'Control-plane недоступен. Попробуйте позже.')
           })
         let operationId: string | null = null
-        if (body.role === null) {
-          // Отзыв бьёт по каждой возможной роли: CP хранит гранты построчно, а
-          // локальная строка в этом режиме уже не авторитетна.
-          const targets: ('builder' | 'moderator' | 'admin')[] =
-            from === 'builder' || from === 'moderator' || from === 'admin'
-              ? [from]
-              : ['builder', 'moderator', 'admin']
-          for (const role of targets) {
-            const receipt = await grant(role, true)
-            operationId ??= receipt.operationId
-            await noteEpoch(receipt.authorizationEpoch)
-          }
-        } else {
-          const receipt = await grant(body.role, false)
-          operationId = receipt.operationId
+        // Отзыв бьёт по всем трём ролям: строка реплики может отставать от CP
+        // после правок мимо сайта, а сужение по from оставляло бы грант живым.
+        const roles: ('builder' | 'moderator' | 'admin')[] =
+          body.role === null ? ['builder', 'moderator', 'admin'] : [body.role]
+        let first = true
+        for (const role of roles) {
+          const receipt = await grant(role, body.role === null, await resolveRevision(first))
+          first = false
+          operationId ??= receipt.operationId
           await noteEpoch(receipt.authorizationEpoch)
         }
+        await store.setStaff(target.uuid, target.name, body.role, actor.name)
         const sync = await syncWorkshop(store, actor).then(
           ({ id }) => ({ id }),
           (error: unknown) => ({
