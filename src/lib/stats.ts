@@ -115,6 +115,10 @@ export type AuditExportManifest = {
   count: number
   sha256: string
 }
+/** Retention deletion refuses unless the presented archive verifies against its manifest. */
+function failDelete(): never {
+  throw new StatsError(409, 'Audit retention deletion requires a verified export.')
+}
 /** Columns hashed into an audit export, in fixed order. */
 const AUDIT_EXPORT_COLUMNS = [
   'id',
@@ -980,11 +984,14 @@ export class StatsStore {
   async auditFinalize(id: number, entry: AuditEntry) {
     // No live event here: the caller publishes after the surrounding commit,
     // so a rolled-back write never shows as ok in the feed.
+    // Transport stays as journaled: auditArgs still validates a supplied via,
+    // but the row keeps auditPending's via/client/correlation.
+    const args = auditArgs(entry, Date.now()).slice(0, 9)
     const row = await this.db
       .prepare(
-        'UPDATE admin_audit SET at=?,actor_uuid=?,actor_name=?,role=?,action=?,target=?,detail=?,ok=?,error=?,pending=NULL,via=?,client=?,correlation=? WHERE id=? RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending",via,client,correlation "correlation"',
+        'UPDATE admin_audit SET at=?,actor_uuid=?,actor_name=?,role=?,action=?,target=?,detail=?,ok=?,error=?,pending=NULL WHERE id=? RETURNING id,at,actor_uuid "actorUuid",actor_name "actorName",role,action,target,detail,ok,error,pending "pending",via,client,correlation "correlation"',
       )
-      .get(...auditArgs(entry, Date.now()), id)
+      .get(...args, id)
     return row
   }
   emitAudit(entry: any) {
@@ -1005,50 +1012,70 @@ export class StatsStore {
     }
     return { manifest, jsonl: lines.join('\n') }
   }
-  /** Recompute the manifest over the live table: count and hash must still match. */
-  async verifyAuditExport(manifest: AuditExportManifest): Promise<boolean> {
+  /** Parse and anchor a presented archive to its manifest: line count, id range and
+  sha256 must all match. Pure: never reads the live table, so a manifest alone deletes nothing. */
+  private archiveRows(manifest: AuditExportManifest, jsonl: string): Map<number, string> {
+    if (manifest?.version !== 1 || !Number.isSafeInteger(manifest?.count) || manifest.count < 0)
+      failDelete()
+    if (typeof manifest?.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(manifest.sha256))
+      failDelete()
+    const lines = typeof jsonl === 'string' ? jsonl.split('\n').filter((l) => l.length > 0) : []
+    if (lines.length !== manifest.count) failDelete()
+    if (createHash('sha256').update(lines.join('\n')).digest('hex') !== manifest.sha256)
+      failDelete()
     if (
-      manifest?.version !== 1 ||
-      !Number.isSafeInteger(manifest?.count) ||
-      manifest.count < 0 ||
-      typeof manifest?.sha256 !== 'string' ||
-      !/^[0-9a-f]{64}$/.test(manifest.sha256)
+      manifest.count > 0 &&
+      (!Number.isSafeInteger(manifest.firstId) || !Number.isSafeInteger(manifest.lastId))
     )
-      return false
-    if (!manifest.count)
-      return (
-        (
-          (await this.db
-            .prepare('SELECT COUNT(*) n FROM admin_audit WHERE pending IS NULL')
-            .get()) as {
-            n: number
-          }
-        ).n === 0
-      )
-    if (!Number.isSafeInteger(manifest.firstId) || !Number.isSafeInteger(manifest.lastId))
-      return false
-    const rows = (await this.exportedRows(manifest.firstId, manifest.lastId)) as Record<
-      string,
-      unknown
-    >[]
-    if (rows.length !== manifest.count) return false
-    const sha256 = createHash('sha256')
-      .update(
-        rows.map((r) => JSON.stringify(AUDIT_EXPORT_COLUMNS.map((c) => r[c] ?? null))).join('\n'),
-      )
-      .digest('hex')
-    return sha256 === manifest.sha256
+      failDelete()
+    const archived = new Map<number, string>()
+    for (const line of lines) {
+      let row: unknown
+      try {
+        row = JSON.parse(line)
+      } catch {
+        failDelete()
+      }
+      if (!Array.isArray(row) || !Number.isSafeInteger(row[0])) failDelete()
+      const id = row[0] as number
+      if (archived.has(id) || id < manifest.firstId! || id > manifest.lastId!) failDelete()
+      archived.set(id, line)
+    }
+    return archived
   }
-  /** Delete only rows covered by a verified export; pending rows always survive. */
-  async deleteAuditExported(manifest: AuditExportManifest): Promise<number> {
-    if (!(await this.verifyAuditExport(manifest)))
-      throw new StatsError(409, 'Audit retention deletion requires a verified export.')
-    if (!manifest.count || manifest.firstId == null || manifest.lastId == null) return 0
-    return (
-      (await this.db
-        .prepare('DELETE FROM admin_audit WHERE id>=? AND id<=? AND pending IS NULL')
-        .run(manifest.firstId, manifest.lastId)) as { changes: number }
-    ).changes
+  /** Delete only archived rows whose live content still matches the archive, in one
+  transaction. The DELETE targets the verified id set, never a re-evaluated range. */
+  async deleteAuditExported(manifest: AuditExportManifest, jsonl: string): Promise<number> {
+    const archived = this.archiveRows(manifest, jsonl)
+    if (!manifest.count) {
+      const live = (await this.db
+        .prepare('SELECT COUNT(*) n FROM admin_audit WHERE pending IS NULL')
+        .get()) as { n: number }
+      if (live.n !== 0) failDelete()
+      return 0
+    }
+    const ids = [...archived.keys()].sort((a, b) => a - b)
+    return await this.db.transaction(async () => {
+      const inList = ids.map(() => '?').join(',')
+      const live = (await this.db
+        .prepare(
+          `SELECT ${AUDIT_EXPORT_COLUMNS.join(',')} FROM admin_audit WHERE id IN (${inList})`,
+        )
+        .all(...ids)) as Record<string, unknown>[]
+      const matched = live
+        .filter(
+          (r) =>
+            archived.get(r.id as number) ===
+            JSON.stringify(AUDIT_EXPORT_COLUMNS.map((c) => r[c] ?? null)),
+        )
+        .map((r) => r.id as number)
+      if (matched.length !== manifest.count) failDelete()
+      const deleted = (await this.db
+        .prepare(`DELETE FROM admin_audit WHERE id IN (${matched.map(() => '?').join(',')})`)
+        .run(...matched)) as { changes: number }
+      if (deleted.changes !== manifest.count) failDelete()
+      return deleted.changes
+    })
   }
   private async exportedRows(firstId: number | null, lastId: number | null) {
     return await this.db
