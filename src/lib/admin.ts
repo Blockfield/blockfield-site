@@ -1712,14 +1712,19 @@ function consoleLink(target: RconTarget = 'game') {
   if (!Number.isSafeInteger(port) || port < 1 || port > 65535)
     throw fail(503, 'Порт консоли настроен неверно.')
   const host = isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_HOST : env.BLOCKFIELD_RCON_HOST
-  const password = isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_PASSWORD : env.BLOCKFIELD_RCON_PASSWORD
-  return { host: host!, port, password: password! }
+  // The mod's console link accepts only its console-read bearer (BLOCKFIELD_CP_CONSOLE_READ_TOKEN
+  // on the server), never the RCON password.
+  const token = isWorkshop
+    ? env.BLOCKFIELD_WORKSHOP_CONSOLE_READ_TOKEN
+    : env.BLOCKFIELD_CONSOLE_READ_TOKEN
+  if (!token) throw fail(503, 'Токен консоли не настроен.')
+  return { host: host!, port, token }
 }
 /** One proxied call to the mod's console link: structured data only, never raw JSON to the browser. */
 async function fetchConsole(target: RconTarget, path: 'logs' | 'suggest', search: string) {
-  const { host, port, password } = consoleLink(target)
+  const { host, port, token } = consoleLink(target)
   const response = await fetch(`http://${host}:${port}/blockfield/console/v1/${path}?${search}`, {
-    headers: { Authorization: `Bearer ${password}`, Accept: 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
     redirect: 'manual',
     signal: AbortSignal.timeout(8000),
   }).catch((error: Error) => {
