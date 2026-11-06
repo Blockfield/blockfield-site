@@ -175,7 +175,8 @@ async function currentActor(context: APIContext, store: StatsStore): Promise<Act
     (({ uuid, username }) => ({ uuid: playerId(uuid) ?? '', name: String(username) }))(
       account(await drasl('/user', { token: await sessionToken(context.cookies, store) })),
     )
-  return { ...who, role: who.uuid ? await roleOf(who.uuid, store) : null }
+  const role = who.uuid ? await roleOf(who.uuid, store) : null
+  return { ...who, role }
 }
 
 /** For the site header (SSR, no client round trip): the signed-in player's name and whether `/admin` would let them in. Never throws. */
@@ -1859,6 +1860,16 @@ const redactAuditDetail = (action: string, detail: unknown): unknown => {
     : { enabled: parsed.enabled, provider: parsed.provider }
 }
 
+/** CP mode has no service-token grant read (verified on control-plane main: no
+staff roster route; /v2/me is self-only and audit is self-restricted for
+non-owners), so no staff route may decide from the local replica. Fail closed
+until CP gains a roster-read route. */
+const cpStaffClosed = () =>
+  fail(
+    503,
+    'Штат через CP недоступен: сервисному токену CP не отдаёт гранты. Нужен ростер-роут CP — обратитесь к координатору.',
+  )
+
 const routes: Record<string, Route> = {
   'GET overview': {
     permission: 'view',
@@ -2735,6 +2746,7 @@ const routes: Record<string, Route> = {
   'GET staff': {
     permission: 'roles',
     handler: async ({ actor, store }) => {
+      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
       const ids = owners()
       await Promise.all([...ids].map(async (uuid) => ownerName(uuid).catch(() => null)))
       const last = ((await store.auditLog(200)) as any[]).find(
@@ -2779,6 +2791,7 @@ const routes: Record<string, Route> = {
     handler: async ({ actor, store, body }) => {
       if (body?.role !== null && !['builder', 'moderator', 'admin'].includes(body?.role))
         throw bad('Неизвестная роль.')
+      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
       const target = body?.uuid
         ? {
             uuid: playerId(body.uuid),
@@ -2786,7 +2799,8 @@ const routes: Record<string, Route> = {
           }
         : await lookupName(body?.name)
       if (!target.uuid || !target.name) throw fail(404, 'Участник не найден.')
-      checkRoleChange(actor, target.uuid, await roleOf(target.uuid, store), body.role)
+      const from = await roleOf(target.uuid, store)
+      checkRoleChange(actor, target.uuid, from, body.role)
       await store.setStaff(target.uuid, target.name, body.role, actor.name)
       const sync = await syncWorkshop(store, actor).then(
         ({ id }) => ({ id }),
@@ -2802,12 +2816,20 @@ const routes: Record<string, Route> = {
     audit: (body, result) => ({
       action: body?.role === null ? 'role-revoke' : 'role-grant',
       target: result?.uuid ?? body?.uuid ?? body?.name ?? null,
-      detail: { name: result?.name ?? body?.name, role: body?.role, sync: result?.sync },
+      detail: {
+        name: result?.name ?? body?.name,
+        role: body?.role,
+        sync: result?.sync,
+        operationId: result?.operationId ?? null,
+      },
     }),
   },
   'POST staff/sync': {
     permission: 'workshop',
-    handler: async ({ actor, store }) => await syncWorkshop(store, actor),
+    handler: async ({ actor, store }) => {
+      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
+      return syncWorkshop(store, actor)
+    },
     audit: (_, result) => ({
       action: 'workshop-sync',
       target: result?.id ?? null,
@@ -2818,6 +2840,7 @@ const routes: Record<string, Route> = {
   'POST staff/maps': {
     permission: 'roles',
     handler: async ({ actor, store, body }) => {
+      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
       const uuid = playerId(body?.uuid)
       // A full-list write racing a grant must not slip between them: same chain as the grants.
       const row = await withStaffMapsLock(async () => {
@@ -2857,6 +2880,7 @@ const routes: Record<string, Route> = {
   'POST staff/map-access': {
     permission: 'roles',
     handler: async ({ actor, store, body }) => {
+      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
       const mapId = body?.mapId,
         uuids = body?.uuids
       if (typeof mapId !== 'string' || !workshopMapIds().has(mapId)) throw bad('Неизвестная карта.')

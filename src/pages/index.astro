@@ -1123,6 +1123,14 @@ const features = [
               : 'Игровой сервер обновляется, лобби открыто. Нажмите «Войти в лобби» — после запуска сервера вас перенесут автоматически.'
           return
         }
+        if (status.deploying) {
+          lastRooms = ''
+          roomList.replaceChildren()
+          roomSection.hidden = false
+          setRoomNavHidden(true)
+          roomStatus.textContent = 'Идёт деплой'
+          return
+        }
         if (!status.available) throw new Error()
         roomSection.hidden = status.rooms.length === 0 && !invitedRoom
         setRoomNavHidden(status.rooms.length === 0)
