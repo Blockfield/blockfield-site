@@ -917,3 +917,68 @@ test('CP ai-limits: dropped account sends a nested null, reset scopes send paren
     assert.deepEqual(view.builders ?? {}, {})
   })
 })
+
+test('CP workshop-ai sequential saves survive the stamped mirror (tolerant reader)', async (t) => {
+  await withCp(t, async (dir, seen) => {
+    seed(dir, 'workshop-ai-settings.json', {
+      schema: 1,
+      revision: 0,
+      enabled: false,
+      provider: 'openrouter',
+      generationProvider: 'openrouter',
+      guardProvider: 'openrouter',
+      transcriptionProvider: 'openrouter',
+      providers: [],
+      generationModel: 'a/b',
+      guardModel: 'typesafe/jev-1',
+      transcriptionModel: 'openai/whisper-1',
+      cleanupModel: '',
+      cleanupProvider: 'openrouter',
+      maxBlocks: 1024,
+      blocksPerTick: 512,
+      minimumBuildTicks: 60,
+      applyBudgetMs: 4,
+      hourlyRequestLimit: 100,
+      hourlyPlayerRequestLimit: 10,
+      maxHourlyBuilders: 32,
+      generationMaxPricePromptUsdPerM: 0.5,
+      generationMaxPriceCompletionUsdPerM: 1.5,
+      inputGuardEnabled: false,
+    })
+    const base = {
+      enabled: false,
+      provider: 'openrouter',
+      generationModel: 'a/b',
+      guardModel: 'typesafe/jev-1',
+      transcriptionModel: 'openai/whisper-1',
+      maxBlocks: 1024,
+      blocksPerTick: 512,
+      minimumBuildTicks: 60,
+      applyBudgetMs: 4,
+      hourlyRequestLimit: 100,
+      hourlyPlayerRequestLimit: 10,
+      maxHourlyBuilders: 32,
+      generationMaxPricePromptUsdPerM: 0.5,
+      generationMaxPriceCompletionUsdPerM: 1.5,
+      inputGuardEnabled: false,
+    }
+    const first = await saveWorkshopAiSettingsCp(dir, { expectedRevision: 0, ...base }, () => true)
+    assert.equal(first.settings.revision, 1)
+    const file1 = JSON.parse(readFileSync(join(dir, 'workshop-ai-settings.json')))
+    assert.equal(file1.revision, 1)
+    assert.equal(typeof file1.updatedAt, 'number', 'mirror carries stamps unlike ai-limits')
+    // Second save proves the stamped file still reads: readWorkshopAiSettings
+    // ignores unknown keys, so unlike ai-limits there is no 503 here.
+    const second = await saveWorkshopAiSettingsCp(
+      dir,
+      { expectedRevision: 1, ...base, maxBlocks: 2048, cpRevisions: { 'workshop-ai': 1 } },
+      () => true,
+    )
+    assert.equal(second.settings.revision, 2)
+    assert.equal(second.settings.maxBlocks, 2048)
+    assert.equal(seen[seen.length - 1][1].patch.maxBlocks, 2048)
+    const file2 = JSON.parse(readFileSync(join(dir, 'workshop-ai-settings.json')))
+    assert.equal(file2.revision, 2)
+    assert.equal(file2.maxBlocks, 2048)
+  })
+})
