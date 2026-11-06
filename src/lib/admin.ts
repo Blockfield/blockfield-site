@@ -2355,10 +2355,21 @@ const routes: Record<string, Route> = {
     permission: 'view',
     handler: async ({ actor, store }) => {
       const catalog = readMapCatalog(adminDir())
+      let cpRevisions: Record<string, number> | undefined
+      try {
+        const { cpConfigured, readSettingsCp } = await import('./cp.ts')
+        if (cpConfigured()) {
+          const view = await readSettingsCp('disabledMapIds')
+          if (view.initialized) cpRevisions = { disabledMapIds: view.revision }
+        }
+      } catch {
+        // File availability stays authoritative when CP cannot be read.
+      }
       return {
         ...catalog,
         editableMaps: await editableMapIds(actor, store, catalog),
         availability: mapAvailability(settingsDir()),
+        ...(cpRevisions ? { cpRevisions } : {}),
       }
     },
   },

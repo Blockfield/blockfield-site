@@ -52,7 +52,7 @@ export function settingsBody(
   )
   return {
     expectedRevision,
-    cpRevisions,
+    ...(Object.keys(cpRevisions).length ? { cpRevisions } : {}),
     ...(form.classCosts
       ? {
           classCosts: Object.fromEntries(
