@@ -502,7 +502,6 @@ export class StatsStore {
       CREATE TABLE IF NOT EXISTS ingest_keys (id INTEGER PRIMARY KEY, server_id TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
       CREATE TABLE IF NOT EXISTS site_sessions (id TEXT PRIMARY KEY, drasl_token TEXT NOT NULL, uuid TEXT NOT NULL, created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS site_sessions_uuid ON site_sessions(uuid,last_seen);
-      CREATE TABLE IF NOT EXISTS cp_grant_epochs (account_uuid TEXT PRIMARY KEY, epoch INTEGER NOT NULL, updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS server_samples (
         server_id TEXT NOT NULL, at INTEGER NOT NULL, tps REAL NOT NULL, mspt_avg REAL NOT NULL, mspt_p95 REAL, mspt_max REAL NOT NULL,
         players INTEGER, heap_used_mb INTEGER, heap_max_mb INTEGER, gc_pause_ms INTEGER, started_at INTEGER, PRIMARY KEY(server_id,at)
@@ -885,26 +884,6 @@ export class StatsStore {
   }
   async touchSession(id: string, now: number) {
     await this.db.prepare('UPDATE site_sessions SET last_seen=? WHERE id=?').run(now, id)
-  }
-  /** Last-known CP authorization epoch per account: CAS receipt bookkeeping, never authority. */
-  async setCpEpoch(accountUuid: string, epoch: number, now = Date.now()) {
-    await this.db
-      .prepare(
-        'INSERT INTO cp_grant_epochs (account_uuid,epoch,updated_at) VALUES (?,?,?) ON CONFLICT(account_uuid) DO UPDATE SET epoch=excluded.epoch,updated_at=excluded.updated_at',
-      )
-      .run(accountUuid, epoch, now)
-  }
-  async getCpEpoch(accountUuid: string): Promise<number | null> {
-    const row = (await this.db
-      .prepare('SELECT epoch FROM cp_grant_epochs WHERE account_uuid=?')
-      .get(accountUuid)) as { epoch: number } | undefined
-    return row?.epoch ?? null
-  }
-  async getCpEpochs(): Promise<Map<string, number>> {
-    const rows = (await this.db
-      .prepare('SELECT account_uuid "uuid",epoch FROM cp_grant_epochs')
-      .all()) as { uuid: string; epoch: number }[]
-    return new Map(rows.map((row) => [row.uuid, row.epoch]))
   }
   async deleteSession(id: string): Promise<boolean> {
     return (await this.db.prepare('DELETE FROM site_sessions WHERE id=?').run(id)).changes === 1

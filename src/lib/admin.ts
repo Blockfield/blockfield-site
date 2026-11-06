@@ -1852,6 +1852,16 @@ const redactAuditDetail = (action: string, detail: unknown): unknown => {
     : { enabled: parsed.enabled, provider: parsed.provider }
 }
 
+/** CP mode has no service-token grant read (verified on control-plane main: no
+staff roster route; /v2/me is self-only and audit is self-restricted for
+non-owners), so no staff route may decide from the local replica. Fail closed
+until CP gains a roster-read route. */
+const cpStaffClosed = () =>
+  fail(
+    503,
+    'Штат через CP недоступен: сервисному токену CP не отдаёт гранты. Нужен ростер-роут CP — обратитесь к координатору.',
+  )
+
 const routes: Record<string, Route> = {
   'GET overview': {
     permission: 'view',
@@ -2653,6 +2663,7 @@ const routes: Record<string, Route> = {
   'GET staff': {
     permission: 'roles',
     handler: async ({ actor, store }) => {
+      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
       const ids = owners()
       await Promise.all([...ids].map(async (uuid) => ownerName(uuid).catch(() => null)))
       const last = ((await store.auditLog(200)) as any[]).find(
@@ -2679,14 +2690,9 @@ const routes: Record<string, Route> = {
         ),
       )
       const name = (uuid: string) => names.get(uuid)
-      // Ревизии для CAS — из чеков CP; null = ещё ни одной записи от сайта.
-      const epochs = await store.getCpEpochs()
       return {
         owners: [...ids].map((uuid) => ({ uuid, name: name(uuid) ?? UNKNOWN_PLAYER })),
-        staff: (await store.staff()).map((row) => ({
-          ...row,
-          expectedRevision: epochs.get(row.uuid) ?? null,
-        })),
+        staff: await store.staff(),
         workshop: readFile(join(adminDir(), 'members.json')),
         expected: workshopMembers(
           await store.staff(),
@@ -2702,6 +2708,7 @@ const routes: Record<string, Route> = {
     handler: async ({ actor, store, body }) => {
       if (body?.role !== null && !['builder', 'moderator', 'admin'].includes(body?.role))
         throw bad('Неизвестная роль.')
+      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
       const target = body?.uuid
         ? {
             uuid: playerId(body.uuid),
@@ -2711,67 +2718,6 @@ const routes: Record<string, Route> = {
       if (!target.uuid || !target.name) throw fail(404, 'Участник не найден.')
       const from = await roleOf(target.uuid, store)
       checkRoleChange(actor, target.uuid, from, body.role)
-      const { cpStaffConfigured, postStaffGrantCp } = await import('./cp.ts')
-      if (cpStaffConfigured()) {
-        // CP — авторитет, локальная таблица — его реплика: после чека CP зеркалим
-        // изменение той же транзакцией маршрута (tx: true), чтобы roleOf, from,
-        // syncWorkshop и список команды читали свежее. Отказ CP бросает выше —
-        // реплика не показывает неподтверждённое.
-        // Ревизия на каждый вызов читается заново: явная из панели побеждает кэш
-        // только в первом вызове (выход из рассинхрона), дальше — свежий кэш из
-        // чеков. Пусто — свежая учётка: эпохи CP стартуют с 1 (control-plane
-        // migrations/001_core.sql: authorization_epoch DEFAULT 1); чужой 409
-        // отдаём громко с путём восстановления, в кэш его не пишем.
-        const resolveRevision = async (first: boolean) =>
-          first && Number.isSafeInteger(body?.expectedRevision)
-            ? body.expectedRevision
-            : ((await store.getCpEpoch(target.uuid)) ?? 1)
-        const noteEpoch = async (epoch: number | null) => {
-          if (epoch !== null) await store.setCpEpoch(target.uuid, epoch)
-        }
-        const grant = (
-          role: 'builder' | 'moderator' | 'admin',
-          revoke: boolean,
-          expectedRevision: number,
-        ) =>
-          postStaffGrantCp({
-            accountUuid: target.uuid,
-            role,
-            revoke,
-            expectedRevision,
-          }).catch((error: Error & { status?: number }) => {
-            // CP отказы с кодом — в статусы сайта; обрыв до центра — 502, а не 403.
-            if (typeof error?.status === 'number')
-              throw fail(
-                error.status === 404 ? 404 : error.status === 409 ? 409 : 403,
-                error.message,
-              )
-            throw fail(502, 'Control-plane недоступен. Попробуйте позже.')
-          })
-        let operationId: string | null = null
-        // Отзыв бьёт по всем трём ролям: строка реплики может отставать от CP
-        // после правок мимо сайта, а сужение по from оставляло бы грант живым.
-        const roles: ('builder' | 'moderator' | 'admin')[] =
-          body.role === null ? ['builder', 'moderator', 'admin'] : [body.role]
-        let first = true
-        for (const role of roles) {
-          const receipt = await grant(role, body.role === null, await resolveRevision(first))
-          first = false
-          operationId ??= receipt.operationId
-          await noteEpoch(receipt.authorizationEpoch)
-        }
-        await store.setStaff(target.uuid, target.name, body.role, actor.name)
-        const sync = await syncWorkshop(store, actor).then(
-          ({ id }) => ({ id }),
-          (error: unknown) => ({
-            error:
-              error instanceof Response
-                ? 'Не удалось отправить список в мастерскую.'
-                : String((error as Error).message),
-          }),
-        )
-        return { uuid: target.uuid, name: target.name, role: body.role, sync, operationId }
-      }
       await store.setStaff(target.uuid, target.name, body.role, actor.name)
       const sync = await syncWorkshop(store, actor).then(
         ({ id }) => ({ id }),
@@ -2797,7 +2743,10 @@ const routes: Record<string, Route> = {
   },
   'POST staff/sync': {
     permission: 'workshop',
-    handler: async ({ actor, store }) => await syncWorkshop(store, actor),
+    handler: async ({ actor, store }) => {
+      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
+      return syncWorkshop(store, actor)
+    },
     audit: (_, result) => ({
       action: 'workshop-sync',
       target: result?.id ?? null,
@@ -2808,6 +2757,7 @@ const routes: Record<string, Route> = {
   'POST staff/maps': {
     permission: 'roles',
     handler: async ({ actor, store, body }) => {
+      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
       const uuid = playerId(body?.uuid)
       // A full-list write racing a grant must not slip between them: same chain as the grants.
       const row = await withStaffMapsLock(async () => {
@@ -2847,6 +2797,7 @@ const routes: Record<string, Route> = {
   'POST staff/map-access': {
     permission: 'roles',
     handler: async ({ actor, store, body }) => {
+      if ((await import('./cp.ts')).cpStaffConfigured()) throw cpStaffClosed()
       const mapId = body?.mapId,
         uuids = body?.uuids
       if (typeof mapId !== 'string' || !workshopMapIds().has(mapId)) throw bad('Неизвестная карта.')

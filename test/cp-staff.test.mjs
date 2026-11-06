@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { cpStaffConfigured, readMeCp, roleFromCpMe, postStaffGrantCp } from '../src/lib/cp.ts'
@@ -167,39 +167,69 @@ test('staff grant denial matrix: every CP refusal maps to a site status', async 
   }
 })
 
-test('staff grant posts the v2 GrantChange shape and fences the local write', async (t) => {
+test('CP mode refuses staff reads and writes without touching CP or the replica', async (t) => {
   const seen = []
   const server = await fakeCp(t, (req, res) => {
-    let body = ''
-    req.on('data', (c) => (body += c))
-    req.on('end', () => {
-      res.setHeader('Content-Type', 'application/json')
-      seen.push([req.method, req.url, req.headers.authorization, body ? JSON.parse(body) : null])
-      res.statusCode = 202
-      res.end(
-        JSON.stringify({
-          operationId: '11111111-1111-4111-8111-111111111111',
-          revision: 2,
-          status: 'accepted',
-          result: { authorizationEpoch: 2 },
-        }),
-      )
-    })
+    seen.push([req.method, req.url])
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({}))
   })
   cpEnv(t, server)
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
-  await s.setStaff(OTHER, 'Oth', 'builder', 'seed')
-  const cpBase = `http://127.0.0.1:${server.address().port}`
+  await s.setStaff(OTHER, 'Oth', 'moderator', 'seed')
+  const call = async (as, method, path, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL(`http://site/api/admin/${path}`)
+    const request = new Request(url, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  // Finding 1: a stale admin row buys nothing — the list itself refuses.
+  const list = await call(`${ADMIN}:Adm`, 'GET', 'staff')
+  assert.equal(list.status, 503)
+  assert.match(await list.text(), /ростер-роут CP/)
+  // The grant path refuses before any replica read, CP call or write.
+  const granted = await call(`${ADMIN}:Adm`, 'POST', 'staff', {
+    uuid: OTHER,
+    role: 'builder',
+  })
+  assert.equal(granted.status, 503)
+  assert.deepEqual(seen, [], 'no CP call precedes the refusal')
+  assert.equal(
+    (await s.staff()).find((row) => row.uuid === OTHER).role,
+    'moderator',
+    'the replica is untouched',
+  )
+})
+
+test('CP mode refuses revokes for unknown targets and demotions alike', async (t) => {
+  const seen = []
+  const server = await fakeCp(t, (req, res) => {
+    seen.push([req.method, req.url])
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({}))
+  })
+  cpEnv(t, server)
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(MOD, 'Mod', 'admin', 'seed')
   const realFetch = globalThis.fetch
   t.after(() => {
     globalThis.fetch = realFetch
   })
+  const cpBase = `http://127.0.0.1:${server.address().port}`
   globalThis.fetch = async (url, init) =>
     String(url).startsWith(cpBase)
       ? realFetch(url, init)
-      : String(url).endsWith(`/session/minecraft/profile/${OWNER}`)
-        ? Response.json({ id: OWNER, name: 'Nether' })
+      : String(url).endsWith('/Deed')
+        ? Response.json({ id: 'dddddddddddddddddddddddddddddddd', name: 'Deed' })
         : new Response('', { status: 404 })
   const call = async (as, path, body) => {
     process.env.BLOCKFIELD_ADMIN_DEV_USER = as
@@ -214,130 +244,135 @@ test('staff grant posts the v2 GrantChange shape and fences the local write', as
       (e) => e,
     )
   }
-  const granted = await call(`${ADMIN}:Adm`, 'staff', {
-    uuid: OTHER,
-    role: 'moderator',
-    expectedRevision: 1,
-  })
-  assert.equal(granted.status, 200)
-  const payload = await granted.json()
-  assert.match(payload.operationId, /.+/)
-  assert.equal(seen.length, 1)
-  const [method, url, auth, body] = seen[0]
-  assert.equal(method, 'POST')
-  assert.equal(url, '/v2/staff/grants')
-  assert.equal(auth, 'Bearer staff-t')
-  assert.deepEqual(body, {
-    idempotencyKey: body.idempotencyKey,
-    environment: 'prod',
-    backend: 'game',
-    accountId: dashed(OTHER),
-    expectedRevision: 1,
-    role: 'moderator',
-    resource: '*',
-    revoke: false,
-  })
-  assert.match(body.idempotencyKey, /.+/)
+  // Finding 2: no local row — refuses instead of deciding from `from: null`.
+  assert.equal((await call(`${ADMIN}:Adm`, 'staff', { name: 'Deed', role: null })).status, 503)
+  // Finding 3: demotion can no longer partially apply — nothing runs at all.
   assert.equal(
-    (await s.staff()).find((row) => row.uuid === OTHER).role,
-    'moderator',
-    'the receipt mirrors into the replica, so roleOf and the next from stay correct',
+    (await call(`${OWNER}:Nether`, 'staff', { uuid: MOD, role: 'moderator' })).status,
+    503,
   )
+  assert.deepEqual(seen, [], 'neither revoke nor grant reached CP')
   assert.equal(
-    (await call(`${ADMIN}:Adm`, 'staff', { uuid: OTHER, role: 'admin', expectedRevision: 1 }))
-      .status,
-    403,
-    'an admin grant stays owner-only before any CP call',
+    (await s.staff()).find((row) => row.uuid === MOD).role,
+    'admin',
+    'the higher grant is untouched',
   )
-  assert.equal(seen.length, 1, 'the refused admin grant never reached CP')
-  assert.equal(
-    (await call(`${ADMIN}:Adm`, 'staff', { uuid: ADMIN, role: null, expectedRevision: 2 })).status,
-    403,
-    'no self edit, even with a revision',
-  )
-  assert.equal(
-    (await call(`${ADMIN}:Adm`, 'staff', { uuid: OTHER, role: 'moderator' })).status,
-    200,
-    'no revision sent: the receipt converged the cache to epoch 2',
-  )
-  assert.equal(seen[1][3].expectedRevision, 2)
 })
 
-test('epoch cache: receipts converge the list, stale 409s', async (t) => {
+test('CP mode refuses map and sync routes that authorize from the replica', async (t) => {
+  const seen = []
   const server = await fakeCp(t, (req, res) => {
-    let body = ''
-    req.on('data', (c) => (body += c))
-    req.on('end', () => {
-      const payload = JSON.parse(body)
-      res.setHeader('Content-Type', 'application/json')
-      if (payload.expectedRevision === 999) {
-        res.statusCode = 409
-        return res.end(JSON.stringify({ error: 'revision_conflict' }))
-      }
-      res.statusCode = 202
-      res.end(
-        JSON.stringify({
-          operationId: '22222222-2222-4222-8222-222222222222',
-          revision: payload.expectedRevision + 1,
-          status: 'accepted',
-          result: { authorizationEpoch: payload.expectedRevision + 1 },
-        }),
-      )
-    })
+    seen.push([req.method, req.url])
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({}))
   })
   cpEnv(t, server)
-  const cpBase = `http://127.0.0.1:${server.address().port}`
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(MOD, 'Mod', 'builder', 'seed')
   const realFetch = globalThis.fetch
   t.after(() => {
     globalThis.fetch = realFetch
   })
+  const cpBase = `http://127.0.0.1:${server.address().port}`
   globalThis.fetch = async (url, init) =>
-    String(url).startsWith(cpBase)
-      ? realFetch(url, init)
-      : String(url).endsWith(`/session/minecraft/profile/${OWNER}`)
-        ? Response.json({ id: OWNER, name: 'Nether' })
-        : new Response('', { status: 404 })
-  const s = await store(t)
-  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
-  await s.setStaff(OTHER, 'Oth', 'builder', 'seed')
-  const call = async (as, method, path, body) => {
+    String(url).startsWith(cpBase) ? realFetch(url, init) : new Response('', { status: 404 })
+  const call = async (as, path, body) => {
     process.env.BLOCKFIELD_ADMIN_DEV_USER = as
     const url = new URL(`http://site/api/admin/${path}`)
     const request = new Request(url, {
-      method,
-      headers: {
-        'content-type': 'application/json',
-        ...(method === 'POST' ? { origin: 'http://site' } : {}),
-      },
-      ...(body ? { body: JSON.stringify(body) } : {}),
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
     })
     return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, s).then(
       (r) => r,
       (e) => e,
     )
   }
-  const list = async () => (await (await call(`${ADMIN}:Adm`, 'GET', 'staff')).json()).staff
+  // OWNER dev user: BLOCKFIELD_OWNER_UUIDS is OWNER, so use the owner identity.
+  process.env.BLOCKFIELD_OWNER_UUIDS = OWNER
+  assert.equal((await call(`${ADMIN}:Adm`, 'staff/maps', { uuid: MOD, maps: null })).status, 503)
   assert.equal(
-    (await list()).find((row) => row.uuid === OTHER).expectedRevision,
-    null,
-    'no receipt yet: the panel sends nothing and the server defaults',
+    (await call(`${ADMIN}:Adm`, 'staff/map-access', { mapId: 'fields', uuids: [] })).status,
+    503,
   )
-  assert.equal(
-    (await call(`${ADMIN}:Adm`, 'POST', 'staff', { uuid: OTHER, role: 'moderator' })).status,
-    200,
+  assert.equal((await call(`${ADMIN}:Adm`, 'staff/sync', {})).status, 503)
+  assert.deepEqual(seen, [], 'no CP call precedes the refusals')
+  assert.equal((await s.staff()).find((row) => row.uuid === MOD).maps, null)
+})
+
+test('peer rule: stateful fake CP enforces the real grant_change policy', async (t) => {
+  // Mirrors control-plane cpv2/core.py grant_change: owner check, peer check,
+  // existence, epoch CAS, step-up for admin work, then apply with epoch+1.
+  const accounts = new Map()
+  const adminTarget = 'dddddddddddddddddddddddddddddddd'
+  accounts.set(adminTarget, { epoch: 5, grants: new Set(['admin']), owner: false })
+  const server = await fakeCp(t, (req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      const payload = JSON.parse(body)
+      res.setHeader('Content-Type', 'application/json')
+      const deny = (code, status = 403) => {
+        res.statusCode = status
+        res.end(JSON.stringify({ error: code }))
+      }
+      const account = accounts.get(payload.accountId.replaceAll('-', ''))
+      if (account?.owner) return deny('protected_owner')
+      if (account && account.grants.has('admin')) return deny('peer_role_edit')
+      if (!account) return deny('account_not_found', 404)
+      if (account.epoch !== payload.expectedRevision) return deny('revision_conflict', 409)
+      if (payload.role === 'admin') return deny('owner_approval_required')
+      if (payload.revoke) account.grants.delete(payload.role)
+      else account.grants.add(payload.role)
+      account.epoch += 1
+      res.statusCode = 202
+      res.end(
+        JSON.stringify({
+          operationId: '66666666-6666-4336-8666-666666666666',
+          revision: account.epoch,
+          status: 'accepted',
+          result: { authorizationEpoch: account.epoch },
+        }),
+      )
+    })
+  })
+  cpEnv(t, server)
+  const target = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+  accounts.set(target, { epoch: 1, grants: new Set(), owner: false })
+  const grant = (role, revoke, expectedRevision) =>
+    postStaffGrantCp({ accountUuid: target, role, revoke, expectedRevision })
+  const ok = (promise) =>
+    promise.then(
+      (r) => r,
+      (e) => e,
+    )
+  // Chained epochs land every grant, exactly like the prescribed loop would.
+  assert.equal((await grant('builder', false, 1)).authorizationEpoch, 2)
+  assert.equal((await grant('moderator', false, 2)).authorizationEpoch, 3)
+  assert.deepEqual([...accounts.get(target).grants].sort(), ['builder', 'moderator'])
+  // An out-of-band admin cannot be revoked by the non-owner service caller.
+  const peer = await ok(
+    postStaffGrantCp({
+      accountUuid: adminTarget,
+      role: 'builder',
+      revoke: true,
+      expectedRevision: 5,
+    }),
   )
-  assert.equal((await list()).find((row) => row.uuid === OTHER).expectedRevision, 2)
-  assert.equal(
-    (
-      await call(`${ADMIN}:Adm`, 'POST', 'staff', {
-        uuid: OTHER,
-        role: 'builder',
-        expectedRevision: 999,
-      })
-    ).status,
-    409,
-    'a stale explicit epoch surfaces as 409, never a blind overwrite',
-  )
+  assert.equal(peer.status, 403)
+  assert.equal(peer.code, 'peer_role_edit')
+  assert.ok(accounts.get(adminTarget).grants.has('admin'), 'the admin grant survives')
+  // Admin grants need owner step-up, which a service credential cannot present.
+  const stepUp = await ok(grant('admin', false, 3))
+  assert.equal(stepUp.status, 403)
+  assert.equal(stepUp.code, 'owner_approval_required')
+  // A stale epoch is a 409 with the recovery hint, never a silent write.
+  const stale = await ok(grant('builder', true, 1))
+  assert.equal(stale.status, 409)
+  assert.match(stale.message, /координатор/)
+  assert.ok(accounts.get(target).grants.has('builder'), 'the refused revoke changed nothing')
 })
 
 test('staff export: rows become operator import references, never accountIds', async (t) => {
@@ -351,249 +386,4 @@ test('staff export: rows become operator import references, never accountIds', a
     { draslUuid: MOD, name: 'Mod', role: 'moderator', maps: null },
   ])
   assert.ok(!JSON.stringify(spec).includes('accountId'), 'no invented CP identity')
-})
-
-function staffCall(s, server, extraFetch) {
-  const cpBase = `http://127.0.0.1:${server.address().port}`
-  const realFetch = globalThis.fetch
-  const restore = () => {
-    globalThis.fetch = realFetch
-  }
-  globalThis.fetch = async (url, init) => {
-    if (String(url).startsWith(cpBase)) return realFetch(url, init)
-    if (extraFetch) {
-      const out = extraFetch(url)
-      if (out) return out
-    }
-    return String(url).endsWith(`/session/minecraft/profile/${OWNER}`)
-      ? Response.json({ id: OWNER, name: 'Nether' })
-      : new Response('', { status: 404 })
-  }
-  const call = async (as, path, body) => {
-    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
-    const url = new URL(`http://site/api/admin/${path}`)
-    const request = new Request(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, s).then(
-      (r) => r,
-      (e) => e,
-    )
-  }
-  return { call, restore }
-}
-
-test('write-through: a CP receipt mirrors into the local replica', async (t) => {
-  const server = await fakeCp(t, (req, res) => {
-    let body = ''
-    req.on('data', (c) => (body += c))
-    req.on('end', () => {
-      const payload = JSON.parse(body)
-      res.setHeader('Content-Type', 'application/json')
-      res.statusCode = 202
-      res.end(
-        JSON.stringify({
-          operationId: '33333333-3333-4333-8333-333333333333',
-          revision: payload.expectedRevision + 1,
-          status: 'accepted',
-          result: { authorizationEpoch: payload.expectedRevision + 1 },
-        }),
-      )
-    })
-  })
-  cpEnv(t, server)
-  const s = await store(t)
-  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
-  await s.setStaff(OTHER, 'Oth', 'builder', 'seed')
-  const { call, restore } = staffCall(s, server)
-  t.after(restore)
-  assert.equal(
-    (await call(`${ADMIN}:Adm`, 'staff', { uuid: OTHER, role: 'moderator' })).status,
-    200,
-  )
-  assert.deepEqual(
-    (({ uuid, name, role, grantedBy, maps }) => ({ uuid, name, role, grantedBy, maps }))(
-      (await s.staff()).find((row) => row.uuid === OTHER),
-    ),
-    { uuid: OTHER, name: 'Oth', role: 'moderator', grantedBy: 'Adm', maps: null },
-    'the receipt mirrors into the replica',
-  )
-  assert.equal(await s.getCpEpoch(OTHER), 2)
-  assert.equal(
-    (await call(`${ADMIN}:Adm`, 'staff', { uuid: OTHER, role: null })).status,
-    200,
-    'revoke rides the cached epoch, no explicit revision needed',
-  )
-  assert.equal(
-    (await s.staff()).find((row) => row.uuid === OTHER),
-    undefined,
-    'revoke deletes the replica row',
-  )
-})
-
-test('write-through: revoke drops the member from the workshop sync', async (t) => {
-  const server = await fakeCp(t, (req, res) => {
-    let body = ''
-    req.on('data', (c) => (body += c))
-    req.on('end', () => {
-      const payload = JSON.parse(body)
-      res.setHeader('Content-Type', 'application/json')
-      res.statusCode = 202
-      res.end(
-        JSON.stringify({
-          operationId: '44444444-4444-4334-8444-444444444444',
-          revision: payload.expectedRevision + 1,
-          status: 'accepted',
-          result: { authorizationEpoch: payload.expectedRevision + 1 },
-        }),
-      )
-    })
-  })
-  cpEnv(t, server)
-  const s = await store(t)
-  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
-  await s.setStaff(OTHER, 'Oth', 'builder', 'seed')
-  const { call, restore } = staffCall(s, server)
-  t.after(restore)
-  const granted = await (
-    await call(`${ADMIN}:Adm`, 'staff', { uuid: OTHER, role: 'moderator' })
-  ).json()
-  const membersAfterGrant = JSON.parse(
-    readFileSync(join(process.env.BLOCKFIELD_INBOX_DIR, `${granted.sync.id}.json`), 'utf8'),
-  ).members
-  assert.ok(
-    membersAfterGrant.some((m) => m.draslId === OTHER && m.role === 'lead'),
-    'granted moderator reaches the members list',
-  )
-  const revoked = await (await call(`${ADMIN}:Adm`, 'staff', { uuid: OTHER, role: null })).json()
-  const membersAfterRevoke = JSON.parse(
-    readFileSync(join(process.env.BLOCKFIELD_INBOX_DIR, `${revoked.sync.id}.json`), 'utf8'),
-  ).members
-  assert.ok(
-    !membersAfterRevoke.some((m) => m.draslId === OTHER),
-    'revoked member leaves the members list',
-  )
-})
-
-test('revoke hits every role with a fresh epoch per call', async (t) => {
-  const seen = []
-  const server = await fakeCp(t, (req, res) => {
-    let body = ''
-    req.on('data', (c) => (body += c))
-    req.on('end', () => {
-      const payload = JSON.parse(body)
-      seen.push({ role: payload.role, expectedRevision: payload.expectedRevision })
-      res.setHeader('Content-Type', 'application/json')
-      res.statusCode = 202
-      res.end(
-        JSON.stringify({
-          operationId: '55555555-5555-4335-8555-555555555555',
-          revision: payload.expectedRevision + 1,
-          status: 'accepted',
-          result: { authorizationEpoch: payload.expectedRevision + 1 },
-        }),
-      )
-    })
-  })
-  cpEnv(t, server)
-  const s = await store(t)
-  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
-  await s.setStaff(OTHER, 'Oth', 'builder', 'seed')
-  const { call, restore } = staffCall(s, server)
-  t.after(restore)
-  assert.equal((await call(`${ADMIN}:Adm`, 'staff', { uuid: OTHER, role: null })).status, 200)
-  assert.deepEqual(
-    seen.map((c) => [c.role, c.expectedRevision]),
-    [
-      ['builder', 1],
-      ['moderator', 2],
-      ['admin', 3],
-    ],
-    'every role revoked, each call on the epoch the previous receipt returned',
-  )
-  assert.equal(
-    (await s.staff()).find((row) => row.uuid === OTHER),
-    undefined,
-  )
-})
-
-test('conflict: loud 409, cache kept, explicit revision recovers', async (t) => {
-  const server = await fakeCp(t, (req, res) => {
-    let body = ''
-    req.on('data', (c) => (body += c))
-    req.on('end', () => {
-      const payload = JSON.parse(body)
-      res.setHeader('Content-Type', 'application/json')
-      if (payload.expectedRevision === 9) {
-        res.statusCode = 202
-        return res.end(
-          JSON.stringify({
-            operationId: '66666666-6666-4336-8666-666666666666',
-            revision: 10,
-            status: 'accepted',
-            result: { authorizationEpoch: 10 },
-          }),
-        )
-      }
-      res.statusCode = 409
-      res.end(JSON.stringify({ error: 'revision_conflict' }))
-    })
-  })
-  cpEnv(t, server)
-  const s = await store(t)
-  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
-  await s.setStaff(OTHER, 'Oth', 'builder', 'seed')
-  await s.setCpEpoch(OTHER, 5)
-  const { call, restore } = staffCall(s, server)
-  t.after(restore)
-  const refused = await call(`${ADMIN}:Adm`, 'staff', { uuid: OTHER, role: 'moderator' })
-  assert.equal(refused.status, 409)
-  assert.match(await refused.text(), /координатор/, 'points at the recovery path')
-  assert.equal(await s.getCpEpoch(OTHER), 5, 'a refusal never clobbers the cache')
-  assert.equal(
-    (await s.staff()).find((row) => row.uuid === OTHER).role,
-    'builder',
-    'a refusal writes nothing locally',
-  )
-  assert.equal(
-    (await call(`${ADMIN}:Adm`, 'staff', { uuid: OTHER, role: 'moderator', expectedRevision: 9 }))
-      .status,
-    200,
-    'an explicit epoch from the operator recovers',
-  )
-  assert.equal(await s.getCpEpoch(OTHER), 10)
-  assert.equal((await s.staff()).find((row) => row.uuid === OTHER).role, 'moderator')
-})
-
-test('peer backstop: an out-of-band admin cannot be revoked by a non-owner', async (t) => {
-  const seen = []
-  const server = await fakeCp(t, (req, res) => {
-    let body = ''
-    req.on('data', (c) => (body += c))
-    req.on('end', () => {
-      seen.push(JSON.parse(body).role)
-      res.setHeader('Content-Type', 'application/json')
-      res.statusCode = 403
-      res.end(JSON.stringify({ error: 'peer_role_edit' }))
-    })
-  })
-  cpEnv(t, server)
-  const s = await store(t)
-  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
-  const outsider = 'dddddddddddddddddddddddddddddddd'
-  const { call, restore } = staffCall(s, server, (url) =>
-    String(url).endsWith('/Deed') ? Response.json({ id: outsider, name: 'Deed' }) : null,
-  )
-  t.after(restore)
-  const refused = await call(`${ADMIN}:Adm`, 'staff', { name: 'Deed', role: null })
-  assert.equal(refused.status, 403)
-  assert.deepEqual(seen, ['builder'], 'aborts on the first refusal, nothing half-applied')
-  assert.equal(
-    (await s.staff()).find((row) => row.uuid === outsider),
-    undefined,
-    'a refusal creates no replica row',
-  )
-  assert.equal(await s.getCpEpoch(outsider), null, 'a refusal caches no epoch')
 })
