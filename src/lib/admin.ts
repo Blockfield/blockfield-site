@@ -3925,7 +3925,7 @@ export async function saveSettingsCp(
         const view = views.get('campaign') ?? null
         if (!view) throw fail(503, 'Control-plane недоступен. Настройки не изменены.')
         if (empty && view.initialized && !emptyCampaign(view.value)) {
-          const base = body?.cpRevisions?.campaign
+          const base = (body as any)?.cpRevisions?.campaign
           if (!Number.isSafeInteger(base)) throw fail(409, conflict)
           jobs.push({
             kind: 'rollback',
@@ -4048,7 +4048,7 @@ export async function saveKitSettingsCp(directory: string, body: any, actorName:
       })
     if (isObjEmpty(desired.kits) && isObjEmpty(desired.fixedModeKits)) {
       if (view.initialized && !emptyKits(view.value)) {
-        const base = body?.cpRevisions?.kits
+        const base = (body as any)?.cpRevisions?.kits
         if (!Number.isSafeInteger(base)) throw fail(409, conflict)
         jobs.push({
           kind: 'rollback',
@@ -4068,7 +4068,7 @@ export async function saveKitSettingsCp(directory: string, body: any, actorName:
       if (!view.initialized)
         jobs.push({ kind: 'patch', namespace: 'kits', patch, conflict, base: 0 })
       else {
-        const base = body?.cpRevisions?.kits
+        const base = (body as any)?.cpRevisions?.kits
         if (!Number.isSafeInteger(base)) throw fail(409, conflict)
         jobs.push({ kind: 'patch', namespace: 'kits', patch, conflict, base })
       }
@@ -4105,8 +4105,8 @@ export async function saveMapAvailabilityCp(directory: string, body: any, actorN
   return cpSaving(async () => {
     const { cp, views } = await cpReadViews(['disabledMapIds'])
     const disabled = new Set(availability.disabledMapIds)
-    if (body.enabled) disabled.delete(body.mapId)
-    else disabled.add(body.mapId)
+    if (body.enabled) disabled.delete((body as any).mapId)
+    else disabled.add((body as any).mapId)
     if (disabled.size > 4096) throw bad('Слишком много отключённых карт.')
     const patch = { disabledMapIds: [...disabled].sort() }
     const view = views.get('disabledMapIds') ?? null
@@ -4117,7 +4117,7 @@ export async function saveMapAvailabilityCp(directory: string, body: any, actorN
       if (!view.initialized)
         jobs.push({ kind: 'patch', namespace: 'disabledMapIds', patch, conflict, base: 0 })
       else {
-        const base = body?.cpRevisions?.disabledMapIds
+        const base = (body as any)?.cpRevisions?.disabledMapIds
         if (!Number.isSafeInteger(base)) throw fail(409, conflict)
         jobs.push({ kind: 'patch', namespace: 'disabledMapIds', patch, conflict, base })
       }
@@ -4177,7 +4177,7 @@ export async function saveAiLimitsCp(directory: string, body: any, actorRole: Ro
       if (!view.initialized)
         jobs.push({ kind: 'patch', namespace: 'ai-limits', patch, conflict, base: 0 })
       else {
-        const base = body?.cpRevisions?.['ai-limits']
+        const base = (body as any)?.cpRevisions?.['ai-limits']
         if (!Number.isSafeInteger(base)) throw fail(409, conflict)
         jobs.push({ kind: 'patch', namespace: 'ai-limits', patch, conflict, base })
       }
@@ -4293,7 +4293,7 @@ export async function saveWorkshopAiSettingsCp(
       if (!view.initialized)
         jobs.push({ kind: 'patch', namespace: 'workshop-ai', patch, conflict, base: 0 })
       else {
-        const base = body?.cpRevisions?.['workshop-ai']
+        const base = (body as any)?.cpRevisions?.['workshop-ai']
         if (!Number.isSafeInteger(base)) throw fail(409, conflict)
         jobs.push({ kind: 'patch', namespace: 'workshop-ai', patch, conflict, base })
       }
