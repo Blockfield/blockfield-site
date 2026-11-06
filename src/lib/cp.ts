@@ -91,3 +91,125 @@ export async function postGateCp(
     }),
   })
 }
+
+export type CpSettingsView = {
+  initialized: boolean
+  revision: number
+  value: unknown
+  hash: string
+}
+
+export type CpSettingsPatch = {
+  expectedRevision: number
+  idempotencyKey: string
+  patch: Record<string, unknown>
+}
+
+const settingsSegment = (value: string, name: string) => {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_*-]{1,64}$/.test(value))
+    throw new Error(`Некорректный ${name} настроек control-plane.`)
+  return value
+}
+
+/** Stale expectedRevision (or a reused idempotency key with a changed body): re-read before retrying. */
+export function isRevisionConflict(error: unknown) {
+  return (
+    !!error &&
+    typeof error === 'object' &&
+    (error as { code?: unknown }).code === 'revision_conflict'
+  )
+}
+
+function settingsError(status: number, data: any): Error {
+  const code = typeof data?.error === 'string' ? data.error : `http_${status}`
+  const error = new Error(
+    code === 'revision_conflict' || code === 'idempotency_conflict'
+      ? 'Настройки уже изменил кто-то другой. Обновите страницу.'
+      : `Control-plane отклонил запрос (${code}).`,
+  )
+  ;(error as { code?: string }).code = code
+  return error
+}
+
+async function settingsRequest(
+  namespace: string,
+  target: string,
+  token: string | undefined,
+  init?: RequestInit,
+): Promise<any> {
+  const url = config()
+  if (!token) throw new Error('Control-plane не настроен на сайте (токен).')
+  const response = await fetch(
+    `${url}/v2/settings/${settingsSegment(namespace, 'раздел')}/${settingsSegment(target, 'адресат')}`,
+    {
+      ...init,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    },
+  )
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw settingsError(response.status, data)
+  return data
+}
+
+function validSettingsView(data: any): data is CpSettingsView {
+  return (
+    typeof data?.initialized === 'boolean' &&
+    Number.isSafeInteger(data?.revision) &&
+    data.revision >= 0 &&
+    !!data?.value &&
+    typeof data.value === 'object' &&
+    typeof data?.hash === 'string'
+  )
+}
+
+/**
+ * v2 settings transport (frozen contract: namespaces `gameplay` + `gate` only).
+ * Site settings families without a v2 namespace (rooms, kits, gunBalance, maps,
+ * ai-limits, workshop-ai) keep their file writers until the contract grows —
+ * see CP-S3b follow-up. Fails closed: no file fallback on CP errors.
+ */
+export async function readSettingsCp(
+  namespace: string,
+  target = '*',
+  token: string | undefined = process.env.BLOCKFIELD_CP_SETTINGS_TOKEN,
+): Promise<CpSettingsView> {
+  const data = await settingsRequest(namespace, target, token)
+  if (!validSettingsView(data)) throw new Error('Control-plane отдал неверное состояние.')
+  return {
+    initialized: data.initialized,
+    revision: data.revision,
+    value: data.value,
+    hash: data.hash,
+  }
+}
+
+export async function patchSettingsCp(
+  namespace: string,
+  target: string,
+  patch: CpSettingsPatch,
+  token: string | undefined = process.env.BLOCKFIELD_CP_SETTINGS_TOKEN,
+): Promise<{ operationId: string; revision: number }> {
+  if (
+    !patch ||
+    typeof patch !== 'object' ||
+    !Number.isSafeInteger(patch.expectedRevision) ||
+    typeof patch.idempotencyKey !== 'string' ||
+    patch.idempotencyKey.length < 1 ||
+    patch.idempotencyKey.length > 128 ||
+    !patch.patch ||
+    typeof patch.patch !== 'object'
+  )
+    throw new Error('Некорректный патч настроек control-plane.')
+  const data = await settingsRequest(namespace, target, token, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      expectedRevision: patch.expectedRevision,
+      idempotencyKey: patch.idempotencyKey,
+      patch: patch.patch,
+    }),
+  })
+  if (typeof data?.operationId !== 'string' || !Number.isSafeInteger(data?.revision))
+    throw new Error('Control-plane отдал неверное состояние.')
+  return { operationId: data.operationId, revision: data.revision }
+}
