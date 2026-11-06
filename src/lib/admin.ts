@@ -3584,11 +3584,7 @@ function cpChangedJob(
  * map-namespace save passes its patch through here first; switching to
  * null-delete later is a one-line change inside this function.
  */
-function cpRefuseDroppedKeys(
-  label: string,
-  patch: Record<string, unknown>,
-  current: unknown,
-) {
+function cpRefuseDroppedKeys(label: string, patch: Record<string, unknown>, current: unknown) {
   const kept = (current ?? {}) as Record<string, unknown>
   for (const [key, fragment] of Object.entries(patch)) {
     if (!fragment || typeof fragment !== 'object' || Array.isArray(fragment)) continue
@@ -3677,7 +3673,10 @@ async function cpSettleSave(args: {
       revs.set(job.namespace, receipt.revision)
     } catch (error) {
       const problem = cpClassify(error)
-      if (problem.kind === 'unknown' && cpPatchApplied(await cpReadOne(cp, job.namespace), job.patch))
+      if (
+        problem.kind === 'unknown' &&
+        cpPatchApplied(await cpReadOne(cp, job.namespace), job.patch)
+      )
         continue
       const built = await cpRebuildMirror(args)
       const mirrorNote = built ? ' Зеркало обновлено.' : ''
