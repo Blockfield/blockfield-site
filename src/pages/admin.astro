@@ -7711,6 +7711,7 @@ const cpGate = cpConfigured()
         api('workshop-ai-gateway-key'),
       ])
       workshopAiRevision = settings.revision
+      workshopAiCpRevisions = settings.cpRevisions ?? {}
       $<HTMLInputElement>('#workshop-ai-enabled').checked = settings.enabled
       $<HTMLSelectElement>('#workshop-ai-provider').value = settings.provider
       $<HTMLInputElement>('#workshop-ai-input-guard').checked = settings.inputGuardEnabled

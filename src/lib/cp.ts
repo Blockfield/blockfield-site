@@ -164,10 +164,11 @@ function validSettingsView(data: any): data is CpSettingsView {
 }
 
 /**
- * v2 settings transport (frozen contract: namespaces `gameplay` + `gate` only).
- * Site settings families without a v2 namespace (rooms, kits, gunBalance, maps,
- * ai-limits, workshop-ai) keep their file writers until the contract grows —
- * see CP-S3b follow-up. Fails closed: no file fallback on CP errors.
+ * v2 settings transport. Namespaces (gameplay, gate, rooms, deathmatch,
+ * classLocks, campaign, parcool, gunBalance, kits, disabledMapIds, ai-limits,
+ * workshop-ai) come from control-plane PR #21: the contract is CP main after
+ * #21 merges (coordinator-ordered), not the old gameplay+gate-only core.
+ * Fails closed: no file fallback on CP errors.
  */
 export async function readSettingsCp(
   namespace: string,

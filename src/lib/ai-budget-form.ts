@@ -109,13 +109,17 @@ export function renderAiBudgetForm(
   renderTargets()
   return {
     node: form,
-    saved: (revision: number) => {
+    saved: (revision: number, cpRevisions?: Record<string, number>) => {
       draft.revision = revision
+      if (cpRevisions)
+        (draft as unknown as { cpRevisions?: Record<string, number> }).cpRevisions = cpRevisions
     },
     read: () => {
       collect()
       return {
         expectedRevision: draft.revision,
+        cpRevisions:
+          (draft as unknown as { cpRevisions?: Record<string, number> }).cpRevisions ?? {},
         mode: draft.mode,
         sessions: { ...draft.sessions },
         builders: { ...draft.builders },

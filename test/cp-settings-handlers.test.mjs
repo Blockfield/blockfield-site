@@ -114,18 +114,18 @@ test('CP settings CAS on a real handler: concurrent writers, one wins with 409',
     const body = { expectedRevision: 0, rooms: { maxRooms: 2 } }
     const [first, second] = await Promise.allSettled([
       saveSettingsCp(dir, body, 'A'),
-      saveSettingsCp(dir, body, 'B'),
+      saveSettingsCp(dir, { expectedRevision: 0, rooms: { maxRooms: 3 } }, 'B'),
     ])
     const won = [first, second].find((r) => r.status === 'fulfilled')
     const lost = [first, second].find((r) => r.status === 'rejected')
     assert.ok(won, 'one writer wins')
-    assert.equal(won.value.revision, 1)
+    assert.equal(won.value.settings.revision, 1)
     assert.ok(lost, 'the other writer loses')
     assert.equal(lost.status, 'rejected')
     const reason = lost.status === 'rejected' ? lost.reason : assert.fail('unreachable')
     assert.equal(status(reason), 409)
     assert.match(await reason.text(), /уже изменил/)
-    assert.equal(seen.filter(([ns]) => ns === 'rooms').length, 2)
+    assert.equal(seen.filter(([ns]) => ns === 'rooms').length, 1)
     assert.equal(JSON.parse(readFileSync(join(dir, 'settings.json'))).revision, 1)
   })
 })
@@ -144,8 +144,8 @@ test('CP ai-limits is owner-only: admin is refused before any CP call', async (t
     await assert.rejects(saveAiLimitsCp(dir, body, 'admin'), (e) => status(e) === 403)
     assert.equal(seen.length, 0)
     const policy = await saveAiLimitsCp(dir, body, 'owner')
-    assert.equal(policy.revision, 1)
-    assert.equal(policy.mode, 'builder')
+    assert.equal(policy.policy.revision, 1)
+    assert.equal(policy.policy.mode, 'builder')
     assert.equal(seen.length, 1)
     assert.equal(seen[0][0], 'ai-limits')
     assert.deepEqual(seen[0][1].patch, {
@@ -166,7 +166,7 @@ test('CP maps round-trip: PATCH disabledMapIds, GET view shows it', async (t) =>
       { mapId: 'arena1', enabled: false, expectedRevision: 0 },
       'A',
     )
-    assert.deepEqual(saved.disabledMapIds, ['arena1'])
+    assert.deepEqual(saved.settings.disabledMapIds, ['arena1'])
     const view = await readSettingsCpView(dir)
     assert.deepEqual(view.settings.disabledMapIds, ['arena1'])
     assert.equal(view.settings.revision, 1)
@@ -184,5 +184,159 @@ test('CP GET view overlays CP namespaces on the file mirror', async (t) => {
     const view = await readSettingsCpView(dir)
     assert.deepEqual(view.settings.lobby, { pvpEnabled: true })
     assert.deepEqual(view.settings.rooms, { maxRooms: 2 })
+  })
+})
+test('CP settings requires the carried base revision: missing base is a 409', async (t) => {
+  await withCp(t, async (dir, seen) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    const first = await saveSettingsCp(
+      dir,
+      { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} },
+      'A',
+    )
+    assert.equal(first.settings.revision, 1)
+    await assert.rejects(
+      saveSettingsCp(dir, { expectedRevision: 1, rooms: { maxRooms: 3 } }, 'B'),
+      (e) => status(e) === 409,
+    )
+    assert.equal(
+      seen.filter(([ns]) => ns === 'rooms').length,
+      1,
+      'no second rooms PATCH after the refused save',
+    )
+  })
+})
+
+test('CP settings surfaces a stale carried base as 409', async (t) => {
+  await withCp(t, async (dir) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    await saveSettingsCp(dir, { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} }, 'A')
+    await assert.rejects(
+      saveSettingsCp(
+        dir,
+        { expectedRevision: 1, rooms: { maxRooms: 3 }, cpRevisions: { rooms: 0 } },
+        'B',
+      ),
+      (e) => status(e) === 409,
+    )
+  })
+})
+
+test('CP settings PATCHes only changed namespaces', async (t) => {
+  await withCp(t, async (dir, seen) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    await saveSettingsCp(
+      dir,
+      {
+        expectedRevision: 0,
+        lobby: { pvpEnabled: true },
+        rooms: { maxRooms: 2 },
+        cpRevisions: {},
+      },
+      'A',
+    )
+    const roomsPatches = seen.filter(([ns]) => ns === 'rooms').length
+    await saveSettingsCp(
+      dir,
+      {
+        expectedRevision: 1,
+        lobby: { pvpEnabled: false },
+        rooms: { maxRooms: 2 },
+        cpRevisions: { gameplay: 1, rooms: 1 },
+      },
+      'A',
+    )
+    assert.equal(
+      seen.filter(([ns]) => ns === 'rooms').length,
+      roomsPatches,
+      'unchanged rooms are not re-PATCHed',
+    )
+    assert.equal(seen.filter(([ns]) => ns === 'gameplay').length, 2, 'changed lobby is PATCHed')
+  })
+})
+
+test('CP settings partial commit names what was saved', async (t) => {
+  await withCp(t, async (dir) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    await saveSettingsCp(
+      dir,
+      {
+        expectedRevision: 0,
+        lobby: { pvpEnabled: true },
+        rooms: { maxRooms: 2 },
+        cpRevisions: {},
+      },
+      'A',
+    )
+    const error = await saveSettingsCp(
+      dir,
+      {
+        expectedRevision: 1,
+        lobby: { pvpEnabled: false },
+        rooms: { maxRooms: 3 },
+        cpRevisions: { gameplay: 1, rooms: 0 },
+      },
+      'B',
+    ).then(
+      () => assert.fail('expected a partial-commit failure'),
+      (e) => e,
+    )
+    assert.equal(status(error), 409)
+    const text = await error.text()
+    assert.match(text, /lobby/, 'names the committed section')
+    assert.match(text, /rooms/, 'names the failed section')
+    const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
+    assert.deepEqual(mirror.lobby, { pvpEnabled: false }, 'committed section mirrored')
+    assert.deepEqual(mirror.rooms, { maxRooms: 2 }, 'failed section keeps the old mirror')
+  })
+})
+
+test('CP gun-only path PATCHes only gunBalance', async (t) => {
+  await withCp(t, async (dir, seen) => {
+    seed(dir, 'settings.json', {
+      schema: 1,
+      revision: 0,
+      lobby: { pvpEnabled: true },
+      rooms: { maxRooms: 2 },
+    })
+    seed(dir, 'gun-balance.json', {
+      schema: 1,
+      revision: 0,
+      fields: {
+        type: 'object',
+        nullable: false,
+        fields: { draw_time: { type: 'number', nullable: false, min: 0, max: 60 } },
+      },
+      guns: [],
+    })
+    const saved = await saveSettingsCp(
+      dir,
+      {
+        expectedRevision: 0,
+        gunBalance: {},
+        cpRevisions: {},
+      },
+      'A',
+      true,
+    )
+    assert.equal(saved.settings.revision, 1)
+    assert.deepEqual(
+      seen.map(([ns]) => ns),
+      ['gunBalance'],
+      'gun-only save touches no other namespace',
+    )
+    assert.deepEqual(seen[0][1].patch, { overrides: {} }, 'empty reset is sent, not dropped')
+    const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
+    assert.equal(mirror.gunBalance, undefined, 'mirror keeps the file empty-reset shape')
+    assert.deepEqual(mirror.lobby, { pvpEnabled: true }, 'mirror keeps untouched sections')
+  })
+})
+
+test('CP GET settings view carries per-namespace base revisions', async (t) => {
+  await withCp(t, async (dir) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    await saveSettingsCp(dir, { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} }, 'A')
+    const view = await readSettingsCpView(dir)
+    assert.deepEqual(view.cpRevisions, { rooms: 1 })
   })
 })

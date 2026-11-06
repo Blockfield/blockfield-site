@@ -1128,6 +1128,7 @@ export function validateSettings(body: any, catalog?: GunBalanceCatalog) {
       (k) =>
         ![
           'expectedRevision',
+          'cpRevisions',
           'lobby',
           'rooms',
           'deathmatch',
@@ -1326,7 +1327,9 @@ function readKits(directory: string) {
 export function saveKitSettings(directory: string, body: any, actorName: string) {
   if (
     !plain(body) ||
-    Object.keys(body).some((key) => !['expectedRevision', 'kits', 'fixedModeKits'].includes(key))
+    Object.keys(body).some(
+      (key) => !['expectedRevision', 'cpRevisions', 'kits', 'fixedModeKits'].includes(key),
+    )
   )
     throw bad('Некорректные настройки наборов.')
   const current = storedSettings(directory)
@@ -1376,7 +1379,11 @@ export function saveSettings(
   const catalog = availability?.available ? availability.catalog : undefined
   let values: Record<string, unknown>
   if (gunBalanceOnly) {
-    if (Object.keys(body).some((key) => !['expectedRevision', 'gunBalance'].includes(key)))
+    if (
+      Object.keys(body).some(
+        (key) => !['expectedRevision', 'cpRevisions', 'gunBalance'].includes(key),
+      )
+    )
       throw bad('Некорректные настройки оружия.')
     values = {
       ...current,
@@ -1406,7 +1413,7 @@ export function saveAiLimits(directory: string, body: any) {
   if (
     !plain(body) ||
     Object.keys(body).some(
-      (key) => !['expectedRevision', 'mode', 'sessions', 'builders'].includes(key),
+      (key) => !['expectedRevision', 'cpRevisions', 'mode', 'sessions', 'builders'].includes(key),
     ) ||
     (body.mode !== 'session' && body.mode !== 'builder')
   )
@@ -1442,6 +1449,7 @@ export function saveWorkshopAiSettings(
       (key) =>
         ![
           'expectedRevision',
+          'cpRevisions',
           'enabled',
           'provider',
           'generationProvider',
@@ -2135,7 +2143,10 @@ const routes: Record<string, Route> = {
     maxBody: 1_048_576,
     handler: async ({ actor, body }) => {
       const { cpConfigured } = await import('./cp.ts')
-      if (cpConfigured()) return { settings: await saveSettingsCp(settingsDir(), body, actor.name) }
+      if (cpConfigured()) {
+        const { settings, cpRevisions } = await saveSettingsCp(settingsDir(), body, actor.name)
+        return { settings, cpRevisions }
+      }
       return { settings: saveSettings(settingsDir(), body, actor.name) }
     },
     audit: (body, result) => ({
@@ -2157,7 +2168,10 @@ const routes: Record<string, Route> = {
     maxBody: 65_536,
     handler: async ({ actor, body }) => {
       const { cpConfigured } = await import('./cp.ts')
-      if (cpConfigured()) return { policy: await saveAiLimitsCp(settingsDir(), body, actor.role) }
+      if (cpConfigured()) {
+        const { policy, cpRevisions } = await saveAiLimitsCp(settingsDir(), body, actor.role)
+        return { policy, cpRevisions }
+      }
       return { policy: saveAiLimits(settingsDir(), body) }
     },
     audit: (body, result) => ({
@@ -2182,8 +2196,14 @@ const routes: Record<string, Route> = {
       const hasKey = (provider) =>
         readWorkshopAiKeyStatus(adminDir(), workshopAiKeyStatusFile(provider)).set
       const { cpConfigured } = await import('./cp.ts')
-      if (cpConfigured())
-        return { settings: await saveWorkshopAiSettingsCp(settingsDir(), body, hasKey) }
+      if (cpConfigured()) {
+        const { settings, cpRevisions } = await saveWorkshopAiSettingsCp(
+          settingsDir(),
+          body,
+          hasKey,
+        )
+        return { settings, cpRevisions }
+      }
       return { settings: saveWorkshopAiSettings(settingsDir(), body, hasKey) }
     },
     audit: (body, result) => ({
@@ -2287,8 +2307,10 @@ const routes: Record<string, Route> = {
     maxBody: 1_048_576,
     handler: async ({ actor, body }) => {
       const { cpConfigured } = await import('./cp.ts')
-      if (cpConfigured())
-        return { settings: await saveKitSettingsCp(settingsDir(), body, actor.name) }
+      if (cpConfigured()) {
+        const { settings, cpRevisions } = await saveKitSettingsCp(settingsDir(), body, actor.name)
+        return { settings, cpRevisions }
+      }
       return { settings: saveKitSettings(settingsDir(), body, actor.name) }
     },
     audit: (body, result) => ({
@@ -2302,8 +2324,15 @@ const routes: Record<string, Route> = {
     maxBody: 1_048_576,
     handler: async ({ actor, body }) => {
       const { cpConfigured } = await import('./cp.ts')
-      if (cpConfigured())
-        return { settings: await saveSettingsCp(settingsDir(), body, actor.name, true) }
+      if (cpConfigured()) {
+        const { settings, cpRevisions } = await saveSettingsCp(
+          settingsDir(),
+          body,
+          actor.name,
+          true,
+        )
+        return { settings, cpRevisions }
+      }
       return { settings: saveSettings(settingsDir(), body, actor.name, true) }
     },
     audit: (body, result) => ({
@@ -2383,8 +2412,14 @@ const routes: Record<string, Route> = {
       if (!entry || entry.kind !== 'arena' || !entry.head)
         throw bad('Доступность меняется только для опубликованной арены.')
       const { cpConfigured } = await import('./cp.ts')
-      if (cpConfigured())
-        return { settings: await saveMapAvailabilityCp(settingsDir(), body, actor.name) }
+      if (cpConfigured()) {
+        const { settings, cpRevisions } = await saveMapAvailabilityCp(
+          settingsDir(),
+          body,
+          actor.name,
+        )
+        return { settings, cpRevisions }
+      }
       return { settings: saveMapAvailability(settingsDir(), body, actor.name) }
     },
     audit: (body, result) => ({
@@ -3390,68 +3425,151 @@ async function record(
 
 /** Control-plane settings path (CP-S3b): one file section = one v2 namespace.
  * Active only when cpConfigured(); otherwise the file writers above stay
- * authoritative. Every CP write mirrors to the settings file, so the game
- * (typed consumer lands in S4a) and the file fallback keep working. The file
- * mirror revision stays the single expectedRevision the UI sends; per-namespace
- * CP revisions are read fresh inside each PATCH, so a concurrent writer fails
- * with 409 instead of silently winning. Preambles mirror the file writers on
- * purpose: the file path is frozen legacy until S9b removes it. */
+ * authoritative. The namespaces (rooms, deathmatch, classLocks, campaign,
+ * parcool, gunBalance, kits, disabledMapIds, ai-limits, workshop-ai, plus the
+ * gameplay/gate core) come from control-plane PR #21: the contract for these
+ * writers is control-plane main after #21 merges (the coordinator orders the
+ * merges), not the old gameplay+gate-only core. Every CP write mirrors to the
+ * settings file, so the game (typed consumer lands in S4a) and the file
+ * fallback keep working. The file mirror revision stays the coarse
+ * expectedRevision the UI sends; the per-namespace CP base revision the edit
+ * was based on travels in body.cpRevisions from the GET view, and only
+ * sections that actually changed are PATCHed. A concurrent writer therefore
+ * fails with 409 instead of silently winning. Preambles mirror the file
+ * writers on purpose: the file path is frozen legacy until S9b removes it. */
 const cpSettingsTarget = '*'
 
-async function cpPatchSettingsNamespace(
+const stable = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0,
+    )
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stable(item)}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'null'
+}
+
+const pick = (value: Record<string, unknown>, keys: string[]) =>
+  Object.fromEntries(keys.filter((key) => key in value).map((key) => [key, value[key]]))
+
+type CpSectionView = { initialized: boolean; revision: number; value: unknown }
+
+async function cpReadViews(namespaces: string[]) {
+  const cp = await import('./cp.ts')
+  const entries = await Promise.all(
+    namespaces.map(async (namespace) => {
+      try {
+        const view = (await cp.readSettingsCp(namespace)) as CpSectionView
+        return [namespace, view] as const
+      } catch {
+        return [namespace, null] as const
+      }
+    }),
+  )
+  return { cp, views: new Map<string, CpSectionView | null>(entries) }
+}
+
+type CpJob = {
+  namespace: string
+  patch: Record<string, unknown>
+  /** File-shape overlay applied to the mirror when this job commits. */
+  filePatch: Record<string, unknown | undefined>
+  conflict: string
+  base: number
+}
+
+/** Changed-only job against the carried base revision; null when nothing changed. */
+function cpChangedJob(
+  body: any,
+  views: Map<string, CpSectionView | null>,
   namespace: string,
   patch: Record<string, unknown>,
-  conflictMessage: string,
-) {
-  const cp = await import('./cp.ts')
+  currentShape: unknown,
+  filePatch: Record<string, unknown | undefined>,
+  conflict: string,
+): CpJob | null {
+  const view = views.get(namespace) ?? null
+  if (!view) throw fail(503, 'Control-plane недоступен. Настройки не изменены.')
+  if (!view.initialized) return { namespace, patch, filePatch, conflict, base: 0 }
+  if (stable(patch) === stable(currentShape)) return null
+  const base = body?.cpRevisions?.[namespace]
+  if (!Number.isSafeInteger(base)) throw fail(409, conflict)
+  return { namespace, patch, filePatch, conflict, base }
+}
+
+async function cpRunJobs(cp: any, jobs: CpJob[]): Promise<{ revisions: Record<string, number> }> {
+  const revisions: Record<string, number> = {}
+  let index = 0
   try {
-    const view = await cp.readSettingsCp(namespace)
-    await cp.patchSettingsCp(namespace, cpSettingsTarget, {
-      expectedRevision: view.revision,
-      idempotencyKey: randomUUID(),
-      patch,
-    })
+    for (; index < jobs.length; index++) {
+      const job = jobs[index]
+      const receipt = (await cp.patchSettingsCp(job.namespace, cpSettingsTarget, {
+        expectedRevision: job.base,
+        idempotencyKey: randomUUID(),
+        patch: job.patch,
+      })) as { operationId: string; revision: number }
+      revisions[job.namespace] = receipt.revision
+    }
+    return { revisions }
   } catch (error) {
-    if (cp.isRevisionConflict(error)) throw fail(409, conflictMessage)
-    throw fail(503, 'Control-plane недоступен. Настройки не изменены.')
+    throw {
+      committed: jobs.slice(0, index),
+      pending: jobs.slice(index),
+      conflict: cp.isRevisionConflict(error),
+    }
   }
 }
 
-/** PATCH every present section to its v2 namespace; absent sections are left alone on CP. */
-async function cpPatchGeneralSections(values: Record<string, unknown>) {
-  const conflict = 'Настройки уже изменил кто-то другой. Обновите страницу.'
-  if (values.lobby !== undefined) {
-    const lobby = values.lobby as Record<string, unknown>
-    await cpPatchSettingsNamespace(
-      'gameplay',
-      { lobby: { pvpEnabled: lobby.pvpEnabled } },
-      conflict,
-    )
+function cpJobError(
+  thrown: { committed: CpJob[]; pending: CpJob[]; conflict: boolean },
+  directory: string,
+  base: Record<string, unknown>,
+  revision: number,
+  actorName: string,
+  fileName = 'settings.json',
+): never {
+  const sectionLabel: Record<string, string> = {
+    gameplay: 'lobby',
+    rooms: 'rooms',
+    deathmatch: 'deathmatch',
+    classLocks: 'classLocks',
+    campaign: 'campaignBalance',
+    parcool: 'parcool',
+    gunBalance: 'gunBalance',
+    kits: 'kits',
+    disabledMapIds: 'disabledMapIds',
+    'ai-limits': 'ai-limits',
+    'workshop-ai': 'workshop-ai',
   }
-  if (values.rooms !== undefined)
-    await cpPatchSettingsNamespace('rooms', values.rooms as Record<string, unknown>, conflict)
-  if (values.deathmatch !== undefined)
-    await cpPatchSettingsNamespace(
-      'deathmatch',
-      values.deathmatch as Record<string, unknown>,
-      conflict,
-    )
-  if (values.classLocks !== undefined || values.classCosts !== undefined) {
-    const patch: Record<string, unknown> = {}
-    if (values.classLocks !== undefined) patch.classLocks = values.classLocks
-    if (values.classCosts !== undefined) patch.classCosts = values.classCosts
-    await cpPatchSettingsNamespace('classLocks', patch, conflict)
+  const label = (job: CpJob) => sectionLabel[job.namespace] ?? job.namespace
+  const saved = thrown.committed.map(label)
+  const pending = thrown.pending.map(label)
+  if (thrown.committed.length === 0) {
+    if (thrown.conflict) throw fail(409, thrown.pending[0].conflict)
+    throw fail(503, 'Control-plane недоступен. Настройки не изменены.')
   }
-  if (values.campaignBalance !== undefined)
-    await cpPatchSettingsNamespace(
-      'campaign',
-      { campaignBalance: values.campaignBalance },
-      conflict,
-    )
-  if (values.parcool !== undefined)
-    await cpPatchSettingsNamespace('parcool', values.parcool as Record<string, unknown>, conflict)
-  if (values.gunBalance !== undefined)
-    await cpPatchSettingsNamespace('gunBalance', { overrides: values.gunBalance }, conflict)
+  const settings = { ...base } as Record<string, unknown>
+  for (const job of thrown.committed)
+    for (const [key, value] of Object.entries(job.filePatch)) {
+      if (value === undefined) delete settings[key]
+      else settings[key] = value
+    }
+  const mirror = {
+    ...settings,
+    schema: 1,
+    revision: revision + 1,
+    updatedAt: Date.now(),
+    updatedBy: actorName,
+  }
+  writeAtomic(directory, fileName, mirror)
+  const reason = thrown.conflict
+    ? 'другой администратор сохранился раньше — обновите страницу'
+    : 'control-plane недоступен'
+  throw fail(
+    thrown.conflict ? 409 : 503,
+    `Частично сохранено (${saved.join(', ')}). Не применено (${pending.join(', ')}): ${reason}.`,
+  )
 }
 
 export async function saveSettingsCp(
@@ -3471,7 +3589,11 @@ export async function saveSettingsCp(
   const catalog = availability?.available ? availability.catalog : undefined
   let values: Record<string, unknown>
   if (gunBalanceOnly) {
-    if (Object.keys(body).some((key) => !['expectedRevision', 'gunBalance'].includes(key)))
+    if (
+      Object.keys(body).some(
+        (key) => !['expectedRevision', 'cpRevisions', 'gunBalance'].includes(key),
+      )
+    )
       throw bad('Некорректные настройки оружия.')
     values = {
       ...current,
@@ -3485,23 +3607,123 @@ export async function saveSettingsCp(
     for (const key of ['gunBalance', 'kits', 'fixedModeKits', 'disabledMapIds'])
       if (!Object.hasOwn(body, key) && Object.hasOwn(current, key)) values[key] = current[key]
   }
-  if (editingGuns && Object.keys(values.gunBalance as object).length === 0) delete values.gunBalance
-  await cpPatchGeneralSections(values)
+  // The mirror drops an empty gunBalance (file reset shape); CP still gets the
+  // explicit reset so a stale namespace cannot resurface through the GET view.
+  const gunReset = editingGuns && Object.keys(values.gunBalance as object).length === 0
+  const conflict = 'Настройки уже изменил кто-то другой. Обновите страницу.'
+  const jobs: CpJob[] = []
+  const queue = (
+    namespace: string,
+    patch: Record<string, unknown>,
+    currentShape: unknown,
+    filePatch: Record<string, unknown | undefined>,
+  ) => {
+    const job = cpChangedJob(body, views, namespace, patch, currentShape, filePatch, conflict)
+    if (job) jobs.push(job)
+  }
+  const { cp, views } = await cpReadViews(
+    gunBalanceOnly
+      ? ['gunBalance']
+      : [
+          'gameplay',
+          'rooms',
+          'deathmatch',
+          'classLocks',
+          'campaign',
+          'parcool',
+          ...(Object.hasOwn(body, 'gunBalance') ? ['gunBalance'] : []),
+        ],
+  )
+  const viewValue = (namespace: string) =>
+    (views.get(namespace)?.value ?? {}) as Record<string, unknown>
+  if (!gunBalanceOnly) {
+    if (Object.hasOwn(body, 'lobby')) {
+      const lobby = values.lobby as Record<string, unknown>
+      queue(
+        'gameplay',
+        { lobby: { pvpEnabled: lobby.pvpEnabled } },
+        { lobby: viewValue('gameplay').lobby },
+        { lobby: values.lobby },
+      )
+    }
+    if (Object.hasOwn(body, 'rooms'))
+      queue('rooms', values.rooms as Record<string, unknown>, nonNullSection(viewValue('rooms')), {
+        rooms: values.rooms,
+      })
+    if (Object.hasOwn(body, 'deathmatch'))
+      queue(
+        'deathmatch',
+        values.deathmatch as Record<string, unknown>,
+        nonNullSection(viewValue('deathmatch')),
+        { deathmatch: values.deathmatch },
+      )
+    if (Object.hasOwn(body, 'classLocks') || Object.hasOwn(body, 'classCosts')) {
+      const patch: Record<string, unknown> = {}
+      if (values.classLocks !== undefined) patch.classLocks = values.classLocks
+      if (values.classCosts !== undefined) patch.classCosts = values.classCosts
+      queue(
+        'classLocks',
+        patch,
+        pick(
+          {
+            classLocks: viewValue('classLocks').classLocks,
+            classCosts: viewValue('classLocks').classCosts,
+          },
+          Object.keys(patch),
+        ),
+        pick({ classLocks: values.classLocks, classCosts: values.classCosts }, Object.keys(patch)),
+      )
+    }
+    if (Object.hasOwn(body, 'campaignBalance'))
+      queue(
+        'campaign',
+        { campaignBalance: values.campaignBalance },
+        { campaignBalance: viewValue('campaign').campaignBalance },
+        { campaignBalance: values.campaignBalance },
+      )
+    if (Object.hasOwn(body, 'parcool'))
+      queue(
+        'parcool',
+        values.parcool as Record<string, unknown>,
+        pick(viewValue('parcool'), Object.keys(values.parcool as object)),
+        { parcool: values.parcool },
+      )
+  }
+  if (editingGuns)
+    queue(
+      'gunBalance',
+      { overrides: (values.gunBalance ?? {}) as Record<string, unknown> },
+      { overrides: viewValue('gunBalance').overrides ?? {} },
+      gunReset ? { gunBalance: undefined } : { gunBalance: values.gunBalance },
+    )
+  let revisions: Record<string, number> = {}
+  try {
+    ;({ revisions } = await cpRunJobs(cp, jobs))
+  } catch (thrown: any) {
+    if (!thrown?.pending) throw thrown
+    cpJobError(thrown, directory, current as Record<string, unknown>, revision, actorName)
+  }
+  for (const [namespace, view] of views)
+    if (view?.initialized) revisions[namespace] ??= view.revision
+  for (const job of jobs) revisions[job.namespace] ??= job.base
+  const mirrorValues = { ...values }
+  if (gunReset) delete mirrorValues.gunBalance
   const settings = {
-    ...values,
+    ...mirrorValues,
     schema: 1,
     revision: revision + 1,
     updatedAt: Date.now(),
     updatedBy: actorName,
   }
   writeAtomic(directory, 'settings.json', settings)
-  return settings
+  return { settings, cpRevisions: revisions }
 }
-
 export async function saveKitSettingsCp(directory: string, body: any, actorName: string) {
   if (
     !plain(body) ||
-    Object.keys(body).some((key) => !['expectedRevision', 'kits', 'fixedModeKits'].includes(key))
+    Object.keys(body).some(
+      (key) => !['expectedRevision', 'cpRevisions', 'kits', 'fixedModeKits'].includes(key),
+    )
   )
     throw bad('Некорректные настройки наборов.')
   const current = storedSettings(directory)
@@ -3522,15 +3744,36 @@ export async function saveKitSettingsCp(directory: string, body: any, actorName:
   } catch (error) {
     throw bad((error as Error).message)
   }
+  const conflict = 'Настройки уже изменил кто-то другой. Обновите страницу.'
+  const { cp, views } = await cpReadViews(['kits'])
+  const view = views.get('kits') ?? null
+  if (!view) throw fail(503, 'Control-plane недоступен. Настройки не изменены.')
   const patch: Record<string, unknown> = {}
   if (changes.kits !== undefined) patch.kits = changes.kits
   if (changes.fixedModeKits !== undefined) patch.fixedModeKits = changes.fixedModeKits
-  if (Object.keys(patch).length > 0)
-    await cpPatchSettingsNamespace(
-      'kits',
-      patch,
-      'Настройки уже изменил кто-то другой. Обновите страницу.',
-    )
+  const filePatch = { ...patch }
+  const value = (view.value ?? {}) as Record<string, unknown>
+  const job =
+    Object.keys(patch).length === 0
+      ? null
+      : cpChangedJob(
+          body,
+          views,
+          'kits',
+          patch,
+          pick(value, Object.keys(patch)),
+          filePatch,
+          conflict,
+        )
+  let revisions: Record<string, number> = {}
+  if (job) {
+    try {
+      ;({ revisions } = await cpRunJobs(cp, [job]))
+    } catch (thrown: any) {
+      if (!thrown?.pending) throw thrown
+      cpJobError(thrown, directory, current as Record<string, unknown>, current.revision, actorName)
+    }
+  } else if (view.initialized) revisions = { kits: view.revision }
   const settings = {
     ...current,
     ...changes,
@@ -3540,7 +3783,7 @@ export async function saveKitSettingsCp(directory: string, body: any, actorName:
     updatedBy: actorName,
   }
   writeAtomic(directory, 'settings.json', settings)
-  return settings
+  return { settings, cpRevisions: revisions }
 }
 
 export async function saveMapAvailabilityCp(directory: string, body: any, actorName: string) {
@@ -3560,11 +3803,36 @@ export async function saveMapAvailabilityCp(directory: string, body: any, actorN
   if (body.enabled) disabled.delete(body.mapId)
   else disabled.add(body.mapId)
   if (disabled.size > 4096) throw bad('Слишком много отключённых карт.')
-  await cpPatchSettingsNamespace(
+  const conflict = 'Настройки уже изменил кто-то другой. Обновите историю; черновики сохранены.'
+  const { cp, views } = await cpReadViews(['disabledMapIds'])
+  const view = views.get('disabledMapIds') ?? null
+  if (!view) throw fail(503, 'Control-plane недоступен. Настройки не изменены.')
+  const patch = { disabledMapIds: [...disabled].sort() }
+  const value = (view.value ?? {}) as Record<string, unknown>
+  const job = cpChangedJob(
+    body,
+    views,
     'disabledMapIds',
-    { disabledMapIds: [...disabled].sort() },
-    'Настройки уже изменил кто-то другой. Обновите историю; черновики сохранены.',
+    patch,
+    { disabledMapIds: value.disabledMapIds ?? [] },
+    patch,
+    conflict,
   )
+  let revisions: Record<string, number> = {}
+  if (job) {
+    try {
+      ;({ revisions } = await cpRunJobs(cp, [job]))
+    } catch (thrown: any) {
+      if (!thrown?.pending) throw thrown
+      cpJobError(
+        thrown,
+        directory,
+        current as Record<string, unknown>,
+        availability.revision,
+        actorName,
+      )
+    }
+  } else if (view.initialized) revisions = { disabledMapIds: view.revision }
   const settings = {
     ...current,
     disabledMapIds: [...disabled].sort(),
@@ -3574,7 +3842,7 @@ export async function saveMapAvailabilityCp(directory: string, body: any, actorN
     updatedBy: actorName,
   }
   writeAtomic(directory, 'settings.json', settings)
-  return settings
+  return { settings, cpRevisions: revisions }
 }
 
 export async function saveAiLimitsCp(directory: string, body: any, actorRole: Role | null) {
@@ -3584,7 +3852,7 @@ export async function saveAiLimitsCp(directory: string, body: any, actorRole: Ro
   if (
     !plain(body) ||
     Object.keys(body).some(
-      (key) => !['expectedRevision', 'mode', 'sessions', 'builders'].includes(key),
+      (key) => !['expectedRevision', 'cpRevisions', 'mode', 'sessions', 'builders'].includes(key),
     ) ||
     (body.mode !== 'session' && body.mode !== 'builder')
   )
@@ -3600,14 +3868,45 @@ export async function saveAiLimitsCp(directory: string, body: any, actorRole: Ro
   const builders = Object.hasOwn(body, 'builders')
     ? validateAiAccounts(body.builders)
     : current.builders
-  await cpPatchSettingsNamespace(
+  const conflict = 'Бюджет AI уже изменил кто-то другой. Обновите состояние; черновик сохранён.'
+  const { cp, views } = await cpReadViews(['ai-limits'])
+  const view = views.get('ai-limits') ?? null
+  if (!view) throw fail(503, 'Control-plane недоступен. Настройки не изменены.')
+  const patch = { currency: 'USD', mode: body.mode, sessions, builders }
+  const value = (view.value ?? {}) as Record<string, unknown>
+  const job = cpChangedJob(
+    body,
+    views,
     'ai-limits',
-    { currency: 'USD', mode: body.mode, sessions, builders },
-    'Бюджет AI уже изменил кто-то другой. Обновите состояние; черновик сохранён.',
+    patch,
+    {
+      currency: value.currency ?? 'USD',
+      mode: value.mode,
+      sessions: value.sessions,
+      builders: value.builders,
+    },
+    patch,
+    conflict,
   )
+  let revisions: Record<string, number> = {}
+  if (job) {
+    try {
+      ;({ revisions } = await cpRunJobs(cp, [job]))
+    } catch (thrown: any) {
+      if (!thrown?.pending) throw thrown
+      cpJobError(
+        thrown,
+        directory,
+        current as unknown as Record<string, unknown>,
+        current.revision,
+        actorRole,
+        'ai-limits.json',
+      )
+    }
+  } else if (view.initialized) revisions = { 'ai-limits': view.revision }
   const policy = { ...current, revision: current.revision + 1, mode: body.mode, sessions, builders }
   writeAtomic(directory, 'ai-limits.json', policy)
-  return policy
+  return { policy, cpRevisions: revisions }
 }
 
 export async function saveWorkshopAiSettingsCp(
@@ -3621,6 +3920,7 @@ export async function saveWorkshopAiSettingsCp(
       (key) =>
         ![
           'expectedRevision',
+          'cpRevisions',
           'enabled',
           'provider',
           'generationProvider',
@@ -3692,80 +3992,114 @@ export async function saveWorkshopAiSettingsCp(
   }
   if (Buffer.byteLength(JSON.stringify(settings, null, 2) + '\n') > 8192)
     throw fail(413, 'Настройки AI превышают доступный размер. Укоротите записи провайдеров.')
+  const conflict = 'Настройки AI мастерской уже изменил кто-то другой. Обновите страницу.'
+  const { cp, views } = await cpReadViews(['workshop-ai'])
+  const view = views.get('workshop-ai') ?? null
+  if (!view) throw fail(503, 'Control-plane недоступен. Настройки не изменены.')
   const { schema: _schema, revision: _revision, ...patch } = settings as Record<string, unknown>
-  await cpPatchSettingsNamespace(
+  const value = (view.value ?? {}) as Record<string, unknown>
+  const job = cpChangedJob(
+    body,
+    views,
     'workshop-ai',
     patch,
-    'Настройки AI мастерской уже изменил кто-то другой. Обновите страницу.',
+    pick(value, Object.keys(patch)),
+    patch,
+    conflict,
   )
+  let revisions: Record<string, number> = {}
+  if (job) {
+    try {
+      ;({ revisions } = await cpRunJobs(cp, [job]))
+    } catch (thrown: any) {
+      if (!thrown?.pending) throw thrown
+      cpJobError(
+        thrown,
+        directory,
+        current as unknown as Record<string, unknown>,
+        (current as Record<string, unknown>).revision as number,
+        'owner',
+        'workshop-ai-settings.json',
+      )
+    }
+  } else if (view.initialized) revisions = { 'workshop-ai': view.revision }
   writeAtomic(directory, 'workshop-ai-settings.json', settings)
-  return settings
+  return { settings, cpRevisions: revisions }
 }
 
 const nonNullSection = (value: unknown) =>
   Object.fromEntries(
-    Object.entries((value ?? {}) as Record<string, unknown>).filter(([, v]) => v !== null),
+    Object.entries((value ?? {}) as Record<string, unknown>).filter(([, item]) => item !== null),
   )
 
 /** GET settings in CP mode: CP namespaces overlaid on the file mirror (shape authority). */
 export async function readSettingsCpView(directory: string) {
   const mirror = readSettings(directory)
   const settings = { ...(mirror.settings as Record<string, unknown>) }
-  const cp = await import('./cp.ts')
-  const get = async (namespace: string) => {
-    try {
-      return await cp.readSettingsCp(namespace)
-    } catch {
-      return null
-    }
-  }
-  const [gameplay, rooms, deathmatch, classLocks, campaign, parcool, gunBalance, kits, maps] =
-    await Promise.all(
-      [
-        'gameplay',
-        'rooms',
-        'deathmatch',
-        'classLocks',
-        'campaign',
-        'parcool',
-        'gunBalance',
-        'kits',
-        'disabledMapIds',
-      ].map(get),
-    )
-  if (gameplay?.initialized && gameplay.value && typeof gameplay.value === 'object') {
+  const namespaces = [
+    'gameplay',
+    'rooms',
+    'deathmatch',
+    'classLocks',
+    'campaign',
+    'parcool',
+    'gunBalance',
+    'kits',
+    'disabledMapIds',
+  ]
+  const { views } = await cpReadViews(namespaces)
+  const cpRevisions: Record<string, number> = {}
+  const view = (namespace: string) => views.get(namespace) ?? null
+  const gameplay = view('gameplay')
+  if (gameplay?.initialized) {
+    cpRevisions.gameplay = gameplay.revision
     const lobby = (gameplay.value as Record<string, unknown>).lobby
     if (lobby && typeof lobby === 'object')
       settings.lobby = { ...((settings.lobby ?? {}) as object), ...(lobby as object) }
   }
+  const rooms = view('rooms')
   if (rooms?.initialized) {
+    cpRevisions.rooms = rooms.revision
     const section = nonNullSection(rooms.value)
     if (Object.keys(section).length > 0) settings.rooms = section
   }
+  const deathmatch = view('deathmatch')
   if (deathmatch?.initialized) {
+    cpRevisions.deathmatch = deathmatch.revision
     const section = nonNullSection(deathmatch.value)
     if (Object.keys(section).length > 0) settings.deathmatch = section
   }
+  const classLocks = view('classLocks')
   if (classLocks?.initialized && classLocks.value && typeof classLocks.value === 'object') {
+    cpRevisions.classLocks = classLocks.revision
     const value = classLocks.value as Record<string, unknown>
     settings.classLocks = value.classLocks
     settings.classCosts = value.classCosts
   }
+  const campaign = view('campaign')
   if (campaign?.initialized && campaign.value && typeof campaign.value === 'object') {
+    cpRevisions.campaign = campaign.revision
     const balance = (campaign.value as Record<string, unknown>).campaignBalance
     if (balance && typeof balance === 'object' && Object.keys(balance).length > 0)
       settings.campaignBalance = balance
     else delete settings.campaignBalance
   }
-  if (parcool?.initialized && parcool.value && typeof parcool.value === 'object')
+  const parcool = view('parcool')
+  if (parcool?.initialized && parcool.value && typeof parcool.value === 'object') {
+    cpRevisions.parcool = parcool.revision
     settings.parcool = parcool.value
+  }
+  const gunBalance = view('gunBalance')
   if (gunBalance?.initialized && gunBalance.value && typeof gunBalance.value === 'object') {
+    cpRevisions.gunBalance = gunBalance.revision
     const overrides = (gunBalance.value as Record<string, unknown>).overrides
     if (overrides && typeof overrides === 'object' && Object.keys(overrides).length > 0)
       settings.gunBalance = overrides
     else delete settings.gunBalance
   }
+  const kits = view('kits')
   if (kits?.initialized && kits.value && typeof kits.value === 'object') {
+    cpRevisions.kits = kits.revision
     const value = kits.value as Record<string, unknown>
     if (value.kits && typeof value.kits === 'object' && Object.keys(value.kits).length > 0)
       settings.kits = value.kits
@@ -3778,16 +4112,19 @@ export async function readSettingsCpView(directory: string) {
       settings.fixedModeKits = value.fixedModeKits
     else delete settings.fixedModeKits
   }
-  if (maps?.initialized && maps.value && typeof maps.value === 'object')
+  const maps = view('disabledMapIds')
+  if (maps?.initialized && maps.value && typeof maps.value === 'object') {
+    cpRevisions.disabledMapIds = maps.revision
     settings.disabledMapIds = (maps.value as Record<string, unknown>).disabledMapIds ?? []
-  return { settings, applied: mirror.applied }
+  }
+  return { settings, applied: mirror.applied, cpRevisions }
 }
 
 export async function readAiLimitsCpView(directory: string) {
   const mirror = readAiLimits(directory)
   try {
     const cp = await import('./cp.ts')
-    const view = await cp.readSettingsCp('ai-limits')
+    const view = (await cp.readSettingsCp('ai-limits')) as CpSectionView
     if (view.initialized && view.value && typeof view.value === 'object') {
       const value = view.value as Record<string, unknown>
       return {
@@ -3797,6 +4134,7 @@ export async function readAiLimitsCpView(directory: string) {
         mode: value.mode,
         sessions: value.sessions,
         builders: value.builders,
+        cpRevisions: { 'ai-limits': view.revision },
       }
     }
   } catch {
@@ -3809,12 +4147,13 @@ export async function readWorkshopAiSettingsCpView(directory: string) {
   const mirror = readWorkshopAiSettings(directory)
   try {
     const cp = await import('./cp.ts')
-    const view = await cp.readSettingsCp('workshop-ai')
+    const view = (await cp.readSettingsCp('workshop-ai')) as CpSectionView
     if (view.initialized && view.value && typeof view.value === 'object')
       return {
         schema: 1,
         revision: (mirror as Record<string, unknown>).revision,
         ...(view.value as object),
+        cpRevisions: { 'workshop-ai': view.revision },
       }
   } catch {
     // CP read failure keeps the file mirror, like rooms.ts readGateCp.
