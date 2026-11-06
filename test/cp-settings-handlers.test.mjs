@@ -6,11 +6,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   saveSettingsCp,
+  saveKitSettingsCp,
   saveMapAvailabilityCp,
   saveAiLimitsCp,
   saveWorkshopAiSettingsCp,
   readSettingsCpView,
+  readAiLimitsCpView,
 } from '../src/lib/admin.ts'
+import { kitFixture } from './kits-fixture.mjs'
 
 const status = (error) =>
   error instanceof Response ? error.status : assert.fail(`expected Response, got ${error}`)
@@ -22,31 +25,39 @@ const temp = (t) => {
 const seed = (dir, name, value) => writeFileSync(join(dir, name), JSON.stringify(value))
 
 /**
- * Deep merge with the exact semantics of control-plane main
- * cpv2/settings.py `merge` (consumed via core.settings_change): dict values
- * recurse, everything else replaces. Consequences the tests rely on:
- * `{overrides: {}}` is a no-op (it cannot clear), and per-key null fails the
- * Strict models below with 422 instead of deleting.
+ * Merge with the exact semantics of control-plane main post-#25
+ * (cpv2/settings.py `merge`, RFC 7396 JSON Merge Patch): a patch null
+ * deletes the key recursively before validation, absent keys are untouched,
+ * arrays are replaced wholesale. The only stored-null exception is
+ * `fixedModeKits.<mode>` ("kit id or null"): null clears the fixed kit but
+ * keeps the explicit entry.
  */
-function merge(base, patch) {
+const NULL_VALUED_PARENTS = new Set(['fixedModeKits'])
+function merge(base, patch, parent) {
   const out = { ...base }
-  for (const [key, value] of Object.entries(patch))
-    out[key] =
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null && !NULL_VALUED_PARENTS.has(parent)) delete out[key]
+    else if (
       value &&
       typeof value === 'object' &&
       !Array.isArray(value) &&
       out[key] &&
       typeof out[key] === 'object' &&
       !Array.isArray(out[key])
-        ? merge(out[key], value)
-        : value
+    )
+      out[key] = merge(out[key], value, key)
+    else out[key] = value
+  }
   return out
 }
 
 /**
  * Narrow mirror of the cpv2/settings.py Strict validators that matter here
- * (control-plane main): gameplay.lobby allows only pvpEnabled; gunBalance,
- * kits and campaign values must be objects (null fails like the real 422).
+ * (control-plane main post-#25): gameplay.lobby allows only pvpEnabled;
+ * gunBalance, kits and campaign values must be objects — a patch null
+ * deletes before validation, so it never reaches the models; fixedModeKits
+ * values are kit ids or null (the stored-null exception); ai-limits scopes
+ * hold micros or are absent after a null-delete reset.
  */
 function validateNs(namespace, value) {
   if (namespace === 'gameplay') {
@@ -61,10 +72,24 @@ function validateNs(namespace, value) {
   if (namespace === 'kits') {
     for (const [id, kit] of Object.entries(value.kits ?? {}))
       if (!kit || typeof kit !== 'object') return `kits.${id}: expected object`
+    for (const [mode, target] of Object.entries(value.fixedModeKits ?? {}))
+      if (target !== null && typeof target !== 'string')
+        return `fixedModeKits.${mode}: expected kit id or null`
   }
   if (namespace === 'campaign') {
     for (const [id, balance] of Object.entries(value.campaignBalance ?? {}))
-      if (!balance || typeof balance !== 'object') return `campaignBalance.${id}: expected object`
+      if (!balance || typeof balance !== 'object' || Array.isArray(balance))
+        return `campaignBalance.${id}: expected object`
+  }
+  if (namespace === 'ai-limits') {
+    for (const scope of ['sessions', 'builders']) {
+      const accounts = value[scope]
+      if (accounts === undefined) continue
+      if (!accounts || typeof accounts !== 'object' || Array.isArray(accounts))
+        return `ai-limits.${scope}: expected object`
+      for (const [, amount] of Object.entries(accounts))
+        if (!Number.isSafeInteger(amount)) return `ai-limits.${scope}: expected micros`
+    }
   }
   return null
 }
@@ -218,12 +243,7 @@ test('CP ai-limits is owner-only: admin is refused before any CP call', async (t
     assert.equal(policy.policy.mode, 'builder')
     assert.equal(seen.length, 1)
     assert.equal(seen[0][0], 'ai-limits')
-    assert.deepEqual(seen[0][1].patch, {
-      currency: 'USD',
-      mode: 'builder',
-      sessions: {},
-      builders: {},
-    })
+    assert.deepEqual(seen[0][1].patch, { mode: 'builder' }, 'unchanged keys are absent')
     assert.equal(typeof seen[0][1].idempotencyKey, 'string')
   })
 })
@@ -411,7 +431,7 @@ test('CP gun-only path PATCHes only gunBalance', async (t) => {
   })
 })
 
-test('CP reset-all gun overrides is refused: removal needs CP null-delete', async (t) => {
+test('CP reset-all gun overrides sends a null-delete PATCH', async (t) => {
   await withCp(t, async (dir, seen) => {
     seed(dir, 'settings.json', { schema: 1, revision: 0 })
     seed(dir, 'gun-balance.json', {
@@ -442,25 +462,21 @@ test('CP reset-all gun overrides is refused: removal needs CP null-delete', asyn
         cpRevisions: {},
       }),
     )
-    const patches = seen.length
-    const error = await saveSettingsCp(
+    const saved = await saveSettingsCp(
       ...args({ expectedRevision: 1, gunBalance: {}, cpRevisions: { gunBalance: 1 } }),
-    ).then(
-      () => assert.fail('expected a removal refusal'),
-      (e) => e,
     )
-    assert.equal(status(error), 409)
-    assert.match(await error.text(), /null-delete/, 'names the missing CP capability')
-    assert.equal(seen.length, patches, 'refused reset sends no CP write')
-    const after = await readSettingsCpView(dir)
     assert.deepEqual(
-      after.settings.gunBalance,
-      { 'tacz:m4a1': { draw_time: 0.5 } },
-      'stored overrides are untouched',
+      seen[seen.length - 1][1].patch,
+      { overrides: null },
+      'reset deletes the whole overrides dict',
     )
+    assert.equal(saved.settings.revision, 2)
+    assert.equal(saved.settings.gunBalance, undefined, 'mirror drops the reset dict')
     const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
-    assert.equal(mirror.revision, 1, 'mirror untouched')
-    assert.deepEqual(mirror.gunBalance, { 'tacz:m4a1': { draw_time: 0.5 } })
+    assert.equal(mirror.revision, 2)
+    assert.ok(!('gunBalance' in mirror), 'mirror file drops the reset dict')
+    const after = await readSettingsCpView(dir)
+    assert.equal(after.settings.gunBalance, undefined)
   })
 })
 
@@ -685,4 +701,284 @@ test('CP commit-then-timeout is treated as applied, not rejected', async (t) => 
     },
     { commitThenHang: 'rooms' },
   )
+})
+
+test('CP campaignBalance: nested removal sends nested nulls, reset sends a parent null', async (t) => {
+  await withCp(t, async (dir, seen) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    await saveSettingsCp(
+      dir,
+      {
+        expectedRevision: 0,
+        campaignBalance: { '*': { max_tickets: 500 }, c1: { score_per_kill: 10 } },
+        cpRevisions: {},
+      },
+      'A',
+    )
+    assert.deepEqual(seen[seen.length - 1][1].patch, {
+      campaignBalance: { '*': { max_tickets: 500 }, c1: { score_per_kill: 10 } },
+    })
+    const view = await readSettingsCpView(dir)
+    await saveSettingsCp(
+      dir,
+      {
+        expectedRevision: 1,
+        campaignBalance: { '*': { max_tickets: 500 }, c1: {} },
+        cpRevisions: { campaign: view.cpRevisions.campaign },
+      },
+      'A',
+    )
+    assert.deepEqual(
+      seen[seen.length - 1][1].patch,
+      { campaignBalance: { c1: { score_per_kill: null } } },
+      'dropped field becomes a nested null; unchanged campaigns are absent',
+    )
+    const afterRemoval = await readSettingsCpView(dir)
+    assert.deepEqual(afterRemoval.settings.campaignBalance, {
+      '*': { max_tickets: 500 },
+      c1: {},
+    })
+    await saveSettingsCp(
+      dir,
+      {
+        expectedRevision: 2,
+        campaignBalance: {},
+        cpRevisions: { campaign: afterRemoval.cpRevisions.campaign },
+      },
+      'A',
+    )
+    assert.deepEqual(
+      seen[seen.length - 1][1].patch,
+      { campaignBalance: null },
+      'reset deletes the whole dict',
+    )
+    const afterReset = await readSettingsCpView(dir)
+    assert.equal(afterReset.settings.campaignBalance, undefined)
+    const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
+    assert.equal(mirror.revision, 3)
+    assert.ok(!('campaignBalance' in mirror), 'mirror file drops the reset dict')
+  })
+})
+
+test('CP gunBalance: dropping one gun sends a per-gun null, untouched guns are absent', async (t) => {
+  await withCp(t, async (dir, seen) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    seed(dir, 'gun-balance.json', {
+      schema: 1,
+      revision: 0,
+      fields: {
+        type: 'object',
+        nullable: false,
+        fields: { draw_time: { type: 'number', nullable: false, min: 0, max: 60 } },
+      },
+      guns: ['tacz:m4a1', 'tacz:ak47'].map((id) => ({
+        id,
+        data: id,
+        name: 'gun',
+        type: 'rifle',
+        defaults: { draw_time: 0.32 },
+        effective: { draw_time: 0.32 },
+        warnings: [],
+      })),
+    })
+    const args = (body) => [dir, body, 'A', true]
+    await saveSettingsCp(
+      ...args({
+        expectedRevision: 0,
+        gunBalance: { 'tacz:m4a1': { draw_time: 0.5 }, 'tacz:ak47': { draw_time: 0.6 } },
+        cpRevisions: {},
+      }),
+    )
+    const saved = await saveSettingsCp(
+      ...args({
+        expectedRevision: 1,
+        gunBalance: { 'tacz:m4a1': { draw_time: 0.5 } },
+        cpRevisions: { gunBalance: 1 },
+      }),
+    )
+    assert.deepEqual(
+      seen[seen.length - 1][1].patch,
+      { overrides: { 'tacz:ak47': null } },
+      'dropped gun becomes a null; the kept override is absent',
+    )
+    assert.deepEqual(saved.settings.gunBalance, { 'tacz:m4a1': { draw_time: 0.5 } })
+  })
+})
+
+test('CP kits: dropped kit sends a null, cleared mode sends null as a value, other modes are never removals', async (t) => {
+  await withCp(t, async (dir, seen) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    seed(dir, 'kits.json', kitFixture())
+    const catalog = kitFixture()
+    const custom = { ...structuredClone(catalog.kits[0].effective), id: 'custom' }
+    const view0 = await saveKitSettingsCp(
+      dir,
+      { expectedRevision: 0, kits: { custom }, fixedModeKits: { room: 'custom' }, cpRevisions: {} },
+      'A',
+    )
+    assert.equal(view0.settings.revision, 1)
+    assert.deepEqual(seen[seen.length - 1][1].patch, {
+      kits: { custom },
+      fixedModeKits: { room: 'custom' },
+    })
+    const dropped = await saveKitSettingsCp(
+      dir,
+      { expectedRevision: 1, kits: {}, fixedModeKits: { room: null }, cpRevisions: { kits: 1 } },
+      'A',
+    )
+    assert.deepEqual(
+      seen[seen.length - 1][1].patch,
+      { kits: null, fixedModeKits: { room: null } },
+      'dropped kit deletes via null; clearing a mode keeps null as the value',
+    )
+    assert.equal(dropped.settings.kits, undefined, 'mirror drops the deleted kits dict')
+    assert.deepEqual(dropped.settings.fixedModeKits, { room: null })
+    const patches = seen.length
+    const kept = await saveKitSettingsCp(
+      dir,
+      { expectedRevision: 2, kits: {}, fixedModeKits: {}, cpRevisions: { kits: 2 } },
+      'A',
+    )
+    assert.equal(seen.length, patches, 'a mode missing from fixedModeKits is not a removal')
+    assert.deepEqual(kept.settings.fixedModeKits, { room: null }, 'stored null survives')
+    assert.equal(kept.settings.revision, 3, 'no-op save still stamps the mirror')
+  })
+})
+
+test('CP ai-limits: dropped account sends a nested null, reset scopes send parent nulls', async (t) => {
+  const u1 = '11111111-1111-1111-1111-111111111111'
+  const u2 = '22222222-2222-2222-2222-222222222222'
+  const u3 = '33333333-3333-3333-3333-333333333333'
+  await withCp(t, async (dir, seen) => {
+    seed(dir, 'ai-limits.json', {
+      schema: 1,
+      revision: 0,
+      currency: 'USD',
+      mode: 'session',
+      sessions: {},
+      builders: {},
+    })
+    await saveAiLimitsCp(
+      dir,
+      { expectedRevision: 0, mode: 'session', sessions: { [u1]: 100, [u3]: 300 }, builders: {} },
+      'owner',
+    )
+    assert.deepEqual(
+      seen[seen.length - 1][1].patch,
+      { mode: 'session', sessions: { [u1]: 100, [u3]: 300 } },
+      'first init sets the mode; currency and empty builders are absent',
+    )
+    await saveAiLimitsCp(
+      dir,
+      {
+        expectedRevision: 1,
+        mode: 'session',
+        sessions: { [u1]: 100 },
+        builders: { [u2]: 50 },
+        cpRevisions: { 'ai-limits': 1 },
+      },
+      'owner',
+    )
+    assert.deepEqual(
+      seen[seen.length - 1][1].patch,
+      { sessions: { [u3]: null }, builders: { [u2]: 50 } },
+      'dropped account becomes a nested null',
+    )
+    await saveAiLimitsCp(
+      dir,
+      {
+        expectedRevision: 2,
+        mode: 'session',
+        sessions: {},
+        builders: { [u2]: 50 },
+        cpRevisions: { 'ai-limits': 2 },
+      },
+      'owner',
+    )
+    assert.deepEqual(
+      seen[seen.length - 1][1].patch,
+      { sessions: null },
+      'emptied scope deletes via a parent null; untouched builders are absent',
+    )
+    await saveAiLimitsCp(
+      dir,
+      {
+        expectedRevision: 3,
+        mode: 'session',
+        sessions: {},
+        builders: {},
+        cpRevisions: { 'ai-limits': 3 },
+      },
+      'owner',
+    )
+    assert.deepEqual(seen[seen.length - 1][1].patch, { builders: null })
+    const view = await readAiLimitsCpView(dir)
+    assert.deepEqual(view.sessions ?? {}, {})
+    assert.deepEqual(view.builders ?? {}, {})
+  })
+})
+
+test('CP workshop-ai sequential saves survive the stamped mirror (tolerant reader)', async (t) => {
+  await withCp(t, async (dir, seen) => {
+    seed(dir, 'workshop-ai-settings.json', {
+      schema: 1,
+      revision: 0,
+      enabled: false,
+      provider: 'openrouter',
+      generationProvider: 'openrouter',
+      guardProvider: 'openrouter',
+      transcriptionProvider: 'openrouter',
+      providers: [],
+      generationModel: 'a/b',
+      guardModel: 'typesafe/jev-1',
+      transcriptionModel: 'openai/whisper-1',
+      cleanupModel: '',
+      cleanupProvider: 'openrouter',
+      maxBlocks: 1024,
+      blocksPerTick: 512,
+      minimumBuildTicks: 60,
+      applyBudgetMs: 4,
+      hourlyRequestLimit: 100,
+      hourlyPlayerRequestLimit: 10,
+      maxHourlyBuilders: 32,
+      generationMaxPricePromptUsdPerM: 0.5,
+      generationMaxPriceCompletionUsdPerM: 1.5,
+      inputGuardEnabled: false,
+    })
+    const base = {
+      enabled: false,
+      provider: 'openrouter',
+      generationModel: 'a/b',
+      guardModel: 'typesafe/jev-1',
+      transcriptionModel: 'openai/whisper-1',
+      maxBlocks: 1024,
+      blocksPerTick: 512,
+      minimumBuildTicks: 60,
+      applyBudgetMs: 4,
+      hourlyRequestLimit: 100,
+      hourlyPlayerRequestLimit: 10,
+      maxHourlyBuilders: 32,
+      generationMaxPricePromptUsdPerM: 0.5,
+      generationMaxPriceCompletionUsdPerM: 1.5,
+      inputGuardEnabled: false,
+    }
+    const first = await saveWorkshopAiSettingsCp(dir, { expectedRevision: 0, ...base }, () => true)
+    assert.equal(first.settings.revision, 1)
+    const file1 = JSON.parse(readFileSync(join(dir, 'workshop-ai-settings.json')))
+    assert.equal(file1.revision, 1)
+    assert.equal(typeof file1.updatedAt, 'number', 'mirror carries stamps unlike ai-limits')
+    // Second save proves the stamped file still reads: readWorkshopAiSettings
+    // ignores unknown keys, so unlike ai-limits there is no 503 here.
+    const second = await saveWorkshopAiSettingsCp(
+      dir,
+      { expectedRevision: 1, ...base, maxBlocks: 2048, cpRevisions: { 'workshop-ai': 1 } },
+      () => true,
+    )
+    assert.equal(second.settings.revision, 2)
+    assert.equal(second.settings.maxBlocks, 2048)
+    assert.equal(seen[seen.length - 1][1].patch.maxBlocks, 2048)
+    const file2 = JSON.parse(readFileSync(join(dir, 'workshop-ai-settings.json')))
+    assert.equal(file2.revision, 2)
+    assert.equal(file2.maxBlocks, 2048)
+  })
 })

@@ -3729,11 +3729,12 @@ async function record(
  * it); a timeout, network error or 5xx means outcome unknown — re-read CP
  * and, if it shows the intended value, treat the job as applied, else report
  * unknown and ask for a reload before retrying. The mirror is still refreshed
- * whenever CP answers. CP merge recurses into dicts, so entry removal has no
- * PATCH expression: reset-all and per-item removals fail closed with a 409
- * naming CP null-delete support (one-line switch once control-plane#25
- * lands RFC 7396 null-delete). Verified against control-plane main
- * (cpv2/settings.py merge, core.py settings_change). */
+ * whenever CP answers. CP PATCH follows RFC 7396 (control-plane#25): a patch null
+ * deletes its key recursively and validates like any other change, so dict
+ * namespaces may become empty; absent keys are untouched. The only
+ * stored-null exception is `kits.fixedModeKits.<mode>` ("kit id or null"):
+ * null clears the fixed kit but keeps the explicit entry. Verified against
+ * control-plane main (cpv2/settings.py merge, core.py settings_change). */
 const cpSettingsTarget = '*'
 
 const stable = (value: unknown): string => {
@@ -3838,30 +3839,76 @@ function cpChangedJob(
 }
 
 /**
- * CP merge recurses into dicts, so a dropped map entry has no PATCH
- * expression until control-plane#25 lands RFC 7396 null-delete. Every
- * map-namespace save passes its patch through here first; switching to
- * null-delete later is a one-line change inside this function.
+ * RFC 7396 diff for a CP Settings PATCH (control-plane#25: null deletes
+ * recursively, only `fixedModeKits` keeps null as a stored value meaning
+ * "no fixed kit"). Returns the merge-patch fragment, or undefined when
+ * nothing changed. Removed keys become null, except directly under
+ * fixedModeKits where a missing mode means "unchanged" (an explicit null in
+ * `desired` still travels as the clearing value). Unchanged keys are absent.
  */
-function cpRefuseDroppedKeys(label: string, patch: Record<string, unknown>, current: unknown) {
-  const kept = (current ?? {}) as Record<string, unknown>
-  for (const [key, fragment] of Object.entries(patch)) {
-    if (!fragment || typeof fragment !== 'object' || Array.isArray(fragment)) continue
-    const have = kept[key]
-    if (!have || typeof have !== 'object' || Array.isArray(have)) continue
-    if (Object.keys(have).some((id) => !Object.hasOwn(fragment, id)))
-      throw fail(
-        409,
-        `${label}: removal needs CP null-delete support (control-plane#25). Reload before retrying.`,
-      )
+const CP_NULL_VALUED_PARENTS = new Set(['fixedModeKits'])
+
+function cpMergePatch(
+  desired: Record<string, unknown>,
+  current: Record<string, unknown>,
+  parent?: string,
+): Record<string, unknown> | undefined {
+  const patch: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(desired)) {
+    if (!Object.hasOwn(current, key)) {
+      patch[key] = value
+      continue
+    }
+    const have = current[key]
+    if (stable(value) === stable(have)) continue
+    if (plain(value) && plain(have)) {
+      const nested = cpMergePatch(value, have, key)
+      if (nested !== undefined) patch[key] = nested
+    } else patch[key] = value
   }
+  for (const key of Object.keys(current)) {
+    if (Object.hasOwn(desired, key)) continue
+    if (parent !== undefined && CP_NULL_VALUED_PARENTS.has(parent)) continue
+    patch[key] = null
+  }
+  return Object.keys(patch).length ? patch : undefined
 }
 
-/** Intended patch keys already visible in a fresh CP read: the job applied. */
+/**
+ * Reset fragment for a whole map field: an emptied dict deletes its parent
+ * key (`{"<field>": null}`), which CP validates as fresh defaults; a
+ * partially emptied dict diffs per key above. Never used for
+ * fixedModeKits, whose missing modes are not removals.
+ */
+function cpResetFragment(
+  desired: Record<string, unknown>,
+  current: Record<string, unknown>,
+  parent: string,
+): Record<string, unknown> | null | undefined {
+  if (!Object.keys(desired).length && Object.keys(current).length) return null
+  return cpMergePatch(desired, current, parent)
+}
+
+/** Intended patch keys already visible in a fresh CP read: the job applied. A patch null counts as applied when the key is absent. */
 function cpPatchApplied(view: CpSectionView | null, patch: Record<string, unknown>): boolean {
   if (!view?.initialized) return false
-  const current = pick((view.value ?? {}) as Record<string, unknown>, Object.keys(patch))
-  return stable(patch) === stable(current)
+  return cpPatchVisible(patch, (view.value ?? {}) as Record<string, unknown>)
+}
+
+function cpPatchVisible(patch: Record<string, unknown>, current: unknown): boolean {
+  if (!plain(current)) return false
+  for (const [key, value] of Object.entries(patch)) {
+    if (!Object.hasOwn(current, key)) {
+      if (value !== null) return false
+      continue
+    }
+    if (value === null) return false // present where deletion was intended
+    const have = (current as Record<string, unknown>)[key]
+    if (plain(value) && plain(have)) {
+      if (!cpPatchVisible(value, have)) return false
+    } else if (stable(value) !== stable(have)) return false
+  }
+  return true
 }
 
 async function cpReadOne(cp: any, namespace: string): Promise<CpSectionView | null> {
@@ -3883,6 +3930,12 @@ async function cpRebuildMirror(args: {
   revision: number
   actorName: string
   rebuild: () => Promise<{ value: any; cpRevisions: Record<string, number> }>
+  /**
+   * ai-limits.json keeps the exact file-mode contract: validateAiLimits
+   * rejects unknown keys, so a stamped mirror (updatedAt/updatedBy) would
+   * break every second CP save with a 503. Stamp only schema/revision there.
+   */
+  stamp?: boolean
 }): Promise<{ value: any; cpRevisions: Record<string, number> } | null> {
   try {
     const view = await args.rebuild()
@@ -3890,8 +3943,7 @@ async function cpRebuildMirror(args: {
       ...(view.value as Record<string, unknown>),
       schema: 1,
       revision: args.revision + 1,
-      updatedAt: Date.now(),
-      updatedBy: args.actorName,
+      ...(args.stamp === false ? {} : { updatedAt: Date.now(), updatedBy: args.actorName }),
     }
     delete (stamped as Record<string, unknown>).cpRevisions
     writeAtomic(args.directory, args.fileName, stamped)
@@ -3915,6 +3967,7 @@ async function cpSettleSave(args: {
   actorName: string
   jobs: CpJob[]
   rebuild: () => Promise<{ value: any; cpRevisions: Record<string, number> }>
+  stamp?: boolean
 }): Promise<{ value: any; cpRevisions: Record<string, number> }> {
   const { cp, jobs, revision } = args
   const joined = (list: CpJob[]) =>
@@ -4059,9 +4112,14 @@ export async function saveSettingsCp(
         )
       }
       if (Object.hasOwn(body, 'campaignBalance')) {
-        const patch = { campaignBalance: values.campaignBalance }
-        cpRefuseDroppedKeys('campaignBalance', patch, viewValue('campaign'))
-        queue('campaign', patch, { campaignBalance: viewValue('campaign').campaignBalance })
+        const desiredBalance = values.campaignBalance as Record<string, unknown>
+        const currentBalance = (viewValue('campaign').campaignBalance ?? {}) as Record<
+          string,
+          unknown
+        >
+        const fragment = cpResetFragment(desiredBalance, currentBalance, 'campaignBalance')
+        if (fragment !== undefined)
+          queue('campaign', { campaignBalance: fragment }, { campaignBalance: currentBalance })
       }
       if (Object.hasOwn(body, 'parcool'))
         queue(
@@ -4072,9 +4130,10 @@ export async function saveSettingsCp(
     }
     if (editingGuns) {
       const gunValue = (values.gunBalance ?? {}) as Record<string, unknown>
-      const patch = { overrides: gunValue }
-      cpRefuseDroppedKeys('gunBalance', patch, viewValue('gunBalance'))
-      queue('gunBalance', patch, { overrides: viewValue('gunBalance').overrides ?? {} })
+      const currentOverrides = (viewValue('gunBalance').overrides ?? {}) as Record<string, unknown>
+      const fragment = cpResetFragment(gunValue, currentOverrides, 'overrides')
+      if (fragment !== undefined)
+        queue('gunBalance', { overrides: fragment }, { overrides: currentOverrides })
     }
     const built = await cpSettleSave({
       cp,
@@ -4135,17 +4194,32 @@ export async function saveKitSettingsCp(directory: string, body: any, actorName:
       fixedModeKits: (view.value as any)?.fixedModeKits ?? {},
     }
     const jobs: CpJob[] = []
-    if (stable(desired) !== stable(currentShape)) {
+    {
       const patch: Record<string, unknown> = {}
-      if (hasKits) patch.kits = desired.kits
-      if (hasFixed) patch.fixedModeKits = desired.fixedModeKits
-      cpRefuseDroppedKeys('kits', patch, view.value)
-      if (!view.initialized)
-        jobs.push({ kind: 'patch', namespace: 'kits', patch, conflict, base: 0 })
-      else {
-        const base = (body as any)?.cpRevisions?.kits
-        if (!Number.isSafeInteger(base)) throw fail(409, conflict)
-        jobs.push({ kind: 'patch', namespace: 'kits', patch, conflict, base })
+      if (hasKits) {
+        const kitsFragment = cpResetFragment(
+          desired.kits as Record<string, unknown>,
+          (currentShape.kits ?? {}) as Record<string, unknown>,
+          'kits',
+        )
+        if (kitsFragment !== undefined) patch.kits = kitsFragment
+      }
+      if (hasFixed) {
+        const fixedFragment = cpMergePatch(
+          desired.fixedModeKits as Record<string, unknown>,
+          (currentShape.fixedModeKits ?? {}) as Record<string, unknown>,
+          'fixedModeKits',
+        )
+        if (fixedFragment !== undefined) patch.fixedModeKits = fixedFragment
+      }
+      if (Object.keys(patch).length) {
+        if (!view.initialized)
+          jobs.push({ kind: 'patch', namespace: 'kits', patch, conflict, base: 0 })
+        else {
+          const base = (body as any)?.cpRevisions?.kits
+          if (!Number.isSafeInteger(base)) throw fail(409, conflict)
+          jobs.push({ kind: 'patch', namespace: 'kits', patch, conflict, base })
+        }
       }
     }
     const built = await cpSettleSave({
@@ -4239,17 +4313,24 @@ export async function saveAiLimitsCp(directory: string, body: any, actorRole: Ro
     const { cp, views } = await cpReadViews(['ai-limits'])
     const view = views.get('ai-limits') ?? null
     if (!view) throw fail(503, 'Control-plane недоступен. Настройки не изменены.')
-    const patch = { currency: 'USD', mode: body.mode, sessions, builders }
     const value = (view.value ?? {}) as Record<string, unknown>
-    const currentShape = {
-      currency: value.currency ?? 'USD',
-      mode: value.mode,
-      sessions: value.sessions,
-      builders: value.builders,
-    }
+    const patch: Record<string, unknown> = {}
+    if (body.mode !== value.mode) patch.mode = body.mode
+    if ((value.currency ?? 'USD') !== 'USD') patch.currency = 'USD'
+    const sessionsFragment = cpResetFragment(
+      sessions as Record<string, unknown>,
+      (value.sessions ?? {}) as Record<string, unknown>,
+      'sessions',
+    )
+    if (sessionsFragment !== undefined) patch.sessions = sessionsFragment
+    const buildersFragment = cpResetFragment(
+      builders as Record<string, unknown>,
+      (value.builders ?? {}) as Record<string, unknown>,
+      'builders',
+    )
+    if (buildersFragment !== undefined) patch.builders = buildersFragment
     const jobs: CpJob[] = []
-    if (stable(patch) !== stable(currentShape)) {
-      cpRefuseDroppedKeys('ai-limits', patch, value)
+    if (Object.keys(patch).length) {
       if (!view.initialized)
         jobs.push({ kind: 'patch', namespace: 'ai-limits', patch, conflict, base: 0 })
       else {
@@ -4265,6 +4346,7 @@ export async function saveAiLimitsCp(directory: string, body: any, actorRole: Ro
       revision: current.revision,
       actorName: String(actorRole),
       jobs,
+      stamp: false,
       rebuild: async () => {
         const view = (await readAiLimitsCpView(directory)) as Record<string, unknown>
         return { value: view, cpRevisions: (view.cpRevisions ?? {}) as Record<string, number> }
@@ -4501,8 +4583,10 @@ export async function readAiLimitsCpView(directory: string) {
         revision: mirror.revision,
         currency: 'USD',
         mode: value.mode,
-        sessions: value.sessions,
-        builders: value.builders,
+        // A null-delete reset removes the scope key in CP; read it back as
+        // the default empty scope so the file policy still validates.
+        sessions: (value.sessions ?? {}) as Record<string, number>,
+        builders: (value.builders ?? {}) as Record<string, number>,
         cpRevisions: { 'ai-limits': view.revision },
       }
     }
