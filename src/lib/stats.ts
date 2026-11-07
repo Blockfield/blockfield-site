@@ -53,6 +53,23 @@ export type ClassResult = {
   deaths: number
   pointSeconds: number
 }
+/** Per-match hit-reg telemetry the game server attaches to its result payload (`StatsResult.telemetry`). */
+export type Telemetry = {
+  shots: number
+  fallbackShare: number
+  tickMsP50: number
+  tickMsP99: number
+  tickMsP99Overflow: boolean
+  ageTicksP50: number
+  ageTicksP50Overflow: boolean
+  rewindTicksP50: number
+  rewindTicksP50Overflow: boolean
+  counters: Record<string, number>
+  tickMsBuckets: { le: number | 'inf'; count: number }[]
+  ageTickBuckets: { le: number | 'inf'; count: number }[]
+  rewindTickBuckets: { le: number | 'inf'; count: number }[]
+  disputes: Record<string, string | number | boolean>[]
+}
 export type Participant = {
   uuid: string
   name: string
@@ -79,6 +96,7 @@ export type Result = {
   participants: Participant[]
   rounds: string[]
   winnerUuid?: string // Additive FFA result; absent legacy fields stay absent for replay digests.
+  telemetry?: Telemetry // Additive hit-reg report; absent legacy payloads stay byte-identical.
 }
 export class StatsError extends Error {
   status: number
@@ -173,6 +191,98 @@ function utc(value: unknown): number {
     'Invalid timestamp',
   )
   return time
+}
+/** Hit-reg telemetry a match result may carry: the server's per-match report, kept verbatim (unknown fields dropped). */
+export function validateTelemetry(value: unknown): Telemetry {
+  requireValue(value && typeof value === 'object' && !Array.isArray(value), 'Invalid telemetry')
+  const t = value as Record<string, unknown>
+  // Mirrors the producer caps (StatsResult): bounded top level, counters and dispute sample.
+  requireValue(Object.keys(t).length <= 64, 'Telemetry oversized')
+  const count = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0
+  const amount = (v: unknown) =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1_000_000
+  requireValue(count(t.shots), 'Invalid telemetry shots')
+  requireValue(
+    typeof t.fallbackShare === 'number' &&
+      Number.isFinite(t.fallbackShare) &&
+      t.fallbackShare >= 0 &&
+      t.fallbackShare <= 1,
+    'Invalid telemetry fallback share',
+  )
+  for (const key of ['tickMsP50', 'tickMsP99'] as const)
+    requireValue(amount(t[key]), `Invalid telemetry ${key}`)
+  for (const key of ['ageTicksP50', 'rewindTicksP50'] as const)
+    requireValue(count(t[key]), `Invalid telemetry ${key}`)
+  for (const key of ['tickMsP99Overflow', 'ageTicksP50Overflow', 'rewindTicksP50Overflow'] as const)
+    requireValue(typeof t[key] === 'boolean', `Invalid telemetry ${key}`)
+  requireValue(
+    t.counters && typeof t.counters === 'object' && !Array.isArray(t.counters),
+    'Invalid telemetry counters',
+  )
+  const counters = t.counters as Record<string, unknown>,
+    names = Object.keys(counters)
+  requireValue(names.length <= 1024, 'Telemetry counters oversized')
+  const cleanCounters: Record<string, number> = {}
+  for (const name of names) {
+    requireValue(
+      /^[a-zA-Z0-9_.:-]{1,160}$/.test(name) && count(counters[name]),
+      'Invalid telemetry counter',
+    )
+    cleanCounters[name] = counters[name] as number
+  }
+  const buckets = (v: unknown) => {
+    requireValue(Array.isArray(v) && v.length <= 32, 'Invalid telemetry buckets')
+    return (v as unknown[]).map((row) => {
+      requireValue(
+        row && typeof row === 'object' && !Array.isArray(row),
+        'Invalid telemetry bucket',
+      )
+      const r = row as Record<string, unknown>
+      requireValue(
+        (typeof r.le === 'number' && Number.isFinite(r.le) && r.le >= 0) || r.le === 'inf',
+        'Invalid telemetry bucket bound',
+      )
+      requireValue(count(r.count), 'Invalid telemetry bucket count')
+      return { le: r.le as number | 'inf', count: r.count as number }
+    })
+  }
+  requireValue(Array.isArray(t.disputes) && t.disputes.length <= 16, 'Invalid telemetry disputes')
+  const disputes = (t.disputes as unknown[]).map((sample) => {
+    requireValue(
+      sample && typeof sample === 'object' && !Array.isArray(sample),
+      'Invalid telemetry dispute',
+    )
+    const entries = Object.entries(sample as Record<string, unknown>)
+    requireValue(entries.length > 0 && entries.length <= 32, 'Invalid telemetry dispute')
+    const kept: Record<string, string | number | boolean> = {}
+    for (const [key, entry] of entries) {
+      requireValue(/^[a-zA-Z0-9_.:-]{1,64}$/.test(key), 'Invalid telemetry dispute')
+      requireValue(
+        (typeof entry === 'string' && entry.length <= 512) ||
+          (typeof entry === 'number' && Number.isFinite(entry)) ||
+          typeof entry === 'boolean',
+        'Invalid telemetry dispute',
+      )
+      kept[key] = entry as string | number | boolean
+    }
+    return kept
+  })
+  return {
+    shots: t.shots as number,
+    fallbackShare: t.fallbackShare as number,
+    tickMsP50: t.tickMsP50 as number,
+    tickMsP99: t.tickMsP99 as number,
+    tickMsP99Overflow: t.tickMsP99Overflow as boolean,
+    ageTicksP50: t.ageTicksP50 as number,
+    ageTicksP50Overflow: t.ageTicksP50Overflow as boolean,
+    rewindTicksP50: t.rewindTicksP50 as number,
+    rewindTicksP50Overflow: t.rewindTicksP50Overflow as boolean,
+    counters: cleanCounters,
+    tickMsBuckets: buckets(t.tickMsBuckets),
+    ageTickBuckets: buckets(t.ageTickBuckets),
+    rewindTickBuckets: buckets(t.rewindTickBuckets),
+    disputes,
+  }
 }
 /** Strict allow-list of gameplay producers: training/playtest never reaches the aggregate tables. */
 export function validateResult(value: any, now = Date.now()): Result {
@@ -317,6 +427,8 @@ export function validateResult(value: any, now = Date.now()): Result {
     )
   }
   // Return only the public contract; never persist arbitrary producer-supplied fields or secrets.
+  const hasTelemetry = Object.hasOwn(value, 'telemetry')
+  const telemetry = hasTelemetry ? validateTelemetry(value.telemetry) : undefined
   return {
     schemaVersion: 1,
     eventId: value.eventId,
@@ -334,6 +446,7 @@ export function validateResult(value: any, now = Date.now()): Result {
     endReason: value.endReason,
     winner: value.winner,
     ...(hasPersonalWinner ? { winnerUuid: value.winnerUuid } : {}),
+    ...(hasTelemetry ? { telemetry } : {}),
     rounds: [...value.rounds].sort(),
     participants: value.participants
       .map((p: any) => ({
@@ -885,6 +998,75 @@ export class StatsStore {
           }
         }),
       ),
+    }
+  }
+  /** Per-match hit-reg telemetry aggregated over a window: summed counters and shots-weighted fallback share, per-match percentiles listed. */
+  async hitreg(mode: string | null, since: number, until: number) {
+    if (mode !== null && !MODES.includes(mode)) throw new StatsError(400, 'Unknown mode')
+    // ponytail: payloads stay schemaless so telemetry needs no migration; cap the scan and say so.
+    const rows = (await this.db
+      .prepare(
+        `SELECT server_id "serverId",event_id "eventId",ended_at "endedAt",payload FROM results
+        WHERE kind='match' AND voided_at IS NULL AND ended_at>=? AND ended_at<=? AND (CAST(? AS TEXT) IS NULL OR mode=?)
+        ORDER BY ended_at DESC,server_id,event_id LIMIT 5001`,
+      )
+      .all(since, until, mode, mode)) as {
+      serverId: string
+      eventId: string
+      endedAt: number
+      payload: string
+    }[]
+    const truncated = rows.length > 5000,
+      scanned = truncated ? rows.slice(0, 5000) : rows
+    const matches: {
+      serverId: string
+      eventId: string
+      endedAt: number
+      shots: number
+      fallbackShare: number
+      tickMsP50: number
+      tickMsP99: number
+      ageTicksP50: number
+      rewindTicksP50: number
+      disputes: number
+    }[] = []
+    const counters: Record<string, number> = {}
+    let shots = 0,
+      fallbackShots = 0,
+      disputes = 0
+    for (const row of scanned) {
+      const telemetry = (JSON.parse(row.payload) as Result).telemetry
+      if (!telemetry) continue
+      matches.push({
+        serverId: row.serverId,
+        eventId: row.eventId,
+        endedAt: row.endedAt,
+        shots: telemetry.shots,
+        fallbackShare: telemetry.fallbackShare,
+        tickMsP50: telemetry.tickMsP50,
+        tickMsP99: telemetry.tickMsP99,
+        ageTicksP50: telemetry.ageTicksP50,
+        rewindTicksP50: telemetry.rewindTicksP50,
+        disputes: telemetry.disputes.length,
+      })
+      shots += telemetry.shots
+      fallbackShots += telemetry.fallbackShare * telemetry.shots
+      disputes += telemetry.disputes.length
+      for (const [name, n] of Object.entries(telemetry.counters))
+        counters[name] = (counters[name] ?? 0) + n
+    }
+    return {
+      schemaVersion: 1,
+      checkedAt: new Date().toISOString(),
+      mode,
+      matches: scanned.length,
+      withTelemetry: matches.length,
+      truncated,
+      shots,
+      fallbackShare: shots === 0 ? 0 : fallbackShots / shots,
+      disputes,
+      counters,
+      perMatch: matches,
     }
   }
   /** Profiles whose stored name is a UUID (see ingest), among `uuids`. */
@@ -1472,6 +1654,11 @@ export async function handleStatsRequest(
         { schemaVersion: 1, current: list.at(-1)?.id ?? null, seasons: list },
         { headers },
       )
+    }
+    if (path === '/api/stats/hitreg') {
+      const query = filters(url.searchParams)
+      const store = dependencies?.store ?? (await statsStore())
+      return Response.json(await store.hitreg(query.mode, query.since, query.until), { headers })
     }
     const query = filters(url.searchParams)
     const store = dependencies?.store ?? (await statsStore())
