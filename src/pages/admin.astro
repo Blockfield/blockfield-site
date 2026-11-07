@@ -640,10 +640,6 @@ const cpGate = cpConfigured()
                 <option value="openrouter">OpenRouter</option>
                 <option value="vercel-gateway">Vercel AI Gateway</option>
               </select>
-              <label class="check" for="workshop-ai-input-guard">
-                <input type="checkbox" id="workshop-ai-input-guard" />
-                Проверка входа сторожем
-              </label>
               <label for="workshop-ai-generation">Модель генерации</label>
               <input
                 id="workshop-ai-generation"
@@ -654,20 +650,6 @@ const cpGate = cpConfigured()
               />
               <label for="workshop-ai-generation-provider">Провайдер генерации</label>
               <select id="workshop-ai-generation-provider"></select>
-              <label for="workshop-ai-guard">Сторожевая модель</label>
-              <input
-                id="workshop-ai-guard"
-                autocomplete="off"
-                spellcheck="false"
-                maxlength="128"
-                placeholder="typesafe/jev-1.13"
-                aria-describedby="workshop-ai-guard-hint"
-              />
-              <small id="workshop-ai-guard-hint" class="muted">
-                Любая vendor/model; под gateway сторож выключен.
-              </small>
-              <label for="workshop-ai-guard-provider">Провайдер сторожа</label>
-              <select id="workshop-ai-guard-provider"></select>
               <label for="workshop-ai-transcription">Модель расшифровки</label>
               <input
                 id="workshop-ai-transcription"
@@ -2482,13 +2464,7 @@ const cpGate = cpConfigured()
     import { settingsBody, settingsReceipt } from '../lib/settings-form'
     import { bodyPartSummary, renderBodyPartField } from '../lib/body-part-form'
     import { renderAiBudgetForm, type BudgetTarget } from '../lib/ai-budget-form'
-    import {
-      isCustomProviderId,
-      isWorkshopAiModel,
-      isWorkshopAiNativeModel,
-      isWorkshopAiProvider,
-      workshopAiKeyLine,
-    } from '../lib/workshop-ai'
+    import { isCustomProviderId, workshopAiKeyLine } from '../lib/workshop-ai'
     import { canonicalBudgetUuid } from '../lib/ai-budget'
     import { weaponFields } from '../lib/gun-fields'
     import { finalDamageVsMatchKit } from '../lib/gun-damage'
@@ -7560,20 +7536,6 @@ const cpGate = cpConfigured()
         error ? 'error' : waiting ? 'pending' : 'ok',
       )
     }
-    function checkWorkshopAiGuard() {
-      const hint = $('#workshop-ai-guard-hint')
-      const value = $<HTMLInputElement>('#workshop-ai-guard').value.trim()
-      const provider = $<HTMLSelectElement>('#workshop-ai-guard-provider').value
-      const custom = !!provider && !isWorkshopAiProvider(provider)
-      const valid = !value || (custom ? isWorkshopAiNativeModel(value) : isWorkshopAiModel(value))
-      hint.textContent = valid
-        ? 'Любая vendor/model; под gateway сторож выключен.'
-        : custom
-          ? 'Сторожевая модель: название модели.'
-          : 'Сторожевая модель: vendor/model.'
-      hint.classList.toggle('error', !valid)
-      return valid
-    }
     const keyProvider = () => $<HTMLSelectElement>('#workshop-ai-key-provider').value
     const isPresetKeyProvider = () =>
       keyProvider() === 'openrouter' || keyProvider() === 'vercel-gateway'
@@ -7621,7 +7583,6 @@ const cpGate = cpConfigured()
     function refreshProviderSelects() {
       for (const id of [
         '#workshop-ai-generation-provider',
-        '#workshop-ai-guard-provider',
         '#workshop-ai-transcription-provider',
         '#workshop-ai-cleanup-provider',
       ])
@@ -7730,9 +7691,7 @@ const cpGate = cpConfigured()
       workshopAiCpRevisions = settings.cpRevisions ?? {}
       $<HTMLInputElement>('#workshop-ai-enabled').checked = settings.enabled
       $<HTMLSelectElement>('#workshop-ai-provider').value = settings.provider
-      $<HTMLInputElement>('#workshop-ai-input-guard').checked = settings.inputGuardEnabled
       $<HTMLInputElement>('#workshop-ai-generation').value = settings.generationModel
-      $<HTMLInputElement>('#workshop-ai-guard').value = settings.guardModel
       $<HTMLInputElement>('#workshop-ai-transcription').value = settings.transcriptionModel
       $<HTMLInputElement>('#workshop-ai-cleanup').value = settings.cleanupModel ?? ''
       draftProviders = Array.isArray(settings.providers)
@@ -7743,10 +7702,6 @@ const cpGate = cpConfigured()
       fillProviderSelect(
         $<HTMLSelectElement>('#workshop-ai-generation-provider'),
         settings.generationProvider ?? settings.provider,
-      )
-      fillProviderSelect(
-        $<HTMLSelectElement>('#workshop-ai-guard-provider'),
-        settings.guardProvider ?? settings.provider,
       )
       fillProviderSelect(
         $<HTMLSelectElement>('#workshop-ai-transcription-provider'),
@@ -7781,7 +7736,6 @@ const cpGate = cpConfigured()
       $<HTMLInputElement>('#workshop-ai-completion-cap').value = String(
         settings.generationMaxPriceCompletionUsdPerM,
       )
-      checkWorkshopAiGuard()
       say($('#workshop-ai-status'), `Настройки сохранены в ревизии ${settings.revision}.`)
       sayWorkshopAiKey(key.status, null, false)
       say(
@@ -7809,11 +7763,6 @@ const cpGate = cpConfigured()
       }
       say(line, 'Ключ применяется… Обновите состояние AI позже.', 'pending')
     }
-    $<HTMLInputElement>('#workshop-ai-guard').addEventListener('input', checkWorkshopAiGuard)
-    $<HTMLSelectElement>('#workshop-ai-guard-provider').addEventListener(
-      'change',
-      checkWorkshopAiGuard,
-    )
     $<HTMLSelectElement>('#workshop-ai-key-provider').addEventListener(
       'change',
       refreshCustomKeyStatus,
@@ -7855,12 +7804,9 @@ const cpGate = cpConfigured()
           enabled: $<HTMLInputElement>('#workshop-ai-enabled').checked,
           provider: $<HTMLSelectElement>('#workshop-ai-provider').value,
           generationProvider: $<HTMLSelectElement>('#workshop-ai-generation-provider').value,
-          guardProvider: $<HTMLSelectElement>('#workshop-ai-guard-provider').value,
           transcriptionProvider: $<HTMLSelectElement>('#workshop-ai-transcription-provider').value,
           providers: draftProviders,
-          inputGuardEnabled: $<HTMLInputElement>('#workshop-ai-input-guard').checked,
           generationModel: $<HTMLInputElement>('#workshop-ai-generation').value.trim(),
-          guardModel: $<HTMLInputElement>('#workshop-ai-guard').value.trim(),
           transcriptionModel: $<HTMLInputElement>('#workshop-ai-transcription').value.trim(),
           cleanupModel: $<HTMLInputElement>('#workshop-ai-cleanup').value.trim(),
           cleanupProvider: $<HTMLSelectElement>('#workshop-ai-cleanup-provider').value,

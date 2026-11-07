@@ -38,12 +38,9 @@ const settings = () => ({
   enabled: true,
   provider: 'vercel-gateway',
   generationProvider: 'openrouter',
-  guardProvider: 'vercel-gateway',
   transcriptionProvider: 'my-proxy',
   providers: [{ id: 'my-proxy', label: 'Мой прокси', baseUrl: 'https://proxy.example.com/v1' }],
-  inputGuardEnabled: true,
   generationModel: 'other/custom-model',
-  guardModel: 'other/guard-9',
   transcriptionModel: 'other/stt-9',
   cleanupModel: 'other/cleanup-1',
   cleanupProvider: 'my-proxy',
@@ -92,7 +89,6 @@ test('settings validate a closed schema with one shape check per model, never a 
   assert.equal(workshopAiKeyStatusFile('my-proxy'), 'my-proxy-key.json')
   // Any well-shaped model works, including ones no old allowlist knew.
   assert.ok(isWorkshopAiModel('typesafe/jev-1.13'))
-  assert.ok(isWorkshopAiModel('other/guard-9'))
   assert.ok(isWorkshopAiModel('other/stt-9'))
   assert.ok(isWorkshopAiKey(SECRET))
   assert.ok(!isWorkshopAiKey('too short'))
@@ -105,12 +101,9 @@ test('settings validate a closed schema with one shape check per model, never a 
     (value) => (value.extra = true),
     (value) => delete value.provider,
     (value) => (value.provider = 'direct'),
-    (value) => (value.inputGuardEnabled = 'yes'),
-    (value) => delete value.inputGuardEnabled,
     (value) => (value.generationModel = 'no-slash-here'),
     (value) => (value.generationModel = `a/${'x'.repeat(128)}`),
     (value) => (value.generationModel = 'a/b c'),
-    (value) => (value.guardModel = 'not a model!'),
     (value) => (value.transcriptionModel = ''),
     (value) => (value.transcriptionModel = 42),
     (value) => (value.maxBlocks = 0),
@@ -147,7 +140,6 @@ test('settings validate a closed schema with one shape check per model, never a 
         baseUrl: 'https://x.example.com',
       }))),
     (value) => (value.generationProvider = 'ghost'),
-    (value) => (value.guardProvider = 'ghost'),
     (value) => (value.transcriptionProvider = 'ghost'),
     (value) => (value.cleanupProvider = 'ghost'),
     (value) => (value.cleanupModel = 'bad model!'),
@@ -159,7 +151,6 @@ test('settings validate a closed schema with one shape check per model, never a 
   // Native ids stay rejected on presets and on malformed input.
   for (const mutate of [
     (value) => (value.generationModel = 'gpt-4o-mini'),
-    (value) => (value.guardModel = 'gpt-4o-mini'),
     (value) => {
       value.transcriptionProvider = 'openrouter'
       value.transcriptionModel = 'gpt-4o-mini'
@@ -190,10 +181,6 @@ test('custom providers accept native model ids keyed by the selected provider', 
   generationNative.generationProvider = 'my-proxy'
   generationNative.generationModel = 'gpt-4o-mini'
   assert.equal(validateWorkshopAiSettings(generationNative).generationModel, 'gpt-4o-mini')
-  const guardNative = settings()
-  guardNative.guardProvider = 'my-proxy'
-  guardNative.guardModel = 'gpt-4o-mini'
-  assert.equal(validateWorkshopAiSettings(guardNative).guardModel, 'gpt-4o-mini')
   // Custom providers still accept the previous vendor/name shape, including long ids.
   const legacyLong = settings()
   legacyLong.transcriptionModel = `vendor/${'x'.repeat(112)}`
@@ -211,12 +198,9 @@ test('missing file returns defaults with revision 0; corrupt or oversized files 
     enabled: false,
     provider: 'openrouter',
     generationProvider: 'openrouter',
-    guardProvider: 'openrouter',
     transcriptionProvider: 'openrouter',
     providers: [],
-    inputGuardEnabled: false,
     generationModel: 'meta/muse-spark-1.3-contributor',
-    guardModel: 'typesafe/jev-1.13',
     transcriptionModel: 'openai/whisper-1',
     cleanupModel: '',
     cleanupProvider: 'openrouter',
@@ -245,7 +229,6 @@ test('missing file returns defaults with revision 0; corrupt or oversized files 
             expectedRevision: 0,
             enabled: false,
             generationModel: 'a/b',
-            guardModel: 'typesafe/jev-1',
             transcriptionModel: 'openai/whisper-1',
           },
           () => false,
@@ -265,7 +248,10 @@ test('old files without provider/limits/caps load with defaults filled in', (t) 
       revision: 3,
       enabled: true,
       generationModel: 'vendor/model:free',
+      // Retired guard-model keys (ws#53) load and are dropped.
       guardModel: 'typesafe/jev-1.13',
+      guardProvider: 'vercel-gateway',
+      inputGuardEnabled: true,
       transcriptionModel: 'openai/whisper-1',
     }),
   )
@@ -273,7 +259,6 @@ test('old files without provider/limits/caps load with defaults filled in', (t) 
   assert.equal(loaded.revision, 3)
   assert.equal(loaded.provider, 'openrouter')
   assert.equal(loaded.generationProvider, 'openrouter')
-  assert.equal(loaded.guardProvider, 'openrouter')
   assert.equal(loaded.transcriptionProvider, 'openrouter')
   assert.deepEqual(loaded.providers, [])
   assert.equal(loaded.cleanupModel, '')
@@ -282,7 +267,8 @@ test('old files without provider/limits/caps load with defaults filled in', (t) 
   assert.equal(loaded.hourlyRequestLimit, 360)
   assert.equal(loaded.generationMaxPricePromptUsdPerM, 0.1)
   assert.equal(loaded.generationMaxPriceCompletionUsdPerM, 0.2)
-  assert.equal(loaded.inputGuardEnabled, false)
+  for (const key of ['guardModel', 'guardProvider', 'inputGuardEnabled'])
+    assert.ok(!(key in loaded), key)
   // Unknown future keys are ignored, not a 503.
   writeFileSync(
     join(directory, 'workshop-ai-settings.json'),
@@ -301,7 +287,6 @@ test('pre-registry files follow the legacy provider; cleanup follows transcripti
   const stored = JSON.parse(readFileSync(join(directory, 'workshop-ai-settings.json'), 'utf8'))
   for (const key of [
     'generationProvider',
-    'guardProvider',
     'transcriptionProvider',
     'providers',
     'cleanupModel',
@@ -311,7 +296,6 @@ test('pre-registry files follow the legacy provider; cleanup follows transcripti
   writeFileSync(join(directory, 'workshop-ai-settings.json'), JSON.stringify(stored))
   const loaded = readWorkshopAiSettings(directory)
   assert.equal(loaded.generationProvider, 'vercel-gateway')
-  assert.equal(loaded.guardProvider, 'vercel-gateway')
   assert.equal(loaded.transcriptionProvider, 'vercel-gateway')
   assert.equal(loaded.cleanupProvider, 'vercel-gateway')
   assert.equal(loaded.cleanupModel, '')
@@ -321,9 +305,7 @@ test('pre-registry files follow the legacy provider; cleanup follows transcripti
     revision: 0,
     enabled: false,
     provider: 'openrouter',
-    inputGuardEnabled: false,
     generationModel: 'a/b',
-    guardModel: 'a/c',
     transcriptionModel: 'a/d',
     maxBlocks: 1,
     blocksPerTick: 1,
@@ -347,7 +329,8 @@ test('settings save uses optimistic revision and rejects unknown keys', (t) => {
     expectedRevision: 0,
     enabled: true,
     provider: 'openrouter',
-    inputGuardEnabled: false,
+    // An admin tab opened before ws#53 still sends the retired guard keys: accepted, dropped.
+    inputGuardEnabled: true,
     generationModel: 'provider/gen-model',
     guardModel: 'other/guard-2',
     transcriptionModel: 'other/stt-9',
@@ -366,6 +349,8 @@ test('settings save uses optimistic revision and rejects unknown keys', (t) => {
   assert.equal(saved.revision, 1)
   assert.equal(saved.enabled, true)
   assert.equal(saved.provider, 'openrouter')
+  for (const key of ['guardModel', 'guardProvider', 'inputGuardEnabled'])
+    assert.ok(!(key in saved), key)
   assert.deepEqual(JSON.parse(readFileSync(join(directory, 'workshop-ai-settings.json'), 'utf8')), {
     ...saved,
   })
@@ -408,7 +393,6 @@ test('a doc that would overflow the settings file is refused instead of bricking
           provider: 'openrouter',
           providers,
           generationModel: 'a/b',
-          guardModel: 'a/c',
           transcriptionModel: 'a/d',
           maxBlocks: 1,
           blocksPerTick: 1,
@@ -419,7 +403,6 @@ test('a doc that would overflow the settings file is refused instead of bricking
           maxHourlyBuilders: 1,
           generationMaxPricePromptUsdPerM: 0,
           generationMaxPriceCompletionUsdPerM: 0,
-          inputGuardEnabled: false,
         },
         () => true,
       ),
@@ -568,7 +551,6 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     enabled: false,
     provider: 'openrouter',
     generationModel: 'provider/gen',
-    guardModel: 'other/guard-2',
     transcriptionModel: 'other/stt-9',
     maxBlocks: 1024,
     blocksPerTick: 512,
@@ -579,7 +561,6 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     maxHourlyBuilders: 32,
     generationMaxPricePromptUsdPerM: 0.5,
     generationMaxPriceCompletionUsdPerM: 1.5,
-    inputGuardEnabled: false,
     ...overrides,
   })
   const call = async (actor, method, path, body) => {
@@ -615,12 +596,9 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     enabled: false,
     provider: 'openrouter',
     generationProvider: 'openrouter',
-    guardProvider: 'openrouter',
     transcriptionProvider: 'openrouter',
     providers: [],
-    inputGuardEnabled: false,
     generationModel: 'meta/muse-spark-1.3-contributor',
-    guardModel: 'typesafe/jev-1.13',
     transcriptionModel: 'openai/whisper-1',
     cleanupModel: '',
     cleanupProvider: 'openrouter',
@@ -661,7 +639,6 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
       enabled: true,
       provider: 'vercel-gateway',
       generationProvider: 'vercel-gateway',
-      guardProvider: 'vercel-gateway',
       transcriptionProvider: 'vercel-gateway',
     }),
   )
@@ -674,18 +651,16 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   const saved = await call(owner, 'PUT', 'workshop-ai-settings', adminBody({ expectedRevision: 1 }))
   assert.equal(saved.status, 200)
   assert.equal((await saved.json()).settings.revision, 2)
-  // Mixed registry: generation on OpenRouter, guard on the gateway, transcription
-  // on a custom endpoint; enabling refuses while the custom key is missing.
+  // Mixed registry: generation on OpenRouter, transcription on a custom endpoint;
+  // enabling refuses while the custom key is missing.
   const registry = (overrides) =>
     adminBody({
       expectedRevision: 2,
       enabled: true,
       provider: 'openrouter',
       generationProvider: 'openrouter',
-      guardProvider: 'vercel-gateway',
       transcriptionProvider: 'my-proxy',
       providers: [{ id: 'my-proxy', label: 'Proxy', baseUrl: 'https://proxy.example.com/v1' }],
-      inputGuardEnabled: true,
       ...overrides,
     })
   const mixedKeyless = await call(owner, 'PUT', 'workshop-ai-settings', registry({}))
@@ -766,7 +741,6 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   const staleSettings = (await stale.json()).settings
   assert.equal(staleSettings.revision, 5)
   assert.equal(staleSettings.generationProvider, 'openrouter')
-  assert.equal(staleSettings.guardProvider, 'vercel-gateway')
   assert.equal(staleSettings.transcriptionProvider, 'my-proxy')
   assert.equal(staleSettings.cleanupModel, 'other/cleanup-1')
   assert.equal(staleSettings.cleanupProvider, 'second-proxy')

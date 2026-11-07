@@ -21,18 +21,17 @@ const plain = (value: unknown): value is Record<string, any> =>
 
 // Closed schema for writes; the reader ignores anything outside it (forward tolerance)
 // and fills the rest from mod defaults (backward tolerance for pre-provider files).
+// Retired guard-model keys (ws#53) from older files or open admin tabs are accepted and dropped.
+const RETIRED_KEYS = ['guardProvider', 'inputGuardEnabled', 'guardModel']
 const KNOWN_KEYS = [
   'schema',
   'revision',
   'enabled',
   'provider',
   'generationProvider',
-  'guardProvider',
   'transcriptionProvider',
   'providers',
-  'inputGuardEnabled',
   'generationModel',
-  'guardModel',
   'transcriptionModel',
   'cleanupModel',
   'cleanupProvider',
@@ -87,13 +86,12 @@ function providers(value: unknown): WorkshopAiCustomProvider[] {
 export function validateWorkshopAiSettings(value: unknown): WorkshopAiSettings {
   if (
     !plain(value) ||
-    Object.keys(value).some((key) => !KNOWN_KEYS.includes(key)) ||
+    Object.keys(value).some((key) => !KNOWN_KEYS.includes(key) && !RETIRED_KEYS.includes(key)) ||
     value.schema !== 1 ||
     !Number.isSafeInteger(value.revision) ||
     value.revision < 0 ||
     typeof value.enabled !== 'boolean' ||
-    !isWorkshopAiProvider(value.provider) ||
-    typeof value.inputGuardEnabled !== 'boolean'
+    !isWorkshopAiProvider(value.provider)
   )
     throw fail(400, 'AI мастерской: некорректные настройки.')
   const custom = providers(value.providers ?? [])
@@ -119,11 +117,6 @@ export function validateWorkshopAiSettings(value: unknown): WorkshopAiSettings {
     value.provider,
     'Провайдер генерации: выберите из списка.',
   )
-  const guardProvider = ref(
-    value.guardProvider,
-    value.provider,
-    'Провайдер сторожа: выберите из списка.',
-  )
   const cleanupProvider = ref(
     value.cleanupProvider,
     transcriptionProvider,
@@ -135,21 +128,13 @@ export function validateWorkshopAiSettings(value: unknown): WorkshopAiSettings {
     enabled: value.enabled,
     provider: value.provider,
     generationProvider,
-    guardProvider,
     transcriptionProvider,
     providers: custom,
-    inputGuardEnabled: value.inputGuardEnabled,
     generationModel: model(
       value.generationModel,
       generationProvider,
       customIds,
       'Модель генерации: vendor/model.',
-    ),
-    guardModel: model(
-      value.guardModel,
-      guardProvider,
-      customIds,
-      'Сторожевая модель: vendor/model.',
     ),
     transcriptionModel: model(
       value.transcriptionModel,
@@ -216,8 +201,8 @@ export function readWorkshopAiSettings(directory: string): WorkshopAiSettings {
     if (size > 8192) throw new Error('settings too large')
     const stored = JSON.parse(buffer.subarray(0, size).toString())
     if (!plain(stored)) throw new Error('settings not an object')
-    // Tolerant reader: files written before the provider/limits/caps/input-guard existed
-    // (or by a newer site) load with mod defaults filled in and extras ignored; only broken
+    // Tolerant reader: files written before the provider/limits/caps existed, with the retired
+    // guard keys, or by a newer site load with mod defaults filled in and extras ignored; only broken
     // JSON or mistyped known fields fail closed. The revision always comes from the file,
     // so the next save still wins the CAS.
     const overlay: Record<string, unknown> = {}
@@ -226,7 +211,7 @@ export function readWorkshopAiSettings(directory: string): WorkshopAiSettings {
     // Pre-registry files carry only the legacy `provider`: per-model fields follow it
     // unless the file sets them; cleanup follows the resolved transcription provider.
     const legacy = overlay.provider ?? WORKSHOP_AI_DEFAULTS.provider
-    for (const key of ['generationProvider', 'guardProvider', 'transcriptionProvider'])
+    for (const key of ['generationProvider', 'transcriptionProvider'])
       if (!(key in overlay)) overlay[key] = legacy
     if (!('cleanupProvider' in overlay) && typeof overlay.transcriptionProvider === 'string')
       overlay.cleanupProvider = overlay.transcriptionProvider
