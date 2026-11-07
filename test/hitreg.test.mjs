@@ -1,6 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { StatsError, validateResult, handleStatsRequest } from '../src/lib/stats.ts'
+import {
+  HITREG_SCAN_CAP,
+  StatsError,
+  telemetryDroppedCount,
+  validateResult,
+  handleStatsRequest,
+} from '../src/lib/stats.ts'
+import { handleAdmin } from '../src/lib/admin.ts'
 
 const server = '00000000-0000-4000-8000-000000000001'
 const player = '00000000-0000-4000-8000-000000000003'
@@ -91,38 +98,60 @@ test('validateResult keeps sanitized telemetry and drops unknown fields', () => 
   assert.equal(validateResult(fixture(2)).telemetry, undefined)
 })
 
-test('telemetry validation mirrors the producer caps', () => {
-  for (const mutate of [
-    (t) => (t.shots = -1),
-    (t) => (t.fallbackShare = 1.5),
-    (t) => (t.tickMsP99 = Infinity),
-    (t) => (t.ageTicksP50 = 1.5),
-    (t) => (t.tickMsP99Overflow = 'no'),
-    (t) => (t.counters = { 'bad key!': 1 }),
-    (t) => (t.counters = { ok: -1 }),
-    (t) => (t.tickMsBuckets = [{ le: 'soon', count: 1 }]),
-    (t) => (t.disputes = [{ ticket: { nested: 'object' } }]),
-    (t) => delete t.shots,
-  ]) {
+test('invalid telemetry is dropped with a log line and a counter; the result is kept', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {})
+  const bad = [
+    (x) => (x.shots = -1),
+    (x) => ((x.shots = 0), (x.fallbackShare = null)), // 0/0 serialized by the producer
+    (x) => (x.fallbackShare = 1.5),
+    (x) => (x.tickMsP99 = Infinity),
+    (x) => (x.ageTicksP50 = -1),
+    (x) => (x.tickMsP99Overflow = 'no'),
+    (x) => (x.counters = { 'bad key!': 1 }),
+    (x) => (x.counters = { ok: -1 }),
+    (x) => (x.tickMsBuckets = [{ le: 'soon', count: 1 }]),
+    (x) => (x.disputes = [{ ticket: { nested: 'object' } }]),
+    (x) => (x.counters = Object.fromEntries(Array.from({ length: 1025 }, (_, i) => [`k${i}`, 1]))),
+    (x) => (x.disputes = Array.from({ length: 17 }, () => ({ a: 'b' }))),
+    (x) => delete x.shots,
+  ]
+  const before = telemetryDroppedCount()
+  for (const mutate of bad) {
     const input = telemetry()
     mutate(input)
-    assert.throws(() => validateResult(fixture(2, { telemetry: input })), StatsError)
+    const result = validateResult(fixture(2, { telemetry: input }))
+    assert.ok(!Object.hasOwn(result, 'telemetry'))
+    assert.equal(result.participants[0].kills, 1)
   }
-  const big = Object.fromEntries(Array.from({ length: 1025 }, (_, i) => [`k${i}`, 1]))
-  assert.throws(
-    () => validateResult(fixture(2, { telemetry: telemetry({ counters: big }) })),
-    StatsError,
+  for (const value of [[1], null, 'x'])
+    assert.ok(!Object.hasOwn(validateResult(fixture(2, { telemetry: value })), 'telemetry'))
+  assert.equal(telemetryDroppedCount() - before, bad.length + 3)
+  assert.equal(warn.mock.callCount(), bad.length + 3)
+  assert.match(warn.mock.calls[0].arguments[0], /Telemetry dropped/)
+  // Combat fields stay strict.
+  assert.throws(() => validateResult(fixture(2, { winner: 'GREEN' })), StatsError)
+  assert.ok(Object.hasOwn(validateResult(fixture(2, { telemetry: telemetry() })), 'telemetry'))
+})
+
+test('POST /api/stats/results stores a match whose telemetry is invalid', async (t) => {
+  t.mock.method(console, 'warn', () => {})
+  const store = await database(t),
+    deps = { store, keys: { [server]: [token] } }
+  const response = await handleStatsRequest(
+    new Request('https://example.test/api/stats/results', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-blockfield-server-id': server,
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(fixture(2, { telemetry: telemetry({ shots: 0, fallbackShare: null }) })),
+    }),
+    deps,
   )
-  assert.throws(
-    () =>
-      validateResult(
-        fixture(2, {
-          telemetry: telemetry({ disputes: Array.from({ length: 17 }, () => ({ a: 'b' })) }),
-        }),
-      ),
-    StatsError,
-  )
-  assert.throws(() => validateResult(fixture(2, { telemetry: [1] })), StatsError)
+  assert.equal(response.status, 201)
+  const row = await store.db.prepare('SELECT payload FROM results').get()
+  assert.ok(!Object.hasOwn(JSON.parse(row.payload), 'telemetry'))
 })
 
 test('telemetry is stored in the result payload; legacy payloads stay untouched', async (t) => {
@@ -165,25 +194,55 @@ test('hitreg aggregates shots, fallback share, counters and disputes per window'
   assert.equal((await db.hitreg(null, 0, Date.now() + 300000)).shots, 20)
 })
 
-test('GET /api/stats/hitreg serves the aggregate publicly', async (t) => {
+test('hitreg is staff-only, defaults to the last 7 days and caps the scan', async (t) => {
   const store = await database(t),
-    deps = { store, keys: { [server]: [token] } }
+    admin = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    builder = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  process.env.NODE_ENV = 'test'
+  await store.setStaff(admin, 'Adm', 'admin', 'seed')
+  await store.setStaff(builder, 'Bld', 'builder', 'seed')
+  const day = 86400000,
+    old = new Date(Date.now() - 20 * day)
   await store.ingest(fixture(2, { telemetry: telemetry() }))
-  const response = await handleStatsRequest(
-    new Request('https://example.test/api/stats/hitreg'),
-    deps,
+  await store.ingest(
+    fixture(3, {
+      startedAt: new Date(old - 60000).toISOString(),
+      endedAt: old.toISOString(),
+      telemetry: telemetry({ shots: 99 }),
+    }),
   )
-  assert.equal(response.status, 200)
-  const body = await response.json()
-  assert.equal(body.schemaVersion, 1)
-  assert.equal(body.shots, 10)
-  assert.equal(
-    await (
-      await handleStatsRequest(
-        new Request('https://example.test/api/stats/hitreg?season=s99'),
-        deps,
-      )
-    ).status,
-    400,
+  const call = async (as, query = '') => {
+    if (as) process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    else delete process.env.BLOCKFIELD_ADMIN_DEV_USER
+    const url = new URL(`http://site/api/admin/hitreg${query}`)
+    return handleAdmin(
+      { request: new Request(url), url, cookies: { get: () => undefined } },
+      'hitreg',
+      store,
+    ).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  assert.equal((await call(null)).status, 401)
+  assert.equal((await call(`${builder}:Bld`)).status, 403)
+  const week = await call(`${admin}:Adm`)
+  assert.equal(week.status, 200)
+  assert.equal((await week.json()).shots, 10)
+  assert.equal((await (await call(`${admin}:Adm`, '?period=month')).json()).shots, 109)
+  assert.equal((await call(`${admin}:Adm`, '?season=s99')).status, 400)
+
+  // Cap: only the newest HITREG_SCAN_CAP rows are read.
+  const insert = store.db.prepare(
+    'INSERT INTO results (server_id,event_id,kind,mode,campaign_id,ended_at,reason,winner,digest,payload) SELECT server_id,?,kind,mode,campaign_id,ended_at,reason,winner,?,payload FROM results WHERE event_id=?',
   )
+  for (let i = 0; i < HITREG_SCAN_CAP; i++) await insert.run(`bulk-${i}`, `digest-${i}`, uid(2))
+  const capped = await store.hitreg(null, 0, Date.now() + 300000)
+  assert.equal(capped.matches, HITREG_SCAN_CAP)
+  assert.equal(capped.truncated, true)
 })

@@ -192,6 +192,9 @@ function utc(value: unknown): number {
   )
   return time
 }
+// shortcut: process-local (resets on restart), shown in the admin hit-reg report; persist if drops must be audited.
+let telemetryDropped = 0
+export const telemetryDroppedCount = () => telemetryDropped
 /** Hit-reg telemetry a match result may carry: the server's per-match report, kept verbatim (unknown fields dropped). */
 export function validateTelemetry(value: unknown): Telemetry {
   requireValue(value && typeof value === 'object' && !Array.isArray(value), 'Invalid telemetry')
@@ -427,8 +430,16 @@ export function validateResult(value: any, now = Date.now()): Result {
     )
   }
   // Return only the public contract; never persist arbitrary producer-supplied fields or secrets.
-  const hasTelemetry = Object.hasOwn(value, 'telemetry')
-  const telemetry = hasTelemetry ? validateTelemetry(value.telemetry) : undefined
+  // Telemetry is diagnostics: a bad block must never cost the match's combat results, so it is dropped.
+  let telemetry: Telemetry | undefined
+  if (Object.hasOwn(value, 'telemetry'))
+    try {
+      telemetry = validateTelemetry(value.telemetry)
+    } catch (error) {
+      if (!(error instanceof StatsError)) throw error
+      telemetryDropped++
+      console.warn(`Telemetry dropped for ${value.serverId}/${value.eventId}: ${error.message}`)
+    }
   return {
     schemaVersion: 1,
     eventId: value.eventId,
@@ -446,7 +457,7 @@ export function validateResult(value: any, now = Date.now()): Result {
     endReason: value.endReason,
     winner: value.winner,
     ...(hasPersonalWinner ? { winnerUuid: value.winnerUuid } : {}),
-    ...(hasTelemetry ? { telemetry } : {}),
+    ...(telemetry ? { telemetry } : {}),
     rounds: [...value.rounds].sort(),
     participants: value.participants
       .map((p: any) => ({
@@ -563,6 +574,8 @@ export function filters(params: URLSearchParams, now = Date.now()): Filters {
     page,
   }
 }
+/** Newest matches one hit-reg report reads. */
+export const HITREG_SCAN_CAP = 5000
 export class StatsStore {
   db: Database
   private constructor(location: string) {
@@ -1003,21 +1016,25 @@ export class StatsStore {
   /** Per-match hit-reg telemetry aggregated over a window: summed counters and shots-weighted fallback share, per-match percentiles listed. */
   async hitreg(mode: string | null, since: number, until: number) {
     if (mode !== null && !MODES.includes(mode)) throw new StatsError(400, 'Unknown mode')
-    // ponytail: payloads stay schemaless so telemetry needs no migration; cap the scan and say so.
+    // ponytail: payloads stay schemaless so telemetry needs no migration; only the telemetry block is read
+    // (never the whole payload) and the scan is capped at the 5000 newest matches so one request stays bounded. Revisit with a telemetry column or per-match aggregate row.
+    const block = this.db.postgres
+      ? "(payload::jsonb->>'telemetry')"
+      : "json_extract(payload,'$.telemetry')"
     const rows = (await this.db
       .prepare(
-        `SELECT server_id "serverId",event_id "eventId",ended_at "endedAt",payload FROM results
+        `SELECT server_id "serverId",event_id "eventId",ended_at "endedAt",${block} telemetry FROM results
         WHERE kind='match' AND voided_at IS NULL AND ended_at>=? AND ended_at<=? AND (CAST(? AS TEXT) IS NULL OR mode=?)
-        ORDER BY ended_at DESC,server_id,event_id LIMIT 5001`,
+        ORDER BY ended_at DESC,server_id,event_id LIMIT ${HITREG_SCAN_CAP + 1}`,
       )
       .all(since, until, mode, mode)) as {
       serverId: string
       eventId: string
       endedAt: number
-      payload: string
+      telemetry: string | null
     }[]
-    const truncated = rows.length > 5000,
-      scanned = truncated ? rows.slice(0, 5000) : rows
+    const truncated = rows.length > HITREG_SCAN_CAP,
+      scanned = truncated ? rows.slice(0, HITREG_SCAN_CAP) : rows
     const matches: {
       serverId: string
       eventId: string
@@ -1035,8 +1052,8 @@ export class StatsStore {
       fallbackShots = 0,
       disputes = 0
     for (const row of scanned) {
-      const telemetry = (JSON.parse(row.payload) as Result).telemetry
-      if (!telemetry) continue
+      if (!row.telemetry) continue
+      const telemetry = JSON.parse(row.telemetry) as Telemetry
       matches.push({
         serverId: row.serverId,
         eventId: row.eventId,
@@ -1061,6 +1078,7 @@ export class StatsStore {
       mode,
       matches: scanned.length,
       withTelemetry: matches.length,
+      telemetryDropped,
       truncated,
       shots,
       fallbackShare: shots === 0 ? 0 : fallbackShots / shots,
@@ -1654,11 +1672,6 @@ export async function handleStatsRequest(
         { schemaVersion: 1, current: list.at(-1)?.id ?? null, seasons: list },
         { headers },
       )
-    }
-    if (path === '/api/stats/hitreg') {
-      const query = filters(url.searchParams)
-      const store = dependencies?.store ?? (await statsStore())
-      return Response.json(await store.hitreg(query.mode, query.since, query.until), { headers })
     }
     const query = filters(url.searchParams)
     const store = dependencies?.store ?? (await statsStore())
