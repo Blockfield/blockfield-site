@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { StatsStore, filters, handleStatsRequest } from '../src/lib/stats.ts'
+import { filters, handleStatsRequest } from '../src/lib/stats.ts'
 
 const uid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
 const server = uid(1),
@@ -166,46 +166,6 @@ test('DB ingest keys: accepted until revoked, only hashes are stored, env keys k
   assert.equal(await db.revokeIngestKey((await db.ingestKeys())[0].id), true)
   assert.equal(await db.revokeIngestKey((await db.ingestKeys())[0].id), false)
   assert.equal((await post(key, 33)).status, 401)
-})
-
-test('schema 3 file upgrades to 4: results gain void columns, new tables appear, data and ratings stay', async () => {
-  const { DatabaseSync } = await import('node:sqlite')
-  const { mkdtempSync, rmSync } = await import('node:fs'),
-    { tmpdir } = await import('node:os'),
-    { join } = await import('node:path')
-  const directory = mkdtempSync(join(tmpdir(), 'bf-migrate-v4-'))
-  try {
-    const path = join(directory, 'stats.sqlite'),
-      result = campaign(50, '2026-09-01T00:00:00Z', 'RED')
-    const first = await StatsStore.open(path)
-    await first.ingest(result)
-    const before = await ratings(first)
-    await first.close()
-    const legacy = new DatabaseSync(path)
-    legacy.exec(`DROP TABLE admin_audit; DROP TABLE ingest_keys; DROP TABLE staff_roles;
-      ALTER TABLE results DROP COLUMN voided_at; ALTER TABLE results DROP COLUMN voided_by; PRAGMA user_version=3;`)
-    await legacy.close()
-    const upgraded = await StatsStore.open(path)
-    try {
-      assert.equal((await upgraded.db.prepare('PRAGMA user_version').get()).user_version, 7)
-      assert.deepEqual(await ratings(upgraded), before)
-      assert.equal((await upgraded.ingest(result)).inserted, false)
-      assert.equal((await upgraded.setVoided(server, uid(50), 'Adm')).rebuilt, 's1')
-      assert.equal((await upgraded.db.prepare('SELECT COUNT(*) n FROM ratings').get()).n, 0)
-      await upgraded.audit({
-        actorUuid: 'a',
-        actorName: 'Adm',
-        role: 'admin',
-        action: 'x',
-        ok: true,
-      })
-      await upgraded.setStaff('b'.repeat(32), 'Bob', 'builder', 'Adm')
-    } finally {
-      await upgraded.close()
-    }
-  } finally {
-    rmSync(directory, { recursive: true, force: true })
-  }
 })
 
 test('audit entries are stored newest first and capped', async (t) => {

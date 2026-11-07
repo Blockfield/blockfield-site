@@ -94,7 +94,7 @@ test('SQLite backup migrates exactly, preserves permissions and key IDs, and ref
         'Local setup is documented in docs/statistics.md (Tests); CI provides it as a service.',
     )
   {
-    const source = await StatsStore.open(':memory:')
+    const source = await StatsStore.openBackup(':memory:')
     t.after(() => source.close())
     const target = await database(t)
     await source.ingest(result())
