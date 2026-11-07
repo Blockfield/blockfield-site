@@ -8090,13 +8090,26 @@ const cpGate = cpConfigured()
       // The list re-syncs after every role change by itself; the manual button only repairs drift.
       $('#sync').hidden = inSync
     }
+    /** Genitive role names for the partial-apply warning (roles CP still holds). */
+    const CP_ROLE_GENITIVE: Record<string, string> = {
+      builder: 'строителя',
+      moderator: 'модератора',
+      admin: 'администратора',
+    }
     async function changeRole(body: Record<string, unknown>, done: string, line: HTMLElement) {
       await run(line, async () => {
         const data = await api('staff', 'POST', body)
         await loadTeam()
-        return data.sync.error
-          ? `${done} Но доступ в мастерскую обновить не удалось — нажмите «Обновить доступ» позже.`
-          : done
+        const notes: string[] = []
+        if (data.sync.error)
+          notes.push(
+            'Но доступ в мастерскую обновить не удалось — нажмите «Обновить доступ» позже.',
+          )
+        if (Array.isArray(data.partialApply) && data.partialApply.length)
+          notes.push(
+            `Но в CP ${data.partialApply.length > 1 ? 'остались роли' : 'осталась роль'} ${data.partialApply.map((role: string) => CP_ROLE_GENITIVE[role] ?? String(role)).join(', ')} — повторите.`,
+          )
+        return notes.length ? `${done} ${notes.join(' ')}` : done
       })
     }
     /** `null`/absent = every map, including ones added later; `[]` = the builder enters the workshop hub but can edit nothing. */

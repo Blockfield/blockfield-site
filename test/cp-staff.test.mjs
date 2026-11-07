@@ -2,6 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { JSDOM } from 'jsdom'
+import ts from 'typescript'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { cpStaffConfigured, readMeCp, roleFromCpMe, postStaffGrantCp } from '../src/lib/cp.ts'
@@ -702,8 +704,8 @@ test('CP mode partial reconcile still mirrors and names held roles', async (t) =
   assert.ok(typeof demotedBody.sync.error === 'string', 'sync failure is a field too')
   assert.equal(
     (await s.staff()).find((row) => row.uuid === OTHER).role,
-    'builder',
-    'the grant is mirrored despite the reconcile failure',
+    'moderator',
+    'the mirror shows the highest held role, not the just-granted one',
   )
   // Revoke: the same holds when the leftover cannot even be re-read.
   roles.failReadsFromWrites = 2
@@ -716,9 +718,16 @@ test('CP mode partial reconcile still mirrors and names held roles', async (t) =
   assert.deepEqual(revokedBody.partialApply, ['builder'])
   assert.equal(revokedBody.role, null)
   assert.equal(
-    (await s.staff()).find((row) => row.uuid === OTHER),
-    undefined,
-    'the revoke is mirrored despite the reconcile failure',
+    (await s.staff()).find((row) => row.uuid === OTHER).role,
+    'builder',
+    'the row is kept while CP still holds a site role',
+  )
+  roles.failReadsFromWrites = Infinity
+  const relist = await callCp(s, `${ADMIN}:Adm`, 'GET', 'staff')
+  assert.equal(relist.status, 200)
+  assert.ok(
+    (await relist.json()).staff.some((m) => m.uuid === OTHER && m.role === 'builder'),
+    'the member does not disappear from GET staff before the retry',
   )
 })
 
@@ -823,6 +832,61 @@ test('CP mode event refresh ignores stale replica roles', async (t) => {
   assert.equal(await refreshRole({ uuid: OTHER, name: 'Oth', role: null }, s), 'moderator')
   delete process.env.BLOCKFIELD_CP_STAFF_TOKEN
   assert.equal(await refreshRole({ uuid: OTHER, name: 'Oth', role: null }, s), 'admin')
+})
+
+test('team page reports CP-held roles after a partial grant', async () => {
+  const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
+  const script = page.split('<script>')[1].split('</script>')[0]
+  const source = ts.createSourceFile('admin.ts', script, ts.ScriptTarget.Latest, true)
+  const wanted = ['changeRole', 'CP_ROLE_GENITIVE']
+  const defs = source.statements
+    .filter(
+      (node) =>
+        (ts.isFunctionDeclaration(node) && wanted.includes(node.name?.text ?? '')) ||
+        (ts.isVariableStatement(node) &&
+          node.declarationList.declarations.some((d) => wanted.includes(d.name.getText(source)))),
+    )
+    .map((node) => node.getText(source))
+    .join('\n')
+  const compiled = ts.transpileModule(defs, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const dom = new JSDOM('', { url: 'https://blockfield.test/admin', runScripts: 'outside-only' })
+  try {
+    let posted
+    let shown
+    Object.assign(dom.window, {
+      api: async (path, method, body) => {
+        posted = body
+        return { sync: {}, partialApply: ['moderator'] }
+      },
+      loadTeam: async () => {},
+      run: async (line, fn) => {
+        shown = await fn()
+      },
+    })
+    dom.window.eval(compiled)
+    await dom.window.eval(`changeRole({ uuid: 'x', role: 'builder' }, 'X теперь строитель.', null)`)
+    assert.equal(posted.role, 'builder')
+    assert.equal(shown, 'X теперь строитель. Но в CP осталась роль модератора — повторите.')
+    dom.window.api = async () => ({ sync: {}, partialApply: ['builder', 'moderator'] })
+    await dom.window.eval(
+      `changeRole({ uuid: 'x', role: 'moderator' }, 'X теперь модератор.', null)`,
+    )
+    assert.equal(
+      shown,
+      'X теперь модератор. Но в CP остались роли строителя, модератора — повторите.',
+    )
+    dom.window.api = async () => ({ sync: { error: 'x' }, partialApply: ['moderator'] })
+    await dom.window.eval(`changeRole({ uuid: 'x', role: 'builder' }, 'X теперь строитель.', null)`)
+    assert.ok(shown.includes('Обновить доступ'), 'the sync warning stays')
+    assert.ok(shown.includes('роль модератора'), 'the partial warning joins it')
+    dom.window.api = async () => ({ sync: {}, partialApply: [] })
+    await dom.window.eval(`changeRole({ uuid: 'x', role: 'builder' }, 'X теперь строитель.', null)`)
+    assert.equal(shown, 'X теперь строитель.')
+  } finally {
+    dom.window.close()
+  }
 })
 
 test('CP outage fails staff routes closed', async (t) => {

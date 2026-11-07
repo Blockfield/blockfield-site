@@ -1898,6 +1898,9 @@ const cpStaffClosed = () =>
 
 type CpLib = typeof import('./cp.ts')
 
+/** Site role seniority for the replica mirror: it shows the highest CP-held role. */
+const SITE_ROLE_RANK: Record<string, number> = { builder: 1, moderator: 2, admin: 3 }
+
 /** Role refresh for the admin event stream: CP authority in CP mode, replica otherwise. */
 export async function refreshRole(actor: Actor, store: StatsStore): Promise<Role | null> {
   if ((await import('./cp.ts')).cpStaffConfigured()) {
@@ -3006,7 +3009,18 @@ const routes: Record<string, Route> = {
         } catch {
           // held already names the remainder; mirror and report below.
         }
-        await store.setStaff(target.uuid, target.name, finalRole, actor.name)
+        // The mirror reflects what CP still holds: a row is deleted only when
+        // a clean read confirmed no site role (empty held). Otherwise the row
+        // stays with the highest held role, so the member keeps showing up in
+        // GET staff, the workshop list and the uuid retry until the retry.
+        const mirrored =
+          held.length > 0
+            ? (held.reduce((a, b) => (SITE_ROLE_RANK[a] >= SITE_ROLE_RANK[b] ? a : b)) as
+                | 'builder'
+                | 'moderator'
+                | 'admin')
+            : finalRole
+        await store.setStaff(target.uuid, target.name, mirrored, actor.name)
         // The grant above is applied; a roster read that fails here must not
         // throw it away — it lands in the sync error field instead.
         const sync = await cpCall(() => cpTeamList(cp, store))
