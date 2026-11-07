@@ -11,7 +11,7 @@ const platform = detectPlatform(
   Astro.request.headers.get('sec-ch-ua-platform') || '',
 )
 const download = launcherDownload(platform, launcher)
-const supported = platform === 'windows' || platform === 'linux' || platform === 'macos'
+const supported = platform === 'windows' || platform === 'linux'
 
 // HTML содержит ссылку для ОС посетителя; общий кэш не должен отдавать её другой платформе.
 Astro.response.headers.set('Cache-Control', 'private, no-store')
@@ -107,7 +107,7 @@ const features = [
         inLanguage: 'ru',
         gamePlatform: 'PC',
         applicationCategory: 'Game',
-        operatingSystem: 'Windows, Linux, macOS',
+        operatingSystem: 'Windows, Linux',
         description:
           'Командный шутер в Minecraft 1.21.1 на Fabric: захват точек, классы, выбор снаряжения.',
         image: 'https://blockfield.pro/og.jpg',
@@ -116,7 +116,7 @@ const features = [
           name: 'Blockfield',
           url: 'https://github.com/Blockfield',
         },
-        downloadUrl: [launcher.windows, launcher.linux, launcher.macosArm, launcher.macosIntel],
+        downloadUrl: [launcher.windows, launcher.linux],
         softwareVersion: launcher.version || undefined,
       })}
     />
@@ -173,14 +173,6 @@ const features = [
             <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.linux} />
             Linux · AppImage
           </a>
-          <a href={launcher.macosIntel}>
-            <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.apple} />
-            macOS · Intel
-          </a>
-          <a href={launcher.macosArm}>
-            <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.apple} />
-            macOS · Apple Silicon
-          </a>
           {launcher.version && <span class="platforms__version">версия {launcher.version}</span>}
         </p>
       </div>
@@ -217,14 +209,6 @@ const features = [
           <a href={launcher.linux}>
             <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.linux} />
             Linux · AppImage
-          </a>
-          <a href={launcher.macosIntel}>
-            <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.apple} />
-            macOS · Intel
-          </a>
-          <a href={launcher.macosArm}>
-            <svg class="i i--fill" viewBox="0 0 24 24" aria-hidden="true" set:html={brand.apple} />
-            macOS · Apple Silicon
           </a>
         </p>
       </div>

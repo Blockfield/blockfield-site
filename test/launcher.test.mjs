@@ -15,14 +15,6 @@ const release = {
       name: 'blockfield-launcher_9.9.9_amd64.AppImage',
       browser_download_url: 'https://example/app.AppImage',
     },
-    {
-      name: 'blockfield-launcher_9.9.9_aarch64.dmg',
-      browser_download_url: 'https://example/arm.dmg',
-    },
-    {
-      name: 'blockfield-launcher_9.9.9_x64.dmg',
-      browser_download_url: 'https://example/intel.dmg',
-    },
   ],
 }
 
@@ -53,8 +45,6 @@ test('релиз разбирается и второй запрос идёт и
     assert.equal(first.version, 'v9.9.9')
     assert.equal(first.windows, 'https://example/setup.exe')
     assert.equal(first.linux, 'https://example/app.AppImage')
-    assert.equal(first.macosArm, 'https://example/arm.dmg')
-    assert.equal(first.macosIntel, 'https://example/intel.dmg')
 
     await latestLauncher()
     assert.equal(stub.calls(), 1, 'внутри TTL в GitHub не ходим')
@@ -103,8 +93,7 @@ test('сбой API не роняет страницу и не долбит GitHu
     const result = await latestLauncher()
     assert.equal(result.version, '')
     assert.match(result.windows, /\/releases\/latest$/)
-    assert.equal(result.macosArm, result.windows)
-    assert.equal(result.macosIntel, result.windows)
+    assert.equal(result.linux, result.windows)
 
     await latestLauncher()
     assert.equal(stub.calls(), 1, 'после сбоя выдерживаем длинную паузу')
