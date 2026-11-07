@@ -2883,7 +2883,9 @@ const cpGate = cpConfigured()
     function describeGame(state: any, rooms: any): { tone: string; title: string; detail: string } {
       if (rooms.maintenance)
         return { tone: 'warn', title: 'Вход в игру закрыт', detail: rooms.maintenance.message }
-      if (!gameReady(state))
+      // site#82: a fresh live answer from the game server confirms readiness by itself; the
+      // controller verdict may fossilize while a match runs, so it only blocks when nothing answers.
+      if (!gameReady(state) && !rooms.available)
         return {
           tone: 'warn',
           title:
@@ -3014,7 +3016,8 @@ const cpGate = cpConfigured()
       const box = $('#mode-options')
       const view = switchView(controller)
       renderProgress(view)
-      const ready = gameReady(controller) && rooms.available && !rooms.maintenance
+      // site#82: the badge mirrors the overview verdict above — live rooms confirm, too.
+      const ready = describeGame(controller, rooms).tone === 'ok'
       const editor = el(
         'div',
         { className: 'option' },
