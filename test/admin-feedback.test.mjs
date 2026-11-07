@@ -116,9 +116,10 @@ test('real admin cards keep Game available during Workshop restart/error/test an
       }
     }
     window.controller = { schema: 1, phase: 'workshop', gate: 'builders' }
+    // site#82: the game server answers live, so a missing controller verdict must not block readiness.
     assert.equal(
       window.describeGame(window.controller, { available: true, rooms: [] }).title,
-      'Готовность игры не подтверждена',
+      'Игра работает',
     )
     window.renderModes(window.describeWorkshop(window.controller, null, null), { available: true })
     assert.equal(
@@ -126,7 +127,23 @@ test('real admin cards keep Game available during Workshop restart/error/test an
       0,
       'no mutation without a valid controller revision',
     )
-    assert.equal(window.document.querySelector('.badge').textContent, 'Готовность не подтверждена')
+    assert.equal(window.document.querySelector('.badge').textContent, 'Вход открыт')
+    // site#82: a fossilized controller game entry must not shadow a live game server, while a
+    // silent server with no verdict still waits for an answer and a starting game keeps its title.
+    window.controller.game = { phase: 'UNAVAILABLE', gate: 'closed', release: null }
+    assert.equal(
+      window.describeGame(window.controller, { available: true, rooms: [{ id: 'match' }] }).title,
+      'Игра работает',
+    )
+    assert.equal(
+      window.describeGame(window.controller, { available: false, rooms: [] }).title,
+      'Готовность игры не подтверждена',
+    )
+    window.controller.game = { phase: 'STARTING', gate: 'closed', release: 'v2.68.0' }
+    assert.equal(
+      window.describeGame(window.controller, { available: false, rooms: [] }).title,
+      'Игра запускается',
+    )
     window.controller.game = { phase: 'game', gate: 'public', release: 'v2.68.0' }
     const maintenance = { maintenance: { message: 'Вход закрыт' } }
     assert.equal(window.describeGame(window.controller, maintenance).title, 'Вход в игру закрыт')
