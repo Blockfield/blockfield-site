@@ -2127,7 +2127,7 @@ test('diagnostics are admin-only and never report health without data', async (t
   assert.equal((await call(`${ADMIN}:Adm`, 'diagnostics/live')).status, 503)
 })
 
-test('console link: logs and suggestions proxy the mod endpoint with the RCON secret, reads stay unaudited', async (t) => {
+test('console link: logs and suggestions proxy the mod endpoint with the console-read token, reads stay unaudited', async (t) => {
   const { createServer } = await import('node:http')
   const saved = { ...process.env }
   t.after(() => {
@@ -2137,7 +2137,7 @@ test('console link: logs and suggestions proxy the mod endpoint with the RCON se
   const seen = []
   const server = createServer((req, res) => {
     seen.push(`${req.method} ${req.url} auth=${req.headers.authorization}`)
-    if (req.headers.authorization !== 'Bearer x') {
+    if (req.headers.authorization !== 'Bearer read-token') {
       res.writeHead(401, { 'content-type': 'application/json' })
       res.end('{"error":"Unauthorized."}')
       return
@@ -2171,6 +2171,7 @@ test('console link: logs and suggestions proxy the mod endpoint with the RCON se
     BLOCKFIELD_RCON_PORT: '1',
     BLOCKFIELD_RCON_PASSWORD: 'x',
     BLOCKFIELD_CONSOLE_PORT: String(server.address().port),
+    BLOCKFIELD_CONSOLE_READ_TOKEN: 'read-token',
   })
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
@@ -2206,8 +2207,12 @@ test('console link: logs and suggestions proxy the mod endpoint with the RCON se
   assert.deepEqual(await suggest.json(), { from: 5, suggestions: [{ text: 'set', hint: '' }] })
   assert.equal((await call(`${OWNER}:Nether`, 'console/logs?since=nope')).status, 400)
   assert.ok(
-    seen.every((line) => line.includes('auth=Bearer x')),
-    'the RCON password is the only link secret',
+    seen.length > 0 && seen.every((line) => line.includes('auth=Bearer read-token')),
+    'the console-read token is the only link secret, never the RCON password',
   )
+  delete process.env.BLOCKFIELD_CONSOLE_READ_TOKEN
+  const before = seen.length
+  assert.equal((await call(`${OWNER}:Nether`, 'console/logs?since=0')).status, 503)
+  assert.equal(seen.length, before, 'no token: the link is never called')
   assert.equal((await s.auditLog()).length, 0, 'link reads are not audited')
 })

@@ -56,6 +56,7 @@ BLOCKFIELD_MAP_PACKAGES_DIR=/map-packages            # read-only mount of contro
 BLOCKFIELD_RCON_HOST=blockfield-server-lfcxy0
 BLOCKFIELD_RCON_PORT=25575
 BLOCKFIELD_RCON_PASSWORD=...                         # secret; never sent to the browser
+BLOCKFIELD_CONSOLE_READ_TOKEN=...                    # secret; console link bearer, equal to the game server's BLOCKFIELD_CP_CONSOLE_READ_TOKEN (BLOCKFIELD_WORKSHOP_CONSOLE_READ_TOKEN for Workshop)
 BLOCKFIELD_DEPLOY_ANNOUNCE_TOKEN=...                 # secret; modpack Deploy workflow (DEPLOY_ANNOUNCE_TOKEN) → POST /api/deploy-announce, fixed restart notice
 BLOCKFIELD_WORKSHOP_KEY=...                          # optional; default: the file workshop.key in BLOCKFIELD_ADMIN_DIR (host /srv/minecraft/workshop/admin, root:1000 0640), shared with the workshop server
 BLOCKFIELD_SESSION_SECRET=...                        # secret; 64 hex chars (32 bytes, e.g. `openssl rand -hex 32`): seals Drasl tokens in site_sessions. Missing/invalid = logins fail closed; rotation expires every session.
