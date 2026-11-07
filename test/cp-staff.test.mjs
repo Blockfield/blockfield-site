@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { cpStaffConfigured, readMeCp, roleFromCpMe, postStaffGrantCp } from '../src/lib/cp.ts'
 import { handleAdmin, handleWorkshopAccess, refreshRole } from '../src/lib/admin.ts'
+import { staffIdempotencyKey } from '../src/lib/cp.ts'
 import { exportStaff } from '../scripts/cp-staff-export.mjs'
 import { database as store } from './storage.mjs'
 
@@ -184,11 +185,19 @@ test('staff grant denial matrix: every CP refusal maps to a site status', async 
 
 async function staffFake(t, roles) {
   if (roles.writes === undefined) roles.writes = 0
+  if (roles.writes === undefined) roles.writes = 0
   const seen = []
   const server = await fakeCp(t, (req, res) => {
     const url = new URL(req.url, 'http://cp')
     if (req.method === 'GET' && url.pathname === '/v2/staff/grants') {
       seen.push(['GET', req.url])
+      if (
+        typeof roles.failReadsFromWrites === 'number' &&
+        roles.writes >= roles.failReadsFromWrites
+      ) {
+        res.statusCode = 500
+        return res.end(JSON.stringify({ error: 'boom' }))
+      }
       if (
         typeof roles.failReadsFromWrites === 'number' &&
         roles.writes >= roles.failReadsFromWrites
@@ -245,6 +254,11 @@ async function staffFake(t, roles) {
           .toLowerCase()
         const entry = roles.get(id)
         if (!entry) return deny('account_not_found', 404)
+        if (roles.dropNextPosts > 0) {
+          roles.dropNextPosts -= 1
+          req.socket.destroy()
+          return
+        }
         if (entry.epoch !== payload.expectedRevision) return deny('revision_conflict', 409)
         if (payload.role === 'admin' || entry.roles.includes('admin'))
           return deny('owner_approval_required')
@@ -252,6 +266,11 @@ async function staffFake(t, roles) {
         else if (!entry.roles.includes(payload.role)) entry.roles.push(payload.role)
         entry.epoch += 1
         roles.writes += 1
+        if (roles.destroyNextPosts > 0) {
+          roles.destroyNextPosts -= 1
+          req.socket.destroy()
+          return
+        }
         res.statusCode = 202
         res.end(
           JSON.stringify({
@@ -887,6 +906,142 @@ test('team page reports CP-held roles after a partial grant', async () => {
   } finally {
     dom.window.close()
   }
+})
+
+test('CP mode skips unreadable roster rows instead of aborting', async (t) => {
+  const roles = new Map([
+    [ADMIN, { roles: ['admin'], epoch: 7 }],
+    [OTHER, { roles: ['builder'], epoch: 2 }],
+    [POISON, { roles: ['builder'], epoch: 1, poison: true }],
+  ])
+  const { server } = await staffFake(t, roles)
+  cpEnv(t, server)
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(OTHER, 'Oth', 'builder', 'seed')
+  await s.setStaff(POISON, 'Poi', 'builder', 'seed')
+  const list = await callCp(s, `${ADMIN}:Adm`, 'GET', 'staff')
+  assert.equal(list.status, 200)
+  const members = (await list.json()).staff.map((m) => m.uuid)
+  assert.ok(members.includes(ADMIN) && members.includes(OTHER))
+  assert.ok(!members.includes(POISON), 'the poisoned row is left out, not fatal')
+  const granted = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff', {
+    uuid: OTHER,
+    role: 'moderator',
+  })
+  assert.equal(granted.status, 200)
+  const body = await granted.json()
+  assert.equal(body.role, 'moderator')
+  assert.ok(body.sync.id)
+  assert.match(body.sync.error, /Poi/, 'the push names the skipped account')
+  const pushed = JSON.parse(
+    readFileSync(join(process.env.BLOCKFIELD_INBOX_DIR, `${body.sync.id}.json`), 'utf8'),
+  ).members
+  assert.ok(!pushed.some((m) => m.draslId === POISON), 'the push leaves the bad row out')
+  assert.ok(pushed.some((m) => m.draslId === OTHER && m.role === 'lead'))
+})
+
+test('CP mode unknown primary outcome recovers from CP truth', async (t) => {
+  assert.equal(
+    staffIdempotencyKey({
+      actorAccountId: ADMIN,
+      accountUuid: OTHER,
+      role: 'builder',
+      revoke: false,
+      scope: { environment: 'prod', backend: 'game', resource: '*' },
+      uiRevision: 3,
+    }),
+    staffIdempotencyKey({
+      actorAccountId: dashed(ADMIN),
+      accountUuid: dashed(OTHER),
+      role: 'builder',
+      revoke: false,
+      scope: { environment: 'prod', backend: 'game', resource: '*' },
+      uiRevision: 3,
+    }),
+    'same intent, same key',
+  )
+  assert.notEqual(
+    staffIdempotencyKey({
+      actorAccountId: ADMIN,
+      accountUuid: OTHER,
+      role: 'builder',
+      revoke: false,
+      scope: { environment: 'prod', backend: 'game', resource: '*' },
+      uiRevision: 3,
+    }),
+    staffIdempotencyKey({
+      actorAccountId: ADMIN,
+      accountUuid: OTHER,
+      role: 'builder',
+      revoke: false,
+      scope: { environment: 'prod', backend: 'game', resource: '*' },
+      uiRevision: 4,
+    }),
+    'a later list revision gets a new key',
+  )
+  const roles = new Map([
+    [ADMIN, { roles: ['admin'], epoch: 7 }],
+    [OTHER, { roles: ['moderator'], epoch: 3 }],
+  ])
+  roles.failReadsFromWrites = Infinity
+  const { server, seen } = await staffFake(t, roles)
+  cpEnv(t, server)
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(OTHER, 'Oth', 'moderator', 'seed')
+  // The primary answer is lost after CP applied it: the re-read continues.
+  roles.destroyNextPosts = 1
+  const granted = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff', {
+    uuid: OTHER,
+    role: 'builder',
+    expectedRevision: 3,
+  })
+  assert.equal(granted.status, 200)
+  const grantedBody = await granted.json()
+  const mainPost = seen.filter(([method]) => method === 'POST')[0][2]
+  assert.equal(
+    mainPost.idempotencyKey,
+    staffIdempotencyKey({
+      actorAccountId: ADMIN,
+      accountUuid: OTHER,
+      role: 'builder',
+      revoke: false,
+      scope: { environment: 'prod', backend: 'game', resource: '*' },
+      uiRevision: 3,
+    }),
+  )
+  assert.equal(grantedBody.role, 'builder')
+  assert.ok(grantedBody.operationId === null || typeof grantedBody.operationId === 'string')
+  assert.deepEqual(roles.get(OTHER).roles, ['builder'])
+  assert.equal((await s.staff()).find((row) => row.uuid === OTHER).role, 'builder')
+  // The primary answer is lost and the change did not land: report, do not mirror.
+  roles.dropNextPosts = 1
+  const dropped = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff', {
+    uuid: OTHER,
+    role: 'moderator',
+    expectedRevision: 4,
+  })
+  assert.equal(dropped.status, 503)
+  assert.equal((await s.staff()).find((row) => row.uuid === OTHER).role, 'builder')
+  // CP unreachable after an unknown write: retry state, no mirrored guess.
+  roles.failReadsFromWrites = 3
+  roles.destroyNextPosts = 1
+  const unknown = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff', {
+    uuid: OTHER,
+    role: 'moderator',
+    expectedRevision: 4,
+  })
+  assert.equal(unknown.status, 200)
+  const unknownBody = await unknown.json()
+  assert.equal(unknownBody.unknownOutcome, true)
+  assert.ok(unknownBody.operationId === null)
+  assert.ok(typeof unknownBody.sync.error === 'string')
+  assert.equal(
+    (await s.staff()).find((row) => row.uuid === OTHER).role,
+    'builder',
+    'no CP answer means no mirrored guess',
+  )
 })
 
 test('CP outage fails staff routes closed', async (t) => {

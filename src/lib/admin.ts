@@ -191,12 +191,7 @@ async function currentActor(context: APIContext, store: StatsStore): Promise<Act
       }
     } catch (error) {
       // Unknown accounts stay unauthenticated; a CP outage fails closed.
-      if (
-        error instanceof TypeError ||
-        (error as { name?: unknown })?.name === 'TimeoutError' ||
-        (error as { name?: unknown })?.name === 'AbortError'
-      )
-        throw cpStaffClosed()
+      if (isUnknownOutcome(error)) throw cpStaffClosed()
       return { ...who, role: null }
     }
   }
@@ -1910,21 +1905,31 @@ export async function refreshRole(actor: Actor, store: StatsStore): Promise<Role
   return roleOf(actor.uuid, store)
 }
 
+/** A CP answer with a status code (denied, conflict, unknown account). */
+function isCpProblem(error: unknown): error is Error & { status: number; code: string } {
+  return (
+    typeof (error as { status?: unknown })?.status === 'number' &&
+    typeof (error as { code?: unknown })?.code === 'string'
+  )
+}
+
+/** No CP answer at all: the mutation may still have applied. */
+function isUnknownOutcome(error: unknown): boolean {
+  return (
+    error instanceof TypeError ||
+    (error as { name?: unknown })?.name === 'TimeoutError' ||
+    (error as { name?: unknown })?.name === 'AbortError'
+  )
+}
+
 /** CP Problem carries {status, code}; fetch outages are TypeErrors/TimeoutErrors. */
 async function cpCall<T>(work: () => Promise<T>): Promise<T> {
   try {
     return await work()
   } catch (error) {
     if (error instanceof Response) throw error
-    const status = (error as { status?: unknown })?.status
-    if (typeof status === 'number' && typeof (error as { code?: unknown })?.code === 'string')
-      throw fail(status, (error as Error).message)
-    if (
-      error instanceof TypeError ||
-      (error as { name?: unknown })?.name === 'TimeoutError' ||
-      (error as { name?: unknown })?.name === 'AbortError'
-    )
-      throw cpStaffClosed()
+    if (isCpProblem(error)) throw fail(error.status, error.message)
+    if (isUnknownOutcome(error)) throw cpStaffClosed()
     throw error
   }
 }
@@ -1952,22 +1957,57 @@ async function cpActorRole(cp: CpLib, actor: Actor): Promise<Role | null> {
     : null
 }
 
-/** Team list: replica rows are the name/maps book, CP grants are role authority. */
+/** Team list: replica rows are the name/maps book, CP grants are role authority.
+One unreadable row never aborts the roster: it is left out and reported in
+`failed`. When nothing at all resolves the read fails closed instead of
+pushing an empty team. */
 async function cpTeamList(cp: CpLib, store: StatsStore) {
   const scope = cp.cpScope()
-  const staff = []
+  const team = []
+  const failed: { uuid: string; name: string }[] = []
   // Serial reads keep the fake-CP request order deterministic in tests.
   for (const row of await store.staff()) {
-    const read = await cpCall(() => cpGrantsOrNull(cp, row.uuid))
+    let read
+    try {
+      read = await cpGrantsOrNull(cp, row.uuid)
+    } catch {
+      // Malformed bodies and 5xx included: skip the row, do not abort the list.
+      failed.push({ uuid: row.uuid, name: row.name })
+      continue
+    }
     if (!read) continue
     const role = cp.roleFromCpMe(
       { accountId: read.accountId, owner: false, grants: read.grants },
       scope,
     )
     if (!role) continue
-    staff.push({ ...row, role, expectedRevision: read.expectedRevision })
+    team.push({ ...row, role, expectedRevision: read.expectedRevision })
   }
-  return staff
+  if (team.length === 0 && failed.length > 0) throw cpStaffClosed()
+  return { team, failed }
+}
+
+/** Push the CP roster to the workshop. Unreadable accounts are left out of the
+push and named in the sync error; a failed push lands there too. Never throws. */
+async function syncCpTeam(store: StatsStore, actor: Actor, cp: CpLib) {
+  try {
+    const { team, failed } = await cpCall(() => cpTeamList(cp, store))
+    const pushed = await syncWorkshop(store, actor, ownerName, team)
+    if (!failed.length) return { id: pushed.id, members: pushed.members }
+    const names = failed.map((m) => m.name ?? m.uuid).join(', ')
+    return {
+      id: pushed.id,
+      members: pushed.members,
+      error: `Доступ обновлён частично: нет данных CP по ${names} — нажмите «Обновить доступ» позже.`,
+    }
+  } catch (error) {
+    return {
+      error:
+        error instanceof Response
+          ? 'Не удалось отправить список в мастерскую.'
+          : String((error as Error).message),
+    }
+  }
 }
 
 const routes: Record<string, Route> = {
@@ -2850,7 +2890,7 @@ const routes: Record<string, Route> = {
         const cp = await import('./cp.ts')
         const actorRole = await cpActorRole(cp, actor)
         if (!can(actorRole, 'roles')) throw fail(403, 'Недостаточно прав.')
-        const team = await cpCall(() => cpTeamList(cp, store))
+        const { team } = await cpCall(() => cpTeamList(cp, store))
         const ids = owners()
         await Promise.all([...ids].map(async (uuid) => ownerName(uuid).catch(() => null)))
         const last = ((await store.auditLog(200)) as any[]).find(
@@ -2957,18 +2997,23 @@ const routes: Record<string, Route> = {
           throw fail(403, 'Администраторов назначает только владелец.')
         const finalRole = body?.role ?? null
         const grantedRole = (finalRole ?? from ?? 'builder') as 'builder' | 'moderator' | 'admin'
-        const receipt = await cpCall(() =>
-          cp.postStaffGrantCp({
-            accountUuid: target.uuid as string,
-            role: grantedRole,
-            revoke: finalRole === null,
-            expectedRevision: read.expectedRevision,
-            actorAccountId: actor.uuid,
-          }),
-        )
-        // The primary write above applied: later failures must not skip the
-        // mirror. `held` always names the last-known in-scope site remainder
-        // so a failure still reports it instead of throwing the grant away.
+        // The idempotency key is derived from the admin request (including the
+        // UI's list revision): a retry of the same intent dedupes in CP, while
+        // a genuinely new change after a re-read gets a new key.
+        const uiRevision = Number.isSafeInteger(body?.expectedRevision)
+          ? (body.expectedRevision as number)
+          : null
+        const idempotencyKey =
+          uiRevision === null
+            ? randomUUID()
+            : cp.staffIdempotencyKey({
+                actorAccountId: actor.uuid,
+                accountUuid: target.uuid as string,
+                role: grantedRole,
+                revoke: finalRole === null,
+                scope,
+                uiRevision,
+              })
         const siteRole = (role: string) => ['builder', 'moderator', 'admin'].includes(role)
         const inScope = (g: {
           environment: string
@@ -2980,9 +3025,52 @@ const routes: Record<string, Route> = {
           g.backend === scope.backend &&
           g.resource === scope.resource &&
           siteRole(g.role)
-        let held = read.grants.filter(inScope).map((g) => g.role)
-        if (finalRole === null) held = held.filter((r) => r !== grantedRole)
-        else if (!held.includes(finalRole)) held.push(finalRole)
+        let receipt: { operationId: string } | null = null
+        let held: string[]
+        try {
+          receipt = await cp.postStaffGrantCp({
+            accountUuid: target.uuid as string,
+            role: grantedRole,
+            revoke: finalRole === null,
+            expectedRevision: read.expectedRevision,
+            actorAccountId: actor.uuid,
+            idempotencyKey,
+          })
+          held = read.grants.filter(inScope).map((g) => g.role)
+          if (finalRole === null) held = held.filter((r) => r !== grantedRole)
+          else if (!held.includes(finalRole)) held.push(finalRole)
+        } catch (error) {
+          if (isCpProblem(error)) throw fail(error.status, error.message)
+          if (!isUnknownOutcome(error)) throw error
+          // Unknown outcome: the write may still have applied. Re-read CP truth.
+          const confirmed = await cp.readStaffGrantsCp(target.uuid as string).then(
+            (r) => r,
+            () => null,
+          )
+          if (!confirmed) {
+            // CP unreachable: surface a retry state, mirror nothing.
+            return {
+              uuid: target.uuid,
+              name: target.name,
+              role: body?.role,
+              sync: {
+                error:
+                  'Не удалось подтвердить изменение в CP: обновите список и при необходимости повторите.',
+              },
+              operationId: null,
+              unknownOutcome: true,
+            }
+          }
+          const actual = confirmed.grants.filter(inScope).map((g) => g.role)
+          const landed =
+            finalRole === null ? !actual.includes(grantedRole) : actual.includes(finalRole)
+          if (!landed)
+            throw fail(
+              503,
+              'Control-plane не подтвердил изменение: обновите список и при необходимости повторите.',
+            )
+          held = [...actual]
+        }
         try {
           // CP keeps every granted role, so remove the target's other in-scope
           // site roles one by one with a fresh revision each. Foreign grants are
@@ -3023,23 +3111,13 @@ const routes: Record<string, Route> = {
         await store.setStaff(target.uuid, target.name, mirrored, actor.name)
         // The grant above is applied; a roster read that fails here must not
         // throw it away — it lands in the sync error field instead.
-        const sync = await cpCall(() => cpTeamList(cp, store))
-          .then((team) => syncWorkshop(store, actor, ownerName, team))
-          .then(
-            ({ id }) => ({ id }),
-            (error: unknown) => ({
-              error:
-                error instanceof Response
-                  ? 'Не удалось отправить список в мастерскую.'
-                  : String((error as Error).message),
-            }),
-          )
+        const sync = await syncCpTeam(store, actor, cp)
         return {
           uuid: target.uuid,
           name: target.name,
           role: body?.role,
           sync,
-          operationId: receipt.operationId,
+          operationId: receipt?.operationId ?? null,
           ...(held.length ? { partialApply: held } : {}),
         }
       }
@@ -3083,7 +3161,7 @@ const routes: Record<string, Route> = {
         const cp = await import('./cp.ts')
         const actorRole = await cpActorRole(cp, actor)
         if (!can(actorRole, 'workshop')) throw fail(403, 'Недостаточно прав.')
-        return syncWorkshop(store, actor, ownerName, await cpCall(() => cpTeamList(cp, store)))
+        return syncCpTeam(store, actor, cp)
       }
       return syncWorkshop(store, actor)
     },
@@ -3129,17 +3207,7 @@ const routes: Record<string, Route> = {
           await store.setStaffMaps(uuid, maps)
           return fresh
         })
-        const sync = await cpCall(() => cpTeamList(cp, store))
-          .then((team) => syncWorkshop(store, actor, ownerName, team))
-          .then(
-            ({ id }) => ({ id }),
-            (error: unknown) => ({
-              error:
-                error instanceof Response
-                  ? 'Не удалось отправить список в мастерскую.'
-                  : String((error as Error).message),
-            }),
-          )
+        const sync = await syncCpTeam(store, actor, cp)
         return { uuid, name: row.name, maps: body?.maps, sync }
       }
       const uuid = playerId(body?.uuid)
@@ -3194,9 +3262,8 @@ const routes: Record<string, Route> = {
         // branch: CP reads inside the lock keep a concurrent maps edit from
         // slipping between the snapshot and the write.
         const changed = await withStaffMapsLock(async () => {
-          const builders = (await cpCall(() => cpTeamList(cp, store))).filter(
-            (s) => s.role === 'builder',
-          )
+          const { team } = await cpCall(() => cpTeamList(cp, store))
+          const builders = team.filter((s) => s.role === 'builder')
           const ids = Array.isArray(uuids) ? uuids.map(playerId) : null
           if (
             !ids ||
@@ -3218,19 +3285,7 @@ const routes: Record<string, Route> = {
           }
           return changed
         })
-        const sync = changed.length
-          ? await cpCall(() => cpTeamList(cp, store))
-              .then((team) => syncWorkshop(store, actor, ownerName, team))
-              .then(
-                ({ id }) => ({ id }),
-                (error: unknown) => ({
-                  error:
-                    error instanceof Response
-                      ? 'Не удалось отправить список в мастерскую.'
-                      : String((error as Error).message),
-                }),
-              )
-          : null
+        const sync = changed.length ? await syncCpTeam(store, actor, cp) : null
         return { mapId, changed, sync }
       }
       const mapId = body?.mapId,
@@ -3598,22 +3653,18 @@ export async function handleWorkshopAccess(
       return { actor, role, target, maps }
     })
     ;({ actor, role, target } = edit)
-    const cp = (await import('./cp.ts')).cpStaffConfigured() ? await import('./cp.ts') : null
-    const sync = await (
-      cp
-        ? cpCall(() => cpTeamList(cp, store)).then((team) =>
-            syncWorkshop(store, actor, ownerName, team),
-          )
-        : syncWorkshop(store, actor)
-    ).then(
-      ({ id }) => ({ id }),
-      (e: unknown) => ({
-        error:
-          e instanceof Response
-            ? 'Не удалось отправить список в мастерскую.'
-            : String((e as Error).message),
-      }),
-    )
+    const cpLib = await import('./cp.ts')
+    const sync = cpLib.cpStaffConfigured()
+      ? await syncCpTeam(store, actor, cpLib)
+      : await syncWorkshop(store, actor).then(
+          ({ id }) => ({ id }),
+          (error: unknown) => ({
+            error:
+              error instanceof Response
+                ? 'Не удалось отправить список в мастерскую.'
+                : String((error as Error).message),
+          }),
+        )
     result = { mapId, name: edit.target.name, maps: edit.maps, sync }
     applied = true
     store.emitAudit(await finalize(true, null))

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { maintenanceFrom, type Maintenance } from './rooms.ts'
 
 export type CpMode = 'open' | 'draining' | 'maintenance'
@@ -423,6 +423,32 @@ export function roleFromCpMe(
     best = grant.role as 'builder' | 'moderator' | 'admin'
   }
   return best
+}
+
+/** Deterministic idempotency key for one admin intent: the same UI retry
+reuses it and dedupes in CP, while a later list revision makes a genuinely new
+change a new key. */
+export function staffIdempotencyKey(request: {
+  actorAccountId: string
+  accountUuid: string
+  role: string
+  revoke: boolean
+  scope: CpScope
+  uiRevision: number
+}): string {
+  const material = [
+    'staff-grant-v1',
+    request.actorAccountId.replaceAll('-', '').toLowerCase(),
+    request.accountUuid.replaceAll('-', '').toLowerCase(),
+    request.role,
+    request.revoke ? 'revoke' : 'grant',
+    request.scope.environment,
+    request.scope.backend,
+    request.scope.resource,
+    String(request.uiRevision),
+  ].join('|')
+  const compact = createHash('sha256').update(material).digest('hex').slice(0, 32)
+  return compact.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5')
 }
 
 export type StaffGrant = {
