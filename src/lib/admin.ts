@@ -3398,7 +3398,7 @@ const routes: Record<string, Route> = {
     },
     audit: (body) => ({ action: 'ingest-key-revoke', target: String(body?.id) }),
   },
-  // Reads up to HITREG_SCAN_CAP matches, so it is staff-only; the window defaults to the last 7 days.
+  // Aggregated in PostgreSQL over up to HITREG_SCAN_CAP matches, so it is staff-only; the window defaults to the last 7 days.
   'GET hitreg': {
     permission: 'stats',
     handler: ({ context, store }) => {

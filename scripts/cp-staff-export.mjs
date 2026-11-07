@@ -27,7 +27,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     throw new Error(
       'Usage: node --experimental-strip-types scripts/cp-staff-export.mjs /path/stats.sqlite',
     )
-  const store = await StatsStore.open(path)
+  const store = await (/^postgres(?:ql)?:\/\//.test(path)
+    ? StatsStore.open(path)
+    : StatsStore.openBackup(path))
   try {
     console.log(JSON.stringify(await exportStaff(store), null, 2))
   } finally {

@@ -195,11 +195,16 @@ function utc(value: unknown): number {
 // shortcut: process-local (resets on restart), shown in the admin hit-reg report; persist if drops must be audited.
 let telemetryDropped = 0
 export const telemetryDroppedCount = () => telemetryDropped
+/** Serialized bytes one stored telemetry block may take. The producer's per-match
+ * report (HitregTelemetry.Report.toMap: ≤512 counters, 8 disputes, fixed histograms)
+ * serializes to ~3 KB worst case; 8 KB leaves margin while keeping the hit-reg read bounded. */
+export const TELEMETRY_MAX_BYTES = 8192
 /** Hit-reg telemetry a match result may carry: the server's per-match report, kept verbatim (unknown fields dropped). */
 export function validateTelemetry(value: unknown): Telemetry {
   requireValue(value && typeof value === 'object' && !Array.isArray(value), 'Invalid telemetry')
   const t = value as Record<string, unknown>
   // Mirrors the producer caps (StatsResult): bounded top level, counters and dispute sample.
+  // The serialized cap bounds what one stored block costs the hit-reg read, whatever shape it takes.
   requireValue(Object.keys(t).length <= 64, 'Telemetry oversized')
   const count = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0
   const amount = (v: unknown) =>
@@ -224,7 +229,7 @@ export function validateTelemetry(value: unknown): Telemetry {
   )
   const counters = t.counters as Record<string, unknown>,
     names = Object.keys(counters)
-  requireValue(names.length <= 1024, 'Telemetry counters oversized')
+  requireValue(names.length <= 512, 'Telemetry counters oversized')
   const cleanCounters: Record<string, number> = {}
   for (const name of names) {
     requireValue(
@@ -249,7 +254,7 @@ export function validateTelemetry(value: unknown): Telemetry {
       return { le: r.le as number | 'inf', count: r.count as number }
     })
   }
-  requireValue(Array.isArray(t.disputes) && t.disputes.length <= 16, 'Invalid telemetry disputes')
+  requireValue(Array.isArray(t.disputes) && t.disputes.length <= 8, 'Invalid telemetry disputes')
   const disputes = (t.disputes as unknown[]).map((sample) => {
     requireValue(
       sample && typeof sample === 'object' && !Array.isArray(sample),
@@ -270,7 +275,7 @@ export function validateTelemetry(value: unknown): Telemetry {
     }
     return kept
   })
-  return {
+  const clean = {
     shots: t.shots as number,
     fallbackShare: t.fallbackShare as number,
     tickMsP50: t.tickMsP50 as number,
@@ -286,6 +291,8 @@ export function validateTelemetry(value: unknown): Telemetry {
     rewindTickBuckets: buckets(t.rewindTickBuckets),
     disputes,
   }
+  requireValue(JSON.stringify(clean).length <= TELEMETRY_MAX_BYTES, 'Telemetry oversized')
+  return clean
 }
 /** Strict allow-list of gameplay producers: training/playtest never reaches the aggregate tables. */
 export function validateResult(value: any, now = Date.now()): Result {
@@ -574,62 +581,7 @@ export function filters(params: URLSearchParams, now = Date.now()): Filters {
     page,
   }
 }
-/** Newest matches one hit-reg report reads. */
-export const HITREG_SCAN_CAP = 5000
-export class StatsStore {
-  db: Database
-  private constructor(location: string) {
-    this.db = new Database(location)
-  }
-  static async open(location: string): Promise<StatsStore> {
-    const store = new StatsStore(location)
-    try {
-      await store.initialize()
-      return store
-    } catch (error) {
-      await store.close()
-      throw error
-    }
-  }
-  private async initialize() {
-    const sqlite = this.db.sqlite
-    const columns = async (table: string): Promise<string[]> =>
-      (await this.db.prepare('SELECT name FROM pragma_table_info(?)').all(table)).map((c) => c.name)
-    if (sqlite) {
-      const version = (await sqlite.prepare('PRAGMA user_version').get()) as {
-        user_version: number
-      }
-      if (![0, 1, 2, 3, 4, 5, 6, 7].includes(version.user_version))
-        throw new Error('Unsupported statistics schema; restore/migrate explicitly')
-      sqlite.function('season_at', (time: any) => seasonAt(Number(time)).id)
-      sqlite.function('uuid_like', { deterministic: true }, (name: any) =>
-        uuidLike(String(name)) ? 1 : 0,
-      )
-    }
-    await this.db.transaction(async () => {
-      if (this.db.postgres) {
-        await this.db
-          .exec(`CREATE TABLE IF NOT EXISTS blockfield_schema (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL);
-          INSERT INTO blockfield_schema VALUES (1,7) ON CONFLICT(id) DO NOTHING;`)
-        const { version } = await this.db
-          .prepare('SELECT version FROM blockfield_schema WHERE id=1')
-          .get()
-        // v6 -> v7: token-hash revocations are replaced by server-side sessions.
-        if (version === 6)
-          await this.db.exec(`DROP TABLE IF EXISTS revoked_sessions;
-          UPDATE blockfield_schema SET version=7 WHERE id=1;`)
-        if (version !== 6 && version !== 7)
-          throw new Error('Unsupported statistics schema; restore/migrate explicitly')
-        await this.db
-          .exec(`CREATE OR REPLACE FUNCTION uuid_like(name TEXT) RETURNS INTEGER LANGUAGE SQL IMMUTABLE AS
-          $$ SELECT CASE WHEN trim(name) ~* '^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$' THEN 1 ELSE 0 END $$;`)
-      }
-      const legacyRatings =
-        sqlite &&
-        (await columns('ratings')).length > 0 &&
-        !(await columns('ratings')).includes('season_id')
-      if (legacyRatings) await this.db.exec('ALTER TABLE ratings RENAME TO ratings_v2')
-      const schema = `
+const SCHEMA = `
       CREATE TABLE IF NOT EXISTS results (
         server_id TEXT NOT NULL, event_id TEXT NOT NULL, kind TEXT NOT NULL, mode TEXT NOT NULL,
         campaign_id TEXT, ended_at INTEGER NOT NULL, reason TEXT NOT NULL, winner TEXT NOT NULL,
@@ -683,51 +635,89 @@ export class StatsStore {
       );
       CREATE INDEX IF NOT EXISTS server_events_at ON server_events(at);
       `
-      await this.db.exec(
-        this.db.postgres
-          ? schema
-              .replace(/\bINTEGER\b/g, 'BIGINT')
-              .replace(/\bREAL\b/g, 'DOUBLE PRECISION')
-              .replace(
-                /id BIGINT PRIMARY KEY/g,
-                'id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY',
-              )
-          : schema,
+/** Newest matches one hit-reg report reads; the scan stops here and `truncated` says so. */
+export const HITREG_SCAN_CAP = 5000
+export class StatsStore {
+  db: Database
+  private constructor(location: string, backup = false) {
+    this.db = new Database(location, backup)
+  }
+  static async open(location: string): Promise<StatsStore> {
+    if (!/^postgres(?:ql)?:\/\//.test(location))
+      throw new StatsError(503, 'BLOCKFIELD_DATABASE_URL must be a PostgreSQL URL')
+    const store = new StatsStore(location)
+    try {
+      await store.initialize()
+      return store
+    } catch (error) {
+      await store.close()
+      throw error
+    }
+  }
+  /**
+   * One-shot offline reader for a SQLite backup file (scripts/migrate-stats.mjs).
+   * The running app never serves from SQLite. Only current-schema (v7) backups are
+   * accepted; older files must first be opened once by a pre-Postgres-only release.
+   */
+  static async openBackup(path: string): Promise<StatsStore> {
+    const store = new StatsStore(path, true)
+    try {
+      await store.initializeBackup()
+      return store
+    } catch (error) {
+      await store.close()
+      throw error
+    }
+  }
+  private async initializeBackup() {
+    const sqlite = this.db.sqlite!
+    const { user_version } = sqlite.prepare('PRAGMA user_version').get() as {
+      user_version: number
+    }
+    if (user_version === 0) {
+      await this.db.exec(SCHEMA)
+      await this.db.exec('PRAGMA user_version=7')
+    } else if (user_version !== 7) {
+      throw new Error(
+        `SQLite backup is schema ${user_version}; this build imports only schema 7 backups`,
       )
-      if (legacyRatings)
-        await this.db
-          .exec(`INSERT INTO ratings SELECT season_at(last_rated_at),uuid,rating,rd,volatility,rated_campaigns,last_rated_at FROM ratings_v2;
-        DROP TABLE ratings_v2;`)
-      if (sqlite && !(await columns('rating_changes')).includes('season_id'))
-        await this.db
-          .exec(`ALTER TABLE rating_changes ADD COLUMN season_id TEXT NOT NULL DEFAULT '';
-        UPDATE rating_changes SET season_id=season_at(rated_at);`)
-      // v3 -> v4: voided results stay stored but leave every aggregate.
-      if (sqlite && !(await columns('results')).includes('voided_at'))
-        await this.db.exec(
-          'ALTER TABLE results ADD COLUMN voided_at INTEGER; ALTER TABLE results ADD COLUMN voided_by TEXT;',
-        )
-      // v4 -> v5: workshop map access per builder (null = every map).
-      if (sqlite && !(await columns('staff_roles')).includes('maps'))
-        await this.db.exec('ALTER TABLE staff_roles ADD COLUMN maps TEXT;')
+    }
+    sqlite.function('uuid_like', { deterministic: true }, (name: any) =>
+      uuidLike(String(name)) ? 1 : 0,
+    )
+  }
+  private async initialize() {
+    await this.db.transaction(async () => {
+      await this.db
+        .exec(`CREATE TABLE IF NOT EXISTS blockfield_schema (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL);
+          INSERT INTO blockfield_schema VALUES (1,7) ON CONFLICT(id) DO NOTHING;`)
+      const { version } = await this.db
+        .prepare('SELECT version FROM blockfield_schema WHERE id=1')
+        .get()
+      // v6 -> v7: token-hash revocations are replaced by server-side sessions.
+      if (version === 6)
+        await this.db.exec(`DROP TABLE IF EXISTS revoked_sessions;
+          UPDATE blockfield_schema SET version=7 WHERE id=1;`)
+      if (version !== 6 && version !== 7)
+        throw new Error('Unsupported statistics schema; restore/migrate explicitly')
+      await this.db
+        .exec(`CREATE OR REPLACE FUNCTION uuid_like(name TEXT) RETURNS INTEGER LANGUAGE SQL IMMUTABLE AS
+          $$ SELECT CASE WHEN trim(name) ~* '^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$' THEN 1 ELSE 0 END $$;`)
+      await this.db.exec(
+        SCHEMA.replace(/\bINTEGER\b/g, 'BIGINT')
+          .replace(/\bREAL\b/g, 'DOUBLE PRECISION')
+          .replace(
+            /id BIGINT PRIMARY KEY/g,
+            'id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY',
+          ),
+      )
       // v6 -> v7: token-hash revocations are replaced by server-side sessions; audit rows gain a pending flag.
-      if (this.db.postgres) {
-        await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS pending BIGINT;')
-        await this.db.exec(
-          "ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS via TEXT NOT NULL DEFAULT 'ui';",
-        )
-        await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS client TEXT;')
-        await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS correlation TEXT;')
-      }
-      if (sqlite && !(await columns('admin_audit')).includes('pending'))
-        await this.db.exec('ALTER TABLE admin_audit ADD COLUMN pending INTEGER;')
-      // E5: every audit row carries its fixed transport; retention deletes only after a verified export.
-      if (sqlite && !(await columns('admin_audit')).includes('via'))
-        await this.db.exec("ALTER TABLE admin_audit ADD COLUMN via TEXT NOT NULL DEFAULT 'ui';")
-      if (sqlite && !(await columns('admin_audit')).includes('client'))
-        await this.db.exec('ALTER TABLE admin_audit ADD COLUMN client TEXT;')
-      if (sqlite && !(await columns('admin_audit')).includes('correlation'))
-        await this.db.exec('ALTER TABLE admin_audit ADD COLUMN correlation TEXT;')
+      await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS pending BIGINT;')
+      await this.db.exec(
+        "ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS via TEXT NOT NULL DEFAULT 'ui';",
+      )
+      await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS client TEXT;')
+      await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS correlation TEXT;')
       // Crash orphans (pending rows from a killed request) are marked interrupted, never hidden.
       // A live row mis-marked by a concurrent replica still finalizes normally afterwards.
       await this.db
@@ -745,16 +735,6 @@ export class StatsStore {
           .get()) as { token: string } | undefined
         if (sample && openTokenRaw(sample.token, key) === null)
           console.error('session secret changed: all sessions invalid')
-      }
-      if (sqlite) {
-        if (!(await columns('ingest_keys')).includes('id'))
-          await this.db.exec(`
-          ALTER TABLE ingest_keys RENAME TO ingest_keys_v5;
-          CREATE TABLE ingest_keys (id INTEGER PRIMARY KEY, server_id TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
-          INSERT INTO ingest_keys SELECT rowid,* FROM ingest_keys_v5;
-          DROP TABLE ingest_keys_v5;`)
-        await this.db.exec('DROP TABLE IF EXISTS revoked_sessions')
-        await this.db.exec('PRAGMA user_version=7')
       }
     })
   }
@@ -1013,78 +993,85 @@ export class StatsStore {
       ),
     }
   }
-  /** Per-match hit-reg telemetry aggregated over a window: summed counters and shots-weighted fallback share, per-match percentiles listed. */
+  /** Hit-reg telemetry aggregated over a window. The sums and per-match percentiles come
+   * straight from PostgreSQL (jsonb operators, SUM, percentile_cont); Node never parses
+   * per-row telemetry. The scan stops at the HITREG_SCAN_CAP newest matches (`truncated` says so). */
   async hitreg(mode: string | null, since: number, until: number) {
     if (mode !== null && !MODES.includes(mode)) throw new StatsError(400, 'Unknown mode')
-    // ponytail: payloads stay schemaless so telemetry needs no migration; only the telemetry block is read
-    // (never the whole payload) and the scan is capped at the 5000 newest matches so one request stays bounded. Revisit with a telemetry column or per-match aggregate row.
-    const block = this.db.postgres
-      ? "(payload::jsonb->>'telemetry')"
-      : "json_extract(payload,'$.telemetry')"
-    const rows = (await this.db
+    // ponytail: payloads stay schemaless so telemetry needs no migration; the window scan stops
+    // at HITREG_SCAN_CAP newest matches (truncated says so) and the report stays staff-only.
+    const scan = `SELECT (payload::jsonb->'telemetry') t,
+        row_number() OVER (ORDER BY ended_at DESC,server_id,event_id) rn FROM results
+      WHERE kind='match' AND voided_at IS NULL AND ended_at>=? AND ended_at<=?
+        AND (CAST(? AS TEXT) IS NULL OR mode=?) LIMIT ${HITREG_SCAN_CAP + 1}`
+    const tele = (expr: string) => `(SELECT ${expr} FROM tele)`
+    const mid = (field: string) =>
+      `percentile_cont(0.5) WITHIN GROUP (ORDER BY (t->>'${field}')::double precision)`
+    const p99 = (field: string) =>
+      `percentile_cont(0.99) WITHIN GROUP (ORDER BY (t->>'${field}')::double precision)`
+    const agg = (await this.db
       .prepare(
-        `SELECT server_id "serverId",event_id "eventId",ended_at "endedAt",${block} telemetry FROM results
-        WHERE kind='match' AND voided_at IS NULL AND ended_at>=? AND ended_at<=? AND (CAST(? AS TEXT) IS NULL OR mode=?)
-        ORDER BY ended_at DESC,server_id,event_id LIMIT ${HITREG_SCAN_CAP + 1}`,
+        `WITH scan AS (${scan}),
+          capped AS (SELECT t FROM scan WHERE rn<=${HITREG_SCAN_CAP}),
+          tele AS (SELECT t FROM capped WHERE jsonb_typeof(t)='object')
+        SELECT (SELECT COUNT(*) FROM capped) matches,
+          (SELECT COUNT(*) FROM scan)>${HITREG_SCAN_CAP} truncated,
+          (SELECT COUNT(*) FROM tele) "withTelemetry",
+          ${tele(`COALESCE(SUM((t->>'shots')::bigint),0)`)} shots,
+          ${tele(`COALESCE(SUM((t->>'fallbackShare')::double precision*(t->>'shots')::bigint),0)`)} "fallbackShots",
+          ${tele(`COALESCE(SUM(jsonb_array_length(t->'disputes')),0)`)} disputes,
+          ${tele(mid('tickMsP50'))} "tickMsP50Median", ${tele(p99('tickMsP50'))} "tickMsP50P99",
+          ${tele(mid('tickMsP99'))} "tickMsP99Median", ${tele(p99('tickMsP99'))} "tickMsP99P99",
+          ${tele(mid('ageTicksP50'))} "ageTicksP50Median", ${tele(p99('ageTicksP50'))} "ageTicksP50P99",
+          ${tele(mid('rewindTicksP50'))} "rewindTicksP50Median", ${tele(p99('rewindTicksP50'))} "rewindTicksP50P99"`,
       )
-      .all(since, until, mode, mode)) as {
-      serverId: string
-      eventId: string
-      endedAt: number
-      telemetry: string | null
-    }[]
-    const truncated = rows.length > HITREG_SCAN_CAP,
-      scanned = truncated ? rows.slice(0, HITREG_SCAN_CAP) : rows
-    const matches: {
-      serverId: string
-      eventId: string
-      endedAt: number
+      .get(since, until, mode, mode)) as {
+      matches: number
+      truncated: boolean
+      withTelemetry: number
       shots: number
-      fallbackShare: number
-      tickMsP50: number
-      tickMsP99: number
-      ageTicksP50: number
-      rewindTicksP50: number
+      fallbackShots: number
       disputes: number
-    }[] = []
-    const counters: Record<string, number> = {}
-    let shots = 0,
-      fallbackShots = 0,
-      disputes = 0
-    for (const row of scanned) {
-      if (!row.telemetry) continue
-      const telemetry = JSON.parse(row.telemetry) as Telemetry
-      matches.push({
-        serverId: row.serverId,
-        eventId: row.eventId,
-        endedAt: row.endedAt,
-        shots: telemetry.shots,
-        fallbackShare: telemetry.fallbackShare,
-        tickMsP50: telemetry.tickMsP50,
-        tickMsP99: telemetry.tickMsP99,
-        ageTicksP50: telemetry.ageTicksP50,
-        rewindTicksP50: telemetry.rewindTicksP50,
-        disputes: telemetry.disputes.length,
-      })
-      shots += telemetry.shots
-      fallbackShots += telemetry.fallbackShare * telemetry.shots
-      disputes += telemetry.disputes.length
-      for (const [name, n] of Object.entries(telemetry.counters))
-        counters[name] = (counters[name] ?? 0) + n
+      tickMsP50Median: number | null
+      tickMsP50P99: number | null
+      tickMsP99Median: number | null
+      tickMsP99P99: number | null
+      ageTicksP50Median: number | null
+      ageTicksP50P99: number | null
+      rewindTicksP50Median: number | null
+      rewindTicksP50P99: number | null
     }
+    // One row per counter name; validated blocks keep ≤512 names each (see validateTelemetry).
+    const counterRows = (await this.db
+      .prepare(
+        `WITH scan AS (${scan}),
+          capped AS (SELECT t FROM scan WHERE rn<=${HITREG_SCAN_CAP} AND jsonb_typeof(t)='object')
+        SELECT name,SUM(value::bigint) total FROM capped
+          CROSS JOIN LATERAL jsonb_each_text(
+            CASE WHEN jsonb_typeof(t->'counters')='object' THEN t->'counters' ELSE '{}'::jsonb END
+          ) c(name,value) GROUP BY name`,
+      )
+      .all(since, until, mode, mode)) as { name: string; total: number }[]
     return {
       schemaVersion: 1,
       checkedAt: new Date().toISOString(),
       mode,
-      matches: scanned.length,
-      withTelemetry: matches.length,
+      matches: agg.matches,
+      withTelemetry: agg.withTelemetry,
       telemetryDropped,
-      truncated,
-      shots,
-      fallbackShare: shots === 0 ? 0 : fallbackShots / shots,
-      disputes,
-      counters,
-      perMatch: matches,
+      truncated: agg.truncated,
+      shots: agg.shots,
+      fallbackShare: agg.shots === 0 ? 0 : agg.fallbackShots / agg.shots,
+      disputes: agg.disputes,
+      counters: Object.fromEntries(counterRows.map((row) => [row.name, row.total])),
+      tickMsP50Median: agg.tickMsP50Median,
+      tickMsP50P99: agg.tickMsP50P99,
+      tickMsP99Median: agg.tickMsP99Median,
+      tickMsP99P99: agg.tickMsP99P99,
+      ageTicksP50Median: agg.ageTicksP50Median,
+      ageTicksP50P99: agg.ageTicksP50P99,
+      rewindTicksP50Median: agg.rewindTicksP50Median,
+      rewindTicksP50P99: agg.rewindTicksP50P99,
     }
   }
   /** Profiles whose stored name is a UUID (see ingest), among `uuids`. */
@@ -1361,7 +1348,7 @@ export class StatsStore {
       SUM(p.captures) captures,SUM(p.neutralizations) neutralizations,SUM(p.point_seconds) "pointSeconds",
       SUM(p.play_seconds) "playSeconds",SUM(p.suicides) suicides,SUM(p.team_kills) "teamKills",MAX(p.max_streak) "maxKillstreak",
       COUNT(*) matches,SUM(CASE WHEN r.reason='completed' AND (
-        (r.mode='deathmatch' AND ${this.db.postgres ? "(r.payload::jsonb->>'winnerUuid')" : "json_extract(r.payload,'$.winnerUuid')"}=p.uuid) OR
+        (r.mode='deathmatch' AND (r.payload::jsonb->>'winnerUuid')=p.uuid) OR
         (r.mode!='deathmatch' AND p.team!='NONE' AND r.winner=p.team)
       ) THEN 1 ELSE 0 END) wins,
       ROUND(CAST(SUM(p.kills)*1.0/greatest(1,SUM(p.deaths)) AS NUMERIC),3) kd,
@@ -1408,7 +1395,7 @@ export class StatsStore {
       (await this.leaderboard({ ...query, page: 1, limit: 1 }, uuid)).players[0] || null
     const history = await this.db
       .prepare(
-        `SELECT r.event_id "eventId",r.server_id "serverId",r.kind,r.mode,r.campaign_id "campaignSessionId",r.ended_at "endedAt",r.reason,r.winner,${this.db.postgres ? "(r.payload::jsonb->>'winnerUuid')" : "json_extract(r.payload,'$.winnerUuid')"} "winnerUuid",p.team,p.score,p.kills,p.deaths
+        `SELECT r.event_id "eventId",r.server_id "serverId",r.kind,r.mode,r.campaign_id "campaignSessionId",r.ended_at "endedAt",r.reason,r.winner,(r.payload::jsonb->>'winnerUuid') "winnerUuid",p.team,p.score,p.kills,p.deaths
       FROM participants p JOIN results r USING(server_id,event_id) WHERE p.uuid=? AND r.voided_at IS NULL AND r.ended_at>=? AND r.ended_at<=? AND (CAST(? AS TEXT) IS NULL OR r.mode=?)
       ORDER BY r.ended_at DESC,r.server_id,r.event_id LIMIT ? OFFSET ?`,
       )
@@ -1533,11 +1520,9 @@ let singleton: Promise<StatsStore> | undefined
 export function statsStore(): Promise<StatsStore> {
   if (singleton) return singleton
   const url = process.env.BLOCKFIELD_DATABASE_URL
-  if (url && !/^postgres(?:ql)?:\/\//.test(url))
+  if (!url || !/^postgres(?:ql)?:\/\//.test(url))
     throw new StatsError(503, 'BLOCKFIELD_DATABASE_URL must be a PostgreSQL URL')
-  const path = url || process.env.BLOCKFIELD_STATS_DB
-  if (!path) throw new StatsError(503, 'Statistics storage is not configured')
-  return (singleton = StatsStore.open(path).catch((error) => {
+  return (singleton = StatsStore.open(url).catch((error) => {
     singleton = undefined
     throw error
   }))

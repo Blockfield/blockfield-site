@@ -1,7 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { DatabaseSync } from 'node:sqlite'
-import { mkdirSync } from 'node:fs'
-import { dirname, isAbsolute } from 'node:path'
 import { Pool, types, type PoolClient } from 'pg'
 
 const number = (value: string) => {
@@ -24,15 +22,15 @@ export function postgresSql(sql: string): string {
 }
 
 export class Database {
-  postgres: boolean
-  sqlite?: DatabaseSync
   pool?: Pool
+  // SQLite exists only as a one-shot offline backup reader for scripts/migrate-stats.mjs.
+  // The app never serves from SQLite: StatsStore.open() accepts PostgreSQL URLs only.
+  sqlite?: DatabaseSync
   private context = new AsyncLocalStorage<PoolClient | DatabaseSync>()
   private tail: Promise<unknown> = Promise.resolve()
 
-  constructor(location: string) {
-    this.postgres = /^postgres(?:ql)?:\/\//.test(location)
-    if (this.postgres) {
+  constructor(location: string, backup = false) {
+    if (/^postgres(?:ql)?:\/\//.test(location)) {
       this.pool = new Pool({
         connectionString: location,
         max: 10,
@@ -41,17 +39,12 @@ export class Database {
         types: pgTypes,
       })
       this.pool.on('error', () => console.error('PostgreSQL idle connection failed'))
-    } else {
-      if (location !== ':memory:') {
-        if (!isAbsolute(location)) throw new Error('BLOCKFIELD_STATS_DB must be absolute')
-        mkdirSync(dirname(location), { recursive: true, mode: 0o700 })
-      }
-      this.sqlite = new DatabaseSync(location)
-      this.sqlite.exec(
-        'PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;',
-      )
-      this.sqlite.function('greatest', { varargs: true }, (...values: any[]) => Math.max(...values))
+      return
     }
+    if (!backup) throw new Error('Statistics storage must be a PostgreSQL URL')
+    this.sqlite = new DatabaseSync(location)
+    this.sqlite.exec('PRAGMA foreign_keys=ON;')
+    this.sqlite.function('greatest', { varargs: true }, (...values: any[]) => Math.max(...values))
   }
   private serial<T>(work: () => Promise<T>): Promise<T> {
     const pending = this.tail.then(work)
@@ -64,9 +57,9 @@ export class Database {
     kind: 'all' | 'get' | 'run' | 'exec',
   ): Promise<any> {
     const execute = async () => {
-      if (this.postgres) {
+      if (this.pool) {
         const result = await (
-          (this.context.getStore() as PoolClient | undefined) ?? this.pool!
+          (this.context.getStore() as PoolClient | undefined) ?? this.pool
         ).query(postgresSql(sql), args)
         if (kind === 'exec') return
         if (kind === 'run') return { changes: result.rowCount }
@@ -75,7 +68,7 @@ export class Database {
       if (kind === 'exec') return this.sqlite!.exec(sql)
       return this.sqlite!.prepare(sql)[kind](...args)
     }
-    return this.postgres || this.context.getStore() ? execute() : this.serial(execute)
+    return this.pool || this.context.getStore() ? execute() : this.serial(execute)
   }
   prepare(sql: string) {
     return {
@@ -90,13 +83,13 @@ export class Database {
   async transaction<T>(work: () => Promise<T>): Promise<T> {
     if (this.context.getStore()) return work()
     const execute = async () => {
-      const connection = this.postgres ? await this.pool!.connect() : this.sqlite!
+      const connection = this.pool ? await this.pool.connect() : this.sqlite!
       try {
         return await this.context.run(connection, async () => {
-          await this.exec(this.postgres ? 'BEGIN' : 'BEGIN IMMEDIATE')
+          await this.exec(this.pool ? 'BEGIN' : 'BEGIN IMMEDIATE')
           try {
-            // Rating updates and rebuilds must serialize across site replicas, just like SQLite's writer lock.
-            if (this.postgres) await this.exec('SELECT pg_advisory_xact_lock(782344, 1)')
+            // Rating updates and rebuilds must serialize across site replicas.
+            if (this.pool) await this.exec('SELECT pg_advisory_xact_lock(782344, 1)')
             const result = await work()
             await this.exec('COMMIT')
             return result
@@ -106,10 +99,10 @@ export class Database {
           }
         })
       } finally {
-        if (this.postgres) (connection as PoolClient).release()
+        if (this.pool) (connection as PoolClient).release()
       }
     }
-    return this.postgres ? execute() : this.serial(execute)
+    return this.pool ? execute() : this.serial(execute)
   }
   async close() {
     await this.tail

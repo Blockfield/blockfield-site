@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { convertLegacy, importManifest } from '../scripts/import-legacy-stats.mjs'
 import { StatsStore, filters } from '../src/lib/stats.ts'
+import { databaseUrl } from './storage.mjs'
 const serverId = '00000000-0000-4000-8000-000000000001'
 const uuid = '00000000-0000-4000-8000-000000000002'
 const context = { serverId, sessionPurpose: 'gameplay', modeId: 'room', mapId: 'fields' }
@@ -40,7 +41,7 @@ function fixture() {
   }
 }
 const classMap = { 'Штурмовик (AK)': { classId: 'assault', variantId: '0' } }
-test('legacy import validates then replays safely, without MMR, and rejects unsafe sources', async () => {
+test('legacy import validates then replays safely, without MMR, and rejects unsafe sources', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'bf-legacy-import-'))
   try {
     const raw = fixture()
@@ -101,20 +102,24 @@ test('legacy import validates then replays safely, without MMR, and rejects unsa
     }
     writeFileSync(manifest, JSON.stringify(doc))
     assert.equal((await importManifest(manifest, database))[0].status, 'validated')
-    assert.equal((await importManifest(manifest, database, true))[0].status, 'inserted')
-    assert.equal((await importManifest(manifest, database, true))[0].status, 'duplicate')
-    const store = await StatsStore.open(database)
-    try {
-      const board = await store.leaderboard(filters(new URLSearchParams()))
-      assert.equal(board.total, 1)
-      assert.equal(board.players[0].matches, 1)
-      assert.equal(board.players[0].kills, 1)
-      assert.equal(board.players[0].mmr, null)
-    } finally {
-      await store.close()
+    const applyDb = process.env.BLOCKFIELD_TEST_DATABASE_URL ? await databaseUrl(t) : null
+    if (applyDb) {
+      assert.equal((await importManifest(manifest, applyDb, true))[0].status, 'inserted')
+      assert.equal((await importManifest(manifest, applyDb, true))[0].status, 'duplicate')
+      const store = await StatsStore.open(applyDb)
+      try {
+        const board = await store.leaderboard(filters(new URLSearchParams()))
+        assert.equal(board.total, 1)
+        assert.equal(board.players[0].matches, 1)
+        assert.equal(board.players[0].kills, 1)
+        assert.equal(board.players[0].mmr, null)
+      } finally {
+        await store.close()
+      }
     }
     writeFileSync(file, JSON.stringify({ ...raw, Winner: 'BlueTeam' }))
-    assert.match((await importManifest(manifest, database, true))[0].error, /checksum/)
+    if (applyDb) assert.match((await importManifest(manifest, applyDb, true))[0].error, /checksum/)
+    else assert.equal((await importManifest(manifest, database))[0].status, 'rejected')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

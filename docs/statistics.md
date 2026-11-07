@@ -4,12 +4,12 @@ Refs: netherg-io/blockfield-releases#3 and #6. This service is part of the exist
 
 ## Runtime and storage
 
-Use Node 22.19+ (the existing Astro dependency graph also requires this). `src/lib/database.ts` selects PostgreSQL through `pg` when `BLOCKFIELD_DATABASE_URL` is set, otherwise built-in `node:sqlite` through `BLOCKFIELD_STATS_DB`. Both store statistics and staff roles. See [PostgreSQL and SQLite compatibility](#postgresql-and-sqlite-compatibility-schema-6) for deployment and migration; some Node 22 releases still report `node:sqlite` as experimental.
+Use Node 22.19+ (the existing Astro dependency graph also requires this). PostgreSQL through `pg` is the only store: `StatsStore.open()` accepts only `BLOCKFIELD_DATABASE_URL`. `node:sqlite` remains solely inside the one-shot offline backup importer (`scripts/migrate-stats.mjs`, `StatsStore.openBackup()`); the running app never serves from SQLite. See [PostgreSQL storage and the SQLite export](#postgresql-storage-schema-7) for deployment and migration.
 
-Site environment for SQLite (use `BLOCKFIELD_DATABASE_URL` instead of the SQLite path for PostgreSQL):
+Site environment (PostgreSQL is required):
 
 ```dotenv
-BLOCKFIELD_STATS_DB=/data/stats/blockfield.sqlite
+BLOCKFIELD_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/blockfield
 # Map persistent game-server UUIDs to 32+ character random producer tokens.
 # During rotation an ID may map to ["current-token", "previous-token"].
 BLOCKFIELD_STATS_INGEST_KEYS={"00000000-0000-4000-8000-000000000001":"REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS"}
@@ -17,9 +17,9 @@ BLOCKFIELD_STATS_INGEST_KEYS={"00000000-0000-4000-8000-000000000001":"REPLACE_WI
 
 Mount a **named persistent volume** at `/data/stats` owned by the image's `node` user (UID 1000). Do not commit real tokens, put them in client configs, or print them. Set the matching server ID/token on the game producer. HTTPS is required outside a private trusted network. Ingestion does not authenticate with player accounts: it accepts only server credentials and rejects submissions for another server ID.
 
-Without a configured database, reads return 503 rather than an empty leaderboard. An invalid PostgreSQL configuration fails instead of falling back to SQLite. Producer keys can also be created and revoked in `/admin` (stored as SHA-256 hashes in `ingest_keys`); env and DB keys are both accepted. Without any ingestion key, writes are unauthorized. Bad key configuration fails closed. Keep one writer deployment per local SQLite volume; do not place the database on NFS or share it between hosts. Use WAL-aware SQLite backup tooling, or stop **the site only** and copy the database plus any WAL/SHM files before upgrades. Do not copy a live `.sqlite` file alone. Restore to an isolated instance and replay the producer outbox to verify a backup. Unknown database schema versions are rejected, not overwritten.
+Without a configured database, reads return 503 rather than an empty leaderboard. An invalid PostgreSQL configuration fails instead of serving anything else. Producer keys can also be created and revoked in `/admin` (stored as SHA-256 hashes in `ingest_keys`); env and DB keys are both accepted. Without any ingestion key, writes are unauthorized. Bad key configuration fails closed. Restore to an isolated instance and replay the producer outbox to verify a backup. Unknown database schema versions are rejected, not overwritten.
 
-Current schema is 6. SQLite upgrades earlier supported versions in place on startup inside one transaction (any failure rolls back and the site refuses to open the file). The original migrations through schema 4 were: v2 → v3: `ratings` is re-keyed from `uuid` to `(season_id, uuid)` and `rating_changes` gains `season_id`; every existing row is assigned to the season that contains its `last_rated_at` / `rated_at` (before season 1 → `s1`). Nothing is recalculated: on the production data (all rated after 2026-09-14) every rating stays exactly as it was, now as season `s1`. v3 → v4 adds `results.voided_at`/`voided_by` (voided results are excluded from every read) and the tables `admin_audit`, `ingest_keys` and `staff_roles` for the admin panel (`docs/admin.md`); no existing row changes. Back up the volume before deploying; a file opened by a newer build cannot be opened by older builds.
+Current schema is 7. Schema 6 gave ingestion keys explicit IDs. There are no automatic deletes or destructive migrations.
 
 There are no automatic deletes or destructive migrations. MMR is recalculated only when an administrator voids/restores a rated campaign. Add retention/administration policies explicitly before a large public rollout. Put public read endpoints behind reverse-proxy rate limits appropriate to the deployment.
 
@@ -36,7 +36,7 @@ The contract is defined and strictly validated by `validateResult` in `src/lib/s
 - UTC `startedAt`/`endedAt`, `rulesetVersion`, structured `endReason` (`completed`, `draw`, `abandoned`, `stopped`, `shutdown`, `error`), winner `RED`, `BLUE` or `NONE`. Interrupted/drawn events cannot name a winner.
 - `participants` is already consolidated by UUID. Use `team: NONE` for genuinely mixed/unknown team participation, not a fabricated victory. Stable class and variant IDs are required. Display names are not identity.
 - All counters are finite/bounded, zero deaths produces finite K/D. Unknown fields (including accidental tokens/IPs) are discarded.
-- Optional `telemetry`: the per-match hit-reg report the game server attaches (`shots`, `fallbackShare`, tick/age/rewind percentiles, `counters`, bucket histograms, `disputes`). It is validated against the producer caps (64 top-level fields, 1024 counters, 16 disputes) and stored in the result payload; results without it keep their legacy bytes. An invalid block never rejects the result: it is dropped, one `Telemetry dropped` warning is logged per result and the process-local `telemetryDropped` counter (shown in the hit-reg report) grows.
+- Optional `telemetry`: the per-match hit-reg report the game server attaches (`shots`, `fallbackShare`, tick/age/rewind percentiles, `counters`, bucket histograms, `disputes`). It is validated against the producer caps (64 top-level fields, 512 counters, 8 disputes, 8 KB serialized) and stored in the result payload; results without it keep their legacy bytes. An invalid block never rejects the result: it is dropped, one `Telemetry dropped` warning is logged per result and the process-local `telemetryDropped` counter (shown in the hit-reg report) grows.
 
 Maximum body 1 MiB, maximum 512 participants, bounded per-player class breakdown, bounded body read timeout. Declared length is not trusted: streamed bytes are counted. Credentials are checked before body parsing. Authorization tokens are compared via fixed-length SHA-256 digests and a constant-time comparison.
 
@@ -49,7 +49,7 @@ All reads are `GET`, public, `Cache-Control: no-store`, and served from the sele
 - `/api/stats/leaderboard?mode=campaign&season=s1&sort=score&page=1&limit=25`
 - `/api/stats/players/<UUID>` with the same filters (sort only affects `totals.rank`).
 - `/api/stats/seasons` → `{schemaVersion, current, seasons: [{id, name, startsAt, endsAt}]}`; only started seasons, oldest first; `current` is `null` before season 1.
-- `/api/stats/hitreg?mode=&season=&period=` → **staff only** (site session with the `stats` permission, same guard as `/api/admin/*`; also served as `/api/admin/hitreg`). Hit-reg aggregate over the same window filters, `period` defaulting to `week` here: summed `shots`, shots-weighted `fallbackShare`, summed `counters` and `disputes`, plus per-match percentiles (`perMatch`). Voided results are excluded; Only the telemetry block is read, from the 5000 newest matches; `truncated` says that cap was hit.
+- `/api/stats/hitreg?mode=&season=&period=` → **staff only** (site session with the `stats` permission, same guard as `/api/admin/*`; also served as `/api/admin/hitreg`). Hit-reg aggregate over the same window filters, `period` defaulting to `week` here: summed `shots`, shots-weighted `fallbackShare`, summed `counters` and `disputes`, plus the median and P99 across per-match tick/age/rewind percentiles. Voided results are excluded; the aggregation runs in PostgreSQL (no per-row parsing in Node) over the 5000 newest matches; `truncated` says that cap was hit.
 
 Filters: `mode` = `room`, `campaign`, `deathmatch` (omitted = all). `period` = `all`, rolling `week` (7 days), rolling `month` (30 days). `season` = a started season ID; `season` together with `period` (even `period=all`), an unknown season or a future season is **400**. `sort` = `score` (default), `rating` (the MMR season's rating), `kills`, `captures`, `pointSeconds`, `playSeconds`, `wins`, `kd`. `limit` 1–100, `page` 1–1000, otherwise 400. A page past the end returns `players: []` with the real `total`.
 
@@ -104,27 +104,27 @@ Late results: a campaign that ended in an earlier season but arrives later updat
 - Site: `/leaderboard` and `/players/<UUID>` call `StatsStore` directly on the server; `/account` fetches `/api/stats/players/<UUID>` in the browser with the Drasl profile UUID.
 - Launcher and in-game UI must read the same public HTTP endpoints and apply the display rules above; do not re-aggregate or recompute rank/MMR locally.
 - The read API never calls Minecraft, RCON or Server List Ping; only the game server's producer writes, via `POST /api/stats/results`.
-- The app selects `BLOCKFIELD_DATABASE_URL` before `BLOCKFIELD_STATS_DB` (absolute path). For local work use an isolated test database or a throwaway SQLite file, seeded by `StatsStore.ingest()` with the test fixtures; never production data.
+- The app requires `BLOCKFIELD_DATABASE_URL` (a PostgreSQL URL). For local work use an isolated test database seeded by `StatsStore.ingest()` with the test fixtures; never production data.
 
 ## Verification and remaining integration
 
-`pnpm install --frozen-lockfile && pnpm check && pnpm build`. Tests cover replay/conflict, transactional rollback, restarts on disk, both authorization boundaries, streamed limits, non-gameplay rejection, duplicate participants, stable paging, zero deaths, filters, name changes, round/campaign double counting, season carry-over and boundaries, late results, season-specific API MMR and the v1→v3 / v2→v3 migrations. Run the producer/API end-to-end check from the companion mod PR before merging both.
+`pnpm install --frozen-lockfile && pnpm check && pnpm build`. Tests cover replay/conflict, transactional rollback, both authorization boundaries, streamed limits, non-gameplay rejection, duplicate participants, stable paging, zero deaths, filters, name changes, round/campaign double counting, season carry-over and boundaries, late results and season-specific API MMR. Run the producer/API end-to-end check from the companion mod PR before merging both.
 
 Local review: submit the test fixture with a configured producer key, replay it, verify exactly one battle; submit a campaign summary, verify counters are unchanged; stop Minecraft, refresh leaderboard/account, and verify history still loads. Invalid/missing DB must show unavailable, not zero stats. Check layout at 360px and desktop, keyboard navigation, long display names and logout during a slow request.
 
 Legacy CamelCase import is provided below. Recomputing later seasons after late results, class-filtered leaderboard and large-dataset load testing remain separate work. Existing log files are never silently reinterpreted or rewritten.
 
-## PostgreSQL and SQLite compatibility (schema 6)
+## PostgreSQL storage (schema 7)
 
-Set `BLOCKFIELD_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DATABASE` for PostgreSQL.
-Without it, `BLOCKFIELD_STATS_DB=/absolute/path/blockfield.sqlite` retains SQLite support.
-An unavailable or invalid PostgreSQL configuration returns an error; it never silently falls back to a different SQLite database.
-Both engines use the same validation, queries, ratings and admin roles. Storage methods and `StatsStore.open()` are asynchronous.
+PostgreSQL is the only store. Set `BLOCKFIELD_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DATABASE`.
+An unavailable or invalid PostgreSQL configuration returns an error; the app never serves from anything else.
+Storage methods and `StatsStore.open()` are asynchronous.
 PostgreSQL uses `pg`, parameterized queries, a pool and one connection per transaction. Ingestion and rating rebuilds take a transaction-level advisory lock across site replicas.
-SQLite serializes connection access so an asynchronous request cannot observe another request's uncommitted writes.
-Schema 6 gives ingestion keys explicit IDs and preserves existing SQLite row IDs when upgrading.
+Schema 7 gives ingestion keys explicit IDs.
 
 ### Migration from SQLite
+
+SQLite volumes are retired: the one-shot offline importer `scripts/migrate-stats.mjs` reads a backup file through `StatsStore.openBackup()` and copies it into PostgreSQL. `node:sqlite` is used only there, never by the running app. The backup must come from a current (schema 7) build — the pre-cutover volume on its last build qualifies. Older files must first be opened once by a pre-Postgres-only release; the importer refuses them with an explicit error instead of guessing.
 
 1. Build/test the new site before the cutover. Keep the existing SQLite volume and record the previous image and environment.
 2. Pause **site writes** for the final backup/copy. Game servers can continue queueing finalized results in their outboxes; do not stop the game server for this migration.
@@ -133,14 +133,14 @@ Schema 6 gives ingestion keys explicit IDs and preserves existing SQLite row IDs
    ```sh
    node --experimental-strip-types scripts/migrate-stats.mjs /absolute/path/backup.sqlite
    ```
-   Use a backup copy: opening it upgrades its schema. The command requires an empty PostgreSQL target, copies all nine data tables, verifies row counts/content digests before committing, and preserves audit/key IDs. It copies existing ratings exactly rather than replaying them.
+   Use a backup copy. The command requires an empty PostgreSQL target, copies all nine data tables, verifies row counts/content digests before committing, and preserves audit/key IDs. It copies existing ratings exactly rather than replaying them.
 5. Set `BLOCKFIELD_DATABASE_URL`, preserving all other environment settings, especially `BLOCKFIELD_OWNER_UUIDS`, RCON and admin mount paths. Deploy the new site, check statistics and owner access, and let the producer replay its queue.
 
 Keep the pre-cutover SQLite backup for recovery. SQLite is an alternative backend, **not a live replica**: switching back after PostgreSQL has accepted writes requires transferring those changes first. Before any new PostgreSQL writes, the previous image/environment and original SQLite volume remain a rollback option.
 Back up PostgreSQL with `pg_dump` and retain the SQLite snapshot independently.
 
-Tests: `pnpm test` covers SQLite and fails without PostgreSQL: the backup-migration test
-requires a live database instead of silently skipping. Set `BLOCKFIELD_TEST_DATABASE_URL` to a
+Tests: `pnpm test` requires PostgreSQL: the backup-migration test
+needs a live database instead of silently skipping. Set `BLOCKFIELD_TEST_DATABASE_URL` to a
 PostgreSQL database where the test user may create schemas, then run `pnpm test:postgres`.
 Local setup with Podman or Docker (same credentials as CI):
 
@@ -151,15 +151,15 @@ export BLOCKFIELD_TEST_DATABASE_URL=postgres://blockfield:test-only@localhost:54
 pnpm test
 ```
 
-Tests create isolated random schemas and remove only those schemas; migration/reopen fixtures still exercise legacy SQLite files. CI runs both engines.
+Tests create isolated random schemas and remove only those schemas. CI runs the PostgreSQL suite.
 
 ## Legacy match import
 
 Run locally as the trusted stats administrator, with a database backup. No HTTP producer key is needed: this is an explicit maintenance operation. Dry-run is the default and does not open the database. Source files are read-only. The report path must not already exist.
 
 ```sh
-node --experimental-strip-types scripts/import-legacy-stats.mjs manifest.json /data/stats/blockfield.sqlite dry-run.json
-node --experimental-strip-types scripts/import-legacy-stats.mjs manifest.json /data/stats/blockfield.sqlite applied.json --apply
+node --experimental-strip-types scripts/import-legacy-stats.mjs manifest.json "$BLOCKFIELD_DATABASE_URL" dry-run.json
+node --experimental-strip-types scripts/import-legacy-stats.mjs manifest.json "$BLOCKFIELD_DATABASE_URL" applied.json --apply
 ```
 
 Example manifest (replace the reviewed source checksum and IDs):

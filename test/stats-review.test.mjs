@@ -1,9 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { StatsStore, validateResult, filters, handleStatsRequest } from '../src/lib/stats.ts'
+import { validateResult, filters, handleStatsRequest } from '../src/lib/stats.ts'
 
 const server = '00000000-0000-4000-8000-000000000001'
 const match = '00000000-0000-4000-8000-000000000002'
@@ -166,122 +163,6 @@ test('conflicting personal winner replay cannot rewrite an accepted victory', as
   )
   assert.equal((await store.player(alpha, query())).totals.wins, 1)
   assert.equal((await store.player(beta, query())).totals.wins, 0)
-})
-
-test('schema 1 database with results opens under schema 4 without losing data', async () => {
-  const { DatabaseSync } = await import('node:sqlite')
-  const directory = mkdtempSync(join(tmpdir(), 'bf-migrate-'))
-  try {
-    const path = join(directory, 'stats.sqlite'),
-      result = { ...fixture(), winnerUuid: alpha }
-    const first = await StatsStore.open(path)
-    await first.ingest(result)
-    await first.close()
-    // Simulate a production v1 file: drop the rating tables and the version bump.
-    const legacy = new DatabaseSync(path)
-    legacy.exec('DROP TABLE rating_changes; DROP TABLE ratings; PRAGMA user_version=1;')
-    await legacy.close()
-    const upgraded = await StatsStore.open(path)
-    try {
-      assert.equal((await upgraded.db.prepare('PRAGMA user_version').get()).user_version, 7)
-      assert.equal((await upgraded.ingest(result)).inserted, false)
-      assert.equal((await upgraded.player(alpha, query())).totals.wins, 1)
-      assert.equal((await upgraded.db.prepare('SELECT COUNT(*) n FROM ratings').get()).n, 0)
-    } finally {
-      await upgraded.close()
-    }
-  } finally {
-    rmSync(directory, { recursive: true, force: true })
-  }
-})
-
-test('schema 2 lifetime ratings migrate in place to schema 4 season 1 rows', async (t) => {
-  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-09-21T00:00:00Z') })
-  const { DatabaseSync } = await import('node:sqlite')
-  const directory = mkdtempSync(join(tmpdir(), 'bf-migrate-v3-'))
-  try {
-    const path = join(directory, 'stats.sqlite'),
-      [red, blue] = fixture().participants
-    const result = {
-      ...fixture(),
-      kind: 'campaign',
-      modeId: 'campaign',
-      ranked: true,
-      eventId: foreign,
-      campaignSessionId: foreign,
-      matchId: null,
-      mapId: null,
-      rounds: [match],
-      startedAt: '2026-09-20T00:00:00Z',
-      endedAt: '2026-09-20T00:00:00Z',
-      winner: 'RED',
-      participants: [
-        { ...red, team: 'RED' },
-        { ...blue, team: 'BLUE' },
-      ],
-    }
-    const first = await StatsStore.open(path)
-    await first.ingest(result)
-    const columns = 'uuid,rating,rd,volatility,rated_campaigns,last_rated_at'
-    const before = (
-      await first.db.prepare(`SELECT ${columns} FROM ratings ORDER BY uuid`).all()
-    ).map((r) => ({ season_id: 's1', ...r }))
-    await first.close()
-    // Rebuild the exact production v2 shape: lifetime ratings keyed by uuid, rating_changes without season_id.
-    const legacy = new DatabaseSync(path)
-    legacy.exec(`ALTER TABLE ratings RENAME TO v3;
-      CREATE TABLE ratings (uuid TEXT PRIMARY KEY, rating REAL NOT NULL, rd REAL NOT NULL, volatility REAL NOT NULL, rated_campaigns INTEGER NOT NULL, last_rated_at INTEGER NOT NULL);
-      INSERT INTO ratings SELECT ${columns} FROM v3; DROP TABLE v3;
-      ALTER TABLE rating_changes DROP COLUMN season_id; PRAGMA user_version=2;`)
-    await legacy.close()
-    const upgraded = await StatsStore.open(path)
-    try {
-      assert.equal((await upgraded.db.prepare('PRAGMA user_version').get()).user_version, 7)
-      const ratings = async () =>
-        (
-          await upgraded.db.prepare(`SELECT season_id,${columns} FROM ratings ORDER BY uuid`).all()
-        ).map((r) => ({ ...r }))
-      assert.equal(before.length, 2)
-      assert.deepEqual(await ratings(), before)
-      assert.deepEqual(
-        (await upgraded.db.prepare('SELECT DISTINCT season_id FROM rating_changes').all()).map(
-          (r) => r.season_id,
-        ),
-        ['s1'],
-      )
-      assert.equal((await upgraded.ingest(result)).inserted, false)
-      assert.deepEqual(await ratings(), before)
-      const detail = await upgraded.player(alpha, query())
-      assert.equal(detail.mmrSeason, 's1')
-      assert.equal(detail.mmr.ratedCampaigns, 1)
-      assert.equal(detail.ratingHistory.length, 1)
-    } finally {
-      await upgraded.close()
-    }
-  } finally {
-    rmSync(directory, { recursive: true, force: true })
-  }
-})
-
-test('winner UUID survives reopen', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'bf-ffa-review-'))
-  try {
-    const path = join(directory, 'stats.sqlite'),
-      result = { ...fixture(), winnerUuid: alpha }
-    const first = await StatsStore.open(path)
-    await first.ingest(result)
-    await first.close()
-    const second = await StatsStore.open(path)
-    try {
-      assert.equal((await second.db.prepare('PRAGMA user_version').get()).user_version, 7)
-      assert.equal((await second.ingest(result)).inserted, false)
-      assert.equal((await second.player(alpha, query())).totals.wins, 1)
-    } finally {
-      await second.close()
-    }
-  } finally {
-    rmSync(directory, { recursive: true, force: true })
-  }
 })
 
 test('allowlisting keeps the new result field but excludes unrelated producer data', async (t) => {

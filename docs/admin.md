@@ -46,8 +46,6 @@ Permissions are one map in `src/lib/admin.ts` (`can(role, permission)`); every A
 
 ```dotenv
 BLOCKFIELD_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/blockfield
-# Or, for SQLite compatibility (when BLOCKFIELD_DATABASE_URL is unset):
-# BLOCKFIELD_STATS_DB=/data/stats/blockfield.sqlite
 BLOCKFIELD_OWNER_UUIDS=e10438e4797b49718cfecec6a8fa171b
 BLOCKFIELD_ADMIN_DIR=/workshop-admin                 # default
 BLOCKFIELD_INBOX_DIR=/workshop-inbox                 # default
@@ -271,8 +269,8 @@ Every non-GET call by a staff member except the transient `POST presence` heartb
 There is no Drasl login for a local test account, so a dev-only identity exists: when `NODE_ENV !== 'production'` **and** `BLOCKFIELD_ADMIN_DEV_USER=<uuid>:<name>` is set, the site treats every request as that player (role still comes from owners/`staff_roles`). The Docker image sets `NODE_ENV=production`, which disables it.
 
 For a local test, create temporary admin, inbox and settings directories. Put their absolute paths
-in `.env` as `BLOCKFIELD_STATS_DB`, `BLOCKFIELD_ADMIN_DIR`, `BLOCKFIELD_INBOX_DIR` and
-`BLOCKFIELD_SETTINGS_DIR`, then run `pnpm dev`. Use a local test account via
+in `.env` as `BLOCKFIELD_ADMIN_DIR`, `BLOCKFIELD_INBOX_DIR` and
+`BLOCKFIELD_SETTINGS_DIR`, and point `BLOCKFIELD_DATABASE_URL` at a local PostgreSQL database, then run `pnpm dev`. Use a local test account via
 `BLOCKFIELD_ADMIN_DEV_USER`; keep this file untracked.
 
 ## Threat notes

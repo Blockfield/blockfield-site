@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   HITREG_SCAN_CAP,
+  TELEMETRY_MAX_BYTES,
   StatsError,
   telemetryDroppedCount,
   validateResult,
@@ -111,8 +112,8 @@ test('invalid telemetry is dropped with a log line and a counter; the result is 
     (x) => (x.counters = { ok: -1 }),
     (x) => (x.tickMsBuckets = [{ le: 'soon', count: 1 }]),
     (x) => (x.disputes = [{ ticket: { nested: 'object' } }]),
-    (x) => (x.counters = Object.fromEntries(Array.from({ length: 1025 }, (_, i) => [`k${i}`, 1]))),
-    (x) => (x.disputes = Array.from({ length: 17 }, () => ({ a: 'b' }))),
+    (x) => (x.counters = Object.fromEntries(Array.from({ length: 513 }, (_, i) => [`k${i}`, 1]))),
+    (x) => (x.disputes = Array.from({ length: 9 }, () => ({ a: 'b' }))),
     (x) => delete x.shots,
   ]
   const before = telemetryDroppedCount()
@@ -130,6 +131,22 @@ test('invalid telemetry is dropped with a log line and a counter; the result is 
   assert.match(warn.mock.calls[0].arguments[0], /Telemetry dropped/)
   // Combat fields stay strict.
   assert.throws(() => validateResult(fixture(2, { winner: 'GREEN' })), StatsError)
+  assert.ok(Object.hasOwn(validateResult(fixture(2, { telemetry: telemetry() })), 'telemetry'))
+})
+
+test('telemetry over the serialized cap is dropped even when structurally valid', (t) => {
+  // Producer-shaped (≤512 counters, ≤8 disputes) but over TELEMETRY_MAX_BYTES serialized.
+  const big = telemetry({
+    counters: Object.fromEntries(Array.from({ length: 512 }, (_, i) => [`counter.${i}`, 1])),
+  })
+  assert.ok(JSON.stringify(big).length > TELEMETRY_MAX_BYTES)
+  const warn = t.mock.method(console, 'warn', () => {})
+  const before = telemetryDroppedCount()
+  assert.ok(!Object.hasOwn(validateResult(fixture(2, { telemetry: big })), 'telemetry'))
+  assert.equal(telemetryDroppedCount() - before, 1)
+  assert.match(warn.mock.calls[0].arguments[0], /Telemetry dropped/)
+  // A producer-realistic block (~3 KB worst case) still passes.
+  assert.ok(JSON.stringify(telemetry()).length < TELEMETRY_MAX_BYTES)
   assert.ok(Object.hasOwn(validateResult(fixture(2, { telemetry: telemetry() })), 'telemetry'))
 })
 
@@ -163,8 +180,9 @@ test('telemetry is stored in the result payload; legacy payloads stay untouched'
   assert.ok(!Object.hasOwn(JSON.parse(rows[1].payload), 'telemetry'))
 })
 
-test('hitreg aggregates shots, fallback share, counters and disputes per window', async (t) => {
+test('hitreg aggregates shots, fallback share, counters and per-match percentiles in SQL', async (t) => {
   const db = await database(t)
+  const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} ≈ ${b}`)
   await db.ingest(fixture(2, { telemetry: telemetry() }))
   await db.ingest(
     fixture(3, {
@@ -172,6 +190,10 @@ test('hitreg aggregates shots, fallback share, counters and disputes per window'
       telemetry: telemetry({
         shots: 20,
         fallbackShare: 0.1,
+        tickMsP50: 30,
+        tickMsP99: 45,
+        ageTicksP50: 3,
+        rewindTicksP50: 2,
         counters: { shots: 20, 'viewRewound:none': 2 },
         disputes: [],
       }),
@@ -185,11 +207,24 @@ test('hitreg aggregates shots, fallback share, counters and disputes per window'
   assert.equal(all.fallbackShare, (0.3 * 10 + 0.1 * 20) / 30)
   assert.equal(all.disputes, 1)
   assert.deepEqual(all.counters, { shots: 30, 'viewCurrent:stale': 3, 'viewRewound:none': 2 })
-  assert.equal(all.perMatch.length, 2)
+  close(all.tickMsP50Median, 20)
+  close(all.tickMsP50P99, 29.8)
+  close(all.tickMsP99Median, 35)
+  close(all.tickMsP99P99, 44.8)
+  close(all.ageTicksP50Median, 2)
+  close(all.rewindTicksP50Median, 1)
   assert.equal(all.truncated, false)
   const room = await db.hitreg('room', 0, Date.now() + 300000)
   assert.equal(room.shots, 10)
   await assert.rejects(db.hitreg('training', 0, 1), StatsError)
+  const empty = await db.hitreg(null, 0, 1)
+  assert.equal(empty.matches, 0)
+  assert.equal(empty.withTelemetry, 0)
+  assert.equal(empty.shots, 0)
+  assert.equal(empty.fallbackShare, 0)
+  assert.deepEqual(empty.counters, {})
+  assert.equal(empty.tickMsP50Median, null)
+  assert.equal(empty.truncated, false)
   await db.setVoided(server, uid(2), player)
   assert.equal((await db.hitreg(null, 0, Date.now() + 300000)).shots, 20)
 })
