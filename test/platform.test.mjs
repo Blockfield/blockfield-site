@@ -5,7 +5,6 @@ import { detectPlatform, launcherDownload } from '../src/lib/platform.ts'
 const links = {
   windows: 'https://example.test/setup.exe',
   linux: 'https://example.test/game.AppImage',
-  macosArm: 'https://example.test/arm.dmg',
 }
 
 for (const [name, ua, hint, expected] of [
@@ -23,10 +22,10 @@ for (const [name, ua, hint, expected] of [
   ],
   ['Chromium client hint', '', '"Linux"', 'linux'],
   [
-    'Mac Safari',
+    'Mac Safari has no build and falls back to manual install',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15',
     '',
-    'macos',
+    'unknown',
   ],
   [
     'Android must not match Linux',
@@ -55,7 +54,6 @@ for (const [name, ua, hint, expected] of [
     const action = launcherDownload(platform, links)
     if (platform === 'windows') assert.equal(action.href, links.windows)
     else if (platform === 'linux') assert.equal(action.href, links.linux)
-    else if (platform === 'macos') assert.equal(action.href, '#download')
     else
       assert.equal(
         action.href,
@@ -65,8 +63,9 @@ for (const [name, ua, hint, expected] of [
   })
 }
 
-test('Mac offers an architecture choice instead of guessing from the user agent', () => {
-  const action = launcherDownload('macos', links)
-  assert.equal(action.href, '#download')
-  assert.match(action.note, /Intel.*Apple Silicon/)
+test('unsupported platforms offer manual install instead of a direct download', () => {
+  for (const platform of ['unknown', 'mobile']) {
+    const action = launcherDownload(platform, links)
+    assert.equal(action.href, '#download')
+  }
 })
