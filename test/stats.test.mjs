@@ -1,10 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import {
-  StatsStore,
   StatsError,
   filters,
   seasons,
@@ -360,33 +356,12 @@ test('read APIs require no game process or producer credentials and distinguish 
 test('result write and derived rows roll back together on storage failure', async (t) => {
   const db = await database(t)
   await db.db.exec(
-    db.db.postgres
-      ? `CREATE FUNCTION reject_class() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected failure'; END $$;
-       CREATE TRIGGER reject_class BEFORE INSERT ON classes FOR EACH ROW EXECUTE FUNCTION reject_class()`
-      : "CREATE TRIGGER fail_test BEFORE INSERT ON classes BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+    `CREATE FUNCTION reject_class() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected failure'; END $$;
+       CREATE TRIGGER reject_class BEFORE INSERT ON classes FOR EACH ROW EXECUTE FUNCTION reject_class()`,
   )
   await assert.rejects(async () => await db.ingest(fixture()), /injected failure/)
   for (const table of ['results', 'participants', 'profiles', 'classes'])
     assert.equal((await db.db.prepare(`SELECT COUNT(*) n FROM ${table}`).get()).n, 0)
-})
-test('accepted data survives close/reopen with a persistent volume path', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'bf-stats-')),
-    path = join(dir, 'stats.sqlite')
-  try {
-    const original = fixture(),
-      first = await StatsStore.open(path)
-    await first.ingest(original)
-    await first.close()
-    const second = await StatsStore.open(path)
-    try {
-      assert.equal((await second.leaderboard(query())).players[0].kills, 1)
-      assert.equal((await second.ingest(original)).inserted, false)
-    } finally {
-      await second.close()
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
 })
 test('pagination/sort inputs are bounded and never become arbitrary SQL', () => {
   for (const value of [

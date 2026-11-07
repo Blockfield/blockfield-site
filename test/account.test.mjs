@@ -16,6 +16,9 @@ import {
   session,
 } from '../src/lib/account.ts'
 import { statsStore } from '../src/lib/stats.ts'
+import { after, singletonDatabase } from './storage.mjs'
+
+after(await singletonDatabase())
 import { POST as logout } from '../src/pages/api/account/logout.ts'
 import { POST as login } from '../src/pages/api/account/login.ts'
 import { POST as password } from '../src/pages/api/account/password.ts'
@@ -254,21 +257,17 @@ const sameSite = (url, body) =>
   })
 
 test('boot validates the session secret while sessions exist', async (t) => {
-  const { mkdtempSync, rmSync } = await import('node:fs'),
-    { tmpdir } = await import('node:os'),
-    { join } = await import('node:path')
   const { StatsStore: Open } = await import('../src/lib/stats.ts')
+  const { databaseUrl } = await import('./storage.mjs')
   const { sealTokenRaw } = await import('../src/lib/session-crypto.ts')
   const saved = process.env.BLOCKFIELD_SESSION_SECRET
   t.after(() => {
     if (saved === undefined) delete process.env.BLOCKFIELD_SESSION_SECRET
     else process.env.BLOCKFIELD_SESSION_SECRET = saved
   })
-  const dir = mkdtempSync(join(tmpdir(), 'bf-session-boot-'))
-  t.after(() => rmSync(dir, { recursive: true, force: true }))
-  const path = join(dir, 'stats.sqlite')
+  const url = await databaseUrl(t)
   process.env.BLOCKFIELD_SESSION_SECRET = 'a'.repeat(64)
-  const first = await Open.open(path)
+  const first = await Open.open(url)
   await first.insertSession(
     '0'.repeat(32),
     sealTokenRaw('tok', Buffer.from('a'.repeat(64), 'hex')),
@@ -277,12 +276,12 @@ test('boot validates the session secret while sessions exist', async (t) => {
   )
   await first.close()
   delete process.env.BLOCKFIELD_SESSION_SECRET
-  await assert.rejects(Open.open(path), /BLOCKFIELD_SESSION_SECRET/, 'missing secret fails fast')
+  await assert.rejects(Open.open(url), /BLOCKFIELD_SESSION_SECRET/, 'missing secret fails fast')
   process.env.BLOCKFIELD_SESSION_SECRET = 'short'
-  await assert.rejects(Open.open(path), /BLOCKFIELD_SESSION_SECRET/, 'malformed secret fails fast')
+  await assert.rejects(Open.open(url), /BLOCKFIELD_SESSION_SECRET/, 'malformed secret fails fast')
   process.env.BLOCKFIELD_SESSION_SECRET = 'b'.repeat(64)
   const warn = t.mock.method(console, 'error', () => {})
-  const second = await Open.open(path)
+  const second = await Open.open(url)
   t.after(() => second.close())
   assert.equal(warn.mock.calls.length, 1, 'one rotation notice')
   assert.match(String(warn.mock.calls[0].arguments[0]), /session secret changed/)
@@ -312,7 +311,6 @@ test('middleware fails the deploy, not the first login, without the secret', asy
 })
 
 test('Drasl tokens are encrypted at rest: the DB never holds plaintext', async () => {
-  process.env.BLOCKFIELD_STATS_DB = ':memory:'
   process.env.BLOCKFIELD_SESSION_SECRET = '2'.repeat(64)
   process.env.DRASL_URL = 'http://drasl.test'
   const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
@@ -346,7 +344,6 @@ test('Drasl tokens are encrypted at rest: the DB never holds plaintext', async (
 })
 
 test('sessions fail closed without the secret, and die on rotation', async () => {
-  process.env.BLOCKFIELD_STATS_DB = ':memory:'
   process.env.DRASL_URL = 'http://drasl.test'
   const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
   const stub = stubFetch(async (url) => {
@@ -381,11 +378,9 @@ test('sessions fail closed without the secret, and die on rotation', async () =>
     delete process.env.DRASL_URL
   }
 })
-process.env.BLOCKFIELD_STATS_DB = ':memory:'
 process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
 process.env.DRASL_URL = 'http://drasl.test'
 test('site sessions: login mints an opaque id per device; logout kills only that device', async () => {
-  process.env.BLOCKFIELD_STATS_DB = ':memory:'
   process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
   process.env.DRASL_URL = 'http://drasl.test'
   const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
@@ -443,7 +438,6 @@ test('site sessions: login mints an opaque id per device; logout kills only that
 })
 
 test('logout always clears the cookie and writes nothing without a valid session', async () => {
-  process.env.BLOCKFIELD_STATS_DB = ':memory:'
   process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
   const db = await statsStore()
   const before = await db.countSessions()
@@ -470,7 +464,6 @@ test('logout always clears the cookie and writes nothing without a valid session
 })
 
 test('password change kills every session and re-logs in', async () => {
-  process.env.BLOCKFIELD_STATS_DB = ':memory:'
   process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
   process.env.DRASL_URL = 'http://drasl.test'
   const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
@@ -529,7 +522,6 @@ test('password change kills every session and re-logs in', async () => {
 })
 
 test('site sessions are capped per user', async () => {
-  process.env.BLOCKFIELD_STATS_DB = ':memory:'
   process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
   process.env.DRASL_URL = 'http://drasl.test'
   const user = { username: 'Alex', players: [{ uuid: 'a'.repeat(32), name: 'Alex' }] }
