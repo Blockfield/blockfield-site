@@ -303,6 +303,9 @@ const cpGate = cpConfigured()
                 <h2 id="settings-group-2">Каждый сам за себя</h2>
               </header>
               <div id="deathmatch-fields" class="fields"></div>
+              <div id="streak-table"></div>
+              <p id="streak-preview" class="muted"></p>
+              <p id="streak-status" class="form-status" role="status"></p>
             </section>
             <section class="group settings-group" aria-labelledby="settings-group-5">
               <header>
@@ -2122,6 +2125,45 @@ const cpGate = cpConfigured()
       font-size: 14px;
       font-weight: 500;
     }
+    .admin-main #streak-table .streak-row {
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    .admin-main #streak-table .streak-row:last-child {
+      border-bottom: 0;
+    }
+    .admin-main #streak-table .streak-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .admin-main #streak-table .streak-head input {
+      width: 90px;
+    }
+    .admin-main #streak-table .streak-head .spacer {
+      flex: 1;
+    }
+    .admin-main #streak-table .streak-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 96px auto auto;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .admin-main #streak-table .streak-actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 4px;
+    }
+    @media (max-width: 900px) {
+      .admin-main #streak-table .streak-item {
+        grid-template-columns: minmax(0, 1fr) 96px;
+      }
+      .admin-main #streak-table .streak-cols {
+        display: none;
+      }
+    }
     .admin-main .field label small {
       display: block;
       color: var(--muted);
@@ -2462,6 +2504,16 @@ const cpGate = cpConfigured()
       TEAM_NAMES,
     } from '../lib/game-names'
     import { settingsBody, settingsReceipt } from '../lib/settings-form'
+    import {
+      DEFAULT_STREAK_ENTRIES,
+      entriesToRows,
+      parseStreakEntries,
+      rowsToEntries,
+      streakCycle,
+      streakPeriod,
+      type StreakEntry,
+      type StreakRow,
+    } from '../lib/streak-table'
     import { bodyPartSummary, renderBodyPartField } from '../lib/body-part-form'
     import { renderAiBudgetForm, type BudgetTarget } from '../lib/ai-budget-form'
     import { isCustomProviderId, workshopAiKeyLine } from '../lib/workshop-ai'
@@ -6975,6 +7027,328 @@ const cpGate = cpConfigured()
     }
     $('#parcool-on').addEventListener('change', syncParcool)
 
+    // ---------- Kill-streak rewards (deathmatch.streakRewards, #344) ----------
+    let streakRows: StreakRow[] = []
+    let streakBase = ''
+    let streakError: string | null = null
+    let lastSettingsSnapshot: any = null
+    function streakEditingActive() {
+      return (
+        streakSerialized() !== streakBase ||
+        ($('#streak-table')?.contains(document.activeElement) ?? false)
+      )
+    }
+    const streakLabels = new Map<string, string>()
+    let streakOptionsLoaded = false
+    function streakTableOf(settings: any): StreakEntry[] {
+      try {
+        return parseStreakEntries(settings?.deathmatch?.streakRewards ?? DEFAULT_STREAK_ENTRIES)
+      } catch {
+        return [...DEFAULT_STREAK_ENTRIES]
+      }
+    }
+    function streakSerialized(): string | null {
+      try {
+        return JSON.stringify(rowsToEntries(streakRows))
+      } catch {
+        return null
+      }
+    }
+    /** Validated table for the save body; undefined = unchanged or invalid (never blocks other saves). */
+    function readStreakForSave(): StreakEntry[] | undefined {
+      const serialized = streakSerialized()
+      return serialized !== null && serialized !== streakBase
+        ? (JSON.parse(serialized) as StreakEntry[])
+        : undefined
+    }
+    function itemLabel(id: string) {
+      return streakLabels.get(id) ?? id
+    }
+    function resolveItemId(text: string): string | null {
+      const trimmed = text.trim()
+      if (streakOptionsLoaded) {
+        for (const [id, label] of streakLabels) if (label === trimmed) return id
+        return /^[a-z0-9_.-]+:[a-z0-9/._-]+$/.test(trimmed) ? trimmed : null
+      }
+      return trimmed || null
+    }
+    function refreshStreakPreview() {
+      const serialized = streakSerialized()
+      const line = $('#streak-preview')
+      if (serialized === null) {
+        line.textContent = ''
+        return
+      }
+      const entries = JSON.parse(serialized) as StreakEntry[],
+        period = streakPeriod(entries)
+      if (!period) {
+        line.textContent = 'Таблица пуста: серия не даёт наград.'
+        return
+      }
+      const cycle = streakCycle(entries, 2)
+        .map((grant) => `${grant.kills}: ${itemLabel(grant.id)} ×${grant.count}`)
+        .join('; ')
+      line.textContent = `Период ${period}. Цикл 2: ${cycle}.`
+    }
+    function validateStreakDraft() {
+      try {
+        rowsToEntries(streakRows)
+        streakError = null
+      } catch (error) {
+        streakError = (error as Error).message
+      }
+      const line = $('#streak-status')
+      if (streakError) say(line, streakError, 'error')
+      else if (line.dataset.s === 'error') line.textContent = ''
+      refreshStreakPreview()
+    }
+    function updateStreakNote(settings: any, applied: any) {
+      if (streakError) return
+      const receipt = settingsReceipt(settings?.revision ?? 0, applied)
+      const lines = Array.isArray(applied?.errors) ? applied.errors : []
+      const rejected = lines.filter(
+        (text: unknown) => typeof text === 'string' && text.includes('streakRewards'),
+      )
+      const line = $('#streak-status')
+      if ((receipt === 'rejected' || receipt === 'partial') && rejected.length) {
+        line.dataset.s = 'error'
+        line.textContent = `Сервер отклонил таблицу: ${rejected[0]}`
+      } else if (line.dataset.s === 'error') line.textContent = ''
+    }
+    function renderStreakTable() {
+      const table = $('#streak-table')
+      table.replaceChildren(
+        ...streakRows.map((row, index) =>
+          el(
+            'div',
+            { className: 'streak-row' },
+            el(
+              'div',
+              { className: 'streak-head' },
+              el(
+                'label',
+                {},
+                'Убийств ',
+                el('input', {
+                  type: 'number',
+                  min: 1,
+                  max: 2147483647,
+                  step: 1,
+                  value: row.kills,
+                  'aria-label': 'Убийств',
+                  onchange: (e: Event) => {
+                    const value = Number((e.target as HTMLInputElement).value)
+                    streakRows[index] = { ...row, kills: value }
+                    validateStreakDraft()
+                  },
+                }),
+              ),
+              el('span', { className: 'spacer' }),
+              el('button', {
+                type: 'button',
+                textContent: 'Убрать порог',
+                onclick: () => {
+                  streakRows = streakRows.filter((_, i) => i !== index)
+                  renderStreakTable()
+                  void commitStreak()
+                },
+              }),
+            ),
+            el(
+              'div',
+              { className: 'streak-item streak-cols', 'aria-hidden': 'true' },
+              el('span', { className: 'muted', textContent: 'Предмет' }),
+              el('span', { className: 'muted', textContent: 'Кол-во' }),
+              el('span', { className: 'muted', textContent: 'Умножать по циклам' }),
+              el('span'),
+            ),
+            ...row.items.map((item, itemIndex) =>
+              el(
+                'div',
+                { className: 'streak-item' },
+                el('input', {
+                  value: itemLabel(item.id),
+                  'aria-label': 'Предмет',
+                  placeholder: 'пространство:предмет',
+                  autocomplete: 'off',
+                  ...(streakOptionsLoaded ? {} : { title: 'ID предмета из реестра игры' }),
+                  oninput: (e: Event) => {
+                    const input = e.target as HTMLInputElement,
+                      id = resolveItemId(input.value) ?? input.value.trim()
+                    streakRows[index].items[itemIndex] = { ...item, id }
+                    validateStreakDraft()
+                  },
+                }),
+                el('input', {
+                  type: 'number',
+                  min: 1,
+                  max: 2147483647,
+                  step: 1,
+                  value: item.count,
+                  'aria-label': 'Кол-во',
+                  onchange: (e: Event) => {
+                    streakRows[index].items[itemIndex] = {
+                      ...streakRows[index].items[itemIndex],
+                      count: Number((e.target as HTMLInputElement).value),
+                    }
+                    validateStreakDraft()
+                  },
+                }),
+                el(
+                  'label',
+                  { className: 'check' },
+                  el('input', {
+                    type: 'checkbox',
+                    checked: item.scale,
+                    'aria-label': 'Умножать по циклам',
+                    onchange: (e: Event) => {
+                      streakRows[index].items[itemIndex] = {
+                        ...streakRows[index].items[itemIndex],
+                        scale: (e.target as HTMLInputElement).checked,
+                      }
+                      validateStreakDraft()
+                    },
+                  }),
+                  'Умножать по циклам',
+                ),
+                el('button', {
+                  type: 'button',
+                  textContent: 'Убрать',
+                  onclick: () => {
+                    streakRows[index] = {
+                      ...row,
+                      items: row.items.filter((_, i) => i !== itemIndex),
+                    }
+                    renderStreakTable()
+                    void commitStreak()
+                  },
+                }),
+              ),
+            ),
+            el(
+              'div',
+              { className: 'streak-actions' },
+              el('button', {
+                type: 'button',
+                textContent: '+ Предмет',
+                onclick: () => {
+                  streakRows[index] = {
+                    ...row,
+                    items: [...row.items, { id: '', count: 1, scale: true }],
+                  }
+                  renderStreakTable()
+                  validateStreakDraft()
+                },
+              }),
+            ),
+          ),
+        ),
+        el(
+          'div',
+          { className: 'streak-actions' },
+          el('button', {
+            type: 'button',
+            textContent: '+ Порог',
+            onclick: () => {
+              const kills = streakRows.length
+                ? Math.max(...streakRows.map((row) => row.kills)) + 1
+                : 2
+              streakRows = [...streakRows, { kills, items: [] }]
+              renderStreakTable()
+              validateStreakDraft()
+            },
+          }),
+          el('button', {
+            type: 'button',
+            textContent: 'По умолчанию',
+            onclick: () => {
+              streakRows = entriesToRows([...DEFAULT_STREAK_ENTRIES])
+              renderStreakTable()
+              void commitStreak()
+            },
+          }),
+        ),
+      )
+      // The extracted-script test harness may stub customCombo away: plain inputs stay usable.
+      if (streakOptionsLoaded && typeof customCombo === 'function')
+        for (const input of table.querySelectorAll<HTMLInputElement>('input[aria-label="Предмет"]'))
+          customCombo(input, [...streakLabels.values()])
+      validateStreakDraft()
+    }
+    function attachStreakCombos() {
+      if (typeof customCombo !== 'function') return
+      for (const input of $('#streak-table').querySelectorAll<HTMLInputElement>(
+        'input[aria-label="Предмет"]',
+      )) {
+        customCombo(input, [...streakLabels.values()])
+        if (document.activeElement !== input) {
+          const known = streakLabels.get(input.value.trim())
+          if (known) input.value = known
+        }
+      }
+    }
+    async function loadStreakItemOptions() {
+      if (streakOptionsLoaded) return
+      streakOptionsLoaded = true
+      try {
+        const { catalog } = await api('kits')
+        for (const group of ['items', 'guns', 'ammos', 'throwables', 'attachments'] as const) {
+          for (const entry of catalog?.[group] ?? [])
+            if (entry?.id && !streakLabels.has(entry.id))
+              streakLabels.set(
+                entry.id,
+                entry.name && entry.name !== entry.id && !entry.name.endsWith('.name')
+                  ? `${entry.name} · ${entry.id}`
+                  : entry.id,
+              )
+        }
+        if (streakEditingActive()) attachStreakCombos()
+        else {
+          streakRows = entriesToRows(streakTableOf(lastSettingsSnapshot))
+          renderStreakTable()
+          attachStreakCombos()
+        }
+      } catch {
+        // Free text with format validation stays: the server checks membership.
+      }
+    }
+    async function commitStreak() {
+      const line = $('#streak-status')
+      let entries: StreakEntry[]
+      try {
+        entries = rowsToEntries(streakRows)
+      } catch (error) {
+        streakError = (error as Error).message
+        say(line, streakError, 'error')
+        return
+      }
+      if (JSON.stringify(entries) === streakBase) return
+      streakError = null
+      say(line, 'сохраняем…', 'pending')
+      try {
+        const body = collectSettingsBody(settingsRevision)
+        const result = await api('settings', 'PUT', body)
+        settingsRevision = Math.max(settingsRevision, result.settings.revision)
+        gunRevision = settingsRevision
+        streakBase = JSON.stringify(streakTableOf(result.settings))
+        await loadSettings(0, true, result)
+        settingsMeta()
+        say(line, 'сохранено', 'ok')
+      } catch (error) {
+        if ((error as { status?: number }).status === 409) {
+          try {
+            const fresh = await api('settings')
+            settingsRevision = Math.max(settingsRevision, fresh.settings?.revision ?? 0)
+            streakBase = JSON.stringify(streakTableOf(fresh.settings))
+            await loadSettings(0, true, { settings: fresh.settings, applied: fresh.applied })
+          } catch {
+            // Fresh state unreadable: keep local edits, the error below explains.
+          }
+          say(line, 'Настройки уже изменил кто-то другой. Таблица сохранена как черновик.', 'error')
+        } else say(line, (error as Error).message, 'error')
+      }
+    }
+
     async function loadSettings(waitStarted = 0, statusOnly = false, data?: any) {
       const {
         settings,
@@ -7057,6 +7431,18 @@ const cpGate = cpConfigured()
             ),
           ),
         )
+        {
+          lastSettingsSnapshot = settings
+          const incoming = streakTableOf(settings)
+          streakBase = JSON.stringify(incoming)
+          if (!data || !streakEditingActive()) {
+            streakRows = entriesToRows(incoming)
+            renderStreakTable()
+            if (streakOptionsLoaded) attachStreakCombos()
+            else void loadStreakItemOptions()
+          }
+          updateStreakNote(settings, applied)
+        }
         replaceSettingsFields(
           $('#class-costs'),
           Boolean(data),
@@ -7125,6 +7511,8 @@ const cpGate = cpConfigured()
       }
 
       observedSettingsRevision = settings.revision ?? 0
+      lastSettingsSnapshot = settings
+      updateStreakNote(settings, applied)
       const editor =
         typeof settings.updatedBy === 'string' ? settings.updatedBy : settings.updatedBy?.name
       const who = editor ? ` · ${editor} · ${ago(settings.updatedAt)}` : ''
@@ -7162,6 +7550,7 @@ const cpGate = cpConfigured()
           lobby: Object.fromEntries(LOBBY.map((f) => [f.key, value(f.key)])),
           rooms: Object.fromEntries(ROOMS.map((f) => [f.key, value(f.key)])),
           deathmatch: Object.fromEntries(DEATHMATCH.map((f) => [f.key, value(f.key)])),
+          streakRewards: readStreakForSave(),
           lockedClasses: [
             ...[...form.querySelectorAll<HTMLInputElement>('input[name=class]')]
               .filter((c) => !c.checked)
@@ -7451,8 +7840,10 @@ const cpGate = cpConfigured()
     autosaveKeys($<HTMLFormElement>('#settings-form'))
     autosaveKeys($<HTMLFormElement>('#gun-balance-form'))
     $('#settings-form').addEventListener('change', (e) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement)
-        commitSetting(e.target)
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) {
+        if ((e.target as HTMLElement).closest('#streak-table')) commitStreak()
+        else commitSetting(e.target)
+      }
     })
 
     // ---------- Team ----------

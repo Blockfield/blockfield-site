@@ -8,6 +8,14 @@ import { weaponFields, BODY_PARTS } from '../src/lib/gun-fields.ts'
 import { finalDamageVsMatchKit } from '../src/lib/gun-damage.ts'
 import { validateGunOverrides, validateGunCatalog } from '../src/lib/gun-balance.ts'
 import { bodyPartSummary, renderBodyPartField } from '../src/lib/body-part-form.ts'
+import {
+  DEFAULT_STREAK_ENTRIES,
+  entriesToRows,
+  parseStreakEntries,
+  rowsToEntries,
+  streakCycle,
+  streakPeriod,
+} from '../src/lib/streak-table.ts'
 
 const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
 const script = page.split('<script>')[1].split('</script>')[0]
@@ -42,6 +50,19 @@ const names = [
   'validation',
   'changeToast',
   'commitSetting',
+  'streakTableOf',
+  'streakSerialized',
+  'streakEditingActive',
+  'readStreakForSave',
+  'itemLabel',
+  'resolveItemId',
+  'refreshStreakPreview',
+  'validateStreakDraft',
+  'updateStreakNote',
+  'renderStreakTable',
+  'attachStreakCombos',
+  'loadStreakItemOptions',
+  'commitStreak',
   'autosaveKeys',
   'checkGunField',
   'commitGun',
@@ -94,6 +115,12 @@ async function setup(options = {}) {
   Object.assign(dom.window, {
     settingsBody,
     settingsReceipt,
+    parseStreakEntries,
+    entriesToRows,
+    rowsToEntries,
+    streakCycle,
+    streakPeriod,
+    DEFAULT_STREAK_ENTRIES,
     structuredClone,
     weaponFields,
     finalDamageVsMatchKit,
@@ -154,6 +181,8 @@ async function setup(options = {}) {
     const gunLabel = gun => gun.id; const KIT_GUNS = new Set();
     let rules = {}, defaults = {}, balance = {}, scope = '*', hadLocks, extraLocks = [], fieldId = 0;
     const mapAvailabilityWaiters = new Set(); let kitCatalog; let settingsLoaded = false, settingsRevision = 0, observedSettingsRevision = 0, lastApplied = null;
+    let streakRows = [], streakBase = '', streakError = null, lastSettingsSnapshot = null, streakOptionsLoaded = false;
+    const streakLabels = new Map();
     let settingsQueue = Promise.resolve(), gunQueue = Promise.resolve(), gunPending = 0, settingsQueueVersion = 0, gunQueueVersion = 0;
     let gunCatalog, selectedGun, gunOverrides = {}, gunRevision = 0; let gunFinalsRefresh = null;
     const gunReaders = new Map(), settingValues = new Map(), stateTimers = new WeakMap();

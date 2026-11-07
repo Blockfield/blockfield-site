@@ -47,6 +47,7 @@ import {
   workshopAiKeyStatusFile,
 } from './workshop-ai.ts'
 import { parseKitCatalog, validateKitChanges } from './kit-schema.ts'
+import { parseStreakEntries } from './streak-table.ts'
 import {
   resolveNames,
   seasons,
@@ -1165,8 +1166,20 @@ export function validateSettings(body: any, catalog?: GunBalanceCatalog) {
   const out: Record<string, unknown> = {}
   if (body.lobby !== undefined) out.lobby = section(body.lobby, LOBBY, 'лобби')
   if (body.rooms !== undefined) out.rooms = section(body.rooms, ROOMS, 'комнаты')
-  if (body.deathmatch !== undefined)
-    out.deathmatch = section(body.deathmatch, DEATHMATCH, 'каждый сам за себя')
+  if (body.deathmatch !== undefined) {
+    // streakRewards is a validated table, not a number: split it off before the numeric check.
+    if (!plain(body.deathmatch)) throw bad('Настройки: неверный раздел «каждый сам за себя».')
+    const { streakRewards, ...numbers } = body.deathmatch
+    const deathmatch = section(numbers, DEATHMATCH, 'каждый сам за себя')
+    if (streakRewards !== undefined) {
+      try {
+        ;(deathmatch as Record<string, unknown>).streakRewards = parseStreakEntries(streakRewards)
+      } catch (error) {
+        throw bad(`Настройки: ${(error as Error).message}`)
+      }
+    }
+    out.deathmatch = deathmatch
+  }
   if (body.classCosts !== undefined) {
     out.classCosts = section(
       body.classCosts,

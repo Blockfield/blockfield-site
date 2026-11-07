@@ -3,6 +3,15 @@ export type SettingsForm = {
   lobby: Record<string, string>
   rooms: Record<string, string>
   deathmatch: Record<string, string>
+  /** Validated flat table (streak-table.ts); undefined = unchanged, [] = rewards off. */
+  streakRewards?: {
+    kills: number
+    id: string
+    count: number
+    scale: boolean
+    throwable_id?: string
+    message?: string
+  }[]
   classCosts?: Record<string, string>
   lockedClasses: string[]
   hadLocks: boolean
@@ -46,7 +55,10 @@ export function settingsBody(
     ...numbers(form.lobby),
   }
   const rooms = numbers(form.rooms)
-  const deathmatch = numbers(form.deathmatch ?? {})
+  const deathmatch = {
+    ...numbers(form.deathmatch ?? {}),
+    ...(form.streakRewards === undefined ? {} : { streakRewards: form.streakRewards }),
+  }
   const balance = Object.fromEntries(
     Object.entries(form.balance).filter(([, v]) => Object.keys(v).length),
   )
