@@ -1474,6 +1474,8 @@ export function saveWorkshopAiSettings(
           'enabled',
           'provider',
           'generationProvider',
+          // Retired guard-model keys (ws#53): an admin tab opened before the update still
+          // sends them; accepted and dropped.
           'guardProvider',
           'transcriptionProvider',
           'providers',
@@ -1509,11 +1511,9 @@ export function saveWorkshopAiSettings(
     // Absent per-model/registry/cleanup keys keep the stored values: a stale form
     // must not reroute models or wipe the registry.
     generationProvider: body.generationProvider ?? current.generationProvider,
-    guardProvider: body.guardProvider ?? current.guardProvider,
     transcriptionProvider: body.transcriptionProvider ?? current.transcriptionProvider,
     providers: body.providers ?? current.providers,
     generationModel: body.generationModel,
-    guardModel: body.guardModel,
     transcriptionModel: body.transcriptionModel,
     cleanupModel: body.cleanupModel ?? current.cleanupModel,
     cleanupProvider: body.cleanupProvider ?? current.cleanupProvider,
@@ -1526,13 +1526,11 @@ export function saveWorkshopAiSettings(
     maxHourlyBuilders: body.maxHourlyBuilders,
     generationMaxPricePromptUsdPerM: body.generationMaxPricePromptUsdPerM,
     generationMaxPriceCompletionUsdPerM: body.generationMaxPriceCompletionUsdPerM,
-    inputGuardEnabled: body.inputGuardEnabled,
   })
   // Enabled AI needs a key for every referenced provider. The gateway key lives in a host
   // file, which the site cannot verify; cleanup counts only when set.
   if (settings.enabled) {
     const needed = new Set([settings.generationProvider, settings.transcriptionProvider])
-    if (settings.inputGuardEnabled) needed.add(settings.guardProvider)
     if (settings.cleanupModel) needed.add(settings.cleanupProvider)
     needed.delete('vercel-gateway')
     const missing = [...needed].filter((id) => !hasKey(id))
@@ -4555,6 +4553,8 @@ export async function saveWorkshopAiSettingsCp(
           'enabled',
           'provider',
           'generationProvider',
+          // Retired guard-model keys (ws#53): an admin tab opened before the update still
+          // sends them; accepted and dropped.
           'guardProvider',
           'transcriptionProvider',
           'providers',
@@ -4588,11 +4588,9 @@ export async function saveWorkshopAiSettingsCp(
     enabled: body.enabled,
     provider: body.provider,
     generationProvider: body.generationProvider ?? current.generationProvider,
-    guardProvider: body.guardProvider ?? current.guardProvider,
     transcriptionProvider: body.transcriptionProvider ?? current.transcriptionProvider,
     providers: body.providers ?? current.providers,
     generationModel: body.generationModel,
-    guardModel: body.guardModel,
     transcriptionModel: body.transcriptionModel,
     cleanupModel: body.cleanupModel ?? current.cleanupModel,
     cleanupProvider: body.cleanupProvider ?? current.cleanupProvider,
@@ -4605,11 +4603,9 @@ export async function saveWorkshopAiSettingsCp(
     maxHourlyBuilders: body.maxHourlyBuilders,
     generationMaxPricePromptUsdPerM: body.generationMaxPricePromptUsdPerM,
     generationMaxPriceCompletionUsdPerM: body.generationMaxPriceCompletionUsdPerM,
-    inputGuardEnabled: body.inputGuardEnabled,
   })
   if (settings.enabled) {
     const needed = new Set([settings.generationProvider, settings.transcriptionProvider])
-    if (settings.inputGuardEnabled) needed.add(settings.guardProvider)
     if (settings.cleanupModel) needed.add(settings.cleanupProvider)
     needed.delete('vercel-gateway')
     const missing = [...needed].filter((id) => !hasKey(id))

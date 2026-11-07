@@ -8,11 +8,9 @@ export const WORKSHOP_AI_DEFAULTS = {
   enabled: false,
   provider: 'openrouter',
   generationProvider: 'openrouter',
-  guardProvider: 'openrouter',
   transcriptionProvider: 'openrouter',
   providers: [],
   generationModel: 'meta/muse-spark-1.3-contributor',
-  guardModel: 'typesafe/jev-1.13',
   transcriptionModel: 'openai/whisper-1',
   cleanupModel: '',
   cleanupProvider: 'openrouter',
@@ -25,7 +23,6 @@ export const WORKSHOP_AI_DEFAULTS = {
   maxHourlyBuilders: 256,
   generationMaxPricePromptUsdPerM: 0.1,
   generationMaxPriceCompletionUsdPerM: 0.2,
-  inputGuardEnabled: false,
 } as const
 
 export const WORKSHOP_AI_PROVIDERS = ['openrouter', 'vercel-gateway'] as const
@@ -85,11 +82,9 @@ export type WorkshopAiSettings = {
   enabled: boolean
   provider: WorkshopAiProvider
   generationProvider: string
-  guardProvider: string
   transcriptionProvider: string
   providers: WorkshopAiCustomProvider[]
   generationModel: string
-  guardModel: string
   transcriptionModel: string
   cleanupModel: string
   cleanupProvider: string
@@ -102,7 +97,6 @@ export type WorkshopAiSettings = {
   maxHourlyBuilders: number
   generationMaxPricePromptUsdPerM: number
   generationMaxPriceCompletionUsdPerM: number
-  inputGuardEnabled: boolean
 }
 
 // Same shape as the server's check: vendor/name with an optional :variant such as :free.
