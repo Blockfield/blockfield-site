@@ -982,3 +982,63 @@ test('CP workshop-ai sequential saves survive the stamped mirror (tolerant reade
     assert.equal(file2.maxBlocks, 2048)
   })
 })
+
+test('CP streak table: saves without it keep it, null deletes the key in CP and the mirror', async (t) => {
+  await withCp(t, async (dir, seen) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    const table = [{ kills: 4, id: 'minecraft:apple', count: 3, scale: false }]
+    const mirror = () => JSON.parse(readFileSync(join(dir, 'settings.json')))
+    await saveSettingsCp(
+      dir,
+      { expectedRevision: 0, deathmatch: { streakRewards: table }, cpRevisions: {} },
+      'A',
+    )
+    await saveSettingsCp(dir, { expectedRevision: 1, rooms: { maxRooms: 3 }, cpRevisions: {} }, 'A')
+    assert.deepEqual((await readSettingsCpView(dir)).settings.deathmatch.streakRewards, table)
+    await saveSettingsCp(
+      dir,
+      { expectedRevision: 2, deathmatch: { minPlayers: 3 }, cpRevisions: { deathmatch: 1 } },
+      'A',
+    )
+    assert.deepEqual(mirror().deathmatch, { minPlayers: 3, streakRewards: table })
+    await saveSettingsCp(
+      dir,
+      {
+        expectedRevision: 3,
+        deathmatch: { minPlayers: 3, streakRewards: null },
+        cpRevisions: { deathmatch: 2 },
+      },
+      'A',
+    )
+    const patch = seen.filter(([ns]) => ns === 'deathmatch').at(-1)[1].patch
+    assert.equal(patch.streakRewards, null, 'null is the RFC 7396 delete')
+    assert.deepEqual((await readSettingsCpView(dir)).settings.deathmatch, { minPlayers: 3 })
+    assert.deepEqual(mirror().deathmatch, { minPlayers: 3 })
+  })
+})
+
+test('CP streak reset of a section holding only the table clears the mirror too', async (t) => {
+  await withCp(t, async (dir) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    const table = [{ kills: 4, id: 'minecraft:apple', count: 3, scale: false }]
+    await saveSettingsCp(
+      dir,
+      { expectedRevision: 0, deathmatch: { streakRewards: table }, cpRevisions: {} },
+      'A',
+    )
+    await saveSettingsCp(
+      dir,
+      {
+        expectedRevision: 1,
+        deathmatch: { streakRewards: null },
+        cpRevisions: { deathmatch: 1 },
+      },
+      'A',
+    )
+    const view = await readSettingsCpView(dir)
+    assert.equal(view.settings.deathmatch?.streakRewards, undefined)
+    const stored = JSON.parse(readFileSync(join(dir, 'settings.json')))
+    assert.equal(stored.deathmatch?.streakRewards, undefined)
+    assert.doesNotMatch(JSON.stringify(stored), /null/)
+  })
+})

@@ -47,6 +47,7 @@ import {
   workshopAiKeyStatusFile,
 } from './workshop-ai.ts'
 import { parseKitCatalog, validateKitChanges } from './kit-schema.ts'
+import { parseStreakEntries } from './streak-table.ts'
 import {
   filters,
   resolveNames,
@@ -1166,8 +1167,22 @@ export function validateSettings(body: any, catalog?: GunBalanceCatalog) {
   const out: Record<string, unknown> = {}
   if (body.lobby !== undefined) out.lobby = section(body.lobby, LOBBY, 'лобби')
   if (body.rooms !== undefined) out.rooms = section(body.rooms, ROOMS, 'комнаты')
-  if (body.deathmatch !== undefined)
-    out.deathmatch = section(body.deathmatch, DEATHMATCH, 'каждый сам за себя')
+  if (body.deathmatch !== undefined) {
+    // streakRewards is a validated table, not a number: split it off before the numeric check.
+    if (!plain(body.deathmatch)) throw bad('Настройки: неверный раздел «каждый сам за себя».')
+    const { streakRewards, ...numbers } = body.deathmatch
+    const deathmatch = section(numbers, DEATHMATCH, 'каждый сам за себя')
+    // null is the request-only reset marker (remove the stored table); it never reaches settings.json.
+    if (streakRewards === null) (deathmatch as Record<string, unknown>).streakRewards = null
+    else if (streakRewards !== undefined) {
+      try {
+        ;(deathmatch as Record<string, unknown>).streakRewards = parseStreakEntries(streakRewards)
+      } catch (error) {
+        throw bad(`Настройки: ${(error as Error).message}`)
+      }
+    }
+    out.deathmatch = deathmatch
+  }
   if (body.classCosts !== undefined) {
     out.classCosts = section(
       body.classCosts,
@@ -1418,6 +1433,12 @@ export function saveSettings(
     values = validateSettings(body, catalog)
     for (const key of ['gunBalance', 'kits', 'fixedModeKits', 'disabledMapIds'])
       if (!Object.hasOwn(body, key) && Object.hasOwn(current, key)) values[key] = current[key]
+    // The editor omits an unedited table, and the deathmatch section is replaced wholesale: keep the stored one.
+    const dm = { ...(values.deathmatch as Record<string, unknown> | undefined) }
+    if (dm.streakRewards === undefined) dm.streakRewards = current.deathmatch?.streakRewards
+    if (dm.streakRewards == null) delete dm.streakRewards // null = reset marker, never stored
+    if (Object.keys(dm).length) values.deathmatch = dm
+    else delete values.deathmatch
   }
   if (editingGuns && Object.keys(values.gunBalance as object).length === 0) delete values.gunBalance
   const settings = {
@@ -4706,6 +4727,13 @@ function mirrorFromCp(
   if (deathmatch?.initialized) {
     const section = nonNullSection(deathmatch.value)
     if (Object.keys(section).length > 0) settings.deathmatch = section
+    else if (plain(settings.deathmatch)) {
+      // A reset can leave CP's section empty; the mirror must not keep the removed table.
+      const rest = { ...settings.deathmatch }
+      delete rest.streakRewards
+      if (Object.keys(rest).length) settings.deathmatch = rest
+      else delete settings.deathmatch
+    }
   }
   const classLocks = view('classLocks')
   if (classLocks?.initialized && classLocks.value && typeof classLocks.value === 'object') {

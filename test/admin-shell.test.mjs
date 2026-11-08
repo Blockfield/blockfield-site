@@ -5,6 +5,42 @@ import { JSDOM } from 'jsdom'
 import ts from 'typescript'
 import { NAV_GROUPS, resolveTab } from '../src/lib/admin-navigation.ts'
 import { settingsReceipt } from '../src/lib/settings-form.ts'
+import {
+  DEFAULT_STREAK_ENTRIES,
+  entriesToRows,
+  parseStreakEntries,
+  rowsToEntries,
+  streakCycle,
+  streakPeriod,
+} from '../src/lib/streak-table.ts'
+const streakLib = {
+  parseStreakEntries,
+  entriesToRows,
+  rowsToEntries,
+  streakCycle,
+  streakPeriod,
+  DEFAULT_STREAK_ENTRIES,
+}
+const streakState = () =>
+  `let streakRows = [], streakBase = '', streakError = null, streakReset = false, lastSettingsSnapshot = null, streakOptionsLoaded = false; const streakLabels = new Map(), customCombo = () => {};`
+const streakFns = [
+  'el',
+  'streakTableOf',
+  'streakSerialized',
+  'streakBaseOf',
+  'streakEditingActive',
+  'readStreakForSave',
+  'streakStored',
+  'itemLabel',
+  'resolveItemId',
+  'refreshStreakPreview',
+  'validateStreakDraft',
+  'updateStreakNote',
+  'renderStreakTable',
+  'attachStreakCombos',
+  'loadStreakItemOptions',
+  'commitStreak',
+]
 
 const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
 const script = page.split('<script>')[1].split('</script>')[0]
@@ -55,6 +91,7 @@ test('settings receipt shows the editor name from an identity object', async () 
   try {
     Object.assign(dom.window, {
       settingsReceipt,
+      ...streakLib,
       structuredClone,
       api: async () => ({
         settings: { revision: 3, updatedAt: Date.now(), updatedBy: { name: 'Nether' } },
@@ -63,7 +100,7 @@ test('settings receipt shows the editor name from an identity object', async () 
       }),
     })
     dom.window.eval(
-      `const $ = (s) => document.querySelector(s); let gunOverrides = {}, selectedGun, remoteSettingsName; let lastApplied, gunRevision = 3, observedSettingsRevision = 0, rules, settingsLoaded = false, settingsRevision = 3; const ago = () => 'только что'; ${functions(['say', 'settingsStatus', 'loadSettings'])}`,
+      `const $ = (s) => document.querySelector(s); let gunOverrides = {}, selectedGun, remoteSettingsName; let lastApplied, gunRevision = 3, observedSettingsRevision = 0, rules, settingsLoaded = false, settingsRevision = 3; const ago = () => 'только что'; ${streakState()} ${functions(['say', 'settingsStatus', 'loadSettings', ...streakFns])}`,
     )
     await dom.window.loadSettings(0, true)
     assert.equal(
@@ -133,6 +170,7 @@ function liveDom(extra = '') {
     const mapAvailabilityWaiters = new Set(); const settingValues = new Map(), busyControls = new WeakSet(), queuedSettings = new Map(); let remoteSettingsName = 'Kira';
     ${extra}
   `)
+  Object.assign(dom.window, streakLib)
   return dom
 }
 
@@ -283,7 +321,8 @@ test('settings event advances the revision, flashes once and keeps a focused con
     const settingsReceipt = () => 'applied', ago = () => 'только что';
     const api = async () => ({settings:{revision:1, rooms:{maxRooms:2}}, applied:{revision:1}, balance:{}});
     const loadGunBalance = async () => {}; const ask = () => { throw Error('Unexpected discard prompt'); };
-    ${functions(['field', 'numberField', 'settingsMeta', 'settingsStatus', 'loadSettings', 'settingsEvent'])}
+    ${functions(['field', 'numberField', 'settingsMeta', 'settingsStatus', 'loadSettings', 'settingsEvent', ...streakFns])}
+    ${streakState()}
     window.structuredClone = value => JSON.parse(JSON.stringify(value));
   `)
   try {
