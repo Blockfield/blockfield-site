@@ -110,3 +110,26 @@ test('moderation maps CP refusals to site errors', async (t) => {
     await new Promise((resolve) => server.close(resolve))
   }
 })
+
+test('moderation forwards a caller-supplied idempotency key verbatim', async (t) => {
+  const seen = []
+  const server = await fakeCp((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      seen.push(JSON.parse(body).idempotencyKey)
+      res.setHeader('Content-Type', 'application/json')
+      res.statusCode = 202
+      res.end(JSON.stringify({ operationId: 'op-k', revision: null, status: 'accepted' }))
+    })
+  })
+  try {
+    env(t, server)
+    const key = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+    await postModerationCp('say', { text: 'hi' }, { idempotencyKey: key })
+    await postModerationCp('say', { text: 'hi' }, { idempotencyKey: key })
+    assert.deepEqual(seen, [key, key])
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})

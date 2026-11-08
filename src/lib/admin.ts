@@ -1745,6 +1745,17 @@ function moderationCpFields(body: any): Record<string, unknown> {
       throw bad('Неизвестное действие.')
   }
 }
+const uuidText = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+/** One client UUID per moderation action: the UI sends it and resends it on
+retry, so a retry after an unknown outcome dedupes in CP instead of
+double-applying. Absent (old UI) means a fresh key, as before. */
+function moderationIdempotencyKey(body: any): string {
+  if (body?.idempotencyKey === undefined) return randomUUID()
+  if (!uuidText(body.idempotencyKey)) throw bad('Некорректный ключ запроса.')
+  return body.idempotencyKey
+}
 /** Brigadier answers a bad command with text, not an error code. */
 export const rejectedByServer = (output: string) =>
   /^\s*(Unknown or incomplete command|Unknown command)/i.test(output) ||
@@ -2190,16 +2201,17 @@ const routes: Record<string, Route> = {
               ? (await currentRooms()).rooms.find((r) => r.id === body.roomId)
               : undefined
           const room = found ? { name: found.name, map: found.map } : undefined
+          // Validated before the call: a bad key is a 400, never an unconfirmed outcome.
+          const idempotencyKey = moderationIdempotencyKey(body)
           try {
-            const receipt = await cp.postModerationCp(cpKind, fields, {
-              idempotencyKey: randomUUID(),
-            })
+            const receipt = await cp.postModerationCp(cpKind, fields, { idempotencyKey })
             return { operationId: receipt.operationId, room }
           } catch (error) {
             if (isCpProblem(error)) throw fail(error.status, error.message)
-            if (isUnknownOutcome(error))
-              throw fail(503, 'Control-plane не отвечает. Попробуйте позже.')
-            throw error
+            // Timeout, dropped connection or a receipt without an operation id:
+            // CP may have applied the command, so this is unconfirmed, not
+            // failed — a retry resends the same key and dedupes in CP.
+            return { operationId: null, unknownOutcome: true, room }
           }
         }
       }
@@ -2237,6 +2249,7 @@ const routes: Record<string, Route> = {
         room: result?.room,
         output: result?.output?.slice(0, 500),
         operationId: result?.operationId,
+        unknownOutcome: result?.unknownOutcome ?? null,
       },
     }),
   },

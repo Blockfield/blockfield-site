@@ -2287,3 +2287,98 @@ test('POST rcon moderation goes through typed CP actions when configured, RCON o
   delete process.env.BLOCKFIELD_CP_MODERATION_TOKEN
   assert.equal((await call(`${MOD}:Moddy`, { action: 'say', text: 'hi' })).status, 503)
 })
+
+test('POST rcon moderation reuses the client key and reports unknown outcomes as unconfirmed', async (t) => {
+  const http = await import('node:http')
+  const dirs = {
+    BLOCKFIELD_ADMIN_DIR: temp(t),
+    BLOCKFIELD_INBOX_DIR: temp(t),
+    BLOCKFIELD_SETTINGS_DIR: temp(t),
+  }
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  // dropNext makes the next request die mid-flight (applied or not: unknown).
+  // badReceiptNext answers 2xx without an operation id (also unknown).
+  const seen = []
+  let dropNext = false,
+    badReceiptNext = false
+  const server = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      if (dropNext) {
+        dropNext = false
+        req.socket.destroy()
+        return
+      }
+      seen.push(JSON.parse(body))
+      res.setHeader('Content-Type', 'application/json')
+      res.statusCode = 202
+      res.end(
+        badReceiptNext
+          ? ((badReceiptNext = false), JSON.stringify({ status: 'accepted' }))
+          : JSON.stringify({ operationId: 'op-9', revision: null, status: 'accepted' }),
+      )
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  Object.assign(process.env, dirs, {
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
+    BLOCKFIELD_CP_MODERATION_TOKEN: 'mod-t',
+    BLOCKFIELD_CP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
+  })
+  delete process.env.BLOCKFIELD_RCON_HOST
+  const s = await store(t)
+  await s.setStaff(MOD, 'Moddy', 'moderator', 'seed')
+  const call = async (body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = `${MOD}:Moddy`
+    const url = new URL('http://site/api/admin/rcon')
+    const request = new Request(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, 'rcon', s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  const key = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+  const first = await call({ action: 'say', text: 'Тихо', idempotencyKey: key })
+  assert.equal(first.status, 200)
+  const retry = await call({ action: 'say', text: 'Тихо', idempotencyKey: key })
+  assert.equal(retry.status, 200)
+  assert.deepEqual(
+    seen.map((b) => b.idempotencyKey),
+    [key, key],
+    'a retry resends the same key so CP dedupes instead of double-applying',
+  )
+  // An invalid key is rejected before any CP call.
+  const bad = await call({ action: 'say', text: 'Тихо', idempotencyKey: 'not-a-uuid' })
+  assert.equal(bad.status, 400)
+  assert.match((await bad.json()).error, /ключ/i)
+  assert.equal(seen.length, 2)
+  // A 2xx receipt without an operation id is unconfirmed, not failed.
+  badReceiptNext = true
+  const receiptless = await call({ action: 'say', text: 'Тихо', idempotencyKey: key })
+  assert.equal(receiptless.status, 200)
+  assert.deepEqual(await receiptless.json(), { operationId: null, unknownOutcome: true })
+  // A dropped connection is unconfirmed too.
+  dropNext = true
+  const dropped = await call({ action: 'say', text: 'Тихо', idempotencyKey: key })
+  assert.equal(dropped.status, 200)
+  assert.deepEqual(await dropped.json(), { operationId: null, unknownOutcome: true })
+  const log = await s.auditLog()
+  const unconfirmed = log.filter((e) => JSON.parse(e.detail).unknownOutcome === true)
+  assert.equal(unconfirmed.length, 2)
+  for (const entry of unconfirmed) {
+    assert.equal(entry.ok, 1, 'unconfirmed rows are not failures')
+    assert.equal(JSON.parse(entry.detail).operationId, null)
+  }
+})

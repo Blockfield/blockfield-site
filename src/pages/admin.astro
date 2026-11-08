@@ -2700,6 +2700,36 @@ const cpGate = cpConfigured()
         buttons.forEach((b) => (b.disabled = false))
       }
     }
+    /** Moderation POST with one UUID per action: the same body is resent on
+    retry, so an unknown outcome never double-applies in CP. */
+    async function moderate(
+      line: HTMLElement,
+      body: Record<string, unknown>,
+      done: string,
+      after: () => void = () => {},
+      scope: HTMLElement | null = null,
+    ) {
+      body.idempotencyKey ??= crypto.randomUUID()
+      await run(
+        line,
+        async () => {
+          for (;;) {
+            const data = await api('rcon', 'POST', body)
+            if (!data?.unknownOutcome) {
+              after()
+              return done
+            }
+            const again = await ask({
+              title: 'Действие не подтверждено',
+              text: 'Команда могла уйти на сервер. Повтор безопасен: дважды она не применится.',
+              ok: 'Повторить',
+            })
+            if (!again) throw new Error('Не подтверждено. Проверьте состояние; повтор безопасен.')
+          }
+        },
+        scope,
+      )
+    }
 
     // Accessible confirmation: native <dialog> traps focus, Escape cancels, focus returns to the opener.
     const dialog = $<HTMLDialogElement>('#dialog')
@@ -3406,16 +3436,17 @@ const cpGate = cpConfigured()
       if (!answer) return
       const outcome = String(answer.get('outcome')),
         reason = String(answer.get('reason') ?? '')
-      run($('#room-status'), async () => {
-        await api('rcon', 'POST', {
+      moderate(
+        $('#room-status'),
+        {
           action: 'stop-room',
           roomId: room.id,
           outcome,
           reason: outcome === 'none' && /^(win|draw)\b/i.test(reason) ? `— ${reason}` : reason,
-        })
-        loadOverview()
-        return `Матч «${room.name}» завершён.`
-      })
+        },
+        `Матч «${room.name}» завершён.`,
+        loadOverview,
+      )
     }
 
     // ---------- Players ----------
@@ -3468,12 +3499,15 @@ const cpGate = cpConfigured()
         fields: spec.reason ? [reasonField()] : [],
       })
       if (!answer) return
-      await run(line, async () => {
-        await api('rcon', 'POST', { action, player, reason: String(answer.get('reason') ?? '') })
-        if (action === 'ban' || action === 'pardon') loadBans()
-        if (action !== 'pardon') setTimeout(loadOnline, 1000)
-        return spec.done(player)
-      })
+      await moderate(
+        line,
+        { action, player, reason: String(answer.get('reason') ?? '') },
+        spec.done(player),
+        () => {
+          if (action === 'ban' || action === 'pardon') loadBans()
+          if (action !== 'pardon') setTimeout(loadOnline, 1000)
+        },
+      )
     }
     async function loadOnline() {
       const summary = $('#online-summary')
@@ -11571,12 +11605,11 @@ const cpGate = cpConfigured()
       b.addEventListener('click', async () => {
         const spec = RANGE[b.dataset.range!]
         if (!(await ask({ ...spec, danger: b.dataset.range !== 'open' }))) return
-        run(
+        moderate(
           $('#range-status'),
-          async () => {
-            await api('rcon', 'POST', { action: 'range', op: b.dataset.range })
-            return spec.done
-          },
+          { action: 'range', op: b.dataset.range },
+          spec.done,
+          undefined,
           b.parentElement,
         )
       }),
@@ -11694,12 +11727,12 @@ const cpGate = cpConfigured()
       e.preventDefault()
       const form = e.currentTarget as HTMLFormElement,
         input = $<HTMLInputElement>('#say-text')
-      run(
+      moderate(
         form.querySelector<HTMLElement>('.form-status')!,
-        async () => {
-          await api('rcon', 'POST', { action: 'say', text: input.value })
+        { action: 'say', text: input.value },
+        'Объявление отправлено.',
+        () => {
           input.value = ''
-          return 'Объявление отправлено.'
         },
         form,
       )
