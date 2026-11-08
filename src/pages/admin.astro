@@ -2701,20 +2701,22 @@ const cpGate = cpConfigured()
       }
     }
     /** Moderation POST with one UUID per action: the same body is resent on
-    retry, so an unknown outcome never double-applies in CP. */
+    retry, so an unknown outcome never double-applies in CP. `route` covers
+    the typed Workshop actions too (same idempotency contract). */
     async function moderate(
       line: HTMLElement,
       body: Record<string, unknown>,
       done: string,
       after: () => void = () => {},
       scope: HTMLElement | null = null,
+      route = 'rcon',
     ) {
       body.idempotencyKey ??= crypto.randomUUID()
       await run(
         line,
         async () => {
           for (;;) {
-            const data = await api('rcon', 'POST', body)
+            const data = await api(route, 'POST', body)
             if (!data?.unknownOutcome) {
               after()
               return done
@@ -3145,19 +3147,12 @@ const cpGate = cpConfigured()
       $('#workshop').hidden
         ? [$('#mode-status'), $('#mode-options')]
         : [$('#ws-status'), $('#ws-actions')]
-    // Waking needs no confirmation: it only starts the stored Workshop goal, and a
-    // still-unanswered wake request is reused. STARTING progress arrives over events.
+    // Waking needs no confirmation: it only starts the stored Workshop goal.
+    // CP accepts the command first; the controller applies it after (the
+    // overview refresh shows the new phase). Retries reuse one client key.
     async function wakeWorkshop() {
       const [line, scope] = modeFeedback()
-      run(
-        line,
-        async () => {
-          const { id } = await api('wake', 'POST', {})
-          follow(line, id, 'Мастерская запускается')
-          return 'применяем…'
-        },
-        scope,
-      )
+      moderate(line, {}, 'Принято: мастерская запускается', loadOverview, scope, 'wake')
     }
     async function cancelSwitch() {
       if (
@@ -3170,15 +3165,7 @@ const cpGate = cpConfigured()
       )
         return
       const [line, scope] = modeFeedback()
-      run(
-        line,
-        async () => {
-          const { id } = await api('cancel', 'POST', {})
-          follow(line, id, 'применено')
-          return 'применяем…'
-        },
-        scope,
-      )
+      moderate(line, {}, 'Отмена принята', loadOverview, scope, 'cancel')
     }
     async function recoverWorkshop() {
       if (
@@ -11547,27 +11534,33 @@ const cpGate = cpConfigured()
         value = input.value.trim()
       if (!value || value === savedMessage || messageInFlight) return
       const line = $('#message-form .form-status')
+      const previous = savedMessage
       messageInFlight = true
-      say(line, 'сохраняем…', 'pending')
       try {
-        const { id } = await api('message', 'POST', { message: value })
-        const previous = savedMessage
-        const result = await follow(line, id, 'применено')
-        savedMessage = result ? value : previous
-        if (result && previous)
-          changeToast('Сообщение мастерской', previous, value, false, async () => {
-            try {
-              const { status } = await api('overview')
-              if (savedMessage !== value || status?.message !== value) {
-                toast('Сообщение уже изменено. Отмена недоступна.')
-                return
-              }
-              input.value = previous
-              await commitMessage()
-            } catch (error) {
-              say(line, (error as Error).message, 'error')
-            }
-          })
+        await moderate(
+          line,
+          { message: value },
+          'применено',
+          () => {
+            savedMessage = value
+            if (previous)
+              void changeToast('Сообщение мастерской', previous, value, false, async () => {
+                try {
+                  const { status } = await api('overview')
+                  if (savedMessage !== value || status?.message !== value) {
+                    toast('Сообщение уже изменено. Отмена недоступна.')
+                    return
+                  }
+                  input.value = previous
+                  await commitMessage()
+                } catch (error) {
+                  say(line, (error as Error).message, 'error')
+                }
+              })
+          },
+          null,
+          'message',
+        )
       } catch (error) {
         say(line, (error as Error).message, 'error')
       } finally {

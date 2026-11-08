@@ -7,7 +7,6 @@ import {
   readSync,
   readFileSync,
   closeSync,
-  readdirSync,
   renameSync,
   writeFileSync,
   unlinkSync,
@@ -867,17 +866,6 @@ export function writeRequest(
         expectedRevision: body.expectedRevision,
       }
     }
-  } else if (body?.kind === 'message') {
-    // Same rule as the controller: strip control characters (Unicode Cc) and §, keep format characters such as ZWJ.
-    const message =
-      typeof body.message === 'string' ? body.message.replace(/[\p{Cc}§]/gu, '').trim() : null
-    if (message === null || [...message].length > 200) throw bad('Сообщение: до 200 символов.')
-    request = { ...base, message }
-  } else if (body?.kind === 'cancel') {
-    request = { ...base }
-  } else if (body?.kind === 'wake') {
-    // Waking a sleeping Workshop carries no parameters: the controller starts the stored goal.
-    request = { ...base }
   } else if (body?.kind === 'members') {
     // `maps` absent/null: every map, including ones added later. `maps: []`: no map (the builder still gets a workshop account, just nothing to edit).
     const validMaps = (m: any) =>
@@ -1066,27 +1054,6 @@ export function writeRequest(
     keyKinds.includes(request.kind as string) ? 0o600 : undefined,
   )
   return base.id
-}
-
-/**
- * A `wake` request already waiting in the inbox: its id, so callers reuse it instead of
- * queueing another. Answered (a result file exists) and malformed files do not count.
- */
-export function pendingWakeId(inboxDirectory: string, resultsDirectory: string): string | null {
-  let names: string[]
-  try {
-    names = readdirSync(inboxDirectory)
-  } catch {
-    return null
-  }
-  for (const name of names.filter((n) => n.endsWith('.json') && !n.startsWith('.')).sort()) {
-    const id = name.slice(0, -'.json'.length)
-    const request = readFile(join(inboxDirectory, name), 4096)
-    if (!request || request.schema !== 1 || request.kind !== 'wake' || request.id !== id) continue
-    if (readFile(join(resultsDirectory, `${id}.json`)) !== null) continue
-    return id
-  }
-  return null
 }
 
 const range = (min: number, max: number) => (v: unknown) =>
@@ -1756,6 +1723,47 @@ function moderationIdempotencyKey(body: any): string {
   if (!uuidText(body.idempotencyKey)) throw bad('Некорректный ключ запроса.')
   return body.idempotencyKey
 }
+/** One client UUID per Workshop action: same retry-dedupe contract as moderation. */
+function workshopIdempotencyKey(body: any): string {
+  if (body?.idempotencyKey === undefined) return randomUUID()
+  if (!uuidText(body.idempotencyKey)) throw bad('Некорректный ключ запроса.')
+  return body.idempotencyKey
+}
+/** CP-bound Workshop actor: the site service principal supplies it, CP binds it (workshop.act). */
+function workshopActor(actor: Actor): { draslId: string; name: string } {
+  if (!playerId(actor.uuid) || !nickname.test(actor.name)) throw bad('Некорректный запрос.')
+  return { draslId: actor.uuid, name: actor.name }
+}
+/** Workshop message rule (was the inbox writer): strip Cc/§, keep format
+characters such as ZWJ, count code points, ≤200. */
+function workshopMessage(value: unknown): string {
+  const message = typeof value === 'string' ? value.replace(/[\p{Cc}§]/gu, '').trim() : null
+  if (message === null || [...message].length > 200) throw bad('Сообщение: до 200 символов.')
+  return message
+}
+/** Typed-CP Workshop call: validated before the call, so a bad key is a 400,
+never an unconfirmed outcome; a dropped connection is unconfirmed, not
+failed. Unlike moderation there is no second transport, so an unconfigured
+site fails closed. */
+async function postWorkshopRoute(
+  kind: 'message' | 'wake' | 'cancel',
+  actor: Actor,
+  body: any,
+  fields: Record<string, unknown> = {},
+) {
+  const cp = await import('./cp.ts')
+  if (!cp.cpWorkshopConfigured()) throw fail(503, 'Мастерская недоступна.')
+  const idempotencyKey = workshopIdempotencyKey(body)
+  try {
+    const receipt = await cp.postWorkshopCp(kind, workshopActor(actor), fields, {
+      idempotencyKey,
+    })
+    return { operationId: receipt.operationId }
+  } catch (error) {
+    if (isCpProblem(error)) throw fail(error.status, error.message)
+    return { operationId: null, unknownOutcome: true }
+  }
+}
 /** Brigadier answers a bad command with text, not an error code. */
 export const rejectedByServer = (output: string) =>
   /^\s*(Unknown or incomplete command|Unknown command)/i.test(output) ||
@@ -2161,28 +2169,44 @@ const routes: Record<string, Route> = {
   },
   'POST message': {
     permission: 'message',
-    handler: ({ actor, body }) => ({
-      id: writeRequest(inboxDir(), actor, { kind: 'message', message: body?.message }),
+    handler: ({ actor, body }) =>
+      postWorkshopRoute('message', actor, body, { message: workshopMessage(body?.message) }),
+    audit: (body, result) => ({
+      action: 'message',
+      detail: {
+        message: body?.message,
+        operationId: result?.operationId ?? null,
+        unknownOutcome: result?.unknownOutcome ?? null,
+      },
     }),
-    audit: (body) => ({ action: 'message', detail: { message: body?.message } }),
   },
   // Cancelling rolls back only the Workshop transition; recovery remains admin-only.
   'POST cancel': {
     permission: 'mode',
-    handler: ({ actor }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'cancel' }) }),
-    audit: () => ({ action: 'cancel' }),
+    handler: ({ actor, body }) => postWorkshopRoute('cancel', actor, body),
+    audit: (_, result) => ({
+      action: 'cancel',
+      detail: {
+        operationId: result?.operationId ?? null,
+        unknownOutcome: result?.unknownOutcome ?? null,
+      },
+    }),
   },
-  // Waking is idempotent: a still-unanswered `wake` request is reused, never duplicated.
-  // Every staff member is a Workshop member (the site derives the controller ACL from staff
-  // roles), so this is open to all roles; POST maps/sessions sets the view-gated precedent.
+  // Waking is idempotent controller-side (an awake editor answers ok without
+  // side effects); the client UUID dedupes UI retries after unknown outcomes.
+  // Every staff member is a Workshop member (the site derives the controller
+  // ACL from staff roles), so this is open to all roles; POST maps/sessions
+  // sets the view-gated precedent.
   'POST wake': {
     permission: 'view',
-    handler: ({ actor }) => ({
-      id:
-        pendingWakeId(inboxDir(), join(adminDir(), 'results')) ??
-        writeRequest(inboxDir(), actor, { kind: 'wake' }),
+    handler: ({ actor, body }) => postWorkshopRoute('wake', actor, body),
+    audit: (_, result) => ({
+      action: 'workshop-wake',
+      detail: {
+        operationId: result?.operationId ?? null,
+        unknownOutcome: result?.unknownOutcome ?? null,
+      },
     }),
-    audit: () => ({ action: 'workshop-wake' }),
   },
   'POST rcon': {
     permission: 'moderate',
