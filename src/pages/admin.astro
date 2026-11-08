@@ -7031,6 +7031,7 @@ const cpGate = cpConfigured()
     let streakRows: StreakRow[] = []
     let streakBase = ''
     let streakError: string | null = null
+    let streakReset = false
     let lastSettingsSnapshot: any = null
     function streakEditingActive() {
       return (
@@ -7054,12 +7055,16 @@ const cpGate = cpConfigured()
         return null
       }
     }
-    /** Validated table for the save body; undefined = unchanged or invalid (never blocks other saves). */
-    function readStreakForSave(): StreakEntry[] | undefined {
+    function streakStored() {
+      return Array.isArray(lastSettingsSnapshot?.deathmatch?.streakRewards)
+    }
+    /** Save-body table: undefined = keep the stored one (also for an invalid draft), null = remove it (reset). */
+    function readStreakForSave(): StreakEntry[] | null | undefined {
       const serialized = streakSerialized()
-      return serialized !== null && serialized !== streakBase
-        ? (JSON.parse(serialized) as StreakEntry[])
-        : undefined
+      if (serialized === null) return undefined
+      if (streakReset && streakStored() && serialized === JSON.stringify(DEFAULT_STREAK_ENTRIES))
+        return null
+      return serialized !== streakBase ? (JSON.parse(serialized) as StreakEntry[]) : undefined
     }
     function itemLabel(id: string) {
       return streakLabels.get(id) ?? id
@@ -7080,15 +7085,18 @@ const cpGate = cpConfigured()
         return
       }
       const entries = JSON.parse(serialized) as StreakEntry[],
-        period = streakPeriod(entries)
+        period = streakPeriod(entries),
+        unset = streakStored()
+          ? ''
+          : 'Не задана в админке: действует таблица из файла сервера, иначе по умолчанию. '
       if (!period) {
-        line.textContent = 'Таблица пуста: серия не даёт наград.'
+        line.textContent = `${unset}Таблица пуста: серия не даёт наград.`
         return
       }
       const cycle = streakCycle(entries, 2)
         .map((grant) => `${grant.kills}: ${itemLabel(grant.id)} ×${grant.count}`)
         .join('; ')
-      line.textContent = `Период ${period}. Цикл 2: ${cycle}.`
+      line.textContent = `${unset}Период ${period}. Цикл 2: ${cycle}.`
     }
     function validateStreakDraft() {
       try {
@@ -7138,7 +7146,7 @@ const cpGate = cpConfigured()
                   'aria-label': 'Убийств',
                   onchange: (e: Event) => {
                     const value = Number((e.target as HTMLInputElement).value)
-                    streakRows[index] = { ...row, kills: value }
+                    streakRows[index] = { ...streakRows[index], kills: value }
                     validateStreakDraft()
                   },
                 }),
@@ -7175,7 +7183,10 @@ const cpGate = cpConfigured()
                   oninput: (e: Event) => {
                     const input = e.target as HTMLInputElement,
                       id = resolveItemId(input.value) ?? input.value.trim()
-                    streakRows[index].items[itemIndex] = { ...item, id }
+                    streakRows[index].items[itemIndex] = {
+                      ...streakRows[index].items[itemIndex],
+                      id,
+                    }
                     validateStreakDraft()
                   },
                 }),
@@ -7216,8 +7227,8 @@ const cpGate = cpConfigured()
                   textContent: 'Убрать',
                   onclick: () => {
                     streakRows[index] = {
-                      ...row,
-                      items: row.items.filter((_, i) => i !== itemIndex),
+                      ...streakRows[index],
+                      items: streakRows[index].items.filter((_, i) => i !== itemIndex),
                     }
                     renderStreakTable()
                     void commitStreak()
@@ -7233,8 +7244,8 @@ const cpGate = cpConfigured()
                 textContent: '+ Предмет',
                 onclick: () => {
                   streakRows[index] = {
-                    ...row,
-                    items: [...row.items, { id: '', count: 1, scale: true }],
+                    ...streakRows[index],
+                    items: [...streakRows[index].items, { id: '', count: 1, scale: true }],
                   }
                   renderStreakTable()
                   validateStreakDraft()
@@ -7263,6 +7274,7 @@ const cpGate = cpConfigured()
             textContent: 'По умолчанию',
             onclick: () => {
               streakRows = entriesToRows([...DEFAULT_STREAK_ENTRIES])
+              streakReset = true
               renderStreakTable()
               void commitStreak()
             },
@@ -7322,7 +7334,8 @@ const cpGate = cpConfigured()
         say(line, streakError, 'error')
         return
       }
-      if (JSON.stringify(entries) === streakBase) return
+      const removing = streakReset && streakStored()
+      if (!removing && JSON.stringify(entries) === streakBase) return
       streakError = null
       say(line, 'сохраняем…', 'pending')
       try {
@@ -7331,8 +7344,10 @@ const cpGate = cpConfigured()
         settingsRevision = Math.max(settingsRevision, result.settings.revision)
         gunRevision = settingsRevision
         streakBase = JSON.stringify(streakTableOf(result.settings))
+        streakReset = false
         await loadSettings(0, true, result)
         settingsMeta()
+        refreshStreakPreview()
         say(line, 'сохранено', 'ok')
       } catch (error) {
         if ((error as { status?: number }).status === 409) {

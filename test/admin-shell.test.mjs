@@ -22,13 +22,14 @@ const streakLib = {
   DEFAULT_STREAK_ENTRIES,
 }
 const streakState = () =>
-  `let streakRows = [], streakBase = '', streakError = null, lastSettingsSnapshot = null, streakOptionsLoaded = false; const streakLabels = new Map(), customCombo = () => {};`
+  `let streakRows = [], streakBase = '', streakError = null, streakReset = false, lastSettingsSnapshot = null, streakOptionsLoaded = false; const streakLabels = new Map(), customCombo = () => {};`
 const streakFns = [
   'el',
   'streakTableOf',
   'streakSerialized',
   'streakEditingActive',
   'readStreakForSave',
+  'streakStored',
   'itemLabel',
   'resolveItemId',
   'refreshStreakPreview',

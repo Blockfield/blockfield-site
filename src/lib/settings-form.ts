@@ -3,15 +3,17 @@ export type SettingsForm = {
   lobby: Record<string, string>
   rooms: Record<string, string>
   deathmatch: Record<string, string>
-  /** Validated flat table (streak-table.ts); undefined = unchanged, [] = rewards off. */
-  streakRewards?: {
-    kills: number
-    id: string
-    count: number
-    scale: boolean
-    throwable_id?: string
-    message?: string
-  }[]
+  /** Validated flat table (streak-table.ts); undefined = keep the stored one, [] = rewards off, null = remove the stored table. */
+  streakRewards?:
+    | {
+        kills: number
+        id: string
+        count: number
+        scale: boolean
+        throwable_id?: string
+        message?: string
+      }[]
+    | null
   classCosts?: Record<string, string>
   lockedClasses: string[]
   hadLocks: boolean

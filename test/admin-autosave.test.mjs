@@ -54,6 +54,7 @@ const names = [
   'streakSerialized',
   'streakEditingActive',
   'readStreakForSave',
+  'streakStored',
   'itemLabel',
   'resolveItemId',
   'refreshStreakPreview',
@@ -181,7 +182,7 @@ async function setup(options = {}) {
     const gunLabel = gun => gun.id; const KIT_GUNS = new Set();
     let rules = {}, defaults = {}, balance = {}, scope = '*', hadLocks, extraLocks = [], fieldId = 0;
     const mapAvailabilityWaiters = new Set(); let kitCatalog; let settingsLoaded = false, settingsRevision = 0, observedSettingsRevision = 0, lastApplied = null;
-    let streakRows = [], streakBase = '', streakError = null, lastSettingsSnapshot = null, streakOptionsLoaded = false;
+    let streakRows = [], streakBase = '', streakError = null, streakReset = false, lastSettingsSnapshot = null, streakOptionsLoaded = false;
     const streakLabels = new Map();
     let settingsQueue = Promise.resolve(), gunQueue = Promise.resolve(), gunPending = 0, settingsQueueVersion = 0, gunQueueVersion = 0;
     let gunCatalog, selectedGun, gunOverrides = {}, gunRevision = 0; let gunFinalsRefresh = null;
@@ -196,7 +197,7 @@ async function setup(options = {}) {
     let savedMessage = ${JSON.stringify(options.message ?? '')}, messageInFlight = false, messageTimer;
     ${functions}
     autosaveKeys($('#settings-form')); autosaveKeys($('#gun-balance-form'));
-    $('#settings-form').addEventListener('change', e => commitSetting(e.target));
+    $('#settings-form').addEventListener('change', e => e.target.closest('#streak-table') ? commitStreak() : commitSetting(e.target));
     ${messageHandlers}
     window.gunSetup = () => { gunCatalog = {fields:{fields:{damage:{type:'number',min:0,max:100,nullable:false},nested:{type:'object',nullable:false,fields:{rate:{type:'integer',nullable:false,min:1,max:10}}}}}}; selectedGun = {id:'bf:test',data:'bf:test',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Test'}; gunCatalog.guns = [selectedGun, {id:'bf:other',data:'bf:other',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Other'}]; renderGun(); };
     window.gunAliasSetup = () => { gunCatalog.guns.push({id:'bf:test_alias',data:'bf:test',type:'rifle',defaults:{damage:10,nested:{rate:2}},warnings:[],name:'Alias'}); renderGun(); };
@@ -254,6 +255,88 @@ test('change commits one field, uses revision and undo commits the old value', a
     assert.equal(calls[1].body.expectedRevision, 4)
   } finally {
     dom.window.close()
+  }
+})
+
+const ID = '[aria-label="Предмет"]'
+const COUNT = '[aria-label="Кол-во"]'
+const CUSTOM_TABLE = [{ kills: 4, id: 'minecraft:apple', count: 3, scale: false }]
+const savePuts = (calls) => calls.filter((call) => call.method === 'PUT')
+const tick = () => new Promise((resolve) => setTimeout(resolve))
+const streakRow = (dom, row) =>
+  dom.window.document.querySelectorAll('#streak-table .streak-row').item(row)
+const streakButton = (dom, label, row = 0) =>
+  [...streakRow(dom, row).querySelectorAll('button')].find((button) => button.textContent === label)
+const streakItem = (dom, row, item) =>
+  streakRow(dom, row).querySelectorAll('.streak-item:not(.streak-cols)').item(item)
+const resetButton = (dom) =>
+  [...dom.window.document.querySelectorAll('#streak-table button')].find(
+    (button) => button.textContent === 'По умолчанию',
+  )
+const edit = (dom, control, value, event = 'change') => {
+  control.value = value
+  control.dispatchEvent(new dom.window.Event(event, { bubbles: true }))
+}
+
+test('streak editor: a count typed before the id survives the id edit and is saved', async () => {
+  const { dom, calls } = await setup()
+  try {
+    streakButton(dom, '+ Предмет').click()
+    const item = streakItem(dom, 0, 1)
+    edit(dom, item.querySelector(COUNT), '3')
+    await tick()
+    assert.equal(savePuts(calls).length, 0, 'an empty id cannot be committed')
+    edit(dom, item.querySelector(ID), 'minecraft:apple', 'input')
+    edit(dom, item.querySelector(ID), 'minecraft:apple')
+    await tick()
+    const [save] = savePuts(calls)
+    const saved = save.body.deathmatch.streakRewards.find((entry) => entry.id === 'minecraft:apple')
+    assert.deepEqual(saved, { kills: 2, id: 'minecraft:apple', count: 3, scale: true })
+  } finally {
+    dom.window.close()
+  }
+})
+
+test('streak editor: a save of another setting leaves the stored table out of the body', async () => {
+  const { dom, calls, input, change } = await setup({
+    settings: { deathmatch: { streakRewards: CUSTOM_TABLE } },
+  })
+  try {
+    change(input, '6')
+    await dom.window.flush()
+    assert.equal(savePuts(calls)[0].body.rooms.maxRooms, 6)
+    assert.equal(savePuts(calls)[0].body.deathmatch, undefined)
+  } finally {
+    dom.window.close()
+  }
+})
+
+test('streak editor: reset sends null for a stored table and nothing when none is stored', async () => {
+  const stored = await setup({ settings: { deathmatch: { streakRewards: CUSTOM_TABLE } } })
+  try {
+    const note = () => stored.dom.window.document.querySelector('#streak-preview').textContent
+    assert.doesNotMatch(note(), /Не задана в админке/)
+    resetButton(stored.dom).click()
+    await tick()
+    assert.deepEqual(
+      savePuts(stored.calls).map((call) => call.body.deathmatch),
+      [{ streakRewards: null }],
+    )
+    assert.match(note(), /Не задана в админке: действует таблица из файла сервера/)
+  } finally {
+    stored.dom.window.close()
+  }
+  const absent = await setup()
+  try {
+    assert.match(
+      absent.dom.window.document.querySelector('#streak-preview').textContent,
+      /Не задана в админке/,
+    )
+    resetButton(absent.dom).click()
+    await tick()
+    assert.equal(savePuts(absent.calls).length, 0)
+  } finally {
+    absent.dom.window.close()
   }
 })
 
