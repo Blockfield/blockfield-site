@@ -1697,6 +1697,65 @@ export function rconCommand(body: any): {
       throw bad('Неизвестное действие.')
   }
 }
+/** Typed-CP moderation actions (control-plane cp#32): fire-and-forget only.
+`list` stays on RCON (a read; CP ACKs carry no output), kick/ban keep the
+RCON nickname flow until the UUID cutover, maintenance/raw have no typed kind. */
+function moderationCpKind(body: any): string | null {
+  switch (body?.action) {
+    case 'say':
+    case 'pardon':
+    case 'team-kick':
+    case 'class-lock':
+    case 'class-unlock':
+    case 'range':
+    case 'stop-room':
+      return body.action
+    default:
+      return null
+  }
+}
+/** Per-kind CP fields; validation mirrors rconCommand so both paths refuse the same bodies. */
+function moderationCpFields(body: any): Record<string, unknown> {
+  switch (body?.action) {
+    case 'say':
+      return { text: text(body.text, true) }
+    case 'pardon':
+    case 'team-kick':
+      return { player: player(body.player) }
+    case 'class-lock':
+    case 'class-unlock':
+      if (typeof body.classId !== 'string' || !/^[a-z0-9_]{1,32}$/.test(body.classId))
+        throw bad('Некорректный класс.')
+      return { classId: body.classId }
+    case 'range':
+      if (!['open', 'close', 'reset'].includes(body.op))
+        throw bad('Полигон: open, close или reset.')
+      return { op: body.op }
+    case 'stop-room': {
+      if (typeof body.roomId !== 'string' || !roomId.test(body.roomId))
+        throw bad('Некорректная комната.')
+      if (!['none', 'draw', 'RED', 'BLUE'].includes(body.outcome))
+        throw bad('Итог: none, draw, RED или BLUE.')
+      const reason = text(body.reason, false)
+      if (body.outcome === 'none' && /^(win|draw)\b/.test(reason))
+        throw bad('Причина не может начинаться с win или draw.')
+      return { roomId: body.roomId, outcome: body.outcome, ...(reason ? { reason } : {}) }
+    }
+    default:
+      throw bad('Неизвестное действие.')
+  }
+}
+const uuidText = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+/** One client UUID per moderation action: the UI sends it and resends it on
+retry, so a retry after an unknown outcome dedupes in CP instead of
+double-applying. Absent (old UI) means a fresh key, as before. */
+function moderationIdempotencyKey(body: any): string {
+  if (body?.idempotencyKey === undefined) return randomUUID()
+  if (!uuidText(body.idempotencyKey)) throw bad('Некорректный ключ запроса.')
+  return body.idempotencyKey
+}
 /** Brigadier answers a bad command with text, not an error code. */
 export const rejectedByServer = (output: string) =>
   /^\s*(Unknown or incomplete command|Unknown command)/i.test(output) ||
@@ -2128,6 +2187,34 @@ const routes: Record<string, Route> = {
   'POST rcon': {
     permission: 'moderate',
     handler: async ({ actor, body }) => {
+      // Typed control-plane path (cp#32): `list`/kick/ban/maintenance fall
+      // through to RCON (see moderationCpKind). Unconfigured sites keep RCON.
+      const cpKind = moderationCpKind(body)
+      if (cpKind) {
+        const cp = await import('./cp.ts')
+        if (cp.cpModerationConfigured()) {
+          const fields = moderationCpFields(body)
+          if (!can(actor.role, cpKind === 'pardon' ? 'ban' : 'moderate'))
+            throw fail(403, 'Недостаточно прав.')
+          const found =
+            body.action === 'stop-room'
+              ? (await currentRooms()).rooms.find((r) => r.id === body.roomId)
+              : undefined
+          const room = found ? { name: found.name, map: found.map } : undefined
+          // Validated before the call: a bad key is a 400, never an unconfirmed outcome.
+          const idempotencyKey = moderationIdempotencyKey(body)
+          try {
+            const receipt = await cp.postModerationCp(cpKind, fields, { idempotencyKey })
+            return { operationId: receipt.operationId, room }
+          } catch (error) {
+            if (isCpProblem(error)) throw fail(error.status, error.message)
+            // Timeout, dropped connection or a receipt without an operation id:
+            // CP may have applied the command, so this is unconfirmed, not
+            // failed — a retry resends the same key and dedupes in CP.
+            return { operationId: null, unknownOutcome: true, room }
+          }
+        }
+      }
       const { permission, commands } = rconCommand(body)
       if (!can(actor.role, permission)) throw fail(403, 'Недостаточно прав.')
       rconConfigured()
@@ -2157,7 +2244,13 @@ const routes: Record<string, Route> = {
     audit: (body, result) => ({
       action: `rcon:${body?.action}`,
       target: body?.player ?? body?.roomId ?? body?.classId ?? body?.op ?? null,
-      detail: { ...body, room: result?.room, output: result?.output?.slice(0, 500) },
+      detail: {
+        ...body,
+        room: result?.room,
+        output: result?.output?.slice(0, 500),
+        operationId: result?.operationId,
+        unknownOutcome: result?.unknownOutcome ?? null,
+      },
     }),
   },
   // Entry gate via control-plane (U1): owner AND site admins; CP audits the actor too.
