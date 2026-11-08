@@ -7365,6 +7365,11 @@ const cpGate = cpConfigured()
             streakReset = false
             await loadSettings(0, true, { settings: fresh.settings, applied: fresh.applied })
           } catch {
+            // Fresh state unreadable: still drop the draft (back to the last known table) so no later save resends it.
+            streakRows = entriesToRows(JSON.parse(streakBase || '[]') as StreakEntry[])
+            streakReset = false
+            renderStreakTable()
+            if (streakOptionsLoaded) attachStreakCombos()
             say(line, 'Настройки уже изменил кто-то другой. Обновите страницу.', 'error')
             return
           }
