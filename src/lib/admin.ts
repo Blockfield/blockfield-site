@@ -48,6 +48,7 @@ import {
 } from './workshop-ai.ts'
 import { parseKitCatalog, validateKitChanges } from './kit-schema.ts'
 import {
+  filters,
   resolveNames,
   seasons,
   statsStore,
@@ -3396,6 +3397,16 @@ const routes: Record<string, Route> = {
       return { revoked: body.id }
     },
     audit: (body) => ({ action: 'ingest-key-revoke', target: String(body?.id) }),
+  },
+  // Aggregated in PostgreSQL over up to HITREG_SCAN_CAP matches, so it is staff-only; the window defaults to the last 7 days.
+  'GET hitreg': {
+    permission: 'stats',
+    handler: ({ context, store }) => {
+      const params = new URLSearchParams(context.url.searchParams)
+      if (!params.has('season') && !params.has('period')) params.set('period', 'week')
+      const query = filters(params)
+      return store.hitreg(query.mode, query.since, query.until)
+    },
   },
   'GET seasons': { permission: 'stats', handler: () => ({ seasons: seasons() }) },
   'GET audit': {

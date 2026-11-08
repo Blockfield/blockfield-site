@@ -53,6 +53,23 @@ export type ClassResult = {
   deaths: number
   pointSeconds: number
 }
+/** Per-match hit-reg telemetry the game server attaches to its result payload (`StatsResult.telemetry`). */
+export type Telemetry = {
+  shots: number
+  fallbackShare: number
+  tickMsP50: number
+  tickMsP99: number
+  tickMsP99Overflow: boolean
+  ageTicksP50: number
+  ageTicksP50Overflow: boolean
+  rewindTicksP50: number
+  rewindTicksP50Overflow: boolean
+  counters: Record<string, number>
+  tickMsBuckets: { le: number | 'inf'; count: number }[]
+  ageTickBuckets: { le: number | 'inf'; count: number }[]
+  rewindTickBuckets: { le: number | 'inf'; count: number }[]
+  disputes: Record<string, string | number | boolean>[]
+}
 export type Participant = {
   uuid: string
   name: string
@@ -79,6 +96,7 @@ export type Result = {
   participants: Participant[]
   rounds: string[]
   winnerUuid?: string // Additive FFA result; absent legacy fields stay absent for replay digests.
+  telemetry?: Telemetry // Additive hit-reg report; absent legacy payloads stay byte-identical.
 }
 export class StatsError extends Error {
   status: number
@@ -173,6 +191,109 @@ function utc(value: unknown): number {
     'Invalid timestamp',
   )
   return time
+}
+// shortcut: process-local (resets on restart), shown in the admin hit-reg report; persist if drops must be audited.
+let telemetryDropped = 0
+export const telemetryDroppedCount = () => telemetryDropped
+/** Serialized bytes one stored telemetry block may take. The producer's per-match
+ * report (HitregTelemetry.Report.toMap: ≤512 counters, 8 disputes, fixed histograms)
+ * serializes to ~3 KB worst case; 8 KB leaves margin while keeping the hit-reg read bounded. */
+export const TELEMETRY_MAX_BYTES = 8192
+/** Hit-reg telemetry a match result may carry: the server's per-match report, kept verbatim (unknown fields dropped). */
+export function validateTelemetry(value: unknown): Telemetry {
+  requireValue(value && typeof value === 'object' && !Array.isArray(value), 'Invalid telemetry')
+  const t = value as Record<string, unknown>
+  // Mirrors the producer caps (StatsResult): bounded top level, counters and dispute sample.
+  // The serialized cap bounds what one stored block costs the hit-reg read, whatever shape it takes.
+  requireValue(Object.keys(t).length <= 64, 'Telemetry oversized')
+  const count = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0
+  const amount = (v: unknown) =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1_000_000
+  requireValue(count(t.shots), 'Invalid telemetry shots')
+  requireValue(
+    typeof t.fallbackShare === 'number' &&
+      Number.isFinite(t.fallbackShare) &&
+      t.fallbackShare >= 0 &&
+      t.fallbackShare <= 1,
+    'Invalid telemetry fallback share',
+  )
+  for (const key of ['tickMsP50', 'tickMsP99'] as const)
+    requireValue(amount(t[key]), `Invalid telemetry ${key}`)
+  for (const key of ['ageTicksP50', 'rewindTicksP50'] as const)
+    requireValue(count(t[key]), `Invalid telemetry ${key}`)
+  for (const key of ['tickMsP99Overflow', 'ageTicksP50Overflow', 'rewindTicksP50Overflow'] as const)
+    requireValue(typeof t[key] === 'boolean', `Invalid telemetry ${key}`)
+  requireValue(
+    t.counters && typeof t.counters === 'object' && !Array.isArray(t.counters),
+    'Invalid telemetry counters',
+  )
+  const counters = t.counters as Record<string, unknown>,
+    names = Object.keys(counters)
+  requireValue(names.length <= 512, 'Telemetry counters oversized')
+  const cleanCounters: Record<string, number> = {}
+  for (const name of names) {
+    requireValue(
+      /^[a-zA-Z0-9_.:-]{1,160}$/.test(name) && count(counters[name]),
+      'Invalid telemetry counter',
+    )
+    cleanCounters[name] = counters[name] as number
+  }
+  const buckets = (v: unknown) => {
+    requireValue(Array.isArray(v) && v.length <= 32, 'Invalid telemetry buckets')
+    return (v as unknown[]).map((row) => {
+      requireValue(
+        row && typeof row === 'object' && !Array.isArray(row),
+        'Invalid telemetry bucket',
+      )
+      const r = row as Record<string, unknown>
+      requireValue(
+        (typeof r.le === 'number' && Number.isFinite(r.le) && r.le >= 0) || r.le === 'inf',
+        'Invalid telemetry bucket bound',
+      )
+      requireValue(count(r.count), 'Invalid telemetry bucket count')
+      return { le: r.le as number | 'inf', count: r.count as number }
+    })
+  }
+  requireValue(Array.isArray(t.disputes) && t.disputes.length <= 8, 'Invalid telemetry disputes')
+  const disputes = (t.disputes as unknown[]).map((sample) => {
+    requireValue(
+      sample && typeof sample === 'object' && !Array.isArray(sample),
+      'Invalid telemetry dispute',
+    )
+    const entries = Object.entries(sample as Record<string, unknown>)
+    requireValue(entries.length > 0 && entries.length <= 32, 'Invalid telemetry dispute')
+    const kept: Record<string, string | number | boolean> = {}
+    for (const [key, entry] of entries) {
+      requireValue(/^[a-zA-Z0-9_.:-]{1,64}$/.test(key), 'Invalid telemetry dispute')
+      requireValue(
+        // Postgres jsonb rejects NUL and lone surrogates; one such value would break every aggregate over the match.
+        (typeof entry === 'string' && entry.length <= 512 && !/[\p{Cc}\p{Cs}]/u.test(entry)) ||
+          (typeof entry === 'number' && Number.isFinite(entry)) ||
+          typeof entry === 'boolean',
+        'Invalid telemetry dispute',
+      )
+      kept[key] = entry as string | number | boolean
+    }
+    return kept
+  })
+  const clean = {
+    shots: t.shots as number,
+    fallbackShare: t.fallbackShare as number,
+    tickMsP50: t.tickMsP50 as number,
+    tickMsP99: t.tickMsP99 as number,
+    tickMsP99Overflow: t.tickMsP99Overflow as boolean,
+    ageTicksP50: t.ageTicksP50 as number,
+    ageTicksP50Overflow: t.ageTicksP50Overflow as boolean,
+    rewindTicksP50: t.rewindTicksP50 as number,
+    rewindTicksP50Overflow: t.rewindTicksP50Overflow as boolean,
+    counters: cleanCounters,
+    tickMsBuckets: buckets(t.tickMsBuckets),
+    ageTickBuckets: buckets(t.ageTickBuckets),
+    rewindTickBuckets: buckets(t.rewindTickBuckets),
+    disputes,
+  }
+  requireValue(JSON.stringify(clean).length <= TELEMETRY_MAX_BYTES, 'Telemetry oversized')
+  return clean
 }
 /** Strict allow-list of gameplay producers: training/playtest never reaches the aggregate tables. */
 export function validateResult(value: any, now = Date.now()): Result {
@@ -317,6 +438,16 @@ export function validateResult(value: any, now = Date.now()): Result {
     )
   }
   // Return only the public contract; never persist arbitrary producer-supplied fields or secrets.
+  // Telemetry is diagnostics: a bad block must never cost the match's combat results, so it is dropped.
+  let telemetry: Telemetry | undefined
+  if (Object.hasOwn(value, 'telemetry'))
+    try {
+      telemetry = validateTelemetry(value.telemetry)
+    } catch (error) {
+      if (!(error instanceof StatsError)) throw error
+      telemetryDropped++
+      console.warn(`Telemetry dropped for ${value.serverId}/${value.eventId}: ${error.message}`)
+    }
   return {
     schemaVersion: 1,
     eventId: value.eventId,
@@ -334,6 +465,7 @@ export function validateResult(value: any, now = Date.now()): Result {
     endReason: value.endReason,
     winner: value.winner,
     ...(hasPersonalWinner ? { winnerUuid: value.winnerUuid } : {}),
+    ...(telemetry ? { telemetry } : {}),
     rounds: [...value.rounds].sort(),
     participants: value.participants
       .map((p: any) => ({
@@ -504,6 +636,8 @@ const SCHEMA = `
       );
       CREATE INDEX IF NOT EXISTS server_events_at ON server_events(at);
       `
+/** Newest matches one hit-reg report reads; the scan stops here and `truncated` says so. */
+export const HITREG_SCAN_CAP = 5000
 export class StatsStore {
   db: Database
   private constructor(location: string, backup = false) {
@@ -858,6 +992,87 @@ export class StatsStore {
           }
         }),
       ),
+    }
+  }
+  /** Hit-reg telemetry aggregated over a window. The sums and per-match percentiles come
+   * straight from PostgreSQL (jsonb operators, SUM, percentile_cont); Node never parses
+   * per-row telemetry. The scan stops at the HITREG_SCAN_CAP newest matches (`truncated` says so). */
+  async hitreg(mode: string | null, since: number, until: number) {
+    if (mode !== null && !MODES.includes(mode)) throw new StatsError(400, 'Unknown mode')
+    // ponytail: payloads stay schemaless so telemetry needs no migration; the window scan stops
+    // at HITREG_SCAN_CAP newest matches (truncated says so) and the report stays staff-only.
+    const scan = `SELECT (payload::jsonb->'telemetry') t,
+        row_number() OVER (ORDER BY ended_at DESC,server_id,event_id) rn FROM results
+      WHERE kind='match' AND voided_at IS NULL AND ended_at>=? AND ended_at<=?
+        AND (CAST(? AS TEXT) IS NULL OR mode=?) LIMIT ${HITREG_SCAN_CAP + 1}`
+    const tele = (expr: string) => `(SELECT ${expr} FROM tele)`
+    const mid = (field: string) =>
+      `percentile_cont(0.5) WITHIN GROUP (ORDER BY (t->>'${field}')::double precision)`
+    const p99 = (field: string) =>
+      `percentile_cont(0.99) WITHIN GROUP (ORDER BY (t->>'${field}')::double precision)`
+    const agg = (await this.db
+      .prepare(
+        `WITH scan AS (${scan}),
+          capped AS (SELECT t FROM scan WHERE rn<=${HITREG_SCAN_CAP}),
+          tele AS (SELECT t FROM capped WHERE jsonb_typeof(t)='object')
+        SELECT (SELECT COUNT(*) FROM capped) matches,
+          (SELECT COUNT(*) FROM scan)>${HITREG_SCAN_CAP} truncated,
+          (SELECT COUNT(*) FROM tele) "withTelemetry",
+          ${tele(`COALESCE(SUM((t->>'shots')::bigint),0)`)} shots,
+          ${tele(`COALESCE(SUM((t->>'fallbackShare')::double precision*(t->>'shots')::bigint),0)`)} "fallbackShots",
+          ${tele(`COALESCE(SUM(jsonb_array_length(t->'disputes')),0)`)} disputes,
+          ${tele(mid('tickMsP50'))} "tickMsP50Median", ${tele(p99('tickMsP50'))} "tickMsP50P99",
+          ${tele(mid('tickMsP99'))} "tickMsP99Median", ${tele(p99('tickMsP99'))} "tickMsP99P99",
+          ${tele(mid('ageTicksP50'))} "ageTicksP50Median", ${tele(p99('ageTicksP50'))} "ageTicksP50P99",
+          ${tele(mid('rewindTicksP50'))} "rewindTicksP50Median", ${tele(p99('rewindTicksP50'))} "rewindTicksP50P99"`,
+      )
+      .get(since, until, mode, mode)) as {
+      matches: number
+      truncated: boolean
+      withTelemetry: number
+      shots: number
+      fallbackShots: number
+      disputes: number
+      tickMsP50Median: number | null
+      tickMsP50P99: number | null
+      tickMsP99Median: number | null
+      tickMsP99P99: number | null
+      ageTicksP50Median: number | null
+      ageTicksP50P99: number | null
+      rewindTicksP50Median: number | null
+      rewindTicksP50P99: number | null
+    }
+    // One row per counter name; validated blocks keep ≤512 names each (see validateTelemetry).
+    const counterRows = (await this.db
+      .prepare(
+        `WITH scan AS (${scan}),
+          capped AS (SELECT t FROM scan WHERE rn<=${HITREG_SCAN_CAP} AND jsonb_typeof(t)='object')
+        SELECT name,SUM(value::bigint) total FROM capped
+          CROSS JOIN LATERAL jsonb_each_text(
+            CASE WHEN jsonb_typeof(t->'counters')='object' THEN t->'counters' ELSE '{}'::jsonb END
+          ) c(name,value) GROUP BY name`,
+      )
+      .all(since, until, mode, mode)) as { name: string; total: number }[]
+    return {
+      schemaVersion: 1,
+      checkedAt: new Date().toISOString(),
+      mode,
+      matches: agg.matches,
+      withTelemetry: agg.withTelemetry,
+      telemetryDropped,
+      truncated: agg.truncated,
+      shots: agg.shots,
+      fallbackShare: agg.shots === 0 ? 0 : agg.fallbackShots / agg.shots,
+      disputes: agg.disputes,
+      counters: Object.fromEntries(counterRows.map((row) => [row.name, row.total])),
+      tickMsP50Median: agg.tickMsP50Median,
+      tickMsP50P99: agg.tickMsP50P99,
+      tickMsP99Median: agg.tickMsP99Median,
+      tickMsP99P99: agg.tickMsP99P99,
+      ageTicksP50Median: agg.ageTicksP50Median,
+      ageTicksP50P99: agg.ageTicksP50P99,
+      rewindTicksP50Median: agg.rewindTicksP50Median,
+      rewindTicksP50P99: agg.rewindTicksP50P99,
     }
   }
   /** Profiles whose stored name is a UUID (see ingest), among `uuids`. */
