@@ -112,6 +112,8 @@ test('invalid telemetry is dropped with a log line and a counter; the result is 
     (x) => (x.counters = { ok: -1 }),
     (x) => (x.tickMsBuckets = [{ le: 'soon', count: 1 }]),
     (x) => (x.disputes = [{ ticket: { nested: 'object' } }]),
+    (x) => (x.disputes = [{ ticket: 'a\u0000b' }]),
+    (x) => (x.disputes = [{ ticket: 'a\ud800b' }]),
     (x) => (x.counters = Object.fromEntries(Array.from({ length: 513 }, (_, i) => [`k${i}`, 1]))),
     (x) => (x.disputes = Array.from({ length: 9 }, () => ({ a: 'b' }))),
     (x) => delete x.shots,

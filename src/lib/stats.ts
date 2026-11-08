@@ -266,7 +266,8 @@ export function validateTelemetry(value: unknown): Telemetry {
     for (const [key, entry] of entries) {
       requireValue(/^[a-zA-Z0-9_.:-]{1,64}$/.test(key), 'Invalid telemetry dispute')
       requireValue(
-        (typeof entry === 'string' && entry.length <= 512) ||
+        // Postgres jsonb rejects NUL and lone surrogates; one such value would break every aggregate over the match.
+        (typeof entry === 'string' && entry.length <= 512 && !/[\p{Cc}\p{Cs}]/u.test(entry)) ||
           (typeof entry === 'number' && Number.isFinite(entry)) ||
           typeof entry === 'boolean',
         'Invalid telemetry dispute',
