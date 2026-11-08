@@ -604,3 +604,93 @@ export async function postModerationCp(
     throw new Error('Control-plane отдал неверное состояние.')
   return { operationId: data.operationId, status: data.status ?? 'accepted' }
 }
+
+/**
+ * Typed Workshop operations via control-plane v2 (control-plane #33,
+ * workshop #72): POST /v2/workshop/<kind>. Only the service-holdable write
+ * kinds move: `members` needs a person session (plus the owner step-up for
+ * admin entries), which the site service credential can never hold, so the
+ * member list stays on the file inbox. Map/session/ai-key/mode ops have no
+ * CP kind. Active only when fully configured; otherwise the routes fail
+ * closed (no second transport, unlike the RCON fallback for moderation).
+ */
+export const workshopCpKinds = ['message', 'wake', 'cancel'] as const
+export type WorkshopCpKind = (typeof workshopCpKinds)[number]
+
+export function cpWorkshopConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (
+    cpConfigured(env) &&
+    ((env.BLOCKFIELD_CP_WORKSHOP_TOKEN ?? '') as string).trim().length > 0 &&
+    uuidLoose.test(((env.BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION ?? '') as string).trim())
+  )
+}
+
+function workshopConfig() {
+  const url = config()
+  const token = (process.env.BLOCKFIELD_CP_WORKSHOP_TOKEN ?? '').trim()
+  if (!token) throw new Error('Control-plane не настроен на сайте (токен).')
+  const generation = (process.env.BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION ?? '').trim()
+  if (!uuidLoose.test(generation))
+    throw new Error('Control-plane не настроен на сайте (поколение получателя).')
+  const consumerId = (process.env.BLOCKFIELD_CP_WORKSHOP_CONSUMER_ID ?? 'workshop').trim()
+  return { url, token, generation, consumerId: consumerId || 'workshop', ...cpScope() }
+}
+
+const workshopMessages: Record<string, [number, string]> = {
+  invalid_action: [502, 'Control-plane отклонил запрос.'],
+  unknown_action: [500, 'Control-plane не знает это действие. Обратитесь к координатору.'],
+  consumer_generation_or_capability: [
+    503,
+    'Версия получателя в control-plane устарела. Обратитесь к координатору.',
+  ],
+  consumer_lag: [503, 'Мастерская занята подтверждением команд. Попробуйте позже.'],
+  forbidden: [503, 'У сайта нет доступа к мастерской в control-plane. Обратитесь к координатору.'],
+}
+
+function workshopProblem(status: number, code: string): CpProblem {
+  const [mappedStatus, message] = workshopMessages[code] ?? [
+    status,
+    'Control-plane отклонил запрос.',
+  ]
+  const error = new Error(message) as CpProblem
+  error.status = mappedStatus
+  error.code = code
+  return error
+}
+
+/** One typed Workshop command: the CP-bound actor plus validated fields go out, the operation receipt comes back. */
+export async function postWorkshopCp(
+  kind: string,
+  actor: { draslId: string; name: string },
+  fields: Record<string, unknown> = {},
+  opts: { idempotencyKey?: string; fetchImpl?: FetchImpl } = {},
+): Promise<{ operationId: string; status: string }> {
+  if (!(workshopCpKinds as readonly string[]).includes(kind))
+    throw new Error('Неизвестное действие.')
+  const { url, token, generation, consumerId, environment, backend } = workshopConfig()
+  const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
+  const response = await fetchImpl(`${url}/v2/workshop/${kind}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      idempotencyKey: opts.idempotencyKey ?? randomUUID(),
+      environment,
+      backend,
+      consumerId,
+      generation,
+      target: '*',
+      actor,
+      ...fields,
+    }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok)
+    throw workshopProblem(
+      response.status,
+      typeof data?.error === 'string' ? data.error : 'control_plane_error',
+    )
+  if (typeof data?.operationId !== 'string')
+    throw new Error('Control-plane отдал неверное состояние.')
+  return { operationId: data.operationId, status: data.status ?? 'accepted' }
+}

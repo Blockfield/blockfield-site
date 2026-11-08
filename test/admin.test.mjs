@@ -62,7 +62,21 @@ test('mode switch and cancel are admin-only; map create stays with the moderator
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
     Object.assign(process.env, saved)
   })
-  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const http = await import('node:http')
+  const cp = http.createServer((req, res) => {
+    res.setHeader('Content-Type', 'application/json')
+    res.statusCode = 202
+    res.end(JSON.stringify({ operationId: 'op-1', revision: null, status: 'accepted' }))
+  })
+  await new Promise((resolve) => cp.listen(0, '127.0.0.1', resolve))
+  t.after(() => cp.close())
+  Object.assign(process.env, dirs, {
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${cp.address().port}`,
+    BLOCKFIELD_CP_WORKSHOP_TOKEN: 'wsh-t',
+    BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
+  })
   const s = await store(t)
   await s.setStaff(MOD, 'Mod', 'moderator', 'seed')
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
@@ -366,6 +380,19 @@ test('finalize failure: low-risk warns on 200, high-risk fails closed', async (t
   Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const http = await import('node:http')
+  const cp = http.createServer((req, res) => {
+    res.setHeader('Content-Type', 'application/json')
+    res.statusCode = 202
+    res.end(JSON.stringify({ operationId: 'op-flaky', revision: null, status: 'accepted' }))
+  })
+  await new Promise((resolve) => cp.listen(0, '127.0.0.1', resolve))
+  t.after(() => cp.close())
+  Object.assign(process.env, {
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${cp.address().port}`,
+    BLOCKFIELD_CP_WORKSHOP_TOKEN: 'wsh-t',
+    BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
+  })
   const flaky = new Proxy(s, {
     get: (target, prop) =>
       prop === 'auditFinalize'
@@ -397,7 +424,11 @@ test('finalize failure: low-risk warns on 200, high-risk fails closed', async (t
     503,
     'high-risk fails closed when the finalize is lost',
   )
-  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 2, 'both effects ran exactly once')
+  assert.equal(
+    readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length,
+    1,
+    'only the inbox effect wrote a file',
+  )
 })
 
 test('admin writes are throttled per user: a flood ends in 429, reads are untouched', async (t) => {
@@ -545,7 +576,6 @@ test('inbox request is validated and written atomically as <id>.json', (t) => {
     [admin, { kind: 'mode', profile: 'maintenance', expectedRevision: 3 }, 400],
     [admin, { kind: 'mode', profile: 'game' }, 400],
     [admin, { kind: 'mode', profile: 'workshop', expectedRevision: 3 }, 400, 'no session'],
-    [admin, { kind: 'message', message: 'x'.repeat(201) }, 400],
     [admin, { kind: 'members', members: [{ draslId: 'bad', name: 'Bob', role: 'admin' }] }, 400],
     [admin, { kind: 'shell' }, 400],
   ])
@@ -657,17 +687,6 @@ test('publish request: optional force must be boolean, only written when true', 
   assert.throws(
     () => writeRequest(dir, admin, { kind: 'publish', candidateId: 'a'.repeat(32), force: 'yes' }),
     (e) => status(e) === 400,
-  )
-})
-
-test('cancel request: same shape as mode/message, no extra fields, no extra validation to bypass', (t) => {
-  const dir = temp(t),
-    lead = { uuid: MOD, name: 'Mod', role: 'moderator' }
-  const id = writeRequest(dir, lead, { kind: 'cancel' })
-  const request = JSON.parse(readFileSync(join(dir, `${id}.json`)))
-  assert.deepEqual(
-    { ...request, createdAt: 0 },
-    { schema: 1, id, kind: 'cancel', actor: { draslId: MOD, name: 'Mod' }, createdAt: 0 },
   )
 })
 
@@ -830,6 +849,11 @@ test('API: role gate, audit of success and refusal, members request on role chan
     Object.assign(process.env, saved)
   })
   Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  Object.assign(process.env, {
+    BLOCKFIELD_CP_URL: 'http://127.0.0.1:9',
+    BLOCKFIELD_CP_WORKSHOP_TOKEN: 'wsh-t',
+    BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
+  })
   delete process.env.BLOCKFIELD_RCON_HOST
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
@@ -856,16 +880,22 @@ test('API: role gate, audit of success and refusal, members request on role chan
 
   mkdirSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'results'))
   // Owner names resolve through Drasl; stub it so the members request can be built offline.
+  // The same stub answers the typed Workshop calls (cancel goes through CP here).
   const realFetch = globalThis.fetch
   t.after(() => {
     globalThis.fetch = realFetch
   })
   globalThis.fetch = async (url) =>
-    String(url).includes(`/session/minecraft/profile/${OWNER}`)
-      ? Response.json({ id: OWNER, name: 'Nether' })
-      : String(url).endsWith('/Moddy')
-        ? Response.json({ id: MOD, name: 'Moddy' })
-        : new Response('', { status: 404 })
+    String(url).includes('/v2/workshop/')
+      ? Response.json(
+          { operationId: 'op-cancel', revision: null, status: 'accepted' },
+          { status: 202 },
+        )
+      : String(url).includes(`/session/minecraft/profile/${OWNER}`)
+        ? Response.json({ id: OWNER, name: 'Nether' })
+        : String(url).endsWith('/Moddy')
+          ? Response.json({ id: MOD, name: 'Moddy' })
+          : new Response('', { status: 404 })
 
   assert.equal(
     (await call(`${ADMIN}:Adm`, 'POST', 'staff', { name: 'Moddy', role: 'admin' })).status,
@@ -893,16 +923,13 @@ test('API: role gate, audit of success and refusal, members request on role chan
     403,
   )
 
-  // cancel switches the server like mode does: admin-only.
+  // cancel switches the server like mode does: admin-only. The command goes
+  // through CP (operationId receipt); the member list still goes to the inbox.
   assert.equal((await call(`${OTHER}:Nobody`, 'POST', 'cancel', {})).status, 403)
   assert.equal((await call(`${MOD}:Moddy`, 'POST', 'cancel', {})).status, 403)
   const cancelled = await call(`${ADMIN}:Adm`, 'POST', 'cancel', {})
   assert.equal(cancelled.status, 200)
-  const { id: cancelId } = await cancelled.json()
-  assert.deepEqual(
-    JSON.parse(readFileSync(join(dirs.BLOCKFIELD_INBOX_DIR, `${cancelId}.json`))).kind,
-    'cancel',
-  )
+  assert.deepEqual(await cancelled.json(), { operationId: 'op-cancel' })
 
   const log = (await (await call(`${OWNER}:Nether`, 'GET', 'audit')).json()).entries
   assert.deepEqual(
@@ -981,22 +1008,6 @@ test('review: range goes through /bf, Brigadier rejections are detected', () => 
   ])
     assert.equal(rejectedByServer(reply), true, reply)
   assert.equal(rejectedByServer('[BlockField] Полигон закрыт, выведено игроков: 0'), false)
-})
-
-test('review: message strips exactly Cc and §, keeps ZWJ emoji, counts code points', (t) => {
-  const dir = temp(t),
-    actor = { uuid: MOD, name: 'Mod', role: 'moderator' },
-    family = '👨\u200d👩\u200d👧'
-  const id = writeRequest(dir, actor, {
-    kind: 'message',
-    message: `  §cРаботы\n\u0085${family}\t `,
-  })
-  assert.equal(JSON.parse(readFileSync(join(dir, `${id}.json`))).message, `cРаботы${family}`)
-  writeRequest(dir, actor, { kind: 'message', message: '😀'.repeat(200) })
-  assert.throws(
-    () => writeRequest(dir, actor, { kind: 'message', message: 'x'.repeat(201) }),
-    (e) => status(e) === 400,
-  )
 })
 
 test('review: balance types, per-key ranges and merged cross-checks match the mod', () => {

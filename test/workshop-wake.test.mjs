@@ -1,19 +1,19 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import http from 'node:http'
 import ts from 'typescript'
-import { handleAdmin, pendingWakeId, writeRequest } from '../src/lib/admin.ts'
+import { handleAdmin } from '../src/lib/admin.ts'
 import { switchView } from '../src/lib/switch-status.ts'
 import { MAP_NAMES, WORKSHOP_PLACES } from '../src/lib/game-names.ts'
 
 const BUILDER = 'dddddddddddddddddddddddddddddddd',
   MOD = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
   ADMIN = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-  NOBODY = 'cccccccccccccccccccccccccccccccc'
-const status = (error) =>
-  error instanceof Response ? error.status : assert.fail(`expected Response, got ${error}`)
+  NOBODY = 'cccccccccccccccccccccccccccccccc',
+  GEN = '12345678-1234-4234-8234-123456789012'
 const temp = (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'bf-wake-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
@@ -21,70 +21,65 @@ const temp = (t) => {
 }
 import { database as store } from './storage.mjs'
 
-test('wake envelope: parameterless request with the standard inbox base', (t) => {
-  const dir = temp(t),
-    actor = { uuid: MOD, name: 'Mod', role: 'moderator' }
-  const id = writeRequest(dir, actor, { kind: 'wake', extra: 'ignored' })
-  const request = JSON.parse(readFileSync(join(dir, `${id}.json`)))
-  assert.deepEqual(Object.keys(request).sort(), ['actor', 'createdAt', 'id', 'kind', 'schema'])
-  assert.deepEqual(request, {
-    schema: 1,
-    id,
-    kind: 'wake',
-    actor: { draslId: MOD, name: 'Mod' },
-    createdAt: request.createdAt,
-  })
-  assert.throws(
-    () => writeRequest(dir, actor, { kind: 'wake-up' }),
-    (e) => status(e) === 400,
-  )
-})
-
-test('pendingWakeId: reuses an unanswered wake, ignores the rest', (t) => {
-  const inbox = temp(t),
-    results = temp(t)
-  assert.equal(pendingWakeId(join(inbox, 'missing'), results), null)
-  assert.equal(pendingWakeId(inbox, results), null)
-  const actor = { uuid: MOD, name: 'Mod', role: 'moderator' }
-  const first = writeRequest(inbox, actor, { kind: 'wake' })
-  const second = writeRequest(inbox, actor, { kind: 'wake' })
-  assert.ok([first, second].includes(pendingWakeId(inbox, results)))
-  // An answered wake no longer counts; other kinds, dotfiles and junk never do.
-  writeFileSync(join(results, `${first}.json`), JSON.stringify({ schema: 1, id: first, ok: true }))
-  assert.equal(pendingWakeId(inbox, results), second)
-  writeFileSync(join(inbox, '.wake.tmp'), '{}')
-  writeFileSync(join(inbox, 'junk.json'), 'not json')
-  writeFileSync(
-    join(inbox, 'other.json'),
-    JSON.stringify({ schema: 1, id: 'other', kind: 'cancel' }),
-  )
-  const alien = writeRequest(inbox, actor, { kind: 'cancel' })
-  assert.equal(pendingWakeId(inbox, results), second, 'cancel request is not a wake')
-  writeFileSync(
-    join(results, `${second}.json`),
-    JSON.stringify({ schema: 1, id: second, ok: true }),
-  )
-  writeFileSync(join(results, `${alien}.json`), JSON.stringify({ schema: 1, id: alien, ok: true }))
-  assert.equal(pendingWakeId(inbox, results), null)
-})
-
-test('POST wake: every staff role may wake, strangers may not; one pending id is reused', async (t) => {
-  const dirs = {
-    BLOCKFIELD_ADMIN_DIR: temp(t),
-    BLOCKFIELD_INBOX_DIR: temp(t),
-    BLOCKFIELD_SETTINGS_DIR: temp(t),
-  }
+function workshopEnv(t, server) {
   const saved = { ...process.env }
   t.after(() => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
     Object.assign(process.env, saved)
   })
+  Object.assign(process.env, {
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
+    BLOCKFIELD_CP_WORKSHOP_TOKEN: 'wsh-t',
+    BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION: GEN,
+  })
+}
+
+async function fakeCp(t) {
+  const seen = []
+  let dropNext = false,
+    receiptlessNext = false
+  const server = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      if (dropNext) {
+        dropNext = false
+        req.socket.destroy()
+        return
+      }
+      seen.push([req.method, req.url, JSON.parse(body)])
+      res.setHeader('Content-Type', 'application/json')
+      res.statusCode = 202
+      res.end(
+        receiptlessNext
+          ? ((receiptlessNext = false), JSON.stringify({ status: 'accepted' }))
+          : JSON.stringify({ operationId: 'op-1', revision: null, status: 'accepted' }),
+      )
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  return {
+    server,
+    seen,
+    dropNext: () => (dropNext = true),
+    receiptlessNext: () => (receiptlessNext = true),
+  }
+}
+
+async function setup(t, cp) {
+  const dirs = {
+    BLOCKFIELD_ADMIN_DIR: temp(t),
+    BLOCKFIELD_INBOX_DIR: temp(t),
+    BLOCKFIELD_SETTINGS_DIR: temp(t),
+  }
   Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: '', NODE_ENV: 'test' })
+  workshopEnv(t, cp)
   const s = await store(t)
   await s.setStaff(BUILDER, 'Bob', 'builder', 'seed')
   await s.setStaff(MOD, 'Moddy', 'moderator', 'seed')
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
-  const call = async (as, method, path, body) => {
+  const call = async (as, path, body, method = 'POST') => {
     process.env.BLOCKFIELD_ADMIN_DEV_USER = as
     const url = new URL(`http://site/api/admin/${path}`)
     const request = new Request(url, {
@@ -101,25 +96,164 @@ test('POST wake: every staff role may wake, strangers may not; one pending id is
       (e) => e,
     )
   }
-  assert.equal((await call(`${NOBODY}:Nobody`, 'POST', 'wake', {})).status, 403)
+  return { dirs, s, call }
+}
+
+test('POST wake goes through typed CP actions, open to every staff role', async (t) => {
+  const cp = await fakeCp(t)
+  const { s, call } = await setup(t, cp.server)
+  assert.equal((await call(`${NOBODY}:Nobody`, 'wake', {})).status, 403)
   for (const as of [`${BUILDER}:Bob`, `${MOD}:Moddy`, `${ADMIN}:Adm`]) {
-    const response = await call(as, 'POST', 'wake', {})
+    const response = await call(as, 'wake', {})
     assert.equal(response.status, 200, as)
-    assert.match((await response.json()).id, /^[0-9a-f-]{36}$/)
+    assert.deepEqual(await response.json(), { operationId: 'op-1' })
   }
-  const files = readdirSync(dirs.BLOCKFIELD_INBOX_DIR).filter((n) => !n.startsWith('.'))
-  assert.equal(files.length, 1, 'the second and third calls reuse the pending wake')
-  const wake = JSON.parse(readFileSync(join(dirs.BLOCKFIELD_INBOX_DIR, files[0])))
-  assert.equal(wake.kind, 'wake')
-  assert.equal(wake.actor.draslId, BUILDER, 'the first (builder) request is kept')
-  const log = (await (await call(`${ADMIN}:Adm`, 'GET', 'audit')).json()).entries
   assert.deepEqual(
-    log.filter((e) => e.action === 'workshop-wake').map((e) => [e.actorName, e.ok]),
+    cp.seen.map(([m, u, b]) => [m, u, b.actor]),
     [
-      ['Adm', 1],
-      ['Moddy', 1],
-      ['Bob', 1],
+      ['POST', '/v2/workshop/wake', { draslId: BUILDER, name: 'Bob' }],
+      ['POST', '/v2/workshop/wake', { draslId: MOD, name: 'Moddy' }],
+      ['POST', '/v2/workshop/wake', { draslId: ADMIN, name: 'Adm' }],
     ],
+  )
+  const [, , first] = cp.seen[0]
+  assert.equal(first.consumerId, 'workshop')
+  assert.equal(first.generation, GEN)
+  assert.equal(first.target, '*')
+  assert.match(first.idempotencyKey, /^[0-9a-f-]{36}$/)
+  const log = await s.auditLog()
+  assert.deepEqual(
+    log.map((e) => [e.actorName, e.action, e.ok]),
+    [
+      ['Adm', 'workshop-wake', 1],
+      ['Moddy', 'workshop-wake', 1],
+      ['Bob', 'workshop-wake', 1],
+    ],
+  )
+  assert.equal(JSON.parse(log[0].detail).operationId, 'op-1')
+})
+
+test('POST wake reuses the client key and reports unknown outcomes as unconfirmed', async (t) => {
+  const cp = await fakeCp(t)
+  const { call } = await setup(t, cp.server)
+  const key = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+  const first = await call(`${MOD}:Moddy`, 'wake', { idempotencyKey: key })
+  assert.equal(first.status, 200)
+  const retry = await call(`${MOD}:Moddy`, 'wake', { idempotencyKey: key })
+  assert.equal(retry.status, 200)
+  assert.deepEqual(
+    cp.seen.map(([, , b]) => b.idempotencyKey),
+    [key, key],
+    'a retry resends the same key so CP dedupes instead of double-applying',
+  )
+  assert.equal((await call(`${MOD}:Moddy`, 'wake', { idempotencyKey: 'not-a-uuid' })).status, 400)
+  assert.equal(cp.seen.length, 2, 'an invalid key is rejected before any CP call')
+  cp.receiptlessNext()
+  const receiptless = await call(`${MOD}:Moddy`, 'wake', { idempotencyKey: key })
+  assert.equal(receiptless.status, 200)
+  assert.deepEqual(await receiptless.json(), { operationId: null, unknownOutcome: true })
+  cp.dropNext()
+  const dropped = await call(`${MOD}:Moddy`, 'wake', { idempotencyKey: key })
+  assert.equal(dropped.status, 200)
+  assert.deepEqual(await dropped.json(), { operationId: null, unknownOutcome: true })
+})
+
+test('POST wake fails closed without the workshop CP client', async (t) => {
+  const cp = await fakeCp(t)
+  const { call } = await setup(t, cp.server)
+  delete process.env.BLOCKFIELD_CP_WORKSHOP_TOKEN
+  assert.equal((await call(`${ADMIN}:Adm`, 'wake', {})).status, 503)
+  assert.equal(cp.seen.length, 0, 'no CP call ran')
+})
+
+test('POST message validates like the old inbox writer and posts the text', async (t) => {
+  const cp = await fakeCp(t)
+  const { s, call } = await setup(t, cp.server)
+  assert.equal((await call(`${BUILDER}:Bob`, 'message', { message: 'hi' })).status, 403)
+  const said = await call(`${MOD}:Moddy`, 'message', { message: 'Перерыв 5 минут' })
+  assert.equal(said.status, 200)
+  assert.deepEqual(await said.json(), { operationId: 'op-1' })
+  assert.deepEqual(
+    cp.seen.map(([m, u, b]) => [m, u, b.message, b.actor]),
+    [['POST', '/v2/workshop/message', 'Перерыв 5 минут', { draslId: MOD, name: 'Moddy' }]],
+  )
+  // Same Cc/§ stripping and code-point count as the removed inbox writer.
+  const stripped = await call(`${MOD}:Moddy`, 'message', {
+    message: '  §cРаботы\n👨\u200d👩\u200d👧\t ',
+  })
+  assert.equal(stripped.status, 200)
+  assert.deepEqual(
+    cp.seen.map(([, , b]) => b.message),
+    ['Перерыв 5 минут', 'cРаботы👨\u200d👩\u200d👧'],
+  )
+  assert.equal((await call(`${MOD}:Moddy`, 'message', { message: 'x'.repeat(201) })).status, 400)
+  assert.equal((await call(`${MOD}:Moddy`, 'message', {})).status, 400)
+  assert.equal(cp.seen.length, 2, 'invalid bodies never reach CP')
+  const log = await s.auditLog()
+  assert.deepEqual(
+    log.map((e) => [e.actorName, e.action, e.ok]),
+    [
+      ['Moddy', 'message', 0],
+      ['Moddy', 'message', 0],
+      ['Moddy', 'message', 1],
+      ['Moddy', 'message', 1],
+      ['Bob', 'message', 0],
+    ],
+  )
+  assert.equal(JSON.parse(log[2].detail).operationId, 'op-1')
+})
+
+test('POST cancel is admin-only and posts through CP', async (t) => {
+  const cp = await fakeCp(t)
+  const { s, call } = await setup(t, cp.server)
+  assert.equal((await call(`${NOBODY}:Nobody`, 'cancel', {})).status, 403)
+  assert.equal((await call(`${MOD}:Moddy`, 'cancel', {})).status, 403)
+  const cancelled = await call(`${ADMIN}:Adm`, 'cancel', {})
+  assert.equal(cancelled.status, 200)
+  assert.deepEqual(await cancelled.json(), { operationId: 'op-1' })
+  assert.deepEqual(
+    cp.seen.map(([m, u, b]) => [m, u, { ...b, idempotencyKey: undefined }]),
+    [
+      [
+        'POST',
+        '/v2/workshop/cancel',
+        {
+          environment: 'prod',
+          backend: 'game',
+          consumerId: 'workshop',
+          generation: GEN,
+          target: '*',
+          actor: { draslId: ADMIN, name: 'Adm' },
+          idempotencyKey: undefined,
+        },
+      ],
+    ],
+  )
+  const log = await s.auditLog()
+  assert.deepEqual(
+    log.map((e) => [e.actorName, e.action, e.ok]),
+    [
+      ['Adm', 'cancel', 1],
+      ['Moddy', 'cancel', 0],
+    ],
+  )
+  assert.equal(JSON.parse(log[0].detail).operationId, 'op-1')
+})
+
+test('members still go to the inbox: staff sync writes a members request', async (t) => {
+  const cp = await fakeCp(t)
+  const { dirs, call } = await setup(t, cp.server)
+  const synced = await call(`${ADMIN}:Adm`, 'staff/sync', {})
+  assert.equal(synced.status, 200)
+  const { id } = await synced.json()
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(dirs.BLOCKFIELD_INBOX_DIR, `${id}.json`))).kind,
+    'members',
+  )
+  assert.deepEqual(
+    readdirSync(dirs.BLOCKFIELD_INBOX_DIR).filter((n) => !n.startsWith('.')),
+    [`${id}.json`],
+    'no CP-covered kind wrote an inbox file',
   )
 })
 
