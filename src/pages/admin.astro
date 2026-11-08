@@ -7033,6 +7033,10 @@ const cpGate = cpConfigured()
     let streakError: string | null = null
     let streakReset = false
     let lastSettingsSnapshot: any = null
+    // Same normalization as the draft (grouped, sorted by kills), so a stored table in another order is not a phantom edit.
+    function streakBaseOf(entries: StreakEntry[]) {
+      return JSON.stringify(rowsToEntries(entriesToRows(entries)))
+    }
     function streakEditingActive() {
       return (
         streakSerialized() !== streakBase ||
@@ -7343,7 +7347,7 @@ const cpGate = cpConfigured()
         const result = await api('settings', 'PUT', body)
         settingsRevision = Math.max(settingsRevision, result.settings.revision)
         gunRevision = settingsRevision
-        streakBase = JSON.stringify(streakTableOf(result.settings))
+        streakBase = streakBaseOf(streakTableOf(result.settings))
         streakReset = false
         await loadSettings(0, true, result)
         settingsMeta()
@@ -7354,7 +7358,7 @@ const cpGate = cpConfigured()
           try {
             const fresh = await api('settings')
             settingsRevision = Math.max(settingsRevision, fresh.settings?.revision ?? 0)
-            streakBase = JSON.stringify(streakTableOf(fresh.settings))
+            streakBase = streakBaseOf(streakTableOf(fresh.settings))
             await loadSettings(0, true, { settings: fresh.settings, applied: fresh.applied })
           } catch {
             // Fresh state unreadable: keep local edits, the error below explains.
@@ -7449,9 +7453,9 @@ const cpGate = cpConfigured()
         {
           lastSettingsSnapshot = settings
           const incoming = streakTableOf(settings)
-          // Check before moving the base: a clean draft must adopt another admin's table, not resend the stale one.
-          const wasEditing = streakEditingActive()
-          streakBase = JSON.stringify(incoming)
+          // Dirty check before moving the base, ignoring focus: a clean draft must adopt another admin's table, not resend the stale one.
+          const wasEditing = streakSerialized() !== streakBase
+          streakBase = streakBaseOf(incoming)
           if (!data || !wasEditing) {
             streakRows = entriesToRows(incoming)
             renderStreakTable()
