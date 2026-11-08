@@ -27,7 +27,7 @@ const digest = (rows) =>
 
 /** Input must be a SQLite backup, never the live source. Existing target data is never overwritten. */
 export async function migrate(source, target) {
-  if (source.db.postgres || !target.db.postgres)
+  if (!source.db.sqlite || !target.db.pool)
     throw new Error('Expected a SQLite backup and a PostgreSQL target')
   return target.db.transaction(async () => {
     const counts = {}
@@ -65,7 +65,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     throw new Error(
       'Usage: BLOCKFIELD_DATABASE_URL=... node --experimental-strip-types scripts/migrate-stats.mjs /absolute/backup.sqlite',
     )
-  const source = await StatsStore.open(path)
+  const source = await StatsStore.openBackup(path)
   try {
     const target = await StatsStore.open(url)
     try {

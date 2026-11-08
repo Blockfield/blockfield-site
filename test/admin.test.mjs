@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -34,9 +34,11 @@ const temp = (t) => {
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   return dir
 }
-import { database as store } from './storage.mjs'
+import { database as store, databaseUrl, singletonDatabase } from './storage.mjs'
 import { StatsError, statsStore } from '../src/lib/stats.ts'
 import { subscribe } from '../src/lib/admin-events.ts'
+
+after(await singletonDatabase())
 
 test('permission map: roles grow strictly, unknown/no role has nothing', () => {
   assert.equal(can('builder', 'view'), true)
@@ -93,13 +95,8 @@ test('mode switch and cancel are admin-only; map create stays with the moderator
 })
 
 test('pending audit rows stay visible as unfinished and are marked at boot', async (t) => {
-  const { mkdtempSync, rmSync } = await import('node:fs'),
-    { tmpdir } = await import('node:os'),
-    { join } = await import('node:path')
   const { StatsStore: Open } = await import('../src/lib/stats.ts')
-  const dir = mkdtempSync(join(tmpdir(), 'bf-audit-pending-'))
-  t.after(() => rmSync(dir, { recursive: true, force: true }))
-  const path = join(dir, 'stats.sqlite')
+  const url = await databaseUrl(t)
   const entry = {
     actorUuid: 'a'.repeat(32),
     actorName: 'Adm',
@@ -109,14 +106,14 @@ test('pending audit rows stay visible as unfinished and are marked at boot', asy
     ok: false,
     error: null,
   }
-  const first = await Open.open(path)
+  const first = await Open.open(url)
   const id = await first.auditPending(entry)
   const shown = (await first.auditLog()).find((e) => e.id === id)
   assert.equal(shown?.pending, 1, 'unfinished attempts stay visible in the journal')
   assert.equal(shown?.ok, 0)
   await first.close()
   // A crash between the row and the effect: reopening marks the orphan instead of hiding it.
-  const second = await Open.open(path)
+  const second = await Open.open(url)
   t.after(() => second.close())
   const marked = (await second.auditLog()).find((e) => e.id === id)
   assert.equal(marked?.pending, null)
@@ -1145,7 +1142,6 @@ test('owner row falls back to the last known profile name, the signed-in owner n
 })
 
 test('siteIdentity: dev user short-circuits, missing/invalid cookie is anonymous, role decides admin access', async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'bf-site-identity-'))
   const saved = { ...process.env }
   t.after(() => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
@@ -1155,13 +1151,8 @@ test('siteIdentity: dev user short-circuits, missing/invalid cookie is anonymous
     BLOCKFIELD_OWNER_UUIDS: OWNER,
     NODE_ENV: 'test',
     BLOCKFIELD_ADMIN_DEV_USER: `${OTHER}:Guest`,
-    BLOCKFIELD_STATS_DB: join(directory, 'stats.sqlite'),
   })
-  const database = await statsStore()
-  t.after(async () => {
-    await database.close()
-    rmSync(directory, { recursive: true, force: true })
-  })
+  await statsStore()
   assert.deepEqual(
     await siteIdentity({ get: () => undefined }),
     { name: 'Guest', hasAdminAccess: false },
