@@ -2207,3 +2207,83 @@ test('console link: logs and suggestions proxy the mod endpoint with the console
   assert.equal(seen.length, before, 'no token: the link is never called')
   assert.equal((await s.auditLog()).length, 0, 'link reads are not audited')
 })
+
+test('POST rcon moderation goes through typed CP actions when configured, RCON otherwise', async (t) => {
+  const http = await import('node:http')
+  const dirs = {
+    BLOCKFIELD_ADMIN_DIR: temp(t),
+    BLOCKFIELD_INBOX_DIR: temp(t),
+    BLOCKFIELD_SETTINGS_DIR: temp(t),
+  }
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  const seen = []
+  const server = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      seen.push([req.method, req.url, JSON.parse(body)])
+      res.setHeader('Content-Type', 'application/json')
+      res.statusCode = 202
+      res.end(JSON.stringify({ operationId: 'op-1', revision: null, status: 'accepted' }))
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  Object.assign(process.env, dirs, {
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
+    BLOCKFIELD_CP_MODERATION_TOKEN: 'mod-t',
+    BLOCKFIELD_CP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
+  })
+  delete process.env.BLOCKFIELD_RCON_HOST
+  const s = await store(t)
+  await s.setStaff(MOD, 'Moddy', 'moderator', 'seed')
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const call = async (as, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL('http://site/api/admin/rcon')
+    const request = new Request(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, 'rcon', s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  const said = await call(`${MOD}:Moddy`, { action: 'say', text: 'Рестарт через 5 минут' })
+  assert.equal(said.status, 200)
+  assert.deepEqual(await said.json(), { operationId: 'op-1' })
+  assert.deepEqual(
+    seen.map(([m, u, b]) => [m, u, b.text]),
+    [['POST', '/v2/actions/moderation.say', 'Рестарт через 5 минут']],
+  )
+  // Same bodies RCON refused stay refused before any CP call.
+  assert.equal((await call(`${MOD}:Moddy`, { action: 'say', text: '/op x' })).status, 400)
+  assert.equal(seen.length, 1)
+  // Pardon needs the ban permission, like its RCON path.
+  assert.equal((await call(`${MOD}:Moddy`, { action: 'pardon', player: 'Bob' })).status, 403)
+  const pardoned = await call(`${ADMIN}:Adm`, { action: 'pardon', player: 'Bob' })
+  assert.equal(pardoned.status, 200)
+  assert.deepEqual(seen[1][1], '/v2/actions/moderation.pardon')
+  const log = await s.auditLog()
+  assert.deepEqual(
+    log.map((e) => [e.actorName, e.action, e.ok]),
+    [
+      ['Adm', 'rcon:pardon', 1],
+      ['Moddy', 'rcon:pardon', 0],
+      ['Moddy', 'rcon:say', 0],
+      ['Moddy', 'rcon:say', 1],
+    ],
+  )
+  assert.equal(JSON.parse(log[0].detail).operationId, 'op-1')
+  // Unconfigured sites keep the RCON path (here: no RCON host, so 503).
+  delete process.env.BLOCKFIELD_CP_MODERATION_TOKEN
+  assert.equal((await call(`${MOD}:Moddy`, { action: 'say', text: 'hi' })).status, 503)
+})

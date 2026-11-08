@@ -508,3 +508,99 @@ export async function revokeSessionCp(
 ): Promise<void> {
   await cpStaff('/v2/sessions/current', token, { method: 'DELETE' }, fetchImpl)
 }
+
+/**
+ * Typed moderation via control-plane v2 (control-plane cp#32):
+ * POST /v2/actions/moderation.<kind>. Only fire-and-forget commands move:
+ * `list` stays on RCON (a read; CP ACKs carry no output), kick/ban keep the
+ * RCON nickname flow until the UUID cutover, maintenance/raw/console have no
+ * typed kind. Active only when fully configured; otherwise RCON stays.
+ */
+export const moderationCpKinds = [
+  'say',
+  'pardon',
+  'team-kick',
+  'class-lock',
+  'class-unlock',
+  'range',
+  'stop-room',
+] as const
+export type ModerationCpKind = (typeof moderationCpKinds)[number]
+
+const uuidLoose = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export function cpModerationConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (
+    cpConfigured(env) &&
+    ((env.BLOCKFIELD_CP_MODERATION_TOKEN ?? '') as string).trim().length > 0 &&
+    uuidLoose.test(((env.BLOCKFIELD_CP_CONSUMER_GENERATION ?? '') as string).trim())
+  )
+}
+
+function moderationConfig() {
+  const url = config()
+  const token = (process.env.BLOCKFIELD_CP_MODERATION_TOKEN ?? '').trim()
+  if (!token) throw new Error('Control-plane не настроен на сайте (токен).')
+  const generation = (process.env.BLOCKFIELD_CP_CONSUMER_GENERATION ?? '').trim()
+  if (!uuidLoose.test(generation))
+    throw new Error('Control-plane не настроен на сайте (поколение получателя).')
+  const consumerId = (process.env.BLOCKFIELD_CP_CONSUMER_ID ?? 'game').trim() || 'game'
+  return { url, token, generation, consumerId, ...cpScope() }
+}
+
+const moderationMessages: Record<string, [number, string]> = {
+  invalid_action: [502, 'Control-plane отклонил запрос.'],
+  unknown_action: [500, 'Control-plane не знает это действие. Обратитесь к координатору.'],
+  consumer_generation_or_capability: [
+    503,
+    'Версия получателя в control-plane устарела. Обратитесь к координатору.',
+  ],
+  consumer_lag: [503, 'Сервер занят подтверждением команд. Попробуйте позже.'],
+  forbidden: [503, 'У сайта нет доступа к модерации в control-plane. Обратитесь к координатору.'],
+}
+
+function moderationProblem(status: number, code: string): CpProblem {
+  const [mappedStatus, message] = moderationMessages[code] ?? [
+    status,
+    'Control-plane отклонил запрос.',
+  ]
+  const error = new Error(message) as CpProblem
+  error.status = mappedStatus
+  error.code = code
+  return error
+}
+
+/** One typed moderation command: validated fields go out, the operation receipt comes back. */
+export async function postModerationCp(
+  kind: string,
+  fields: Record<string, unknown>,
+  opts: { target?: string; idempotencyKey?: string; fetchImpl?: FetchImpl } = {},
+): Promise<{ operationId: string; status: string }> {
+  if (!(moderationCpKinds as readonly string[]).includes(kind))
+    throw new Error('Неизвестное действие.')
+  const { url, token, generation, consumerId, environment, backend } = moderationConfig()
+  const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
+  const response = await fetchImpl(`${url}/v2/actions/moderation.${kind}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      idempotencyKey: opts.idempotencyKey ?? randomUUID(),
+      environment,
+      backend,
+      consumerId,
+      generation,
+      target: opts.target ?? '*',
+      ...fields,
+    }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok)
+    throw moderationProblem(
+      response.status,
+      typeof data?.error === 'string' ? data.error : 'control_plane_error',
+    )
+  if (typeof data?.operationId !== 'string')
+    throw new Error('Control-plane отдал неверное состояние.')
+  return { operationId: data.operationId, status: data.status ?? 'accepted' }
+}
