@@ -7449,8 +7449,10 @@ const cpGate = cpConfigured()
         {
           lastSettingsSnapshot = settings
           const incoming = streakTableOf(settings)
+          // Check before moving the base: a clean draft must adopt another admin's table, not resend the stale one.
+          const wasEditing = streakEditingActive()
           streakBase = JSON.stringify(incoming)
-          if (!data || !streakEditingActive()) {
+          if (!data || !wasEditing) {
             streakRows = entriesToRows(incoming)
             renderStreakTable()
             if (streakOptionsLoaded) attachStreakCombos()
