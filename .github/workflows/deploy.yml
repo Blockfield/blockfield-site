@@ -1,5 +1,7 @@
 name: Build and deploy the landing page
 on:
+  # Release flow: main moves only on the next→main release merge, so every
+  # push here ships prod (image :latest plus the Dokploy deploy below).
   push:
     branches: [main]
   workflow_dispatch:
