@@ -27,6 +27,7 @@ const streakFns = [
   'el',
   'streakTableOf',
   'streakSerialized',
+  'streakBaseOf',
   'streakEditingActive',
   'readStreakForSave',
   'streakStored',

@@ -52,6 +52,7 @@ const names = [
   'commitSetting',
   'streakTableOf',
   'streakSerialized',
+  'streakBaseOf',
   'streakEditingActive',
   'readStreakForSave',
   'streakStored',
