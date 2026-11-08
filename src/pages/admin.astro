@@ -7358,12 +7358,21 @@ const cpGate = cpConfigured()
           try {
             const fresh = await api('settings')
             settingsRevision = Math.max(settingsRevision, fresh.settings?.revision ?? 0)
-            streakBase = streakBaseOf(streakTableOf(fresh.settings))
+            // Drop the conflicted draft: kept dirty, any later unrelated save would silently overwrite the other admin's table.
+            const freshTable = streakTableOf(fresh.settings)
+            streakBase = streakBaseOf(freshTable)
+            streakRows = entriesToRows(freshTable)
+            streakReset = false
             await loadSettings(0, true, { settings: fresh.settings, applied: fresh.applied })
           } catch {
-            // Fresh state unreadable: keep local edits, the error below explains.
+            say(line, 'Настройки уже изменил кто-то другой. Обновите страницу.', 'error')
+            return
           }
-          say(line, 'Настройки уже изменил кто-то другой. Таблица сохранена как черновик.', 'error')
+          say(
+            line,
+            'Таблицу уже изменил кто-то другой: показана текущая версия, повторите правки.',
+            'error',
+          )
         } else say(line, (error as Error).message, 'error')
       }
     }
