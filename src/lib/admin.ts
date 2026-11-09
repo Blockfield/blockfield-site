@@ -2228,7 +2228,9 @@ const routes: Record<string, Route> = {
           // Validated before the call: a bad key is a 400, never an unconfirmed outcome.
           const idempotencyKey = moderationIdempotencyKey(body)
           try {
-            const receipt = await cp.postModerationCp(cpKind, fields, { idempotencyKey })
+            const receipt = await cp.postModerationCp(cpKind, actor.uuid, fields, {
+              idempotencyKey,
+            })
             return { operationId: receipt.operationId, room }
           } catch (error) {
             if (isCpProblem(error)) throw fail(error.status, error.message)

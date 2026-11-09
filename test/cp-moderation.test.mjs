@@ -10,6 +10,7 @@ async function fakeCp(handler) {
 }
 
 const GEN = '12345678-1234-4234-8234-123456789012'
+const ACTOR = 'd94f8b1e2c3a4d5e8f7091a2b3c4d5e6'
 
 function env(t, server) {
   const saved = { ...process.env }
@@ -73,7 +74,7 @@ test('moderation posts the typed action envelope (fail-before for the CP shape)'
   })
   try {
     env(t, server)
-    const out = await postModerationCp('say', { text: 'Рестарт через 5 минут' })
+    const out = await postModerationCp('say', ACTOR, { text: 'Рестарт через 5 минут' })
     assert.equal(out.operationId, 'op-say')
     const [[method, url, auth, payload]] = seen
     assert.equal(method, 'POST')
@@ -103,9 +104,119 @@ test('moderation maps CP refusals to site errors', async (t) => {
   try {
     env(t, server)
     // No moderation scopes on the site credential yet: coordinator step, not a silent failure.
-    await assert.rejects(postModerationCp('say', { text: 'hi' }), /координатору/)
-    await assert.rejects(postModerationCp('range', { op: 'open' }), /позже/)
-    await assert.rejects(postModerationCp('list', {}), /Неизвестное действие/)
+    await assert.rejects(postModerationCp('say', ACTOR, { text: 'hi' }), /координатору/)
+    await assert.rejects(postModerationCp('range', ACTOR, { op: 'open' }), /позже/)
+    await assert.rejects(postModerationCp('list', ACTOR, {}), /Неизвестное действие/)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('moderation sends the acting admin uuid for say', async (t) => {
+  const seen = []
+  const server = await fakeCp((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      seen.push(JSON.parse(body))
+      res.setHeader('Content-Type', 'application/json')
+      res.statusCode = 202
+      res.end(JSON.stringify({ operationId: 'op-say', revision: null, status: 'accepted' }))
+    })
+  })
+  try {
+    env(t, server)
+    await postModerationCp('say', 'd94f8b1e2c3a4d5e8f7091a2b3c4d5e6', {
+      text: 'Рестарт через 5 минут',
+    })
+    const [payload] = seen
+    assert.equal(payload.actorAccountId, 'd94f8b1e-2c3a-4d5e-8f70-91a2b3c4d5e6')
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('moderation sends the acting admin uuid for pardon', async (t) => {
+  const seen = []
+  const server = await fakeCp((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      seen.push(JSON.parse(body))
+      res.setHeader('Content-Type', 'application/json')
+      res.statusCode = 202
+      res.end(JSON.stringify({ operationId: 'op-pardon', revision: null, status: 'accepted' }))
+    })
+  })
+  try {
+    env(t, server)
+    await postModerationCp('pardon', 'D94F8B1E-2C3A-4D5E-8F70-91A2B3C4D5E6', {
+      player: 'Steve_01',
+    })
+    const [payload] = seen
+    assert.equal(payload.player, 'Steve_01')
+    assert.equal(payload.actorAccountId, 'd94f8b1e-2c3a-4d5e-8f70-91a2b3c4d5e6')
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+async function rejectsCpProblem(t, server, code, status, message) {
+  env(t, server)
+  await assert.rejects(
+    postModerationCp('say', 'd94f8b1e2c3a4d5e8f7091a2b3c4d5e6', { text: 'hi' }),
+    (error) => {
+      assert.equal(error.status, status)
+      assert.match(error.message, message)
+      assert.equal(error.code, code)
+      return true
+    },
+  )
+}
+
+function cpErrorServer(code, status) {
+  return fakeCp((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      res.setHeader('Content-Type', 'application/json')
+      res.statusCode = status
+      res.end(JSON.stringify({ error: code }))
+    })
+  })
+}
+
+test('moderation maps a missing actor assertion to a coordinator error', async (t) => {
+  const server = await cpErrorServer('service_actor_required', 403)
+  try {
+    await rejectsCpProblem(t, server, 'service_actor_required', 500, /не передал автора/)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('moderation maps a forbidden actor assertion to a coordinator error', async (t) => {
+  const server = await cpErrorServer('actor_forbidden', 403)
+  try {
+    await rejectsCpProblem(t, server, 'actor_forbidden', 500, /не вправе подтверждать автора/)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('moderation maps an ineligible actor to a site error', async (t) => {
+  const server = await cpErrorServer('ineligible_account', 403)
+  try {
+    await rejectsCpProblem(t, server, 'ineligible_account', 403, /не может выполнять модерацию/)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('moderation maps an unknown actor to a site error', async (t) => {
+  const server = await cpErrorServer('account_not_found', 404)
+  try {
+    await rejectsCpProblem(t, server, 'account_not_found', 404, /Участник не найден/)
   } finally {
     await new Promise((resolve) => server.close(resolve))
   }
@@ -126,8 +237,8 @@ test('moderation forwards a caller-supplied idempotency key verbatim', async (t)
   try {
     env(t, server)
     const key = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
-    await postModerationCp('say', { text: 'hi' }, { idempotencyKey: key })
-    await postModerationCp('say', { text: 'hi' }, { idempotencyKey: key })
+    await postModerationCp('say', ACTOR, { text: 'hi' }, { idempotencyKey: key })
+    await postModerationCp('say', ACTOR, { text: 'hi' }, { idempotencyKey: key })
     assert.deepEqual(seen, [key, key])
   } finally {
     await new Promise((resolve) => server.close(resolve))

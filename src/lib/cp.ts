@@ -564,6 +564,13 @@ const moderationMessages: Record<string, [number, string]> = {
     'Версия получателя в control-plane устарела. Обратитесь к координатору.',
   ],
   consumer_lag: [503, 'Сервер занят подтверждением команд. Попробуйте позже.'],
+  service_actor_required: [500, 'Сайт не передал автора изменения. Обратитесь к координатору.'],
+  actor_forbidden: [
+    500,
+    'Сайт не вправе подтверждать автора изменения. Обратитесь к координатору.',
+  ],
+  ineligible_account: [403, 'Этот аккаунт не может выполнять модерацию.'],
+  account_not_found: [404, 'Участник не найден.'],
   forbidden: [503, 'У сайта нет доступа к модерации в control-plane. Обратитесь к координатору.'],
 }
 
@@ -581,11 +588,16 @@ function moderationProblem(status: number, code: string): CpProblem {
 /** One typed moderation command: validated fields go out, the operation receipt comes back. */
 export async function postModerationCp(
   kind: string,
+  actorAccountId: string,
   fields: Record<string, unknown>,
   opts: { target?: string; idempotencyKey?: string; fetchImpl?: FetchImpl } = {},
 ): Promise<{ operationId: string; status: string }> {
   if (!(moderationCpKinds as readonly string[]).includes(kind))
     throw new Error('Неизвестное действие.')
+  // The site service credential asserts the logged-in admin (like staff
+  // grants): CP refuses unasserted service calls, so the actor is required.
+  const actor = actorAccountId.replaceAll('-', '').toLowerCase()
+  if (!/^[0-9a-f]{32}$/.test(actor)) throw new Error('Некорректный запрос.')
   const { url, token, generation, consumerId, environment, backend } = moderationConfig()
   const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
   const response = await fetchImpl(`${url}/v2/actions/moderation.${kind}`, {
@@ -599,6 +611,7 @@ export async function postModerationCp(
       generation,
       target: opts.target ?? '*',
       ...fields,
+      actorAccountId: actor.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
     }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   })
