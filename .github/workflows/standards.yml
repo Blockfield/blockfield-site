@@ -205,7 +205,7 @@ jobs:
     name: ${{ (github.event_name == 'pull_request_review' && (github.event.review.user.login != 'blockfield-review-bot[bot]' || github.event.review.state != 'approved')) && 'postgres (skipped review)' || 'postgres' }}
     needs: [decide, bot-gate]
     if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (needs.bot-gate.outputs.verdict == 'permit' && needs.bot-gate.outputs.sha_match == 'true')) && needs.decide.outputs.tested != 'true'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
       postgres:
