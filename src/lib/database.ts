@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { DatabaseSync } from 'node:sqlite'
 import { Pool, types, type PoolClient } from 'pg'
 
 const number = (value: string) => {
@@ -22,53 +21,33 @@ export function postgresSql(sql: string): string {
 }
 
 export class Database {
-  pool?: Pool
-  // SQLite exists only as a one-shot offline backup reader for scripts/migrate-stats.mjs.
-  // The app never serves from SQLite: StatsStore.open() accepts PostgreSQL URLs only.
-  sqlite?: DatabaseSync
-  private context = new AsyncLocalStorage<PoolClient | DatabaseSync>()
-  private tail: Promise<unknown> = Promise.resolve()
+  pool: Pool
+  private context = new AsyncLocalStorage<PoolClient>()
 
-  constructor(location: string, backup = false) {
-    if (/^postgres(?:ql)?:\/\//.test(location)) {
-      this.pool = new Pool({
-        connectionString: location,
-        max: 10,
-        connectionTimeoutMillis: 5000,
-        statement_timeout: 30000,
-        types: pgTypes,
-      })
-      this.pool.on('error', () => console.error('PostgreSQL idle connection failed'))
-      return
-    }
-    if (!backup) throw new Error('Statistics storage must be a PostgreSQL URL')
-    this.sqlite = new DatabaseSync(location)
-    this.sqlite.exec('PRAGMA foreign_keys=ON;')
-    this.sqlite.function('greatest', { varargs: true }, (...values: any[]) => Math.max(...values))
-  }
-  private serial<T>(work: () => Promise<T>): Promise<T> {
-    const pending = this.tail.then(work)
-    this.tail = pending.catch(() => {})
-    return pending
+  constructor(location: string) {
+    if (!/^postgres(?:ql)?:\/\//.test(location))
+      throw new Error('Statistics storage must be a PostgreSQL URL')
+    this.pool = new Pool({
+      connectionString: location,
+      max: 10,
+      connectionTimeoutMillis: 5000,
+      statement_timeout: 30000,
+      types: pgTypes,
+    })
+    this.pool.on('error', () => console.error('PostgreSQL idle connection failed'))
   }
   private async query(
     sql: string,
     args: any[],
     kind: 'all' | 'get' | 'run' | 'exec',
   ): Promise<any> {
-    const execute = async () => {
-      if (this.pool) {
-        const result = await (
-          (this.context.getStore() as PoolClient | undefined) ?? this.pool
-        ).query(postgresSql(sql), args)
-        if (kind === 'exec') return
-        if (kind === 'run') return { changes: result.rowCount }
-        return kind === 'get' ? result.rows[0] : result.rows
-      }
-      if (kind === 'exec') return this.sqlite!.exec(sql)
-      return this.sqlite!.prepare(sql)[kind](...args)
-    }
-    return this.pool || this.context.getStore() ? execute() : this.serial(execute)
+    const result = await ((this.context.getStore() as PoolClient | undefined) ?? this.pool).query(
+      postgresSql(sql),
+      args,
+    )
+    if (kind === 'exec') return
+    if (kind === 'run') return { changes: result.rowCount }
+    return kind === 'get' ? result.rows[0] : result.rows
   }
   prepare(sql: string) {
     return {
@@ -82,31 +61,26 @@ export class Database {
   }
   async transaction<T>(work: () => Promise<T>): Promise<T> {
     if (this.context.getStore()) return work()
-    const execute = async () => {
-      const connection = this.pool ? await this.pool.connect() : this.sqlite!
-      try {
-        return await this.context.run(connection, async () => {
-          await this.exec(this.pool ? 'BEGIN' : 'BEGIN IMMEDIATE')
-          try {
-            // Rating updates and rebuilds must serialize across site replicas.
-            if (this.pool) await this.exec('SELECT pg_advisory_xact_lock(782344, 1)')
-            const result = await work()
-            await this.exec('COMMIT')
-            return result
-          } catch (error) {
-            await this.exec('ROLLBACK')
-            throw error
-          }
-        })
-      } finally {
-        if (this.pool) (connection as PoolClient).release()
-      }
+    const connection = await this.pool.connect()
+    try {
+      return await this.context.run(connection, async () => {
+        await this.exec('BEGIN')
+        try {
+          // Rating updates and rebuilds must serialize across site replicas.
+          await this.exec('SELECT pg_advisory_xact_lock(782344, 1)')
+          const result = await work()
+          await this.exec('COMMIT')
+          return result
+        } catch (error) {
+          await this.exec('ROLLBACK')
+          throw error
+        }
+      })
+    } finally {
+      connection.release()
     }
-    return this.pool ? execute() : this.serial(execute)
   }
   async close() {
-    await this.tail
-    if (this.pool) await this.pool.end()
-    else this.sqlite!.close()
+    await this.pool.end()
   }
 }

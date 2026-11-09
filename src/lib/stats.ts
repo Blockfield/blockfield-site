@@ -640,8 +640,8 @@ const SCHEMA = `
 export const HITREG_SCAN_CAP = 5000
 export class StatsStore {
   db: Database
-  private constructor(location: string, backup = false) {
-    this.db = new Database(location, backup)
+  private constructor(location: string) {
+    this.db = new Database(location)
   }
   static async open(location: string): Promise<StatsStore> {
     if (!/^postgres(?:ql)?:\/\//.test(location))
@@ -654,38 +654,6 @@ export class StatsStore {
       await store.close()
       throw error
     }
-  }
-  /**
-   * One-shot offline reader for a SQLite backup file (scripts/migrate-stats.mjs).
-   * The running app never serves from SQLite. Only current-schema (v7) backups are
-   * accepted; older files must first be opened once by a pre-Postgres-only release.
-   */
-  static async openBackup(path: string): Promise<StatsStore> {
-    const store = new StatsStore(path, true)
-    try {
-      await store.initializeBackup()
-      return store
-    } catch (error) {
-      await store.close()
-      throw error
-    }
-  }
-  private async initializeBackup() {
-    const sqlite = this.db.sqlite!
-    const { user_version } = sqlite.prepare('PRAGMA user_version').get() as {
-      user_version: number
-    }
-    if (user_version === 0) {
-      await this.db.exec(SCHEMA)
-      await this.db.exec('PRAGMA user_version=7')
-    } else if (user_version !== 7) {
-      throw new Error(
-        `SQLite backup is schema ${user_version}; this build imports only schema 7 backups`,
-      )
-    }
-    sqlite.function('uuid_like', { deterministic: true }, (name: any) =>
-      uuidLike(String(name)) ? 1 : 0,
-    )
   }
   private async initialize() {
     await this.db.transaction(async () => {
@@ -1236,7 +1204,7 @@ export class StatsStore {
   /** Delete only archived rows whose live content still matches the archive, in one
   transaction. The DELETE targets the verified id set, never a re-evaluated range.
   Statements bind at most AUDIT_DELETE_CHUNK ids: one parameter per row would
-  exceed the engine bind limit (32766 SQLite, 65535 Postgres) on large exports. */
+  exceed the Postgres bind limit (65535 parameters) on large exports. */
   async deleteAuditExported(manifest: AuditExportManifest, jsonl: string): Promise<number> {
     const archived = this.archiveRows(manifest, jsonl)
     if (!manifest.count) {

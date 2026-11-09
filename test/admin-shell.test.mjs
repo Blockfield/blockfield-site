@@ -43,7 +43,15 @@ const streakFns = [
 ]
 
 const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
-const script = page.split('<script>')[1].split('</script>')[0]
+// SITE95-U2: section helpers live in typed modules; extract from all sources.
+const libs = [
+  '../src/lib/admin-shell.ts',
+  '../src/lib/admin-settings.ts',
+  '../src/lib/admin-workshop.ts',
+]
+  .map((file) => readFileSync(new URL(file, import.meta.url), 'utf8'))
+  .join('\n')
+const script = page.split('<script>')[1].split('</script>')[0] + '\n' + libs
 const source = ts.createSourceFile('admin.ts', script, ts.ScriptTarget.Latest, true)
 const functions = (names) =>
   ts.transpileModule(
@@ -134,7 +142,7 @@ test('live sidebar shows unavailable, empty and scored matches without placehold
       can: () => false,
     })
     dom.window.eval(
-      `const $ = (s) => document.querySelector(s); let controller, session, lastWorkshop; const PHASES = { VOTING: 'Голосование за карту' }; const describeGame = () => ({ tone: 'bad', title: 'недоступно', detail: '' }); const describeWorkshop = describeGame; const say = () => {}; const ago = () => 'только что'; const renderModes = () => {}; const renderRooms = () => {}; const renderWorkshopCard = () => {}; ${functions(['el', 'renderRoomSummary', 'renderGameOverview', 'renderOverview', 'loadOverview'])}`,
+      `const $ = (s) => document.querySelector(s); let controller, session, lastWorkshop; const setController = (v) => controller = v; const PHASES = { VOTING: 'Голосование за карту' }; const describeGame = () => ({ tone: 'bad', title: 'недоступно', detail: '' }); const describeWorkshop = describeGame; const say = () => {}; const ago = () => 'только что'; const renderModes = () => {}; const renderRooms = () => {}; const renderWorkshopCard = () => {}; ${functions(['el', 'renderRoomSummary', 'renderGameOverview', 'renderOverview', 'loadOverview'])}`,
     )
     await dom.window.loadOverview()
     const box = dom.window.document.querySelector('#side-now')

@@ -11,8 +11,7 @@ WORKDIR /app
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=4321
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN npm install --global pnpm@11.18.0 && pnpm install --prod --frozen-lockfile && pnpm store prune
-# A new named volume copies this ownership; without it the stats DB is root-owned and reads return 503.
-RUN mkdir -p /data/stats && chown node:node /data/stats
+# No persistent local volume: statistics live in PostgreSQL. Do not commit real tokens, put them in client configs, or print them.
 USER node
 # Last layer: a new commit must not invalidate the dependency cache above.
 ARG BUILD_COMMIT

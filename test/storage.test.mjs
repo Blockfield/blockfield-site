@@ -1,9 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { StatsStore, filters } from '../src/lib/stats.ts'
+import { filters } from '../src/lib/stats.ts'
 import { postgresSql } from '../src/lib/database.ts'
-import { roleOf } from '../src/lib/admin.ts'
-import { migrate } from '../scripts/migrate-stats.mjs'
 import { database } from './storage.mjs'
 
 const serverId = '10000000-0000-4000-8000-000000000001'
@@ -85,46 +83,4 @@ test('rolled-back writes are invisible to concurrent readers', async (t) => {
   release()
   await assert.rejects(transaction, /abort/)
   assert.deepEqual(await reading, [])
-})
-
-test('SQLite backup migrates exactly, preserves permissions and key IDs, and refuses an occupied target', async (t) => {
-  if (!process.env.BLOCKFIELD_TEST_DATABASE_URL)
-    throw new Error(
-      'BLOCKFIELD_TEST_DATABASE_URL is not set: this test needs a PostgreSQL database where the test user may create schemas. ' +
-        'Local setup is documented in docs/statistics.md (Tests); CI provides it as a service.',
-    )
-  {
-    const source = await StatsStore.openBackup(':memory:')
-    t.after(() => source.close())
-    const target = await database(t)
-    await source.ingest(result())
-    await source.setStaff(staffId, 'Player', 'builder', 'owner')
-    await source.setStaffMaps(staffId, ['test'])
-    await source.audit({
-      actorUuid: staffId,
-      actorName: 'Player',
-      role: 'builder',
-      action: 'test',
-      ok: true,
-    })
-    const key = await source.createIngestKey(serverId, 'producer')
-    await source.db.prepare('UPDATE ingest_keys SET id=37').run()
-    const counts = await migrate(source, target)
-    assert.equal(counts.results, 1)
-    assert.deepEqual(await target.staff(), await source.staff())
-    assert.equal(await roleOf(staffId, target, new Set()), 'builder')
-    assert.deepEqual(
-      await target.ingestKeys(),
-      JSON.parse(JSON.stringify(await source.ingestKeys())),
-    )
-    assert.deepEqual(await target.auditLog(), JSON.parse(JSON.stringify(await source.auditLog())))
-    assert.equal((await target.ingest(result())).inserted, false)
-    assert.equal((await target.leaderboard(filters(new URLSearchParams()))).players[0].wins, 1)
-    assert.ok((await target.ingestKeyHashes(serverId)).length)
-    assert.ok(key)
-    await target.createIngestKey(serverId, 'next')
-    assert.equal((await target.ingestKeys())[0].id, 38)
-    await assert.rejects(() => migrate(source, target), /not empty/)
-    assert.equal((await target.ingestKeys()).length, 2)
-  }
 })
