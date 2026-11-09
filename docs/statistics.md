@@ -4,7 +4,7 @@ Refs: netherg-io/blockfield-releases#3 and #6. This service is part of the exist
 
 ## Runtime and storage
 
-Use Node 22.19+ (the existing Astro dependency graph also requires this). PostgreSQL through `pg` is the only store: `StatsStore.open()` accepts only `BLOCKFIELD_DATABASE_URL`. `node:sqlite` remains solely inside the one-shot offline backup importer (`scripts/migrate-stats.mjs`, `StatsStore.openBackup()`); the running app never serves from SQLite. See [PostgreSQL storage and the SQLite export](#postgresql-storage-schema-7) for deployment and migration.
+Use Node 22.19+ (the existing Astro dependency graph also requires this). PostgreSQL through `pg` is the only store: `StatsStore.open()` accepts only `BLOCKFIELD_DATABASE_URL`. No `node:sqlite` code remains. See [PostgreSQL storage and the SQLite export](#postgresql-storage-schema-7) for deployment and migration.
 
 Site environment (PostgreSQL is required):
 
@@ -15,7 +15,7 @@ BLOCKFIELD_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/blockfield
 BLOCKFIELD_STATS_INGEST_KEYS={"00000000-0000-4000-8000-000000000001":"REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS"}
 ```
 
-Mount a **named persistent volume** at `/data/stats` owned by the image's `node` user (UID 1000). Do not commit real tokens, put them in client configs, or print them. Set the matching server ID/token on the game producer. HTTPS is required outside a private trusted network. Ingestion does not authenticate with player accounts: it accepts only server credentials and rejects submissions for another server ID.
+Statistics live in PostgreSQL; the image keeps no local stats volume. Do not commit real tokens, put them in client configs, or print them. Set the matching server ID/token on the game producer. HTTPS is required outside a private trusted network. Ingestion does not authenticate with player accounts: it accepts only server credentials and rejects submissions for another server ID.
 
 Without a configured database, reads return 503 rather than an empty leaderboard. An invalid PostgreSQL configuration fails instead of serving anything else. Producer keys can also be created and revoked in `/admin` (stored as SHA-256 hashes in `ingest_keys`); env and DB keys are both accepted. Without any ingestion key, writes are unauthorized. Bad key configuration fails closed. Restore to an isolated instance and replay the producer outbox to verify a backup. Unknown database schema versions are rejected, not overwritten.
 
@@ -124,7 +124,10 @@ Schema 7 gives ingestion keys explicit IDs.
 
 ### Migration from SQLite
 
-SQLite volumes are retired: the one-shot offline importer `scripts/migrate-stats.mjs` reads a backup file through `StatsStore.openBackup()` and copies it into PostgreSQL. `node:sqlite` is used only there, never by the running app. The backup must come from a current (schema 7) build — the pre-cutover volume on its last build qualifies. Older files must first be opened once by a pre-Postgres-only release; the importer refuses them with an explicit error instead of guessing.
+SQLite volumes are retired and the `node:sqlite` importer is removed: past cutover the only
+supported path is the already-exported PostgreSQL data (plus `pg_dump` backups). The notes below
+are kept for the pre-cutover backup only; `scripts/migrate-stats.mjs` and `StatsStore.openBackup()`
+no longer exist. Owner step: retire the old SQLite volume once the PostgreSQL data is verified.
 
 1. Build/test the new site before the cutover. Keep the existing SQLite volume and record the previous image and environment.
 2. Pause **site writes** for the final backup/copy. Game servers can continue queueing finalized results in their outboxes; do not stop the game server for this migration.
@@ -139,8 +142,7 @@ SQLite volumes are retired: the one-shot offline importer `scripts/migrate-stats
 Keep the pre-cutover SQLite backup for recovery. SQLite is an alternative backend, **not a live replica**: switching back after PostgreSQL has accepted writes requires transferring those changes first. Before any new PostgreSQL writes, the previous image/environment and original SQLite volume remain a rollback option.
 Back up PostgreSQL with `pg_dump` and retain the SQLite snapshot independently.
 
-Tests: `pnpm test` requires PostgreSQL: the backup-migration test
-needs a live database instead of silently skipping. Set `BLOCKFIELD_TEST_DATABASE_URL` to a
+Tests: `pnpm test` requires PostgreSQL: set `BLOCKFIELD_TEST_DATABASE_URL` to a
 PostgreSQL database where the test user may create schemas, then run `pnpm test:postgres`.
 Local setup with Podman or Docker (same credentials as CI):
 

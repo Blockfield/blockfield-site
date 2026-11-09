@@ -7,7 +7,15 @@ import { permissions } from '../src/lib/admin.ts'
 import { ARENA_MODES } from '../src/lib/game-names.ts'
 
 const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
-const script = page.split('<script>')[1].split('</script>')[0]
+// SITE95-U2: section helpers live in typed modules; extract from all sources.
+const libs = [
+  '../src/lib/admin-shell.ts',
+  '../src/lib/admin-settings.ts',
+  '../src/lib/admin-workshop.ts',
+]
+  .map((file) => readFileSync(new URL(file, import.meta.url), 'utf8'))
+  .join('\n')
+const script = page.split('<script>')[1].split('</script>')[0] + '\n' + libs
 const source = ts.createSourceFile('admin.ts', script, ts.ScriptTarget.Latest, true)
 const names = [
   'el',

@@ -314,9 +314,17 @@ test('SBW ammo editor preserves its loaded value and only exposes supported gun 
 })
 
 const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
+// SITE95-U2: section helpers live in typed modules; extract from all sources.
+const libs = [
+  '../src/lib/admin-shell.ts',
+  '../src/lib/admin-settings.ts',
+  '../src/lib/admin-workshop.ts',
+]
+  .map((file) => readFileSync(new URL(file, import.meta.url), 'utf8'))
+  .join('\n')
 const source = ts.createSourceFile(
   'admin.ts',
-  page.split('<script>')[1].split('</script>')[0],
+  page.split('<script>')[1].split('</script>')[0] + '\n' + libs,
   ts.ScriptTarget.Latest,
   true,
 )
