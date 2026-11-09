@@ -54,6 +54,8 @@ BLOCKFIELD_MAP_PACKAGES_DIR=/map-packages            # read-only mount of contro
 BLOCKFIELD_RCON_HOST=blockfield-server-lfcxy0
 BLOCKFIELD_RCON_PORT=25575
 BLOCKFIELD_RCON_PASSWORD=...                         # secret; never sent to the browser
+BLOCKFIELD_CP_GATE_READ_TOKEN=...                   # secret; gate read bearer for GET /v1/gate (needs gate:read on the site credential); without BLOCKFIELD_CP_URL the maintenance buttons stay hidden
+BLOCKFIELD_CP_GATE_TOKEN=...                        # secret; gate write bearer for PATCH /v2/settings/gate/* (needs moderation.ban on the site credential); replaces the removed U1 BLOCKFIELD_CP_GATE_WRITE_TOKEN (POST /v1/gate no longer exists)
 BLOCKFIELD_CP_MODERATION_TOKEN=...                   # secret; typed moderation bearer for POST /v2/actions/moderation.* (needs moderation.* scopes on the site credential); when set with BLOCKFIELD_CP_CONSUMER_GENERATION, say/pardon/team-kick/class-lock/class-unlock/range/stop-room go through control-plane, otherwise RCON
 BLOCKFIELD_CP_CONSUMER_ID=game                       # default; the game consumer addressed by typed moderation actions
 BLOCKFIELD_CP_CONSUMER_GENERATION=...                # UUID; current generation of the game consumer (stale = 503, ask the coordinator)

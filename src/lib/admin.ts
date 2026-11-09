@@ -2277,10 +2277,11 @@ const routes: Record<string, Route> = {
       },
     }),
   },
-  // Entry gate via control-plane (U1): owner AND site admins; CP audits the actor too.
+  // Entry gate via control-plane v2: owner AND site admins; the service
+  // credential holds moderation.ban and CP attributes the service principal.
   'POST gate': {
     permission: 'maintenance',
-    handler: async ({ actor, body }) => {
+    handler: async ({ body }) => {
       let toggle
       try {
         toggle = gateToggle(body)
@@ -2290,12 +2291,7 @@ const routes: Record<string, Route> = {
       const { mode, message } = toggle
       const { postGateCp } = await import('./cp.ts')
       try {
-        return await postGateCp(
-          mode,
-          message,
-          { id: actor.uuid, role: actor.role === 'owner' ? 'owner' : 'admin' },
-          randomUUID(),
-        )
+        return await postGateCp(mode, message, randomUUID())
       } catch (error) {
         const text = error instanceof Error ? error.message : ''
         // Безопасно для показа: ревизия CP — только номер, «не настроен» — без секретов.
