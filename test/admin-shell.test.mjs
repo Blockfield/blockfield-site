@@ -48,6 +48,13 @@ const libs = [
   '../src/lib/admin-shell.ts',
   '../src/lib/admin-settings.ts',
   '../src/lib/admin-workshop.ts',
+  '../src/lib/admin-overview.ts',
+  '../src/lib/admin-players.ts',
+  '../src/lib/admin-stats.ts',
+  '../src/lib/admin-journal.ts',
+  '../src/lib/admin-health.ts',
+  '../src/lib/admin-console.ts',
+  '../src/lib/admin-tabs.ts',
 ]
   .map((file) => readFileSync(new URL(file, import.meta.url), 'utf8'))
   .join('\n')
@@ -399,10 +406,11 @@ test('rooms event renders the real Game headline, lamp, detail and mode readines
       const switchView = () => ({ busy:false });
       const describeWorkshop = () => ({title:'Мастерская открыта',detail:'',tone:'ok'});
       const renderRooms = () => {}, renderProgress = () => {};
+      const getLastWorkshop = () => lastWorkshop;
       ${functions(['el', 'describeGame', 'renderRoomSummary', 'renderGameOverview', 'renderModes', 'workshopActions'])}
       window.handlers = {};
       const events = { addEventListener: (name, handler) => window.handlers[name] = handler };
-      ${ts.transpileModule(script.slice(script.indexOf("      events.addEventListener('rooms'"), script.indexOf("      events.addEventListener(\n        'settings'", script.indexOf("      events.addEventListener('rooms'"))), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}
+      ${ts.transpileModule(script.slice(script.indexOf("  events.addEventListener('rooms'"), script.indexOf("  events.addEventListener(\n    'settings'", script.indexOf("  events.addEventListener('rooms'"))), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}
     `)
     const send = (rooms) => dom.window.handlers.rooms({ data: JSON.stringify({ rooms }) })
     send({ available: true, rooms: [], online: 0 })

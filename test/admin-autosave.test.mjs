@@ -23,6 +23,13 @@ const libs = [
   '../src/lib/admin-shell.ts',
   '../src/lib/admin-settings.ts',
   '../src/lib/admin-workshop.ts',
+  '../src/lib/admin-overview.ts',
+  '../src/lib/admin-players.ts',
+  '../src/lib/admin-stats.ts',
+  '../src/lib/admin-journal.ts',
+  '../src/lib/admin-health.ts',
+  '../src/lib/admin-console.ts',
+  '../src/lib/admin-tabs.ts',
 ]
   .map((file) => readFileSync(new URL(file, import.meta.url), 'utf8'))
   .join('\n')
@@ -93,6 +100,8 @@ const names = [
   'moderate',
   'follow',
   'commitMessage',
+  'getSavedMessage',
+  'setSavedMessage',
   'waitMapAvailability',
   'gunBandInsert',
   'gunBandRemove',
@@ -109,10 +118,10 @@ const productionSelect = compile(
 const messageHandlers = compile(
   script.slice(
     script.indexOf(
-      "    $('#message-form').addEventListener('submit'",
+      "$('#message-form').addEventListener('submit'",
       script.indexOf('let savedMessage'),
     ),
-    script.indexOf('    const RANGE:'),
+    script.indexOf('const RANGE:'),
   ),
 )
 
