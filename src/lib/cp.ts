@@ -9,7 +9,6 @@ export type CpGate = {
   since: number | null
   observedAt: number
 }
-export type CpActor = { id: string; role: string }
 
 /** «Начать/Закончить техработы»: admin action to CP mode (pure, unit-tested). */
 export function gateToggle(body: any): { mode: 'maintenance' | 'open'; message: string } {
@@ -76,21 +75,30 @@ export async function readGateCp(
 export async function postGateCp(
   mode: CpMode,
   message: string,
-  actor: CpActor,
   idempotencyKey: string,
+  token: string | undefined = process.env.BLOCKFIELD_CP_GATE_TOKEN,
 ): Promise<{ operationId: string; revision: number }> {
   const read = await cp('/v1/gate', process.env.BLOCKFIELD_CP_GATE_READ_TOKEN)
   if (!validGate(read)) throw new Error('Control-plane отдал неверное состояние.')
-  return cp('/v1/gate', process.env.BLOCKFIELD_CP_GATE_WRITE_TOKEN, {
-    method: 'POST',
-    body: JSON.stringify({
-      expectedRevision: read.revision,
-      idempotencyKey,
-      mode,
-      message,
-      actor,
-    }),
-  })
+  try {
+    // Game gate on CP v2: PATCH /v2/settings/gate/* with the moderation.ban
+    // scope. SettingsChange carries no actor field: the service write is
+    // attributed to the stable service principal, unlike staff/moderation.
+    return await patchSettingsCp(
+      'gate',
+      '*',
+      { expectedRevision: read.revision, idempotencyKey, patch: { mode, message } },
+      token,
+    )
+  } catch (error) {
+    // Callers (POST gate) map «ревизия N» to 409: keep that contract and the code.
+    if (isRevisionConflict(error)) {
+      const conflict = new Error(`Control-plane отклонил запрос (ревизия ${read.revision}).`)
+      ;(conflict as { code?: string }).code = 'revision_conflict'
+      throw conflict
+    }
+    throw error
+  }
 }
 
 export type CpSettingsView = {
