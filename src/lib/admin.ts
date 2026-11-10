@@ -289,6 +289,17 @@ export type MapBranch = {
   createdAt: number
   createdBy: Record<string, unknown>
 }
+// Linear history (workshop#65): named pointers beside the head. `branches`
+// below stays as a tolerant rollout read only; nothing writes it anymore.
+export type MapSnapshot = {
+  schema: 1
+  mapId: string
+  name: string
+  versionDigest: string
+  generation: number
+  createdAt: number
+  createdBy: Record<string, unknown>
+}
 export type MapCatalogEntry = {
   mapId: string
   kind: MapHead['kind']
@@ -296,6 +307,7 @@ export type MapCatalogEntry = {
   head: MapHead | null
   versions: MapVersion[]
   branches?: MapBranch[]
+  snapshots?: MapSnapshot[]
   draft?: { workingCopyId: string; name: string }
 }
 export type MapSession = {
@@ -545,6 +557,27 @@ export function readMapCatalog(directory: string): MapCatalogAvailability {
       }
       if (head !== null && !names.has('main')) return unavailable
     }
+    if (entry.snapshots !== undefined) {
+      const names = new Set<string>()
+      if (!Array.isArray(entry.snapshots) || entry.snapshots.length > 1024) return unavailable
+      for (const snapshot of entry.snapshots) {
+        if (
+          !plain(snapshot) ||
+          snapshot.schema !== 1 ||
+          snapshot.mapId !== entry.mapId ||
+          !mutableBranch(snapshot.name) ||
+          names.has(snapshot.name) ||
+          !digest(snapshot.versionDigest) ||
+          !versions.has(snapshot.versionDigest) ||
+          !Number.isSafeInteger(snapshot.generation) ||
+          (snapshot.generation as number) < 1 ||
+          !timestamp(snapshot.createdAt) ||
+          !plain(snapshot.createdBy)
+        )
+          return unavailable
+        names.add(snapshot.name)
+      }
+    }
   }
   const maps = value.maps as MapCatalogEntry[]
   if (
@@ -647,21 +680,14 @@ async function editableMap(actor: Actor, store: StatsStore, id: unknown) {
     throw fail(403, 'Нет права строить на этой карте.')
   return { catalog, entry }
 }
-function selectedMapBranch(
+function selectedMapSession(
   catalog: Extract<MapCatalogAvailability, { available: true }>,
   entry: MapCatalogEntry,
 ) {
-  const copy = catalog.session,
-    name = copy?.branches?.[entry.mapId]
-  const branch = entry.branches?.find((ref) => ref.name === name)
-  if (
-    !copy ||
-    !(copy.maps === null || copy.maps.includes(entry.mapId)) ||
-    !branch ||
-    !mutableBranch(name)
-  )
-    throw fail(409, 'Выберите ветку этой карты в действующем сеансе мастерской.')
-  return { copy, branch }
+  const copy = catalog.session
+  if (!copy || !(copy.maps === null || copy.maps.includes(entry.mapId)))
+    throw fail(409, 'Откройте эту карту в действующем сеансе мастерской.')
+  return { copy }
 }
 function workshopMapIds() {
   const catalog = readMapCatalog(adminDir())
@@ -785,18 +811,9 @@ export function writeRequest(
         )
           throw bad('Некорректный список карт.')
         extra = { session: 'new', maps }
-        if (body.branches !== undefined) {
-          if (
-            !Array.isArray(maps) ||
-            !plain(body.branches) ||
-            Object.keys(body.branches).length !== maps.length ||
-            !Object.entries(body.branches).every(
-              ([id, name]) => maps.includes(id) && mutableBranch(name),
-            )
-          )
-            throw bad('Выберите одну рабочую ветку для каждой карты сеанса.')
-          extra.branches = body.branches
-        }
+        // Linear history (workshop#65): sessions track maps only. A stale
+        // client may still send `branches`; it is validated nowhere and never
+        // forwarded — the controller ignores it the same way during rollout.
       } else {
         if (
           body.sessionId !== undefined &&
@@ -907,49 +924,44 @@ export function writeRequest(
     )
       throw bad('Некорректная страница сохранённых черновиков.')
     request = { ...base, offset: body.offset, limit: body.limit ?? 100 }
-  } else if (['branch-create', 'commit', 'compare', 'merge-preview'].includes(body?.kind)) {
+  } else if (
+    ['commit', 'compare', 'snapshot-create', 'snapshot-delete', 'snapshots'].includes(body?.kind)
+  ) {
     if (!mapId(body.mapId) || !knownMaps.has(body.mapId)) throw bad('Неизвестная карта.')
     const common = { ...base, mapId: body.mapId }
-    if (body.kind === 'branch-create') {
-      if (!mutableBranch(body.branch) || !digest(body.versionDigest))
-        throw bad('Укажите имя рабочей ветки и сохранённую версию.')
-      request = { ...common, branch: body.branch, versionDigest: body.versionDigest }
-    } else if (body.kind === 'commit') {
+    if (body.kind === 'commit') {
       if (
-        !mutableBranch(body.branch) ||
         typeof body.workingCopyId !== 'string' ||
         !COPY_UUID.test(body.workingCopyId) ||
-        !digest(body.expectedBranchHead) ||
+        !Object.hasOwn(body, 'expectedHead') ||
+        (body.expectedHead !== null && !digest(body.expectedHead)) ||
         typeof body.note !== 'string' ||
         !body.note.trim() ||
         body.note.length > 200
       )
         throw bad(
-          'Коммит требует выбранную ветку, рабочую копию, её текущую версию и описание изменений до 200 символов.',
+          'Коммит требует рабочую копию, текущую версию карты и описание изменений до 200 символов.',
         )
       request = {
         ...common,
-        branch: body.branch,
         workingCopyId: body.workingCopyId,
-        expectedBranchHead: body.expectedBranchHead,
+        expectedHead: body.expectedHead,
         note: body.note.trim(),
       }
     } else if (body.kind === 'compare') {
       if (!digest(body.before) || !digest(body.after))
         throw bad('Выберите две сохранённые версии карты.')
       request = { ...common, before: body.before, after: body.after }
+    } else if (body.kind === 'snapshots') {
+      request = { ...common }
     } else {
-      if (
-        !digest(body.versionDigest) ||
-        !Object.hasOwn(body, 'expectedHead') ||
-        (body.expectedHead !== null && !digest(body.expectedHead))
-      )
-        throw bad('Слияние требует исходную версию и текущую main.')
-      request = {
-        ...common,
-        versionDigest: body.versionDigest,
-        expectedHead: body.expectedHead,
-        ...(body.resolutions === undefined ? {} : { resolutions: resolutions(body.resolutions) }),
+      if (!mutableBranch(body.name))
+        throw bad('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
+      if (body.kind === 'snapshot-create') {
+        if (!digest(body.versionDigest)) throw bad('Выберите сохранённую версию карты для снимка.')
+        request = { ...common, name: body.name, versionDigest: body.versionDigest }
+      } else {
+        request = { ...common, name: body.name }
       }
     }
   } else if (body?.kind === 'candidate' || body?.kind === 'rollback') {
@@ -966,29 +978,34 @@ export function writeRequest(
         mapId: body.mapId,
         ...(body.workingCopyId === undefined ? {} : { workingCopyId: body.workingCopyId }),
       }
-      if (body.branch !== undefined || body.expectedBranchHead !== undefined) {
+      if (body.expectedHead !== undefined)
+        Object.assign(request, { expectedHead: body.expectedHead })
+      if (
+        request.workingCopyId !== undefined ||
+        request.expectedHead !== undefined ||
+        body.commit !== undefined ||
+        body.note !== undefined
+      ) {
         if (
-          !mutableBranch(body.branch) ||
-          !digest(body.expectedBranchHead) ||
-          typeof body.workingCopyId !== 'string'
+          typeof request.workingCopyId !== 'string' ||
+          !Object.hasOwn(request, 'expectedHead') ||
+          (request.expectedHead !== null && !digest(request.expectedHead))
         )
-          throw bad('Проверка требует выбранную ветку, её текущую версию и рабочую копию.')
-        Object.assign(request, { branch: body.branch, expectedBranchHead: body.expectedBranchHead })
-      }
-      if (body.commit !== undefined && typeof body.commit !== 'boolean')
-        throw bad('Некорректный запрос сохранения перед проверкой.')
-      if (body.commit === true) {
-        if (
-          body.branch === undefined ||
-          typeof body.note !== 'string' ||
-          !body.note.trim() ||
-          body.note.length > 200 ||
-          /\p{Cc}/u.test(body.note)
-        )
-          throw bad(
-            'Сохранение перед проверкой требует ветку и описание изменений до 200 символов.',
+          throw bad('Проверка требует рабочую копию и текущую версию карты.')
+        if (body.commit !== undefined && typeof body.commit !== 'boolean')
+          throw bad('Некорректный запрос сохранения перед проверкой.')
+        if (body.commit === true || body.note !== undefined) {
+          if (
+            typeof body.note !== 'string' ||
+            !body.note.trim() ||
+            body.note.length > 200 ||
+            /\p{Cc}/u.test(body.note)
           )
-        Object.assign(request, { commit: true, note: body.note.trim() })
+            throw bad('Сохранение перед проверкой требует описание изменений до 200 символов.')
+          Object.assign(request, { commit: body.commit === true, note: body.note.trim() })
+        } else if (body.commit !== undefined) {
+          Object.assign(request, { commit: false })
+        }
       }
     } else {
       if (
@@ -2133,18 +2150,6 @@ const routes: Record<string, Route> = {
         if (!modes.includes(body.modeId))
           throw bad('Сохранённая версия карты не поддерживает этот режим.')
       }
-      if (body?.profile === 'workshop' && body?.session === 'new' && body.branches !== undefined) {
-        if (
-          !catalog.available ||
-          !plain(body.branches) ||
-          !Object.entries(body.branches).every(([id, name]) =>
-            catalog.maps
-              .find((entry) => entry.mapId === id)
-              ?.branches?.some((ref) => ref.name === name && ref.name !== 'main'),
-          )
-        )
-          throw bad('Выбранная ветка отсутствует в каталоге карт.')
-      }
       return {
         id: writeRequest(
           inboxDir(),
@@ -2664,27 +2669,51 @@ const routes: Record<string, Route> = {
       }
     },
   },
-  'POST maps/branches': {
+  'POST maps/snapshots': {
     permission: 'map-edit',
     handler: async ({ actor, store, body }) => {
       const { catalog, entry } = await editableMap(actor, store, body?.mapId)
+      if (typeof body?.name !== 'string' || !mutableBranch(body.name))
+        throw bad('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
+      if (body?.action === 'delete') {
+        if (!entry.snapshots?.some((snapshot) => snapshot.name === body.name))
+          throw fail(404, 'Снимок не найден.')
+        return {
+          id: writeRequest(
+            inboxDir(),
+            actor,
+            { kind: 'snapshot-delete', mapId: entry.mapId, name: body.name },
+            new Set(catalog.maps.map((map) => map.mapId)),
+          ),
+        }
+      }
       if (!entry.versions.some((version) => version.versionDigest === body?.versionDigest))
         throw bad('Выбранная версия отсутствует в истории карты.')
-      if (entry.branches?.some((ref) => ref.name === body?.branch))
-        throw fail(409, 'Ветка с таким именем уже существует.')
+      if (
+        entry.snapshots?.some(
+          (snapshot) =>
+            snapshot.name === body.name && snapshot.versionDigest !== body.versionDigest,
+        )
+      )
+        throw fail(409, 'Снимок с таким именем уже указывает на другую версию.')
       return {
         id: writeRequest(
           inboxDir(),
           actor,
-          { ...body, kind: 'branch-create' },
+          {
+            kind: 'snapshot-create',
+            mapId: entry.mapId,
+            name: body.name,
+            versionDigest: body.versionDigest,
+          },
           new Set(catalog.maps.map((map) => map.mapId)),
         ),
       }
     },
     audit: (body) => ({
-      action: 'map-branch-create',
+      action: body?.action === 'delete' ? 'map-snapshot-delete' : 'map-snapshot-create',
       target: body?.mapId,
-      detail: { branch: body?.branch, versionDigest: body?.versionDigest },
+      detail: { name: body?.name, versionDigest: body?.versionDigest },
     }),
   },
   'POST maps/create': {
@@ -2734,7 +2763,7 @@ const routes: Record<string, Route> = {
     permission: 'maps',
     handler: async ({ actor, store, body }) => {
       const { catalog, entry } = await editableMap(actor, store, body?.mapId),
-        { copy } = selectedMapBranch(catalog, entry)
+        { copy } = selectedMapSession(catalog, entry)
       editorRevision(body)
       if (body?.workingCopyId !== copy.id)
         throw fail(409, 'Рабочая копия изменилась. Обновите историю.')
@@ -2764,13 +2793,11 @@ const routes: Record<string, Route> = {
     permission: 'map-edit',
     handler: async ({ actor, store, body }) => {
       const { catalog, entry } = await editableMap(actor, store, body?.mapId),
-        { copy, branch } = selectedMapBranch(catalog, entry)
-      if (
-        body?.branch !== branch.name ||
-        body?.workingCopyId !== copy.id ||
-        body?.expectedBranchHead !== branch.versionDigest
-      )
-        throw fail(409, 'Ветка или рабочая копия изменилась. Обновите историю перед коммитом.')
+        { copy } = selectedMapSession(catalog, entry)
+      if (body?.workingCopyId !== copy.id)
+        throw fail(409, 'Рабочая копия изменилась. Обновите историю перед коммитом.')
+      if (body?.expectedHead !== (entry.head?.versionDigest ?? null))
+        throw fail(409, 'Версия карты уже изменилась. Обновите историю перед коммитом.')
       return {
         id: writeRequest(
           inboxDir(),
@@ -2784,8 +2811,7 @@ const routes: Record<string, Route> = {
       action: 'map-commit',
       target: body?.mapId,
       detail: {
-        branch: body?.branch,
-        expectedBranchHead: body?.expectedBranchHead,
+        expectedHead: body?.expectedHead,
         note: body?.note,
       },
     }),
@@ -2813,28 +2839,6 @@ const routes: Record<string, Route> = {
       action: 'map-compare',
       target: body?.mapId,
       detail: { before: body?.before, after: body?.after },
-    }),
-  },
-  'POST maps/merge-preview': {
-    maxBody: 8 * 1024 * 1024,
-    permission: 'map-edit',
-    handler: async ({ actor, store, body }) => {
-      const { catalog, entry } = await editableMap(actor, store, body?.mapId)
-      if (!entry.versions.some((version) => version.versionDigest === body?.versionDigest))
-        throw bad('Исходная версия не принадлежит этой карте.')
-      return {
-        id: writeRequest(
-          inboxDir(),
-          actor,
-          { ...body, kind: 'merge-preview', expectedHead: expectedMapHead(body, entry) },
-          new Set(catalog.maps.map((map) => map.mapId)),
-        ),
-      }
-    },
-    audit: (body) => ({
-      action: 'map-merge-preview',
-      target: body?.mapId,
-      detail: { versionDigest: body?.versionDigest, expectedHead: body?.expectedHead },
     }),
   },
   'GET candidates/download': {
@@ -2872,16 +2876,12 @@ const routes: Record<string, Route> = {
     permission: 'map-edit',
     handler: async ({ actor, store, body }) => {
       const { catalog, entry } = await editableMap(actor, store, body?.mapId),
-        { copy, branch } = selectedMapBranch(catalog, entry)
+        { copy } = selectedMapSession(catalog, entry)
       if (
-        ((body.commit === true || body.branch !== undefined) && body.branch !== branch.name) ||
-        ((body.commit === true || body.expectedBranchHead !== undefined) &&
-          body.expectedBranchHead !== branch.versionDigest) ||
-        (body.commit === true && body.workingCopyId !== copy.id)
+        body?.expectedHead !== undefined &&
+        body.expectedHead !== (entry.head?.versionDigest ?? null)
       )
-        throw fail(409, 'Ветка уже изменилась. Обновите историю перед отправкой на проверку.')
-      if (body.commit !== true && branch.versionDigest === entry.head?.versionDigest)
-        throw fail(409, 'Сначала зафиксируйте изменения в ветке: её коммит совпадает с main.')
+        throw fail(409, 'Версия карты уже изменилась. Обновите историю перед отправкой.')
       return {
         id: writeRequest(
           inboxDir(),
@@ -2890,10 +2890,9 @@ const routes: Record<string, Route> = {
             kind: 'candidate',
             mapId: entry.mapId,
             workingCopyId: copy.id,
-            branch: branch.name,
-            expectedBranchHead: branch.versionDigest,
-            commit: body.commit,
-            note: body.note,
+            expectedHead: entry.head?.versionDigest ?? null,
+            commit: body?.commit,
+            note: body?.note,
           },
           new Set(catalog.maps.map((map) => map.mapId)),
         ),
@@ -2910,15 +2909,10 @@ const routes: Record<string, Route> = {
       const entry = catalog.maps.find((map) => map.mapId === candidate?.mapId)
       if (!candidate || !entry) throw fail(404, 'Кандидат или карта не найдены.')
       const expectedHead = expectedMapHead(body, entry)
-      if (
-        candidate.sourceBranch !== undefined &&
-        (body.force === true || candidate.targetHead !== expectedHead)
-      )
+      if (candidate.targetHead !== undefined && candidate.targetHead !== expectedHead)
         throw fail(
-          body.force === true ? 400 : 409,
-          body.force === true
-            ? 'Конфликты слияния требуют точного выбора main или версии на проверке.'
-            : 'Main изменилась после отправки. Нужна новая проверка из ветки.',
+          409,
+          'Версия в игре сменилась после отправки. Попросите автора отправить версию заново.',
         )
       return {
         id: writeRequest(inboxDir(), actor, {
@@ -3646,7 +3640,7 @@ export async function handleWorkshopSubmit(
   let applied = false
   try {
     const { catalog, entry } = await editableMap(actor, store, mapId),
-      { copy, branch } = selectedMapBranch(catalog, entry)
+      { copy } = selectedMapSession(catalog, entry)
     if (body.workingCopyId !== copy.id)
       throw fail(409, 'Рабочая копия карты уже изменилась. Вернитесь в действующую мастерскую.')
     id = writeRequest(
@@ -3656,8 +3650,7 @@ export async function handleWorkshopSubmit(
         kind: 'candidate',
         mapId,
         workingCopyId: copy.id,
-        branch: branch.name,
-        expectedBranchHead: branch.versionDigest,
+        expectedHead: entry.head?.versionDigest ?? null,
         commit: true,
         note: `С планшета: ${actor.name}`
           .replace(/\p{Cc}/gu, ' ')

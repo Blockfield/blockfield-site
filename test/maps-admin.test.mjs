@@ -216,10 +216,67 @@ test('inbox wire includes exact copies, explicit heads and archived rollback tar
   const candidate = writeRequest(
     directory,
     actor,
-    { kind: 'candidate', mapId: 'custom_arena', workingCopyId: COPY },
+    { kind: 'candidate', mapId: 'custom_arena', workingCopyId: COPY, expectedHead: SECOND },
     maps,
   )
   assert.equal(JSON.parse(readFileSync(join(directory, candidate + '.json'))).workingCopyId, COPY)
+  const commitReview = writeRequest(
+    directory,
+    actor,
+    {
+      kind: 'candidate',
+      mapId: 'custom_arena',
+      workingCopyId: COPY,
+      expectedHead: SECOND,
+      commit: true,
+      note: 'Укрытия у точки',
+    },
+    maps,
+  )
+  assert.equal(
+    JSON.parse(readFileSync(join(directory, commitReview + '.json'))).note,
+    'Укрытия у точки',
+  )
+  const snapshotCreate = writeRequest(
+    directory,
+    actor,
+    { kind: 'snapshot-create', mapId: 'custom_arena', name: 'before-final', versionDigest: FIRST },
+    maps,
+  )
+  assert.equal(
+    JSON.parse(readFileSync(join(directory, snapshotCreate + '.json'))).name,
+    'before-final',
+  )
+  const snapshotDelete = writeRequest(
+    directory,
+    actor,
+    { kind: 'snapshot-delete', mapId: 'custom_arena', name: 'before-final' },
+    maps,
+  )
+  assert.equal(
+    JSON.parse(readFileSync(join(directory, snapshotDelete + '.json'))).kind,
+    'snapshot-delete',
+  )
+  const snapshots = writeRequest(
+    directory,
+    actor,
+    { kind: 'snapshots', mapId: 'custom_arena' },
+    maps,
+  )
+  assert.equal(JSON.parse(readFileSync(join(directory, snapshots + '.json'))).kind, 'snapshots')
+  const commit = writeRequest(
+    directory,
+    actor,
+    {
+      kind: 'commit',
+      mapId: 'custom_arena',
+      workingCopyId: COPY,
+      expectedHead: SECOND,
+      note: 'Укрытия',
+    },
+    maps,
+  )
+  assert.equal(JSON.parse(readFileSync(join(directory, commit + '.json'))).expectedHead, SECOND)
   const publish = writeRequest(directory, actor, {
     kind: 'publish',
     candidateId: CANDIDATE,
@@ -239,10 +296,28 @@ test('inbox wire includes exact copies, explicit heads and archived rollback tar
     { kind: 'rollback', mapId: 'custom_arena', versionDigest: FIRST },
     { kind: 'rollback', mapId: 'custom_arena', versionDigest: FIRST, expectedHead: false },
     { kind: 'candidate', mapId: 'custom_arena', workingCopyId: '../draft' },
+    { kind: 'candidate', mapId: 'custom_arena', workingCopyId: COPY },
+    { kind: 'candidate', mapId: 'custom_arena', expectedHead: SECOND },
+    {
+      kind: 'candidate',
+      mapId: 'custom_arena',
+      workingCopyId: COPY,
+      expectedHead: SECOND,
+      commit: true,
+    },
+    { kind: 'commit', mapId: 'custom_arena', workingCopyId: COPY, expectedHead: SECOND },
+    {
+      kind: 'snapshot-create',
+      mapId: 'custom_arena',
+      name: 'main',
+      versionDigest: FIRST,
+    },
+    { kind: 'snapshot-create', mapId: 'custom_arena', name: 'before-final' },
+    { kind: 'snapshot-delete', mapId: 'custom_arena', name: '../outside' },
     { kind: 'publish', candidateId: CANDIDATE, expectedHead: 'latest' },
   ])
     rejected(() => writeRequest(directory, actor, body, maps))
-  assert.equal(readdirSync(directory).length, 3)
+  assert.equal(readdirSync(directory).length, 8)
 })
 
 test('map API reads without mutation, derives browser copy, and refuses stale or foreign history writes', async (t) => {
@@ -292,8 +367,8 @@ test('map API reads without mutation, derives browser copy, and refuses stale or
   const id = (await created.json()).id,
     pending = JSON.parse(readFileSync(join(inbox, id + '.json')))
   assert.equal(pending.workingCopyId, COPY)
-  assert.equal(pending.branch, BRANCH)
-  assert.equal(pending.expectedBranchHead, FIRST)
+  assert.equal(pending.expectedHead, SECOND)
+  assert.equal(pending.commit, undefined)
   assert.equal(
     (
       await call(
@@ -455,16 +530,35 @@ test('native downloads use the mounted package cache and require accepted checks
   assert.equal((await download()).status, 503)
 })
 
-test('Git map catalog retains merge parents and archived branch selections, rejecting malformed refs', (t) => {
+test('linear map catalog keeps snapshots beside the head and still reads old branches', (t) => {
   const directory = temp(t)
   seed(directory)
   const catalog = fixture()
   catalog.maps[0].versions[0].parents = [FIRST]
+  catalog.maps[0].snapshots = [
+    {
+      schema: 1,
+      mapId: 'custom_arena',
+      name: 'before-final',
+      versionDigest: FIRST,
+      generation: 1,
+      createdAt: 10,
+      createdBy: { name: 'Builder' },
+    },
+  ]
   catalog.sessions = [
     { schema: 1, id: COPY, maps: ['custom_arena'], branches: { custom_arena: BRANCH } },
   ]
   write(directory, 'maps', catalog)
   assert.deepEqual(readMapCatalog(directory).sessions, catalog.sessions)
+  assert.deepEqual(readMapCatalog(directory).maps[0].snapshots, catalog.maps[0].snapshots)
+  // A rollout catalog without branches or snapshots reads the same way.
+  const linear = structuredClone(catalog)
+  delete linear.maps[0].branches
+  delete linear.sessions
+  write(directory, 'maps', linear)
+  assert.equal(readMapCatalog(directory).available, true)
+  assert.equal(readMapCatalog(directory).maps[0].snapshots.length, 1)
   for (const mutate of [
     (value) => {
       value.maps[0].versions[0].parents = [FOREIGN]
@@ -477,6 +571,12 @@ test('Git map catalog retains merge parents and archived branch selections, reje
     },
     (value) => {
       value.maps[0].branches[1].workingCopyId = 'not-a-copy'
+    },
+    (value) => {
+      value.maps[0].snapshots[0].name = 'main'
+    },
+    (value) => {
+      value.maps[0].snapshots[0].versionDigest = FOREIGN
     },
     (value) => {
       value.sessions[0].branches.custom_arena = 'main'
@@ -492,7 +592,7 @@ test('Git map catalog retains merge parents and archived branch selections, reje
   }
 })
 
-test('scoped Git endpoints bind commits and reviews; main requires exact review target and conflict choices', async (t) => {
+test('scoped linear endpoints bind commits and reviews; snapshots replace branches', async (t) => {
   const directory = temp(t),
     inbox = temp(t),
     environment = { ...process.env },
@@ -529,49 +629,79 @@ test('scoped Git endpoints bind commits and reviews; main requires exact review 
     return JSON.parse(readFileSync(join(inbox, id + '.json')))
   }
   const created = await readRequest(
-    await call('POST', 'maps/branches', {
+    await call('POST', 'maps/snapshots', {
       mapId: 'custom_arena',
-      branch: 'layout-b',
+      name: 'layout-b',
       versionDigest: FIRST,
       actor: { role: 'owner' },
     }),
   )
   assert.deepEqual(
-    [created.kind, created.actor.draslId, created.branch],
-    ['branch-create', BUILDER, 'layout-b'],
+    [created.kind, created.actor.draslId, created.name],
+    ['snapshot-create', BUILDER, 'layout-b'],
   )
   assert.equal(
     (
-      await call('POST', 'maps/branches', {
+      await call('POST', 'maps/snapshots', {
         mapId: 'other',
-        branch: 'layout-b',
+        name: 'layout-b',
         versionDigest: FOREIGN,
       })
     ).status,
     403,
   )
+  // A catalog without snapshots seeds one; deleting it queues an inbox removal.
+  const seeded = fixture()
+  seeded.maps[0].snapshots = [
+    {
+      schema: 1,
+      mapId: 'custom_arena',
+      name: 'layout-b',
+      versionDigest: FIRST,
+      generation: 1,
+      createdAt: 10,
+      createdBy: { name: 'Builder' },
+    },
+  ]
+  write(directory, 'maps', seeded)
   assert.equal(
     (
-      await call('POST', 'maps/branches', {
+      await call('POST', 'maps/snapshots', {
         mapId: 'custom_arena',
-        branch: 'main',
-        versionDigest: FIRST,
+        name: 'layout-b',
+        versionDigest: SECOND,
       })
     ).status,
     409,
   )
+  const deleted = await readRequest(
+    await call('POST', 'maps/snapshots', {
+      mapId: 'custom_arena',
+      action: 'delete',
+      name: 'layout-b',
+    }),
+  )
+  assert.deepEqual([deleted.kind, deleted.name], ['snapshot-delete', 'layout-b'])
+  assert.equal(
+    (
+      await call('POST', 'maps/snapshots', {
+        mapId: 'custom_arena',
+        action: 'delete',
+        name: 'nope',
+      })
+    ).status,
+    404,
+  )
+  write(directory, 'maps', fixture())
+  assert.equal((await call('POST', 'maps/branches', { mapId: 'custom_arena' })).status, 404)
+  assert.equal((await call('POST', 'maps/merge-preview', { mapId: 'custom_arena' })).status, 404)
   const commit = {
     mapId: 'custom_arena',
-    branch: BRANCH,
     workingCopyId: COPY,
-    expectedBranchHead: FIRST,
+    expectedHead: SECOND,
     note: 'Move capture point',
   }
-  for (const changes of [
-    { branch: 'layout-b' },
-    { workingCopyId: OWNER },
-    { expectedBranchHead: SECOND },
-  ])
+  for (const changes of [{ workingCopyId: OWNER }, { expectedHead: FIRST }])
     assert.equal((await call('POST', 'maps/commit', { ...commit, ...changes })).status, 409)
   const queuedBeforeLongNote = readdirSync(inbox).length
   assert.equal(
@@ -580,21 +710,29 @@ test('scoped Git endpoints bind commits and reviews; main requires exact review 
   )
   assert.equal(readdirSync(inbox).length, queuedBeforeLongNote)
   const saved = await readRequest(await call('POST', 'maps/commit', commit))
-  assert.deepEqual(
-    [saved.kind, saved.expectedBranchHead, saved.note],
-    ['commit', FIRST, commit.note],
-  )
+  assert.deepEqual([saved.kind, saved.expectedHead, saved.note], ['commit', SECOND, commit.note])
   const review = await readRequest(
     await call('POST', 'candidates/create', { mapId: 'custom_arena' }),
   )
   assert.deepEqual(
-    [review.kind, review.branch, review.expectedBranchHead, review.workingCopyId],
-    ['candidate', BRANCH, FIRST, COPY],
+    [review.kind, review.expectedHead, review.workingCopyId],
+    ['candidate', SECOND, COPY],
   )
   assert.equal(
-    (await call('POST', 'candidates/create', { mapId: 'custom_arena', expectedBranchHead: SECOND }))
+    (await call('POST', 'candidates/create', { mapId: 'custom_arena', expectedHead: FIRST }))
       .status,
     409,
+  )
+  const saveReview = await readRequest(
+    await call('POST', 'candidates/create', {
+      mapId: 'custom_arena',
+      commit: true,
+      note: 'Укрытия',
+    }),
+  )
+  assert.deepEqual(
+    [saveReview.kind, saveReview.commit, saveReview.note],
+    ['candidate', true, 'Укрытия'],
   )
   assert.equal(
     (await call('POST', 'maps/compare', { mapId: 'custom_arena', before: FIRST, after: FOREIGN }))
@@ -609,54 +747,6 @@ test('scoped Git endpoints bind commits and reviews; main requires exact review 
     ).kind,
     'compare',
   )
-  const choices = {
-    'world/region/r.0.0.mca': 'ours',
-    'world/entities/c.-1.0.mcc': 'theirs',
-    'map.json#/name': 'theirs',
-  }
-  const preview = await readRequest(
-    await call('POST', 'maps/merge-preview', {
-      mapId: 'custom_arena',
-      versionDigest: FIRST,
-      expectedHead: SECOND,
-      resolutions: choices,
-    }),
-  )
-  assert.deepEqual(preview.resolutions, choices)
-  const manyChoices = Object.fromEntries(
-    Array.from({ length: 10_000 }, (_, index) => [`world/region/r.${index}.0.mca`, 'ours']),
-  )
-  assert.ok(JSON.stringify(manyChoices).length > 65_536)
-  const largeMerge = {
-    mapId: 'custom_arena',
-    versionDigest: FIRST,
-    expectedHead: SECOND,
-    resolutions: manyChoices,
-  }
-  assert.equal(
-    Object.keys(
-      (await readRequest(await call('POST', 'maps/merge-preview', largeMerge))).resolutions,
-    ).length,
-    10_000,
-  )
-  assert.equal(
-    (
-      await call('POST', 'maps/merge-preview', {
-        ...largeMerge,
-        resolutions: { ...manyChoices, 'map.json#/overflow': 'ours' },
-      })
-    ).status,
-    400,
-  )
-  assert.equal(
-    (
-      await call('POST', 'maps/merge-preview', {
-        ...largeMerge,
-        padding: 'x'.repeat(8 * 1024 * 1024),
-      })
-    ).status,
-    413,
-  )
   assert.equal(
     (
       await call('POST', 'maps/compare', {
@@ -668,17 +758,6 @@ test('scoped Git endpoints bind commits and reviews; main requires exact review 
     ).status,
     413,
   )
-  assert.equal(
-    (
-      await call('POST', 'maps/merge-preview', {
-        mapId: 'custom_arena',
-        versionDigest: FIRST,
-        expectedHead: SECOND,
-        resolutions: { '../secret': 'ours' },
-      })
-    ).status,
-    400,
-  )
   write(directory, 'candidates', {
     schema: 1,
     candidates: [
@@ -686,40 +765,25 @@ test('scoped Git endpoints bind commits and reviews; main requires exact review 
         id: CANDIDATE,
         mapId: 'custom_arena',
         versionDigest: FIRST,
-        sourceBranch: BRANCH,
         targetHead: SECOND,
         status: 'pending',
       },
     ],
   })
-  const publish = { candidateId: CANDIDATE, expectedHead: SECOND, resolutions: choices }
+  const publish = { candidateId: CANDIDATE, expectedHead: SECOND }
   assert.equal((await call('POST', 'candidates/publish', publish)).status, 403)
   assert.equal(
     (await call('POST', 'candidates/publish', { ...publish, force: true }, OWNER)).status,
-    400,
+    200,
   )
   assert.equal(
     (await call('POST', 'candidates/publish', { ...publish, expectedHead: FIRST }, OWNER)).status,
     409,
   )
-  assert.deepEqual(
-    (await readRequest(await call('POST', 'candidates/publish', publish, OWNER))).resolutions,
-    choices,
-  )
   assert.equal(
-    Object.keys(
-      (
-        await readRequest(
-          await call('POST', 'candidates/publish', { ...publish, resolutions: manyChoices }, OWNER),
-        )
-      ).resolutions,
-    ).length,
-    10_000,
+    (await readRequest(await call('POST', 'candidates/publish', publish, OWNER))).expectedHead,
+    SECOND,
   )
-  const noOp = fixture()
-  noOp.maps[0].branches[1].versionDigest = SECOND
-  write(directory, 'maps', noOp)
-  assert.equal((await call('POST', 'candidates/create', { mapId: 'custom_arena' })).status, 409)
 })
 
 test('saved drafts are paged through the inbox and resume preserves their immutable selection', async (t) => {
@@ -920,7 +984,6 @@ test('map creation and rename require authoritative lead access, stable revision
         id: CANDIDATE,
         mapId: 'custom_arena',
         status: 'pending',
-        sourceBranch: BRANCH,
         versionDigest: FIRST,
         targetHead: null,
         supportedModes: ['tdm', 'training'],
@@ -936,11 +999,22 @@ test('map creation and rename require authoritative lead access, stable revision
   const catalog = fixture()
   catalog.maps[0].head = null
   catalog.maps[0].branches = [ref('custom_arena', BRANCH, FIRST)]
+  catalog.maps[0].snapshots = [
+    {
+      schema: 1,
+      mapId: 'custom_arena',
+      name: 'before-final',
+      versionDigest: FIRST,
+      generation: 1,
+      createdAt: 10,
+      createdBy: { name: 'Builder' },
+    },
+  ]
   write(directory, 'maps', catalog)
-  const preview = { mapId: 'custom_arena', versionDigest: FIRST, expectedHead: null }
-  assert.equal((await read(await call('maps/merge-preview', preview))).expectedHead, null)
+  const snapshot = { mapId: 'custom_arena', name: 'before-final', versionDigest: FIRST }
+  assert.equal((await read(await call('maps/snapshots', snapshot))).versionDigest, FIRST)
   assert.equal(
-    (await call('maps/merge-preview', { mapId: 'custom_arena', versionDigest: FIRST })).status,
+    (await call('maps/snapshots', { mapId: 'custom_arena', name: 'before-final' })).status,
     400,
   )
   assert.equal(
