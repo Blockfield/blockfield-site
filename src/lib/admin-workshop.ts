@@ -779,18 +779,33 @@ function newMapControls() {
   return form
 }
 
+// Workshop#74 refuses saves from an outdated copy with this exact message. The
+// catalog carries no stale flag (drafts are {workingCopyId,name} only), so this
+// refusal is the signal: match the message itself, not the loose error regex.
+const STALE_COPY_MESSAGE =
+  'stale working copy: the map has a newer version; save your draft as a snapshot and start from the current version'
+function isStaleCopy(error: unknown): boolean {
+  return typeof error === 'string' && error.includes(STALE_COPY_MESSAGE)
+}
+
+// Refused copies by map: a session switch while the notice is open must not offer
+// the way out for a different copy, and a fresh save clears the mark.
+const staleCopyIds = new Map<string, string>()
+async function staleCopyReload(mapId: string, copy: string) {
+  staleCopyIds.set(mapId, copy)
+  await loadMapHistory()
+}
+
 function mapRequestError(line: HTMLElement, error: string) {
   const message = /no changes|nothing to commit/i.test(error)
     ? 'Нет изменений для сохранения. Постройте или измените разметку перед отправкой.'
-    : /stale|head|revision|target.*changed|branch.*changed/i.test(error)
-      ? 'Ветка или версия в игре успели измениться. Обновите список карт и попробуйте снова.'
-      : /conflict|resolution|merge/i.test(error)
-        ? 'Для каждого конфликта нужно выбрать вариант. Пересчитайте проверку с вашим выбором.'
-        : /missing|corrupt|unsafe|behind/i.test(error)
-          ? 'Рабочая копия или сохранённая версия недоступна. Сообщите администратору.'
-          : /actor|member|scope|permission/i.test(error)
-            ? 'Мастерская не подтвердила участника или доступ к карте. Попросите администратора обновить доступ.'
-            : 'Не удалось выполнить запрос. Обновите состояние и попробуйте снова.'
+    : /stale|head|revision|target.*changed|behind/i.test(error)
+      ? 'Версия в игре успела измениться. Обновите список карт и попробуйте снова.'
+      : /missing|corrupt|unsafe/i.test(error)
+        ? 'Рабочая копия или сохранённая версия недоступна. Сообщите администратору.'
+        : /actor|member|scope|permission/i.test(error)
+          ? 'Мастерская не подтвердила участника или доступ к карте. Попросите администратора обновить доступ.'
+          : 'Не удалось выполнить запрос. Обновите состояние и попробуйте снова.'
   say(line, message, 'error')
   return true
 }
@@ -800,10 +815,18 @@ async function mapRequest(
   body: Record<string, unknown>,
   line: HTMLElement,
   done: string,
+  onStale?: () => void | Promise<void>,
 ) {
   const { id } = await api(path, 'POST', body)
-  const result = await follow(line, id, done, (error) => mapRequestError(line, error))
-  if (!result?.ok) return null
+  let stale = false
+  const result = await follow(line, id, done, (error) => {
+    stale = isStaleCopy(error)
+    return mapRequestError(line, error)
+  })
+  if (!result?.ok) {
+    if (stale) await onStale?.()
+    return null
+  }
   if (
     !result.payload ||
     typeof result.payload !== 'object' ||
@@ -915,29 +938,6 @@ async function compareMap(
   renderMapChanges(outlet, data)
 }
 
-async function openMapBranch(map: MapCatalogEntry, branch: string, line: HTMLElement) {
-  if (
-    !(await ask({
-      title: `Открыть ${branchLabel(branch)} в мастерской?`,
-      text: `Мастерская сохранит текущие правки и откроет эту ветку карты «${mapName(map.mapId)}» в новом сеансе. Прежний черновик останется в сохранённых. Игра продолжит работать.`,
-      ok: 'Открыть',
-      danger: true,
-    }))
-  )
-    return
-  await run(line, async () => {
-    const { id } = await api('mode', 'POST', {
-      profile: 'workshop',
-      session: 'new',
-      maps: [map.mapId],
-      branches: { [map.mapId]: branch },
-      expectedRevision: controller.revision,
-    })
-    await follow(line, id, 'Ветка открыта в мастерской.')
-    await loadMapHistory()
-  })
-}
-
 type StaffRow = {
   uuid: string
   name: string
@@ -990,6 +990,22 @@ function playedVersions(map: MapCatalogEntry) {
   return seen
 }
 
+// Saved versions not yet in the published history that no other version builds
+// on: the tip(s) of the unpublished chain. Order comes from parent links, never
+// from timestamps (two saves can share one). Several reviews of a map may be
+// pending, so "send" is pointless only when a tip itself is already pending.
+function unpublishedTips(map: MapCatalogEntry) {
+  const played = playedVersions(map),
+    parents = new Set(
+      map.versions.flatMap(
+        (version) => version.parents ?? (version.parent ? [version.parent] : []),
+      ),
+    )
+  return map.versions.filter(
+    (version) => !played.has(version.versionDigest) && !parents.has(version.versionDigest),
+  )
+}
+
 function goesLive(mapId: string) {
   const kind = mapCatalog?.find((map) => map.mapId === mapId)?.kind
   return kind === 'lobby'
@@ -999,58 +1015,12 @@ function goesLive(mapId: string) {
       : 'Следующие матчи пойдут на ней, начатые доиграют на прежней.'
 }
 
-function branchLabel(name: string) {
-  if (name === 'main') return 'версия в игре'
-  const id = /^work-(.+)$/.exec(name)?.[1]
-  if (!id) return `ветка «${name}»`
-  const owner = [mapSession, ...savedMapSessions].find((saved) => saved?.id === id)
-  return typeof owner?.startedAt === 'number'
-    ? `ветка сеанса от ${date(owner.startedAt)}${owner.startedBy?.name ? `, ${owner.startedBy.name}` : ''}`
-    : 'ветка прошлого сеанса'
-}
-
 const versionLabel = (version: MapCatalogEntry['versions'][number]) =>
   `${date(version.createdAt)} · ${String(version.author.name ?? 'автор не указан')}${version.note ? ` · ${version.note.slice(0, 48)}` : ''}`
 
-async function requestReview(
-  mapId: string,
-  branch: { name: string; versionDigest: string },
-  line: HTMLElement,
-) {
-  const { id } = await api('candidates/create', 'POST', {
-    mapId,
-    branch: branch.name,
-    expectedBranchHead: branch.versionDigest,
-  })
-  const result = await follow(
-    line,
-    id,
-    `«${mapName(mapId)}» отправлена на проверку. Можно строить дальше: новые правки в эту заявку не попадут.`,
-    (error) => mapRequestError(line, error),
-  )
-  if (result?.ok) await loadCandidates()
-}
-
-async function submitMap(mapId: string, name: string, line: HTMLElement) {
-  if (
-    !(await ask({
-      title: `Отправить «${name}» на проверку?`,
-      text: 'Уйдёт последняя сохранённая версия. Несохранённые правки в мире останутся в черновике.',
-      ok: 'Отправить',
-    }))
-  )
-    return
-  await run(line, async () => {
-    const map = mapCatalog?.find((entry) => entry.mapId === mapId),
-      branch = map?.branches?.find((ref) => ref.name === mapSession?.branches?.[mapId])
-    if (!branch) throw new Error('Ветка черновика не подтверждена. Обновите список карт.')
-    await requestReview(mapId, branch, line)
-  })
-}
-
 async function commitMap(
   map: MapCatalogEntry,
-  branch: { name: string; versionDigest: string },
+  copy: string,
   note: string,
   line: HTMLElement,
   review: boolean,
@@ -1059,9 +1029,8 @@ async function commitMap(
     review ? 'candidates/create' : 'maps/commit',
     {
       mapId: map.mapId,
-      branch: branch.name,
-      workingCopyId: mapSession!.id,
-      expectedBranchHead: branch.versionDigest,
+      workingCopyId: copy,
+      expectedHead: map.head?.versionDigest ?? null,
       note,
       ...(review ? { commit: true } : {}),
     },
@@ -1069,42 +1038,158 @@ async function commitMap(
     review
       ? 'Версия сохранена и отправлена на проверку. Можно строить дальше.'
       : 'Версия сохранена. Отправьте её на проверку, когда будете готовы.',
+    () => staleCopyReload(map.mapId, copy),
   )
   if (!payload) return
+  staleCopyIds.delete(map.mapId)
   if (mapNotes.get(map.mapId) === note) mapNotes.delete(map.mapId)
   await loadMapHistory()
   if (review) await loadCandidates()
 }
 
-function draftPanel(
-  map: MapCatalogEntry,
-  branch: NonNullable<MapCatalogEntry['branches']>[number],
-) {
+async function submitSaved(map: MapCatalogEntry, copy: string, line: HTMLElement) {
+  const name = mapName(map.mapId)
+  if (
+    !(await ask({
+      title: `Отправить «${name}» на проверку?`,
+      text: 'Уйдёт последняя сохранённая версия. Несохранённые правки останутся в черновике.',
+      ok: 'Отправить',
+    }))
+  )
+    return
+  await run(line, async () => {
+    const payload = await mapRequest(
+      'candidates/create',
+      {
+        mapId: map.mapId,
+        workingCopyId: copy,
+        expectedHead: map.head?.versionDigest ?? null,
+        commit: false,
+      },
+      line,
+      `«${name}» отправлена на проверку. Новые правки в неё не попадут.`,
+      () => staleCopyReload(map.mapId, copy),
+    )
+    if (payload) {
+      staleCopyIds.delete(map.mapId)
+      await loadCandidates()
+    }
+  })
+}
+
+async function snapshotStaleCopy(map: MapCatalogEntry, copy: string, line: HTMLElement) {
+  const name = el('input', {
+    name: 'snapshot',
+    required: true,
+    maxLength: 64,
+    pattern: '[a-z0-9][a-z0-9.\\-]{0,63}',
+    autocomplete: 'off',
+  })
+  const answer = await ask({
+    title: 'Сохранить черновик снимком?',
+    text: 'Черновик запишется снимком под этим именем и останется устаревшим; в игру он не попадёт.',
+    ok: 'Сохранить снимком',
+    fields: [field('Имя снимка', name, 'Латиница, цифры, точка, дефис или подчёркивание.')],
+  })
+  if (!answer) return
+  const snapshot = String(answer.get('snapshot') ?? '').trim()
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(snapshot) || snapshot === 'main')
+    throw new Error('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
+  await run(line, async () => {
+    const payload = await mapRequest(
+      'maps/snapshot-copy',
+      { mapId: map.mapId, name: snapshot, workingCopyId: copy },
+      line,
+      `Черновик сохранён снимком «${snapshot}». Копия осталась устаревшей: начните с текущей версии.`,
+    )
+    if (payload) await loadMapHistory()
+  })
+}
+
+async function checkoutFreshCopy(map: MapCatalogEntry, copy: string, line: HTMLElement) {
+  if (
+    !(await ask({
+      title: 'Начать с текущей версии?',
+      text: 'Откроется новая копия с версией из игры; несохранённые правки останутся в старой копии. Продолжите новую копию в сохранённых черновиках.',
+      ok: 'Начать с текущей версии',
+    }))
+  )
+    return
+  await run(line, async () => {
+    const payload = await mapRequest(
+      'maps/checkout-fresh',
+      { mapId: map.mapId, workingCopyId: copy },
+      line,
+      'Новая копия создана из текущей версии. Продолжите её в сохранённых черновиках.',
+    )
+    if (payload) await loadMapHistory()
+  })
+}
+
+function staleCopyActions(map: MapCatalogEntry, copy: string, line: HTMLElement) {
+  return el(
+    'div',
+    { className: 'stack' },
+    el('p', {
+      className: 'warn',
+      textContent:
+        'Копия устарела: в игре более новая версия, сохранение отклонено. Сохраните черновик снимком или начните с текущей версии.',
+    }),
+    el(
+      'div',
+      { className: 'actions' },
+      can('workshop')
+        ? button(
+            'Сохранить черновик снимком',
+            () => mapBusy(map.mapId, () => snapshotStaleCopy(map, copy, line)),
+            'small',
+            `Сохранить черновик карты ${mapName(map.mapId)} снимком`,
+          )
+        : null,
+      button(
+        'Начать с текущей версии',
+        () => mapBusy(map.mapId, () => checkoutFreshCopy(map, copy, line)),
+        'small',
+        `Начать карту ${mapName(map.mapId)} с текущей версии`,
+      ),
+    ),
+  )
+}
+
+function draftPanel(map: MapCatalogEntry) {
   const id = map.mapId,
     name = mapName(id),
     line = mapLine(`${id}:draft`),
-    last = map.versions.find((version) => version.versionDigest === branch.versionDigest),
-    ahead = branch.versionDigest !== map.head?.versionDigest,
-    sent = candidateList.some(
-      (c) => c.status === 'pending' && c.mapId === id && c.versionDigest === branch.versionDigest,
+    // The copy this panel was rendered for: a session switch while a dialog or
+    // request is open must never redirect the action to another copy.
+    copy = mapSession!.id,
+    head = map.head?.versionDigest ?? null,
+    sent = candidateList.some((c) => c.status === 'pending' && c.mapId === id),
+    unsent = unpublishedTips(map).some(
+      (tip) =>
+        !candidateList.some(
+          (c) => c.status === 'pending' && c.mapId === id && c.versionDigest === tip.versionDigest,
+        ),
     )
   const part = el(
     'div',
     { className: 'map-part map-draft' },
     el('h4', { textContent: 'Черновик в мастерской' }),
     el('p', {
-      textContent: `Карта открыта в мастерской (${branchLabel(branch.name)}). Правки в мире копятся в черновике сами; проверяющие увидят их после «Сохранить версию».`,
+      textContent: `Карта открыта в мастерской. Правки в мире копятся в черновике сами; проверяющие увидят их после «Сохранить версию».`,
     }),
     el('p', {
       className: 'muted',
-      textContent: !ahead
-        ? 'Новых сохранённых версий нет: черновик начат с версии, которая сейчас в игре.'
-        : sent
-          ? `Последняя версия (${last ? date(last.createdAt) : 'без даты'}) уже на проверке.`
-          : `Последняя версия (${last ? date(last.createdAt) : 'без даты'}) сохранена, но ещё не отправлена на проверку.`,
+      textContent:
+        head === null
+          ? 'У карты пока нет версии в игре: первая сохранённая версия станет начальной.'
+          : sent
+            ? 'Заявка уже на проверке: новые правки в неё не попадут.'
+            : 'Сохранённые версии идут по порядку; в игру попадает только принятая.',
     }),
   )
   if (!mayEditMap(id)) return part
+  if (staleCopyIds.get(id) === copy) part.append(staleCopyActions(map, copy, line))
   const form = el('form', { className: 'stack' }),
     note = el('textarea', { name: 'note', required: true, maxLength: 200, rows: 2 })
   note.value = mapNotes.get(id) ?? ''
@@ -1112,7 +1197,7 @@ function draftPanel(
   const save = (review: boolean) => {
     if (!form.reportValidity()) return
     const submitted = note.value
-    mapBusy(id, () => run(line, () => commitMap(map, branch, submitted, line, review), part))
+    mapBusy(id, () => run(line, () => commitMap(map, copy, submitted, line, review), part))
   }
   form.append(
     field('Что изменилось', note, 'Коротко, для проверяющего и истории карты. До 200 символов.'),
@@ -1121,10 +1206,12 @@ function draftPanel(
       { className: 'actions' },
       button('Сохранить и отправить на проверку', () => save(true), 'small primary'),
       button('Только сохранить версию', () => save(false), 'small'),
-      ahead && !sent
+      // Commits never move the head (it moves on publish): offer the action for
+      // the newest unpublished saved version unless that exact version is pending.
+      unsent
         ? button(
             'Отправить последнюю версию',
-            () => mapBusy(id, () => submitMap(id, name, line)),
+            () => mapBusy(id, () => submitSaved(map, copy, line)),
             'small',
             `Отправить последнюю сохранённую версию ${name} на проверку`,
           )
@@ -1169,7 +1256,7 @@ function draftPanel(
             {
               mapId: id,
               name: title.value,
-              workingCopyId: mapSession!.id,
+              workingCopyId: copy,
               expectedRevision: controller.revision,
             },
             line,
@@ -1230,9 +1317,9 @@ function historyPanel(map: MapCatalogEntry) {
     const current = version.versionDigest === head,
       inGame = played.has(version.versionDigest),
       when = date(version.createdAt),
-      tips = (map.branches ?? [])
-        .filter((ref) => ref.name !== 'main' && ref.versionDigest === version.versionDigest)
-        .map((ref) => branchLabel(ref.name))
+      tips = (map.snapshots ?? []).filter(
+        (snapshot) => snapshot.versionDigest === version.versionDigest,
+      )
     const main = el(
       'div',
       { className: 'row-main' },
@@ -1250,15 +1337,15 @@ function historyPanel(map: MapCatalogEntry) {
         textContent: `${String(version.author.name ?? 'Автор не указан')}${version.parents?.length === 2 ? ' · принята с проверки' : ''} · изменено файлов ${version.changed.length}, удалено ${version.deleted.length}`,
       }),
       version.note ? el('p', { textContent: version.note }) : null,
-      ...tips.map((tip) =>
+      ...tips.map((snapshot) =>
         el('small', {
-          textContent: `${tip[0].toUpperCase()}${tip.slice(1)} сейчас на этой версии.`,
+          textContent: `Снимок «${snapshot.name}» сейчас на этой версии.`,
         }),
       ),
       el('small', { className: 'digest', textContent: version.versionDigest }),
     )
     const actions = el('div', { className: 'actions' })
-    // Only versions that already were in the game can come back without review; branch-only work goes through «Ждут решения».
+    // Only versions that already were in the game can come back without review; unsent work goes through «Ждут решения».
     if (can('workshop') && inGame && !current)
       actions.append(
         button(
@@ -1342,70 +1429,101 @@ function historyPanel(map: MapCatalogEntry) {
   )
 }
 
-function branchesPanel(map: MapCatalogEntry, open: boolean) {
+function snapshotsPanel(map: MapCatalogEntry, open: boolean) {
   const name = mapName(map.mapId),
-    line = mapLine(`${map.mapId}:branches`),
-    selected = mapSession?.branches?.[map.mapId],
-    refs = (map.branches ?? []).filter((ref) => ref.name !== 'main'),
+    line = mapLine(`${map.mapId}:snapshots`),
+    snapshots = map.snapshots ?? [],
     byId = new Map(map.versions.map((version) => [version.versionDigest, version]))
   const panel = el(
     'details',
     { className: 'disclosure map-advanced', dataMap: map.mapId, open },
-    el('summary', { textContent: `Ветки и сравнение версий · веток: ${refs.length}` }),
-    el('p', {
-      className: 'muted',
-      textContent:
-        'Ветка — отдельная линия правок карты. У каждого сеанса мастерской своя; именную можно завести, например, для большой переделки. В игру попадает только принятая версия.',
-    }),
+    el('summary', { textContent: `Снимки · ${snapshots.length}` }),
     line,
     el(
       'ul',
       { className: 'rows' },
-      ...refs.map((ref) => {
-        const last = byId.get(ref.versionDigest)
+      ...snapshots.map((snapshot) => {
+        const last = byId.get(snapshot.versionDigest)
         return el(
           'li',
           { className: 'row' },
           el(
             'div',
             { className: 'row-main' },
-            el(
-              'strong',
-              {},
-              branchLabel(ref.name),
-              ref.name === selected
-                ? el('span', { className: 'badge ok', textContent: 'Открыта в мастерской' })
-                : null,
-            ),
+            el('strong', { textContent: `Снимок «${snapshot.name}»` }),
             el('small', {
-              textContent: `${last ? `Последняя версия: ${versionLabel(last)}` : 'Версия не найдена'}${ref.versionDigest === map.head?.versionDigest ? ' · совпадает с игрой' : ''}`,
+              textContent: `${last ? versionLabel(last) : 'Версия не найдена'}${snapshot.versionDigest === map.head?.versionDigest ? ' · совпадает с игрой' : ''}`,
             }),
-            ref.name.startsWith('work-')
-              ? null
-              : el('small', { className: 'digest', textContent: ref.name }),
+            el('small', { className: 'digest', textContent: snapshot.versionDigest }),
           ),
-          can('mode') && ref.name !== selected
+          can('workshop')
             ? el(
                 'div',
                 { className: 'actions' },
                 button(
-                  'Открыть в мастерской',
-                  () => openMapBranch(map, ref.name, line),
+                  'Вернуть в игру',
+                  async () => {
+                    if (
+                      !(await ask({
+                        title: `Вернуть снимок «${snapshot.name}»?`,
+                        text: 'Появится новая версия с его содержимым; история не стирается.',
+                        ok: 'Вернуть в игру',
+                        danger: true,
+                      }))
+                    )
+                      return
+                    await run(line, async () => {
+                      const { id } = await api('candidates/rollback', 'POST', {
+                        mapId: map.mapId,
+                        versionDigest: snapshot.versionDigest,
+                        expectedHead: map.head?.versionDigest ?? null,
+                      })
+                      follow(line, id, `Снимок «${snapshot.name}» возвращён.`).then(loadMapHistory)
+                      return 'применяем…'
+                    })
+                  },
                   'small',
-                  `Открыть ${branchLabel(ref.name)} карты ${name} в мастерской`,
+                  `Вернуть снимок ${snapshot.name} карты ${name} в игру`,
+                ),
+                button(
+                  'Удалить',
+                  async () => {
+                    if (
+                      !(await ask({
+                        title: `Удалить снимок «${snapshot.name}»?`,
+                        text: 'Версии истории останутся; исчезнет только именованный указатель.',
+                        ok: 'Удалить',
+                        danger: true,
+                      }))
+                    )
+                      return
+                    await run(line, async () => {
+                      const payload = await mapRequest(
+                        'maps/snapshots',
+                        { mapId: map.mapId, action: 'delete', name: snapshot.name },
+                        line,
+                        'Снимок удалён.',
+                      )
+                      if (payload) await loadMapHistory()
+                    })
+                  },
+                  'small',
+                  `Удалить снимок ${snapshot.name} карты ${name}`,
                 ),
               )
             : null,
         )
       }),
-      ...(refs.length ? [] : [el('li', { className: 'empty', textContent: 'Веток пока нет.' })]),
+      ...(snapshots.length
+        ? []
+        : [el('li', { className: 'empty', textContent: 'Снимков пока нет.' })]),
     ),
   )
   if (!mayEditMap(map.mapId)) return panel
   if (map.versions.length) {
     const create = el('form', { className: 'form-grid' }),
-      branchInput = el('input', {
-        name: 'branch',
+      nameInput = el('input', {
+        name: 'snapshot',
         required: true,
         maxLength: 64,
         pattern: '[a-z0-9][a-z0-9._\\-]{0,63}',
@@ -1419,16 +1537,12 @@ function branchesPanel(map: MapCatalogEntry, open: boolean) {
       ),
     )
     create.append(
-      field(
-        'Новая ветка',
-        branchInput,
-        'Латиницей: строчные буквы, цифры, точка, дефис или подчёркивание. Название «main» занято версией в игре.',
-      ),
-      field('Начать с версии', from),
+      field('Новый снимок', nameInput, 'Название «main» занято версией в игре.'),
+      field('Версия', from),
       el(
         'div',
         { className: 'actions' },
-        el('button', { type: 'submit', className: 'small', textContent: 'Создать ветку' }),
+        el('button', { type: 'submit', className: 'small', textContent: 'Создать снимок' }),
       ),
     )
     create.onsubmit = (event) => {
@@ -1438,14 +1552,14 @@ function branchesPanel(map: MapCatalogEntry, open: boolean) {
         line,
         async () => {
           const payload = await mapRequest(
-            'maps/branches',
+            'maps/snapshots',
             {
               mapId: map.mapId,
-              branch: String(form.get('branch')),
+              name: String(form.get('snapshot')),
               versionDigest: String(form.get('version')),
             },
             line,
-            'Ветка создана. Открыть её в мастерской может модератор.',
+            'Снимок создан.',
           )
           if (payload) await loadMapHistory()
         },
@@ -1454,55 +1568,59 @@ function branchesPanel(map: MapCatalogEntry, open: boolean) {
     }
     panel.append(create)
   }
-  if (map.versions.length > 1) {
-    const compare = el('form', { className: 'form-grid' }),
-      output = kept(`${map.mapId}:compare`, () => el('div', {}))
-    const choose = (key: string) =>
-      el(
-        'select',
-        { name: key },
-        ...map.versions.map((version) =>
-          el('option', { value: version.versionDigest, textContent: versionLabel(version) }),
-        ),
-      )
-    const before = choose('before') as HTMLSelectElement,
-      after = choose('after') as HTMLSelectElement
-    before.selectedIndex = 1
-    // The kept result names its pair, so a re-render shows the selects that produced it.
-    if (output.dataset.before) {
-      before.value = output.dataset.before
-      after.value = output.dataset.after!
-    }
-    compare.append(
-      field('Сравнить: было', before),
-      field('Стало', after),
-      el(
-        'div',
-        { className: 'actions' },
-        el('button', { type: 'submit', className: 'small', textContent: 'Сравнить версии' }),
+  return panel
+}
+
+function comparePanel(map: MapCatalogEntry) {
+  if (map.versions.length < 2) return null
+  const line = mapLine(`${map.mapId}:compare`),
+    compare = el('form', { className: 'form-grid' }),
+    output = kept(`${map.mapId}:compare`, () => el('div', {}))
+  const choose = (key: string) =>
+    el(
+      'select',
+      { name: key },
+      ...map.versions.map((version) =>
+        el('option', { value: version.versionDigest, textContent: versionLabel(version) }),
       ),
     )
-    compare.onsubmit = (event) => {
-      event.preventDefault()
-      const data = new FormData(compare)
-      output.dataset.before = String(data.get('before'))
-      output.dataset.after = String(data.get('after'))
-      run(
-        line,
-        () =>
-          compareMap(
-            map.mapId,
-            String(data.get('before')),
-            String(data.get('after')),
-            output,
-            line,
-          ),
-        compare,
-      )
-    }
-    panel.append(compare, output)
+  const before = choose('before') as HTMLSelectElement,
+    after = choose('after') as HTMLSelectElement
+  before.selectedIndex = 1
+  // The kept result names its pair, so a re-render shows the selects that produced it.
+  if (output.dataset.before) {
+    before.value = output.dataset.before
+    after.value = output.dataset.after!
   }
-  return panel
+  compare.append(
+    field('Сравнить: было', before),
+    field('Стало', after),
+    el(
+      'div',
+      { className: 'actions' },
+      el('button', { type: 'submit', className: 'small', textContent: 'Сравнить версии' }),
+    ),
+  )
+  compare.onsubmit = (event) => {
+    event.preventDefault()
+    const data = new FormData(compare)
+    output.dataset.before = String(data.get('before'))
+    output.dataset.after = String(data.get('after'))
+    run(
+      line,
+      () =>
+        compareMap(map.mapId, String(data.get('before')), String(data.get('after')), output, line),
+      compare,
+    )
+  }
+  return el(
+    'details',
+    { className: 'disclosure map-advanced', dataMap: map.mapId },
+    el('summary', { textContent: 'Сравнение версий' }),
+    line,
+    compare,
+    output,
+  )
 }
 
 function renderMaps() {
@@ -1511,7 +1629,7 @@ function renderMaps() {
     opened = (selector: string) =>
       new Set([...box.querySelectorAll<HTMLElement>(selector)].map((node) => node.dataset.map)),
     open = opened(':scope > details[open]'),
-    openBranches = opened('details.map-advanced[open]'),
+    openSnapshots = opened('details.map-advanced[open]'),
     builders = teamStaff?.filter((s) => s.role === 'builder')
   // The legacy hub is an access scope, not a map: it has builders but never versions.
   const entries: [string, MapCatalogEntry | null][] = [
@@ -1522,8 +1640,8 @@ function renderMaps() {
     ...entries.map(([id, map]) => {
       const name = mapName(id),
         live = map?.versions.find((version) => version.versionDigest === map.head?.versionDigest),
-        selected = mapSession?.branches?.[id],
-        branch = selected ? map?.branches?.find((ref) => ref.name === selected) : undefined,
+        openInSession =
+          !!map && !!mapSession && (mapSession.maps === null || mapSession.maps.includes(id)),
         waiting = candidateList.some((c) => c.status === 'pending' && c.mapId === id),
         arena = map?.kind === 'arena' && !!mapAvailability?.available,
         offWanted = arena && mapAvailability.disabledMapIds.includes(id),
@@ -1544,7 +1662,9 @@ function renderMaps() {
         {},
         el('strong', { textContent: name }),
         waiting ? el('span', { className: 'badge warn', textContent: 'Ждёт решения' }) : null,
-        branch ? el('span', { className: 'badge ok', textContent: 'Открыта в мастерской' }) : null,
+        openInSession
+          ? el('span', { className: 'badge ok', textContent: 'Открыта в мастерской' })
+          : null,
         off ? el('span', { className: 'badge', textContent: off }) : null,
         el('span', {
           className: 'map-meta',
@@ -1570,7 +1690,7 @@ function renderMaps() {
         el(
           'div',
           { className: 'map-body' },
-          map && branch && mapSession ? draftPanel(map, branch) : null,
+          map && openInSession ? draftPanel(map) : null,
           builders ? accessPanel(id, name, builders) : null,
           map?.kind === 'arena' && map.head
             ? el(
@@ -1581,9 +1701,8 @@ function renderMaps() {
               )
             : null,
           map ? historyPanel(map) : null,
-          map && (map.branches?.some((ref) => ref.name !== 'main') || mayEditMap(id))
-            ? branchesPanel(map, openBranches.has(id))
-            : null,
+          map ? snapshotsPanel(map, openSnapshots.has(id)) : null,
+          map ? comparePanel(map) : null,
         ),
       )
     }),
@@ -1604,14 +1723,7 @@ function renderSavedMapSessions() {
             textContent: `${date(saved.startedAt)}${saved.id === mapSession?.id ? ' · текущий' : ''}`,
           }),
           el('small', {
-            textContent: `${saved.startedBy?.name ?? 'Участник команды'} · ${(saved.maps ?? [])
-              .map((id) => {
-                const ref = saved.branches?.[id]
-                return ref && ref !== `work-${saved.id}`
-                  ? `${mapName(id)} (ветка «${ref}»)`
-                  : mapName(id)
-              })
-              .join(', ')}`,
+            textContent: `${saved.startedBy?.name ?? 'Участник команды'} · ${(saved.maps ?? []).map((id) => mapName(id)).join(', ')}`,
           }),
         ),
         can('mode') && saved.id !== mapSession?.id
@@ -1624,7 +1736,7 @@ function renderSavedMapSessions() {
                   if (
                     !(await ask({
                       title: 'Продолжить сохранённый черновик?',
-                      text: 'Текущая рабочая копия сохранится. Мастерская откроет прежние карты и ветки вместе с их несохранёнными правками. Игра продолжит работать.',
+                      text: 'Текущая рабочая копия сохранится. Мастерская откроет прежние карты вместе с их несохранёнными правками. Игра продолжит работать.',
                       ok: 'Продолжить',
                       danger: true,
                     }))
@@ -1703,121 +1815,32 @@ async function loadMapHistory() {
 
 const reviewOutlets = new Map<string, HTMLElement>()
 
-async function previewMapReview(
-  candidate: any,
-  outlet: HTMLElement,
-  line: HTMLElement,
-  choices: Record<string, 'ours' | 'theirs'> = {},
-) {
+async function previewCandidate(candidate: any, outlet: HTMLElement, line: HTMLElement) {
   const map = mapCatalog?.find((entry) => entry.mapId === candidate.mapId)
   if (!map || (map.head?.versionDigest ?? null) !== candidate.targetHead)
     throw new Error(
       'Версию в игре сменили после отправки. Попросите автора отправить версию заново.',
     )
-  const data = await mapRequest(
-    'maps/merge-preview',
-    {
-      mapId: candidate.mapId,
-      versionDigest: candidate.versionDigest,
-      expectedHead: candidate.targetHead,
-      ...(Object.keys(choices).length ? { resolutions: choices } : {}),
-    },
-    line,
-    'Проверка готова.',
-  )
-  if (!data) return
-  if (
-    data.sourceVersion !== candidate.versionDigest ||
-    data.targetVersion !== candidate.targetHead ||
-    !Array.isArray(data.conflicts) ||
-    !Array.isArray(data.unresolved) ||
-    !data.changes
-  )
-    throw new Error(
-      'Не удалось проверить версии для слияния. Обновите историю и попробуйте ещё раз.',
-    )
-  const changes = el('div', {}),
-    conflicts = el('div', { className: 'stack git-diff' }),
-    fields: HTMLSelectElement[] = []
+  const changes = el('div', {})
   outlet.replaceChildren(
     el('p', {
       textContent:
         candidate.targetHead === null
-          ? `Карты ещё нет в игре: эта версия станет первой. Конфликтов: ${data.conflicts.length}.`
-          : `Изменения этой версии лягут поверх той, что в игре. Конфликтов: ${data.conflicts.length}${data.conflicts.length ? ' — это места, которые поменяли и в игре, и в присланной версии' : ''}.`,
+          ? 'Карты ещё нет в игре: эта версия станет первой.'
+          : 'Принятие запишет её поверх версии в игре; история линейна, слияний нет.',
     }),
     changes,
-    conflicts,
   )
-  renderMapChanges(changes, data.changes)
-  for (const conflict of data.conflicts) {
-    const item = el(
-      'details',
-      { className: 'disclosure' },
-      el('summary', { textContent: mapPathLabel(conflict.path) }),
-      el('strong', { textContent: 'Сейчас в игре' }),
-      el('pre', {
-        textContent: conflict.oursPresent ? JSON.stringify(conflict.ours) : 'Отсутствует',
-      }),
-      el('strong', { textContent: 'В присланной версии' }),
-      el('pre', {
-        textContent: conflict.theirsPresent ? JSON.stringify(conflict.theirs) : 'Отсутствует',
-      }),
-    )
-    if (can('workshop')) {
-      const select = el(
-        'select',
-        { name: conflict.path },
-        el('option', { value: '', textContent: 'Выберите вариант' }),
-        el('option', { value: 'ours', textContent: 'Оставить как в игре' }),
-        el('option', { value: 'theirs', textContent: 'Взять из присланной версии' }),
-      ) as HTMLSelectElement
-      select.value = choices[conflict.path] ?? ''
-      fields.push(select)
-      item.append(
-        field(
-          'Какой вариант оставить',
-          select,
-          conflict.kind === 'binary'
-            ? 'Регион заменяется целиком; блоки двух версий автоматически не смешиваются.'
-            : 'Применится именно выбранное значение этого поля.',
-        ),
-      )
-    }
-    conflicts.append(item)
-  }
-  const actions = el('div', { className: 'actions' })
+  if (candidate.targetHead !== null)
+    await compareMap(candidate.mapId, candidate.targetHead, candidate.versionDigest, changes, line)
   if (can('workshop')) {
-    if (fields.length)
-      actions.append(
-        button(
-          'Пересчитать с моим выбором',
-          () =>
-            run(
-              line,
-              () =>
-                previewMapReview(
-                  candidate,
-                  outlet,
-                  line,
-                  Object.fromEntries(
-                    fields
-                      .filter((select) => select.value)
-                      .map((select) => [select.name, select.value as 'ours' | 'theirs']),
-                  ),
-                ),
-              outlet,
-            ),
-          'small',
-        ),
-      )
-    const merge = button(
+    const accept = button(
       'Принять в игру',
       async () => {
         if (
           !(await ask({
             title: `Принять «${mapName(candidate.mapId)}» в игру?`,
-            text: `Применится именно присланная версия с вашим выбором по конфликтам. ${goesLive(candidate.mapId)} История обеих линий правок сохранится.`,
+            text: `Применится присланная версия. ${goesLive(candidate.mapId)}`,
             ok: 'Принять в игру',
             danger: true,
           }))
@@ -1830,7 +1853,6 @@ async function previewMapReview(
               candidateId: candidate.id,
               mapId: candidate.mapId,
               expectedHead: candidate.targetHead,
-              ...(Object.keys(choices).length ? { resolutions: choices } : {}),
             })
             const result = await follow(
               line,
@@ -1849,25 +1871,8 @@ async function previewMapReview(
       'small primary',
       `Принять ${mapName(candidate.mapId)} в игру`,
     )
-    merge.disabled = data.unresolved.length > 0
-    fields.forEach((select) =>
-      select.addEventListener('change', () => {
-        merge.disabled = true
-        say(line, 'Нажмите «Пересчитать с моим выбором», потом принимайте.', 'pending')
-      }),
-    )
-    actions.append(merge)
+    outlet.append(el('div', { className: 'actions' }, accept))
   }
-  outlet.append(
-    data.unresolved.length
-      ? el('p', {
-          className: 'muted',
-          textContent:
-            'Чтобы принять, выберите вариант для каждого конфликта и нажмите «Пересчитать с моим выбором».',
-        })
-      : el('p', { textContent: 'Конфликтов не осталось — можно принимать.' }),
-    actions,
-  )
   outlet.querySelectorAll<HTMLSelectElement>('select').forEach(customSelect)
 }
 
@@ -1934,9 +1939,8 @@ async function loadCandidates() {
     // baseMatches: false — the map's reference changed since editing started; null — unknown base (older drafts). Either needs a forced publish.
     // Two versions of one map need distinct accessible names on their buttons.
     const version = c.id.slice(0, 6)
-    const baseWarn = c.sourceBranch
-      ? null
-      : c.baseMatches === false
+    const baseWarn =
+      c.baseMatches === false
         ? 'карту изменили, пока шла правка'
         : c.baseMatches === null
           ? 'неизвестно, с какой версии начата правка'
@@ -1956,7 +1960,7 @@ async function loadCandidates() {
       }),
     )
     const actions = el('div', { className: 'actions' })
-    if (c.sourceBranch && mayEditMap(c.mapId)) {
+    if (mayEditMap(c.mapId)) {
       if (c.status !== 'pending') reviewOutlets.delete(c.id)
       const outlet = reviewOutlets.get(c.id) ?? el('div', { className: 'stack' })
       if (c.status === 'pending') reviewOutlets.set(c.id, outlet)
@@ -1966,7 +1970,7 @@ async function loadCandidates() {
       main.append(
         sent?.note ? el('p', { textContent: `«${sent.note}»` }) : null,
         el('small', {
-          textContent: `${branchLabel(c.sourceBranch)} · версия от ${sent ? date(sent.createdAt) : 'неизвестной даты'}. Правки после отправки сюда не входят.`,
+          textContent: `Версия от ${sent ? date(sent.createdAt) : 'неизвестной даты'}. Правки после отправки сюда не входят.`,
         }),
         outlet,
       )
@@ -1974,7 +1978,7 @@ async function loadCandidates() {
         actions.append(
           button(
             'Проверить и принять',
-            () => run(line, () => previewMapReview(c, outlet, line)),
+            () => run(line, () => previewCandidate(c, outlet, line)),
             'small primary',
             `Проверить и принять ${name}`,
           ),
@@ -1986,8 +1990,9 @@ async function loadCandidates() {
             run(line, async () => {
               const map = mapCatalog?.find((entry) => entry.mapId === c.mapId)
               if (!map) throw new Error('Карта не подтверждена. Обновите историю.')
-              if (!map.head) await previewMapReview(c, outlet, line)
-              else await compareMap(c.mapId, map.head.versionDigest, c.versionDigest, outlet, line)
+              if (!map.head || !c.versionDigest)
+                throw new Error('Версия заявки не подтверждена. Обновите историю.')
+              await compareMap(c.mapId, map.head.versionDigest, c.versionDigest, outlet, line)
             }),
           'small',
           `Что изменилось в ${name} по сравнению с игрой`,
@@ -2029,7 +2034,7 @@ async function loadCandidates() {
         }).then(() => Promise.all([loadCandidates(), loadMapHistory()]))
         return 'применяем…'
       })
-    if (can('workshop') && c.status === 'pending' && !c.sourceBranch) {
+    if (can('workshop') && c.status === 'pending') {
       actions.append(
         button(
           'Принять',
@@ -2082,36 +2087,6 @@ async function loadCandidates() {
         ),
       )
     }
-    if (can('workshop') && c.status === 'pending' && c.sourceBranch)
-      actions.append(
-        button(
-          'Отклонить',
-          async () => {
-            if (
-              !(await ask({
-                title: `Отклонить заявку «${name}»?`,
-                text: 'Версия и её ветка останутся в истории, в игру эта заявка не попадёт. Автор может доработать и отправить снова.',
-                ok: 'Отклонить',
-                danger: true,
-              }))
-            )
-              return
-            await run(line, async () => {
-              const { id } = await api('candidates/reject', 'POST', {
-                candidateId: c.id,
-                mapId: c.mapId,
-              })
-              const result = await follow(line, id, 'Заявка отклонена.')
-              if (result?.ok) {
-                reviewOutlets.delete(c.id)
-                await loadCandidates()
-              }
-            })
-          },
-          'small danger',
-          `Отклонить заявку ${name}`,
-        ),
-      )
     if (
       can('mode') &&
       c.status === 'pending' &&

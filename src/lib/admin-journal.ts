@@ -115,16 +115,13 @@ function sentence(a: any): [string, string, string] {
       ]
     case 'workshop-rollback':
       return ['восстановил', 'восстановить', ` прежнюю версию карты «${mapName(a.target)}»`]
-    case 'map-branch-create':
-      return ['создал', 'создать', ` ветку ${d.branch ?? ''} карты «${mapName(a.target)}»`]
+    case 'map-snapshot-create':
+      return ['создал', 'создать', ` снимок ${d.name ?? ''} карты «${mapName(a.target)}»`]
+    case 'map-snapshot-delete':
+      return ['удалил', 'удалить', ` снимок ${d.name ?? ''} карты «${mapName(a.target)}»`]
     case 'map-commit':
-      return [
-        'сохранил',
-        'сохранить',
-        ` версию карты «${mapName(a.target)}» в ветке ${d.branch ?? ''}`,
-      ]
+      return ['сохранил', 'сохранить', ` версию карты «${mapName(a.target)}»`]
     case 'map-compare':
-    case 'map-merge-preview':
       return ['сравнил', 'сравнить', ` версии карты «${mapName(a.target)}»`]
     case 'map-sessions':
       return ['открыл', 'открыть', ' список сохранённых черновиков']

@@ -1664,8 +1664,7 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
     ['candidate', 'fields', 'Bob'],
   )
   assert.equal(request.workingCopyId, workingCopyId)
-  assert.equal(request.branch, 'layout-work')
-  assert.equal(request.expectedBranchHead, 'a'.repeat(64))
+  assert.equal(request.expectedHead, 'a'.repeat(64))
   assert.equal(request.commit, true)
   assert.equal(request.note, 'С планшета: Bob')
   const { id } = await ok.json()
@@ -1712,21 +1711,19 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
       s,
     ).catch((error) => error)
   }
-  const draft = {
-    mapId: 'fields',
-    branch: 'layout-work',
-    workingCopyId,
-    expectedBranchHead: 'a'.repeat(64),
-  }
-  assert.equal((await web(draft)).status, 409, 'review-only still requires a saved change')
+  const draft = { mapId: 'fields', workingCopyId, expectedHead: 'a'.repeat(64) }
+  assert.equal((await web({ mapId: 'fields' })).status, 409, 'review pins the working copy')
+  assert.equal(
+    (await web({ ...draft, workingCopyId: '00000000-0000-0000-0000-000000000000' })).status,
+    409,
+    'stale copy is refused',
+  )
+  assert.equal((await web(draft)).status, 200, 'plain review queues')
   assert.equal((await web({ ...draft, commit: true, note: '' })).status, 400)
   assert.equal(
-    (await web({ ...draft, expectedBranchHead: 'b'.repeat(64), commit: true, note: 'Update' }))
-      .status,
+    (await web({ ...draft, expectedHead: 'b'.repeat(64), commit: true, note: 'Update' })).status,
     409,
   )
-  for (const workingCopyId of [undefined, '00000000-0000-0000-0000-000000000000'])
-    assert.equal((await web({ ...draft, workingCopyId, commit: true, note: 'Update' })).status, 409)
   const combined = await web({ ...draft, commit: true, note: ' Layout update ' })
   assert.equal(combined.status, 200)
   const combinedId = (await combined.json()).id
@@ -1737,7 +1734,8 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
   assert.equal(combinedRequest.commit, true)
   assert.equal(combinedRequest.note, 'Layout update')
   assert.equal(combinedRequest.workingCopyId, workingCopyId)
-  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 2, 'one request per submission')
+  assert.equal(combinedRequest.expectedHead, 'a'.repeat(64))
+  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 3, 'one request per submission')
   assert.ok(
     (await s.auditLog(5)).some(
       (e) => e.action === 'workshop-candidate' && e.ok && e.target === 'fields',
@@ -1752,9 +1750,8 @@ test('writeRequest: candidate/rollback take a real map, publish/reject a candida
   const combined = {
     kind: 'candidate',
     mapId: 'konstaxa',
-    branch: 'layout',
     workingCopyId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
-    expectedBranchHead: 'a'.repeat(64),
+    expectedHead: 'a'.repeat(64),
     commit: true,
     note: 'Update',
   }
@@ -1763,7 +1760,8 @@ test('writeRequest: candidate/rollback take a real map, publish/reject a candida
     { note: '' },
     { note: 'a'.repeat(201) },
     { note: 'line\nbreak' },
-    { branch: undefined },
+    { workingCopyId: undefined },
+    { expectedHead: undefined },
     { commit: 'true' },
   ])
     assert.throws(() => writeRequest(dir, actor, { ...combined, ...overrides }))
