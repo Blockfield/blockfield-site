@@ -359,9 +359,21 @@ test('map API reads without mutation, derives browser copy, and refuses stale or
     (await call('POST', 'candidates/create', { mapId: 'custom_arena' }, BUILDER)).status,
     403,
   )
+  // A stale form pins its own copy: a foreign or missing working copy, or a moved
+  // head, is refused before anything is queued.
+  const queuedBeforeStale = readdirSync(inbox).length
+  for (const body of [
+    { mapId: 'custom_arena', workingCopyId: 'malicious-client-uuid', expectedHead: SECOND },
+    { mapId: 'custom_arena', expectedHead: SECOND },
+    { mapId: 'custom_arena', workingCopyId: COPY },
+    { mapId: 'custom_arena', workingCopyId: COPY, expectedHead: FIRST },
+  ])
+    assert.equal((await call('POST', 'candidates/create', body)).status, 409)
+  assert.equal(readdirSync(inbox).length, queuedBeforeStale)
   const created = await call('POST', 'candidates/create', {
     mapId: 'custom_arena',
-    workingCopyId: 'malicious-client-uuid',
+    workingCopyId: COPY,
+    expectedHead: SECOND,
   })
   assert.equal(created.status, 200)
   const id = (await created.json()).id,
@@ -711,8 +723,23 @@ test('scoped linear endpoints bind commits and reviews; snapshots replace branch
   assert.equal(readdirSync(inbox).length, queuedBeforeLongNote)
   const saved = await readRequest(await call('POST', 'maps/commit', commit))
   assert.deepEqual([saved.kind, saved.expectedHead, saved.note], ['commit', SECOND, commit.note])
+  assert.equal((await call('POST', 'candidates/create', { mapId: 'custom_arena' })).status, 409)
+  assert.equal(
+    (
+      await call('POST', 'candidates/create', {
+        mapId: 'custom_arena',
+        workingCopyId: OWNER,
+        expectedHead: SECOND,
+      })
+    ).status,
+    409,
+  )
   const review = await readRequest(
-    await call('POST', 'candidates/create', { mapId: 'custom_arena' }),
+    await call('POST', 'candidates/create', {
+      mapId: 'custom_arena',
+      workingCopyId: COPY,
+      expectedHead: SECOND,
+    }),
   )
   assert.deepEqual(
     [review.kind, review.expectedHead, review.workingCopyId],
@@ -726,6 +753,8 @@ test('scoped linear endpoints bind commits and reviews; snapshots replace branch
   const saveReview = await readRequest(
     await call('POST', 'candidates/create', {
       mapId: 'custom_arena',
+      workingCopyId: COPY,
+      expectedHead: SECOND,
       commit: true,
       note: 'Укрытия',
     }),
@@ -734,6 +763,16 @@ test('scoped linear endpoints bind commits and reviews; snapshots replace branch
     [saveReview.kind, saveReview.commit, saveReview.note],
     ['candidate', true, 'Укрытия'],
   )
+  // An already saved version goes for review without another commit.
+  const resend = await readRequest(
+    await call('POST', 'candidates/create', {
+      mapId: 'custom_arena',
+      workingCopyId: COPY,
+      expectedHead: SECOND,
+      commit: false,
+    }),
+  )
+  assert.deepEqual([resend.kind, resend.commit], ['candidate', false])
   assert.equal(
     (await call('POST', 'maps/compare', { mapId: 'custom_arena', before: FIRST, after: FOREIGN }))
       .status,

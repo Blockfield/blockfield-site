@@ -683,10 +683,13 @@ async function editableMap(actor: Actor, store: StatsStore, id: unknown) {
 function selectedMapSession(
   catalog: Extract<MapCatalogAvailability, { available: true }>,
   entry: MapCatalogEntry,
+  workingCopyId: unknown,
 ) {
   const copy = catalog.session
   if (!copy || !(copy.maps === null || copy.maps.includes(entry.mapId)))
     throw fail(409, 'Откройте эту карту в действующем сеансе мастерской.')
+  // A stale form must never submit a different session's copy: the caller pins its copy.
+  if (workingCopyId !== copy.id) throw fail(409, 'Рабочая копия изменилась. Обновите историю.')
   return { copy }
 }
 function workshopMapIds() {
@@ -2762,11 +2765,9 @@ const routes: Record<string, Route> = {
   'POST maps/properties': {
     permission: 'maps',
     handler: async ({ actor, store, body }) => {
-      const { catalog, entry } = await editableMap(actor, store, body?.mapId),
-        { copy } = selectedMapSession(catalog, entry)
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId)
+      selectedMapSession(catalog, entry, body?.workingCopyId)
       editorRevision(body)
-      if (body?.workingCopyId !== copy.id)
-        throw fail(409, 'Рабочая копия изменилась. Обновите историю.')
       return {
         id: writeRequest(
           inboxDir(),
@@ -2792,10 +2793,8 @@ const routes: Record<string, Route> = {
   'POST maps/commit': {
     permission: 'map-edit',
     handler: async ({ actor, store, body }) => {
-      const { catalog, entry } = await editableMap(actor, store, body?.mapId),
-        { copy } = selectedMapSession(catalog, entry)
-      if (body?.workingCopyId !== copy.id)
-        throw fail(409, 'Рабочая копия изменилась. Обновите историю перед коммитом.')
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId)
+      selectedMapSession(catalog, entry, body?.workingCopyId)
       if (body?.expectedHead !== (entry.head?.versionDigest ?? null))
         throw fail(409, 'Версия карты уже изменилась. Обновите историю перед коммитом.')
       return {
@@ -2876,11 +2875,8 @@ const routes: Record<string, Route> = {
     permission: 'map-edit',
     handler: async ({ actor, store, body }) => {
       const { catalog, entry } = await editableMap(actor, store, body?.mapId),
-        { copy } = selectedMapSession(catalog, entry)
-      if (
-        body?.expectedHead !== undefined &&
-        body.expectedHead !== (entry.head?.versionDigest ?? null)
-      )
+        { copy } = selectedMapSession(catalog, entry, body?.workingCopyId)
+      if (body?.expectedHead !== (entry.head?.versionDigest ?? null))
         throw fail(409, 'Версия карты уже изменилась. Обновите историю перед отправкой.')
       return {
         id: writeRequest(
@@ -3640,9 +3636,7 @@ export async function handleWorkshopSubmit(
   let applied = false
   try {
     const { catalog, entry } = await editableMap(actor, store, mapId),
-      { copy } = selectedMapSession(catalog, entry)
-    if (body.workingCopyId !== copy.id)
-      throw fail(409, 'Рабочая копия карты уже изменилась. Вернитесь в действующую мастерскую.')
+      { copy } = selectedMapSession(catalog, entry, body.workingCopyId)
     id = writeRequest(
       inboxDir(),
       actor,

@@ -36,6 +36,7 @@ const names = [
   'comparePanel',
   'previewCandidate',
   'commitMap',
+  'submitSaved',
   'mapRequestError',
   'renderSavedMapSessions',
   'newMapControls',
@@ -270,6 +271,7 @@ test('all roles get scoped draft and snapshot actions; only admins resume saved 
     const draft = window.draftPanel(map)
     assert.match(draft.textContent, /Сохранить и отправить на проверку/)
     assert.match(draft.textContent, /Только сохранить версию/)
+    assert.match(draft.textContent, /Отправить последнюю версию/)
     assert.match(draft.textContent, /в игру попадает только принятая/)
     assert.equal(draft.textContent.includes('Переименовать карту'), role !== 'builder')
     const snapshots = window.snapshotsPanel(map, false)
@@ -281,6 +283,7 @@ test('all roles get scoped draft and snapshot actions; only admins resume saved 
     assert.match(compare.textContent, /Сравнение версий/)
     window.candidateList = [{ status: 'pending', mapId: 'fields', versionDigest: SECOND }]
     assert.match(window.draftPanel(map).textContent, /уже на проверке/)
+    assert.equal(window.draftPanel(map).textContent.includes('Отправить последнюю версию'), false)
     window.candidateList = []
     window.savedMapSessions = [
       {
@@ -363,6 +366,40 @@ test('«save and send» commits and reviews in one request; refusal preserves th
   assert.equal(calls[0][0], 'maps/commit')
   assert.equal(calls[0][1].commit, undefined)
   assert.equal(calls[0][1].expectedHead, FIRST)
+  assert.equal(candidates, 1)
+})
+
+test('saved version goes for review without a new commit', async (t) => {
+  const window = dom(t),
+    line = window.document.createElement('p'),
+    calls = []
+  let candidates = 0
+  window.mapRequest = async (path, body) => {
+    calls.push([path, body])
+    return { mapId: body.mapId }
+  }
+  window.loadCandidates = async () => {
+    candidates++
+  }
+  window.ask = async () => true
+  window.run = (_line, action) => action()
+  await window.submitSaved(map, line)
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    [
+      'candidates/create',
+      {
+        mapId: 'fields',
+        workingCopyId: COPY,
+        expectedHead: FIRST,
+        commit: false,
+      },
+    ],
+  ])
+  assert.equal(candidates, 1)
+  calls.length = 0
+  window.ask = async () => null
+  await window.submitSaved(map, line)
+  assert.equal(calls.length, 0)
   assert.equal(candidates, 1)
 })
 

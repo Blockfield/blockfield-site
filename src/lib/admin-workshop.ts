@@ -998,6 +998,32 @@ async function commitMap(map: MapCatalogEntry, note: string, line: HTMLElement, 
   if (review) await loadCandidates()
 }
 
+async function submitSaved(map: MapCatalogEntry, line: HTMLElement) {
+  const name = mapName(map.mapId)
+  if (
+    !(await ask({
+      title: `Отправить «${name}» на проверку?`,
+      text: 'Уйдёт последняя сохранённая версия. Несохранённые правки останутся в черновике.',
+      ok: 'Отправить',
+    }))
+  )
+    return
+  await run(line, async () => {
+    const payload = await mapRequest(
+      'candidates/create',
+      {
+        mapId: map.mapId,
+        workingCopyId: mapSession!.id,
+        expectedHead: map.head?.versionDigest ?? null,
+        commit: false,
+      },
+      line,
+      `«${name}» отправлена на проверку. Новые правки в неё не попадут.`,
+    )
+    if (payload) await loadCandidates()
+  })
+}
+
 function draftPanel(map: MapCatalogEntry) {
   const id = map.mapId,
     name = mapName(id),
@@ -1038,6 +1064,14 @@ function draftPanel(map: MapCatalogEntry) {
       { className: 'actions' },
       button('Сохранить и отправить на проверку', () => save(true), 'small primary'),
       button('Только сохранить версию', () => save(false), 'small'),
+      head !== null && !sent
+        ? button(
+            'Отправить последнюю версию',
+            () => mapBusy(id, () => submitSaved(map, line)),
+            'small',
+            `Отправить последнюю сохранённую версию ${name} на проверку`,
+          )
+        : null,
     ),
   )
   form.onsubmit = (event) => {

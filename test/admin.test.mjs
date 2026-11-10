@@ -1712,7 +1712,13 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
     ).catch((error) => error)
   }
   const draft = { mapId: 'fields', workingCopyId, expectedHead: 'a'.repeat(64) }
-  assert.equal((await web({ mapId: 'fields' })).status, 200, 'plain review queues')
+  assert.equal((await web({ mapId: 'fields' })).status, 409, 'review pins the working copy')
+  assert.equal(
+    (await web({ ...draft, workingCopyId: '00000000-0000-0000-0000-000000000000' })).status,
+    409,
+    'stale copy is refused',
+  )
+  assert.equal((await web(draft)).status, 200, 'plain review queues')
   assert.equal((await web({ ...draft, commit: true, note: '' })).status, 400)
   assert.equal(
     (await web({ ...draft, expectedHead: 'b'.repeat(64), commit: true, note: 'Update' })).status,
