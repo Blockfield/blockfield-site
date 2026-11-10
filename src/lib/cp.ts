@@ -82,8 +82,9 @@ export async function postGateCp(
   if (!validGate(read)) throw new Error('Control-plane отдал неверное состояние.')
   try {
     // Game gate on CP v2: PATCH /v2/settings/gate/* with the moderation.ban
-    // scope. SettingsChange carries no actor field: the service write is
-    // attributed to the stable service principal, unlike staff/moderation.
+    // scope. The gate toggle sends no actor: that scope keeps the stable
+    // service-principal attribution, unlike game settings writes where the
+    // site asserts the acting admin.
     return await patchSettingsCp(
       'gate',
       '*',
@@ -112,6 +113,12 @@ export type CpSettingsPatch = {
   expectedRevision: number
   idempotencyKey: string
   patch: Record<string, unknown>
+  /**
+   * Logged-in admin the service credential asserts (CP re-resolves the
+   * account; required for game namespaces, omitted only for the gate
+   * toggle whose moderation.ban scope keeps stable-principal attribution).
+   */
+  actorAccountId?: string
 }
 
 const settingsSegment = (value: string, name: string) => {
@@ -213,12 +220,26 @@ export async function patchSettingsCp(
     typeof patch.patch !== 'object'
   )
     throw new Error('Некорректный патч настроек control-plane.')
+  // The site service credential asserts the logged-in admin for game
+  // namespaces (like staff grants): CP refuses unasserted service writes
+  // there. The gate toggle omits it: its moderation.ban scope keeps the
+  // stable-principal path.
+  const actor =
+    patch.actorAccountId === undefined
+      ? undefined
+      : patch.actorAccountId.replaceAll('-', '').toLowerCase()
+  if (actor !== undefined && !/^[0-9a-f]{32}$/.test(actor)) throw new Error('Некорректный запрос.')
   const data = await settingsRequest(namespace, target, token, {
     method: 'PATCH',
     body: JSON.stringify({
       expectedRevision: patch.expectedRevision,
       idempotencyKey: patch.idempotencyKey,
       patch: patch.patch,
+      ...(actor === undefined
+        ? {}
+        : {
+            actorAccountId: actor.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
+          }),
     }),
   })
   if (typeof data?.operationId !== 'string' || !Number.isSafeInteger(data?.revision))
@@ -226,7 +247,10 @@ export async function patchSettingsCp(
   return { operationId: data.operationId, revision: data.revision }
 }
 
-export type CpSettingsRollback = Pick<CpSettingsPatch, 'expectedRevision' | 'idempotencyKey'> & {
+export type CpSettingsRollback = Pick<
+  CpSettingsPatch,
+  'expectedRevision' | 'idempotencyKey' | 'actorAccountId'
+> & {
   revision: number
 }
 
@@ -248,6 +272,11 @@ export async function rollbackSettingsCp(
     rollback.revision < 1
   )
     throw new Error('Некорректный откат настроек control-plane.')
+  const actor =
+    rollback.actorAccountId === undefined
+      ? undefined
+      : rollback.actorAccountId.replaceAll('-', '').toLowerCase()
+  if (actor !== undefined && !/^[0-9a-f]{32}$/.test(actor)) throw new Error('Некорректный запрос.')
   const data = await settingsRequest(
     namespace,
     target,
@@ -258,6 +287,11 @@ export async function rollbackSettingsCp(
         expectedRevision: rollback.expectedRevision,
         idempotencyKey: rollback.idempotencyKey,
         revision: rollback.revision,
+        ...(actor === undefined
+          ? {}
+          : {
+              actorAccountId: actor.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
+            }),
       }),
     },
     '/rollback',
