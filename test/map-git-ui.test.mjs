@@ -337,7 +337,7 @@ test('«save and send» commits and reviews in one request; refusal preserves th
     throw new Error('a second request is forbidden')
   }
   window.mapNotes.set('fields', 'Новые укрытия')
-  await window.commitMap(map, 'Новые укрытия', line, true)
+  await window.commitMap(map, COPY, 'Новые укрытия', line, true)
   assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
     [
       'candidates/create',
@@ -355,14 +355,14 @@ test('«save and send» commits and reviews in one request; refusal preserves th
   assert.equal(window.mapNotes.has('fields'), false)
   refused = true
   window.mapNotes.set('fields', 'Ничего')
-  await window.commitMap(map, 'Ничего', line, true)
+  await window.commitMap(map, COPY, 'Ничего', line, true)
   assert.equal(window.mapNotes.get('fields'), 'Ничего')
   assert.equal(histories, 1)
   assert.equal(candidates, 1)
   assert.match(line.textContent, /Нет изменений для сохранения/)
   refused = false
   calls.length = 0
-  await window.commitMap(map, 'Только сохранить', line, false)
+  await window.commitMap(map, COPY, 'Только сохранить', line, false)
   assert.equal(calls[0][0], 'maps/commit')
   assert.equal(calls[0][1].commit, undefined)
   assert.equal(calls[0][1].expectedHead, FIRST)
@@ -383,7 +383,7 @@ test('saved version goes for review without a new commit', async (t) => {
   }
   window.ask = async () => true
   window.run = (_line, action) => action()
-  await window.submitSaved(map, line)
+  await window.submitSaved(map, COPY, line)
   assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
     [
       'candidates/create',
@@ -398,9 +398,29 @@ test('saved version goes for review without a new commit', async (t) => {
   assert.equal(candidates, 1)
   calls.length = 0
   window.ask = async () => null
-  await window.submitSaved(map, line)
+  await window.submitSaved(map, COPY, line)
   assert.equal(calls.length, 0)
   assert.equal(candidates, 1)
+})
+
+test('a session switch while the dialog is open never redirects the saved-version submit', async (t) => {
+  // Review r4524190737: the copy is the one the panel was rendered for, not
+  // whatever session is current after the confirmation closes.
+  const window = dom(t),
+    line = window.document.createElement('p'),
+    calls = []
+  window.mapRequest = async (path, body) => {
+    calls.push([path, body])
+    return { mapId: body.mapId }
+  }
+  window.loadCandidates = async () => {}
+  window.ask = async () => {
+    window.mapSession = { id: 'another-copy', maps: ['fields'] }
+    return true
+  }
+  window.run = (_line, action) => action()
+  await window.submitSaved(map, COPY, line)
+  assert.equal(calls[0][1].workingCopyId, COPY)
 })
 
 test('review preview compares the frozen target and publishes fast-forward', async (t) => {

@@ -977,12 +977,18 @@ function goesLive(mapId: string) {
 const versionLabel = (version: MapCatalogEntry['versions'][number]) =>
   `${date(version.createdAt)} · ${String(version.author.name ?? 'автор не указан')}${version.note ? ` · ${version.note.slice(0, 48)}` : ''}`
 
-async function commitMap(map: MapCatalogEntry, note: string, line: HTMLElement, review: boolean) {
+async function commitMap(
+  map: MapCatalogEntry,
+  copy: string,
+  note: string,
+  line: HTMLElement,
+  review: boolean,
+) {
   const payload = await mapRequest(
     review ? 'candidates/create' : 'maps/commit',
     {
       mapId: map.mapId,
-      workingCopyId: mapSession!.id,
+      workingCopyId: copy,
       expectedHead: map.head?.versionDigest ?? null,
       note,
       ...(review ? { commit: true } : {}),
@@ -998,7 +1004,7 @@ async function commitMap(map: MapCatalogEntry, note: string, line: HTMLElement, 
   if (review) await loadCandidates()
 }
 
-async function submitSaved(map: MapCatalogEntry, line: HTMLElement) {
+async function submitSaved(map: MapCatalogEntry, copy: string, line: HTMLElement) {
   const name = mapName(map.mapId)
   if (
     !(await ask({
@@ -1013,7 +1019,7 @@ async function submitSaved(map: MapCatalogEntry, line: HTMLElement) {
       'candidates/create',
       {
         mapId: map.mapId,
-        workingCopyId: mapSession!.id,
+        workingCopyId: copy,
         expectedHead: map.head?.versionDigest ?? null,
         commit: false,
       },
@@ -1028,6 +1034,9 @@ function draftPanel(map: MapCatalogEntry) {
   const id = map.mapId,
     name = mapName(id),
     line = mapLine(`${id}:draft`),
+    // The copy this panel was rendered for: a session switch while a dialog or
+    // request is open must never redirect the action to another copy.
+    copy = mapSession!.id,
     head = map.head?.versionDigest ?? null,
     sent = candidateList.some((c) => c.status === 'pending' && c.mapId === id)
   const part = el(
@@ -1055,7 +1064,7 @@ function draftPanel(map: MapCatalogEntry) {
   const save = (review: boolean) => {
     if (!form.reportValidity()) return
     const submitted = note.value
-    mapBusy(id, () => run(line, () => commitMap(map, submitted, line, review), part))
+    mapBusy(id, () => run(line, () => commitMap(map, copy, submitted, line, review), part))
   }
   form.append(
     field('Что изменилось', note, 'Коротко, для проверяющего и истории карты. До 200 символов.'),
@@ -1067,7 +1076,7 @@ function draftPanel(map: MapCatalogEntry) {
       head !== null && !sent
         ? button(
             'Отправить последнюю версию',
-            () => mapBusy(id, () => submitSaved(map, line)),
+            () => mapBusy(id, () => submitSaved(map, copy, line)),
             'small',
             `Отправить последнюю сохранённую версию ${name} на проверку`,
           )
@@ -1112,7 +1121,7 @@ function draftPanel(map: MapCatalogEntry) {
             {
               mapId: id,
               name: title.value,
-              workingCopyId: mapSession!.id,
+              workingCopyId: copy,
               expectedRevision: controller.revision,
             },
             line,
