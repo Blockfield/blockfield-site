@@ -33,7 +33,7 @@ const names = [
   'compareMap',
   'draftPanel',
   'playedVersions',
-  'unpublishedSaved',
+  'latestUnpublished',
   'snapshotsPanel',
   'comparePanel',
   'previewCandidate',
@@ -307,6 +307,9 @@ test('all roles get scoped draft and snapshot actions; only admins resume saved 
     window.candidateList = [{ status: 'pending', mapId: 'fields', versionDigest: SECOND }]
     assert.match(window.draftPanel(map).textContent, /уже на проверке/)
     assert.equal(window.draftPanel(map).textContent.includes('Отправить последнюю версию'), false)
+    // r4524282850: an OLDER pending review must not hide sending a newer saved version.
+    window.candidateList = [{ status: 'pending', mapId: 'fields', versionDigest: FIRST }]
+    assert.match(window.draftPanel(map).textContent, /Отправить последнюю версию/)
     window.candidateList = []
     window.savedMapSessions = [
       {

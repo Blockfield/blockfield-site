@@ -965,9 +965,16 @@ function playedVersions(map: MapCatalogEntry) {
   return seen
 }
 
-function unpublishedSaved(map: MapCatalogEntry) {
+// The newest saved version that is not part of the published history yet, or
+// null. Several reviews of one map may be pending, so only this exact version
+// being pending already makes "send" pointless.
+function latestUnpublished(map: MapCatalogEntry) {
   const played = playedVersions(map)
-  return map.versions.some((version) => !played.has(version.versionDigest))
+  return (
+    map.versions
+      .filter((version) => !played.has(version.versionDigest))
+      .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null
+  )
 }
 
 function goesLive(mapId: string) {
@@ -1043,7 +1050,13 @@ function draftPanel(map: MapCatalogEntry) {
     // request is open must never redirect the action to another copy.
     copy = mapSession!.id,
     head = map.head?.versionDigest ?? null,
-    sent = candidateList.some((c) => c.status === 'pending' && c.mapId === id)
+    sent = candidateList.some((c) => c.status === 'pending' && c.mapId === id),
+    latest = latestUnpublished(map),
+    unsent =
+      latest !== null &&
+      !candidateList.some(
+        (c) => c.status === 'pending' && c.mapId === id && c.versionDigest === latest.versionDigest,
+      )
   const part = el(
     'div',
     { className: 'map-part map-draft' },
@@ -1078,10 +1091,9 @@ function draftPanel(map: MapCatalogEntry) {
       { className: 'actions' },
       button('Сохранить и отправить на проверку', () => save(true), 'small primary'),
       button('Только сохранить версию', () => save(false), 'small'),
-      // Commits never move the head (it moves on publish), so a first map has
-      // saved versions while head is still null: offer the action whenever a
-      // saved version is not yet part of the published history.
-      unpublishedSaved(map) && !sent
+      // Commits never move the head (it moves on publish): offer the action for
+      // the newest unpublished saved version unless that exact version is pending.
+      unsent
         ? button(
             'Отправить последнюю версию',
             () => mapBusy(id, () => submitSaved(map, copy, line)),
