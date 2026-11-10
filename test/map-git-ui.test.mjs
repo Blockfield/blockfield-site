@@ -33,7 +33,7 @@ const names = [
   'compareMap',
   'draftPanel',
   'playedVersions',
-  'latestUnpublished',
+  'unpublishedTips',
   'snapshotsPanel',
   'comparePanel',
   'previewCandidate',
@@ -262,6 +262,33 @@ test('availability displays observed state, marks pending changes and reserves o
     /Ожидает применения: отключение/,
   )
   assert.equal(window.mapAvailabilityControls({ ...map, head: null }, line).textContent, '')
+})
+
+test('the newest unpublished version comes from parent links, not equal timestamps', (t) => {
+  // Review r4524308884: two saves can share a timestamp; the tip of the chain is
+  // the version no other version builds on.
+  const window = dom(t)
+  window.can = (permission) => permissions('builder').includes(permission)
+  window.mayEditMap = () => true
+  window.controller = { revision: 3 }
+  const chain = {
+    ...map,
+    head: null,
+    snapshots: [],
+    versions: [
+      { versionDigest: FIRST, createdAt: 5 },
+      { versionDigest: SECOND, createdAt: 5, parent: FIRST },
+    ],
+  }
+  assert.deepEqual(
+    window.unpublishedTips(chain).map((version) => version.versionDigest),
+    [SECOND],
+  )
+  window.candidateList = [{ status: 'pending', mapId: 'fields', versionDigest: FIRST }]
+  assert.match(window.draftPanel(chain).textContent, /Отправить последнюю версию/)
+  window.candidateList = [{ status: 'pending', mapId: 'fields', versionDigest: SECOND }]
+  assert.equal(window.draftPanel(chain).textContent.includes('Отправить последнюю версию'), false)
+  window.candidateList = []
 })
 
 test('a saved but unpublished version can be sent, also before the first publish', (t) => {

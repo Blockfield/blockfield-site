@@ -965,15 +965,19 @@ function playedVersions(map: MapCatalogEntry) {
   return seen
 }
 
-// The newest saved version that is not part of the published history yet, or
-// null. Several reviews of one map may be pending, so only this exact version
-// being pending already makes "send" pointless.
-function latestUnpublished(map: MapCatalogEntry) {
-  const played = playedVersions(map)
-  return (
-    map.versions
-      .filter((version) => !played.has(version.versionDigest))
-      .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null
+// Saved versions not yet in the published history that no other version builds
+// on: the tip(s) of the unpublished chain. Order comes from parent links, never
+// from timestamps (two saves can share one). Several reviews of a map may be
+// pending, so "send" is pointless only when a tip itself is already pending.
+function unpublishedTips(map: MapCatalogEntry) {
+  const played = playedVersions(map),
+    parents = new Set(
+      map.versions.flatMap(
+        (version) => version.parents ?? (version.parent ? [version.parent] : []),
+      ),
+    )
+  return map.versions.filter(
+    (version) => !played.has(version.versionDigest) && !parents.has(version.versionDigest),
   )
 }
 
@@ -1051,12 +1055,12 @@ function draftPanel(map: MapCatalogEntry) {
     copy = mapSession!.id,
     head = map.head?.versionDigest ?? null,
     sent = candidateList.some((c) => c.status === 'pending' && c.mapId === id),
-    latest = latestUnpublished(map),
-    unsent =
-      latest !== null &&
-      !candidateList.some(
-        (c) => c.status === 'pending' && c.mapId === id && c.versionDigest === latest.versionDigest,
-      )
+    unsent = unpublishedTips(map).some(
+      (tip) =>
+        !candidateList.some(
+          (c) => c.status === 'pending' && c.mapId === id && c.versionDigest === tip.versionDigest,
+        ),
+    )
   const part = el(
     'div',
     { className: 'map-part map-draft' },
