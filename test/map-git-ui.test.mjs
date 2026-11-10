@@ -34,6 +34,11 @@ const names = [
   'draftPanel',
   'playedVersions',
   'unpublishedTips',
+  'isStaleCopy',
+  'staleCopyReload',
+  'staleCopyActions',
+  'snapshotStaleCopy',
+  'checkoutFreshCopy',
   'snapshotsPanel',
   'comparePanel',
   'previewCandidate',
@@ -82,6 +87,10 @@ function dom(t) {
   window.customSelect = () => {}
   window.mapNotes = new Map()
   window.busyMaps = new Set()
+  window.staleCopyIds = new Map()
+  // Workshop contract (candidates.py STALE_COPY_MESSAGE): module state like the rest.
+  window.STALE_COPY_MESSAGE =
+    'stale working copy: the map has a newer version; save your draft as a snapshot and start from the current version'
   window.kept = (key, make) => make()
   window.mapLine = () => window.document.createElement('p')
   window.versionLabel = () => '8 октября 2026'
@@ -517,4 +526,90 @@ test('review preview compares the frozen target and publishes fast-forward', asy
     () => window.previewCandidate(candidate, outlet, line),
     /Версию в игре сменили/,
   )
+})
+
+test('only the workshop stale refusal marks the copy, not other errors', (t) => {
+  const window = dom(t)
+  assert.equal(
+    window.isStaleCopy(
+      'stale working copy: the map has a newer version; save your draft as a snapshot and start from the current version',
+    ),
+    true,
+  )
+  assert.equal(window.isStaleCopy('stale map head: refresh the map history'), false)
+  assert.equal(window.isStaleCopy('Версия в игре успела измениться. Обновите историю.'), false)
+  assert.equal(window.isStaleCopy(null), false)
+})
+
+test('a refused save marks the copy stale and offers the way out with role gating', async (t) => {
+  const window = dom(t),
+    line = window.document.createElement('p')
+  window.can = (permission) => permissions('owner').includes(permission)
+  window.mayEditMap = () => true
+  window.controller = { revision: 3 }
+  assert.equal(window.draftPanel(map).textContent.includes('Начать с текущей версии'), false)
+  let histories = 0
+  // The workshop refusal is the only stale signal: the catalog carries no stale flag.
+  window.mapRequest = async (_path, _body, _line, _done, onStale) => {
+    await onStale?.()
+    return null
+  }
+  window.loadMapHistory = async () => {
+    histories++
+  }
+  await window.commitMap(map, COPY, 'Новые укрытия', line, true)
+  assert.equal(histories, 1)
+  const stale = window.draftPanel(map)
+  assert.match(stale.textContent, /Копия устарела/)
+  assert.match(stale.textContent, /Сохранить черновик снимком/)
+  assert.match(stale.textContent, /Начать с текущей версии/)
+  // Builders and moderators restart from the head; only admins snapshot the draft.
+  for (const role of ['builder', 'moderator']) {
+    window.can = (permission) => permissions(role).includes(permission)
+    const panel = window.draftPanel(map)
+    assert.equal(panel.textContent.includes('Сохранить черновик снимком'), false)
+    assert.match(panel.textContent, /Начать с текущей версии/)
+  }
+  // A session switch hides the actions: the mark belongs to the refused copy.
+  window.can = (permission) => permissions('owner').includes(permission)
+  window.mapSession = { id: 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff', maps: ['fields'] }
+  assert.equal(window.draftPanel(map).textContent.includes('Начать с текущей версии'), false)
+})
+
+test('stale actions send the panel copy and refresh history after success', async (t) => {
+  const window = dom(t),
+    line = window.document.createElement('p'),
+    calls = []
+  let histories = 0
+  window.mapRequest = async (path, body) => {
+    calls.push([path, body])
+    return { mapId: body.mapId }
+  }
+  window.loadMapHistory = async () => {
+    histories++
+  }
+  window.run = (_line, action) => action()
+  window.ask = async () => ({ get: (key) => (key === 'snapshot' ? 'stale-draft' : null) })
+  await window.snapshotStaleCopy(map, COPY, line)
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['maps/snapshot-copy', { mapId: 'fields', name: 'stale-draft', workingCopyId: COPY }],
+  ])
+  assert.equal(histories, 1)
+  window.ask = async () => null
+  await window.snapshotStaleCopy(map, COPY, line)
+  assert.equal(calls.length, 1)
+  window.ask = async () => ({ get: () => 'main' })
+  await assert.rejects(() => window.snapshotStaleCopy(map, COPY, line), /имя снимка/)
+  assert.equal(calls.length, 1)
+  // checkout-fresh sends the panel copy; the server mints the new copy id.
+  calls.length = 0
+  window.ask = async () => true
+  await window.checkoutFreshCopy(map, COPY, line)
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['maps/checkout-fresh', { mapId: 'fields', workingCopyId: COPY }],
+  ])
+  assert.equal(histories, 2)
+  window.ask = async () => null
+  await window.checkoutFreshCopy(map, COPY, line)
+  assert.equal(calls.length, 1)
 })

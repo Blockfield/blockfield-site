@@ -779,6 +779,23 @@ function newMapControls() {
   return form
 }
 
+// Workshop#74 refuses saves from an outdated copy with this exact message. The
+// catalog carries no stale flag (drafts are {workingCopyId,name} only), so this
+// refusal is the signal: match the message itself, not the loose error regex.
+const STALE_COPY_MESSAGE =
+  'stale working copy: the map has a newer version; save your draft as a snapshot and start from the current version'
+function isStaleCopy(error: unknown): boolean {
+  return typeof error === 'string' && error.includes(STALE_COPY_MESSAGE)
+}
+
+// Refused copies by map: a session switch while the notice is open must not offer
+// the way out for a different copy, and a fresh save clears the mark.
+const staleCopyIds = new Map<string, string>()
+async function staleCopyReload(mapId: string, copy: string) {
+  staleCopyIds.set(mapId, copy)
+  await loadMapHistory()
+}
+
 function mapRequestError(line: HTMLElement, error: string) {
   const message = /no changes|nothing to commit/i.test(error)
     ? 'Нет изменений для сохранения. Постройте или измените разметку перед отправкой.'
@@ -798,10 +815,18 @@ async function mapRequest(
   body: Record<string, unknown>,
   line: HTMLElement,
   done: string,
+  onStale?: () => void | Promise<void>,
 ) {
   const { id } = await api(path, 'POST', body)
-  const result = await follow(line, id, done, (error) => mapRequestError(line, error))
-  if (!result?.ok) return null
+  let stale = false
+  const result = await follow(line, id, done, (error) => {
+    stale = isStaleCopy(error)
+    return mapRequestError(line, error)
+  })
+  if (!result?.ok) {
+    if (stale) await onStale?.()
+    return null
+  }
   if (
     !result.payload ||
     typeof result.payload !== 'object' ||
@@ -1013,8 +1038,10 @@ async function commitMap(
     review
       ? 'Версия сохранена и отправлена на проверку. Можно строить дальше.'
       : 'Версия сохранена. Отправьте её на проверку, когда будете готовы.',
+    () => staleCopyReload(map.mapId, copy),
   )
   if (!payload) return
+  staleCopyIds.delete(map.mapId)
   if (mapNotes.get(map.mapId) === note) mapNotes.delete(map.mapId)
   await loadMapHistory()
   if (review) await loadCandidates()
@@ -1041,9 +1068,92 @@ async function submitSaved(map: MapCatalogEntry, copy: string, line: HTMLElement
       },
       line,
       `«${name}» отправлена на проверку. Новые правки в неё не попадут.`,
+      () => staleCopyReload(map.mapId, copy),
     )
-    if (payload) await loadCandidates()
+    if (payload) {
+      staleCopyIds.delete(map.mapId)
+      await loadCandidates()
+    }
   })
+}
+
+async function snapshotStaleCopy(map: MapCatalogEntry, copy: string, line: HTMLElement) {
+  const name = el('input', {
+    name: 'snapshot',
+    required: true,
+    maxLength: 64,
+    pattern: '[a-z0-9][a-z0-9.\\-]{0,63}',
+    autocomplete: 'off',
+  })
+  const answer = await ask({
+    title: 'Сохранить черновик снимком?',
+    text: 'Черновик запишется снимком под этим именем и останется устаревшим; в игру он не попадёт.',
+    ok: 'Сохранить снимком',
+    fields: [field('Имя снимка', name, 'Латиница, цифры, точка, дефис или подчёркивание.')],
+  })
+  if (!answer) return
+  const snapshot = String(answer.get('snapshot') ?? '').trim()
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(snapshot) || snapshot === 'main')
+    throw new Error('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
+  await run(line, async () => {
+    const payload = await mapRequest(
+      'maps/snapshot-copy',
+      { mapId: map.mapId, name: snapshot, workingCopyId: copy },
+      line,
+      `Черновик сохранён снимком «${snapshot}». Копия осталась устаревшей: начните с текущей версии.`,
+    )
+    if (payload) await loadMapHistory()
+  })
+}
+
+async function checkoutFreshCopy(map: MapCatalogEntry, copy: string, line: HTMLElement) {
+  if (
+    !(await ask({
+      title: 'Начать с текущей версии?',
+      text: 'Откроется новая копия с версией из игры; несохранённые правки останутся в старой копии. Продолжите новую копию в сохранённых черновиках.',
+      ok: 'Начать с текущей версии',
+    }))
+  )
+    return
+  await run(line, async () => {
+    const payload = await mapRequest(
+      'maps/checkout-fresh',
+      { mapId: map.mapId, workingCopyId: copy },
+      line,
+      'Новая копия создана из текущей версии. Продолжите её в сохранённых черновиках.',
+    )
+    if (payload) await loadMapHistory()
+  })
+}
+
+function staleCopyActions(map: MapCatalogEntry, copy: string, line: HTMLElement) {
+  return el(
+    'div',
+    { className: 'stack' },
+    el('p', {
+      className: 'warn',
+      textContent:
+        'Копия устарела: в игре более новая версия, сохранение отклонено. Сохраните черновик снимком или начните с текущей версии.',
+    }),
+    el(
+      'div',
+      { className: 'actions' },
+      can('workshop')
+        ? button(
+            'Сохранить черновик снимком',
+            () => mapBusy(map.mapId, () => snapshotStaleCopy(map, copy, line)),
+            'small',
+            `Сохранить черновик карты ${mapName(map.mapId)} снимком`,
+          )
+        : null,
+      button(
+        'Начать с текущей версии',
+        () => mapBusy(map.mapId, () => checkoutFreshCopy(map, copy, line)),
+        'small',
+        `Начать карту ${mapName(map.mapId)} с текущей версии`,
+      ),
+    ),
+  )
 }
 
 function draftPanel(map: MapCatalogEntry) {
@@ -1079,6 +1189,7 @@ function draftPanel(map: MapCatalogEntry) {
     }),
   )
   if (!mayEditMap(id)) return part
+  if (staleCopyIds.get(id) === copy) part.append(staleCopyActions(map, copy, line))
   const form = el('form', { className: 'stack' }),
     note = el('textarea', { name: 'note', required: true, maxLength: 200, rows: 2 })
   note.value = mapNotes.get(id) ?? ''

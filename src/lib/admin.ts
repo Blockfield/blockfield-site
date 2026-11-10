@@ -967,6 +967,31 @@ export function writeRequest(
         request = { ...common, name: body.name }
       }
     }
+  } else if (body?.kind === 'snapshot-copy' || body?.kind === 'checkout-fresh') {
+    // The stale-copy way out (workshop#65 linear history): snapshot-copy preserves
+    // the refused draft under a name, checkout-fresh restarts from the current head.
+    if (!mapId(body.mapId) || !knownMaps.has(body.mapId)) throw bad('Неизвестная карта.')
+    if (body.kind === 'snapshot-copy') {
+      // The workshop admits only admins to snapshot-copy; the rest restart fresh.
+      if (!can(actor.role, 'workshop'))
+        throw fail(403, 'Сохранение черновика снимком доступно администратору.')
+      if (!mutableBranch(body.name))
+        throw bad('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
+      if (typeof body.workingCopyId !== 'string' || !COPY_UUID.test(body.workingCopyId))
+        throw bad('Выберите рабочую копию карты для снимка.')
+      request = {
+        ...base,
+        mapId: body.mapId,
+        name: body.name,
+        workingCopyId: body.workingCopyId,
+      }
+    } else {
+      if (!can(actor.role, 'map-edit')) throw fail(403, 'Нет права строить на этой карте.')
+      // The inbox workingCopyId is the NEW copy: the workshop refuses existing ids,
+      // so the server mints it (like map-create mints sessionId). The route pins the
+      // panel copy from the request body before it reaches this serializer.
+      request = { ...base, mapId: body.mapId, workingCopyId: randomUUID() }
+    }
   } else if (body?.kind === 'candidate' || body?.kind === 'rollback') {
     if (typeof body.mapId !== 'string' || !knownMaps.has(body.mapId))
       throw bad('Неизвестная карта.')
@@ -2832,6 +2857,49 @@ const routes: Record<string, Route> = {
         note: body?.note,
       },
     }),
+  },
+  'POST maps/snapshot-copy': {
+    permission: 'workshop',
+    handler: async ({ actor, store, body }) => {
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId),
+        { copy } = selectedMapSession(catalog, entry, body?.workingCopyId)
+      if (typeof body?.name !== 'string' || !mutableBranch(body.name))
+        throw bad('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
+      return {
+        id: writeRequest(
+          inboxDir(),
+          actor,
+          {
+            kind: 'snapshot-copy',
+            mapId: entry.mapId,
+            name: body.name,
+            workingCopyId: copy.id,
+          },
+          new Set(catalog.maps.map((map) => map.mapId)),
+        ),
+      }
+    },
+    audit: (body) => ({
+      action: 'map-snapshot-copy',
+      target: body?.mapId,
+      detail: { name: body?.name },
+    }),
+  },
+  'POST maps/checkout-fresh': {
+    permission: 'map-edit',
+    handler: async ({ actor, store, body }) => {
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId)
+      selectedMapSession(catalog, entry, body?.workingCopyId)
+      return {
+        id: writeRequest(
+          inboxDir(),
+          actor,
+          { kind: 'checkout-fresh', mapId: entry.mapId },
+          new Set(catalog.maps.map((map) => map.mapId)),
+        ),
+      }
+    },
+    audit: (body) => ({ action: 'map-checkout-fresh', target: body?.mapId ?? null }),
   },
   'POST maps/compare': {
     permission: 'map-edit',

@@ -1151,3 +1151,113 @@ test('published availability is admin-only, preserves settings/history and refus
   )
   assert.equal(readFileSync(join(settingsDir, 'settings.json'), 'utf8'), '{corrupt')
 })
+
+test('stale-copy way out: snapshot preserves the draft, fresh copy restarts from the head', async (t) => {
+  const directory = temp(t),
+    inbox = temp(t),
+    environment = { ...process.env },
+    store = await database(t),
+    MODERATOR = '3'.repeat(32)
+  t.after(() => {
+    for (const key of Object.keys(process.env)) if (!(key in environment)) delete process.env[key]
+    Object.assign(process.env, environment)
+  })
+  Object.assign(process.env, {
+    NODE_ENV: 'test',
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    BLOCKFIELD_ADMIN_DIR: directory,
+    BLOCKFIELD_INBOX_DIR: inbox,
+  })
+  await store.setStaff(BUILDER, 'Builder', 'builder', 'seed')
+  await store.setStaffMaps(BUILDER, ['custom_arena'])
+  await store.setStaff(MODERATOR, 'Moderator', 'moderator', 'seed')
+  seed(directory)
+  const call = async (method, path, body, actor = BUILDER) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = `${actor}:Tester`
+    const url = new URL('http://site/api/admin/' + path),
+      request = new Request(url, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, path, store).catch(
+      (error) => error,
+    )
+  }
+  const readRequest = async (response) => {
+    assert.equal(response.status, 200)
+    const { id } = await response.json()
+    return JSON.parse(readFileSync(join(inbox, id + '.json')))
+  }
+  const snapshotBody = { mapId: 'custom_arena', name: 'stale-draft', workingCopyId: COPY }
+  assert.equal((await call('POST', 'maps/snapshot-copy', snapshotBody)).status, 403)
+  assert.equal((await call('POST', 'maps/snapshot-copy', snapshotBody, MODERATOR)).status, 403)
+  assert.equal(
+    (await call('POST', 'maps/snapshot-copy', { ...snapshotBody, name: 'main' }, OWNER)).status,
+    400,
+  )
+  assert.equal(
+    (await call('POST', 'maps/snapshot-copy', { ...snapshotBody, workingCopyId: OWNER }, OWNER))
+      .status,
+    409,
+  )
+  const snapshot = await readRequest(await call('POST', 'maps/snapshot-copy', snapshotBody, OWNER))
+  assert.deepEqual(
+    [snapshot.kind, snapshot.mapId, snapshot.name, snapshot.workingCopyId],
+    ['snapshot-copy', 'custom_arena', 'stale-draft', COPY],
+  )
+  // checkout-fresh sends the panel copy; the server mints the new copy id.
+  const fresh = await readRequest(
+    await call('POST', 'maps/checkout-fresh', { mapId: 'custom_arena', workingCopyId: COPY }),
+  )
+  assert.equal(fresh.kind, 'checkout-fresh')
+  assert.equal(fresh.mapId, 'custom_arena')
+  assert.match(
+    fresh.workingCopyId,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  )
+  assert.notEqual(fresh.workingCopyId, COPY)
+  assert.equal(
+    (await call('POST', 'maps/checkout-fresh', { mapId: 'custom_arena', workingCopyId: OWNER }))
+      .status,
+    409,
+  )
+  assert.equal(
+    (await call('POST', 'maps/checkout-fresh', { mapId: 'other', workingCopyId: COPY })).status,
+    403,
+  )
+  const maps = new Set(['custom_arena'])
+  assert.throws(
+    () =>
+      writeRequest(
+        directory,
+        { uuid: MODERATOR, name: 'Moderator', role: 'moderator' },
+        { kind: 'snapshot-copy', mapId: 'custom_arena', name: 'x', workingCopyId: COPY },
+        maps,
+      ),
+    (error) => error instanceof Response && error.status === 403,
+  )
+  rejected(() =>
+    writeRequest(
+      directory,
+      { uuid: OWNER, name: 'Owner', role: 'owner' },
+      { kind: 'snapshot-copy', mapId: 'custom_arena', name: '../outside', workingCopyId: COPY },
+      maps,
+    ),
+  )
+  const direct = writeRequest(
+    directory,
+    { uuid: BUILDER, name: 'Builder', role: 'builder' },
+    { kind: 'checkout-fresh', mapId: 'custom_arena' },
+    maps,
+  )
+  assert.equal(JSON.parse(readFileSync(join(directory, direct + '.json'))).kind, 'checkout-fresh')
+  rejected(() =>
+    writeRequest(
+      directory,
+      { uuid: BUILDER, name: 'Builder', role: 'builder' },
+      { kind: 'checkout-fresh', mapId: 'unknown' },
+      maps,
+    ),
+  )
+})
