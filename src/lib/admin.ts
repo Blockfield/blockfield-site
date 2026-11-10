@@ -2435,7 +2435,12 @@ const routes: Record<string, Route> = {
     handler: async ({ actor, body }) => {
       const { cpConfigured } = await import('./cp.ts')
       if (cpConfigured()) {
-        const { settings, cpRevisions } = await saveSettingsCp(settingsDir(), body, actor.name)
+        const { settings, cpRevisions } = await saveSettingsCp(
+          settingsDir(),
+          body,
+          actor.name,
+          actor.uuid,
+        )
         return { settings, cpRevisions }
       }
       return { settings: saveSettings(settingsDir(), body, actor.name) }
@@ -2460,7 +2465,12 @@ const routes: Record<string, Route> = {
     handler: async ({ actor, body }) => {
       const { cpConfigured } = await import('./cp.ts')
       if (cpConfigured()) {
-        const { policy, cpRevisions } = await saveAiLimitsCp(settingsDir(), body, actor.role)
+        const { policy, cpRevisions } = await saveAiLimitsCp(
+          settingsDir(),
+          body,
+          actor.role,
+          actor.uuid,
+        )
         return { policy, cpRevisions }
       }
       return { policy: saveAiLimits(settingsDir(), body) }
@@ -2483,7 +2493,7 @@ const routes: Record<string, Route> = {
   'PUT workshop-ai-settings': {
     permission: 'ai',
     maxBody: 8192,
-    handler: async ({ body }) => {
+    handler: async ({ actor, body }) => {
       const hasKey = (provider) =>
         readWorkshopAiKeyStatus(adminDir(), workshopAiKeyStatusFile(provider)).set
       const { cpConfigured } = await import('./cp.ts')
@@ -2492,6 +2502,7 @@ const routes: Record<string, Route> = {
           settingsDir(),
           body,
           hasKey,
+          actor.uuid,
         )
         return { settings, cpRevisions }
       }
@@ -2599,7 +2610,12 @@ const routes: Record<string, Route> = {
     handler: async ({ actor, body }) => {
       const { cpConfigured } = await import('./cp.ts')
       if (cpConfigured()) {
-        const { settings, cpRevisions } = await saveKitSettingsCp(settingsDir(), body, actor.name)
+        const { settings, cpRevisions } = await saveKitSettingsCp(
+          settingsDir(),
+          body,
+          actor.name,
+          actor.uuid,
+        )
         return { settings, cpRevisions }
       }
       return { settings: saveKitSettings(settingsDir(), body, actor.name) }
@@ -2620,6 +2636,7 @@ const routes: Record<string, Route> = {
           settingsDir(),
           body,
           actor.name,
+          actor.uuid,
           true,
         )
         return { settings, cpRevisions }
@@ -2719,6 +2736,7 @@ const routes: Record<string, Route> = {
           settingsDir(),
           body,
           actor.name,
+          actor.uuid,
         )
         return { settings, cpRevisions }
       }
@@ -4294,6 +4312,7 @@ async function cpSettleSave(args: {
   fileName: string
   revision: number
   actorName: string
+  actorUuid: string
   jobs: CpJob[]
   rebuild: () => Promise<{ value: any; cpRevisions: Record<string, number> }>
   stamp?: boolean
@@ -4310,6 +4329,7 @@ async function cpSettleSave(args: {
         expectedRevision: base,
         idempotencyKey: `site:${revision}:${job.namespace}:${job.kind}:${index}`,
         patch: job.patch,
+        actorAccountId: args.actorUuid,
       })) as { operationId: string; revision: number }
       revs.set(job.namespace, receipt.revision)
     } catch (error) {
@@ -4351,6 +4371,7 @@ export async function saveSettingsCp(
   directory: string,
   body: any,
   actorName: string,
+  actorUuid: string,
   gunBalanceOnly = false,
 ) {
   if (!plain(body)) throw bad('Некорректные настройки.')
@@ -4470,6 +4491,7 @@ export async function saveSettingsCp(
       fileName: 'settings.json',
       revision,
       actorName,
+      actorUuid,
       jobs,
       rebuild: async () => {
         const view = await readSettingsCpView(directory)
@@ -4479,7 +4501,12 @@ export async function saveSettingsCp(
     return { settings: built.value, cpRevisions: built.cpRevisions }
   })
 }
-export async function saveKitSettingsCp(directory: string, body: any, actorName: string) {
+export async function saveKitSettingsCp(
+  directory: string,
+  body: any,
+  actorName: string,
+  actorUuid: string,
+) {
   if (
     !plain(body) ||
     Object.keys(body).some(
@@ -4557,6 +4584,7 @@ export async function saveKitSettingsCp(directory: string, body: any, actorName:
       fileName: 'settings.json',
       revision: current.revision,
       actorName,
+      actorUuid,
       jobs,
       rebuild: async () => {
         const view = await readSettingsCpView(directory)
@@ -4567,7 +4595,12 @@ export async function saveKitSettingsCp(directory: string, body: any, actorName:
   })
 }
 
-export async function saveMapAvailabilityCp(directory: string, body: any, actorName: string) {
+export async function saveMapAvailabilityCp(
+  directory: string,
+  body: any,
+  actorName: string,
+  actorUuid: string,
+) {
   if (
     !plain(body) ||
     !mapId(body.mapId) ||
@@ -4606,6 +4639,7 @@ export async function saveMapAvailabilityCp(directory: string, body: any, actorN
       fileName: 'settings.json',
       revision: availability.revision,
       actorName,
+      actorUuid,
       jobs,
       rebuild: async () => {
         const view = await readSettingsCpView(directory)
@@ -4616,7 +4650,12 @@ export async function saveMapAvailabilityCp(directory: string, body: any, actorN
   })
 }
 
-export async function saveAiLimitsCp(directory: string, body: any, actorRole: Role | null) {
+export async function saveAiLimitsCp(
+  directory: string,
+  body: any,
+  actorRole: Role | null,
+  actorUuid: string,
+) {
   if (actorRole !== 'owner') throw fail(403, 'Недостаточно прав.')
   if (
     !plain(body) ||
@@ -4674,6 +4713,7 @@ export async function saveAiLimitsCp(directory: string, body: any, actorRole: Ro
       fileName: 'ai-limits.json',
       revision: current.revision,
       actorName: String(actorRole),
+      actorUuid,
       jobs,
       stamp: false,
       rebuild: async () => {
@@ -4689,6 +4729,7 @@ export async function saveWorkshopAiSettingsCp(
   directory: string,
   body: any,
   hasKey: (provider: string) => boolean,
+  actorUuid: string,
 ) {
   if (
     !plain(body) ||
@@ -4789,6 +4830,7 @@ export async function saveWorkshopAiSettingsCp(
       fileName: 'workshop-ai-settings.json',
       revision: (current as Record<string, unknown>).revision as number,
       actorName: 'owner',
+      actorUuid,
       jobs,
       rebuild: async () => {
         const view = (await readWorkshopAiSettingsCpView(directory)) as Record<string, unknown>
