@@ -32,6 +32,8 @@ const names = [
   'goesLive',
   'compareMap',
   'draftPanel',
+  'playedVersions',
+  'unpublishedSaved',
   'snapshotsPanel',
   'comparePanel',
   'previewCandidate',
@@ -260,6 +262,27 @@ test('availability displays observed state, marks pending changes and reserves o
     /Ожидает применения: отключение/,
   )
   assert.equal(window.mapAvailabilityControls({ ...map, head: null }, line).textContent, '')
+})
+
+test('a saved but unpublished version can be sent, also before the first publish', (t) => {
+  // Review r4524237455: commits never move the head, so a first map has a saved
+  // version while head is still null; the send action must be offered then too.
+  const window = dom(t)
+  window.can = (permission) => permissions('builder').includes(permission)
+  window.mayEditMap = () => true
+  window.controller = { revision: 3 }
+  const first = {
+    ...map,
+    head: null,
+    snapshots: [],
+    versions: [{ versionDigest: FIRST, createdAt: 1 }],
+  }
+  assert.match(window.draftPanel(first).textContent, /Отправить последнюю версию/)
+  const published = { ...first, head: { versionDigest: FIRST } }
+  assert.equal(
+    window.draftPanel(published).textContent.includes('Отправить последнюю версию'),
+    false,
+  )
 })
 
 test('all roles get scoped draft and snapshot actions; only admins resume saved copies', (t) => {

@@ -965,6 +965,11 @@ function playedVersions(map: MapCatalogEntry) {
   return seen
 }
 
+function unpublishedSaved(map: MapCatalogEntry) {
+  const played = playedVersions(map)
+  return map.versions.some((version) => !played.has(version.versionDigest))
+}
+
 function goesLive(mapId: string) {
   const kind = mapCatalog?.find((map) => map.mapId === mapId)?.kind
   return kind === 'lobby'
@@ -1073,7 +1078,10 @@ function draftPanel(map: MapCatalogEntry) {
       { className: 'actions' },
       button('Сохранить и отправить на проверку', () => save(true), 'small primary'),
       button('Только сохранить версию', () => save(false), 'small'),
-      head !== null && !sent
+      // Commits never move the head (it moves on publish), so a first map has
+      // saved versions while head is still null: offer the action whenever a
+      // saved version is not yet part of the published history.
+      unpublishedSaved(map) && !sent
         ? button(
             'Отправить последнюю версию',
             () => mapBusy(id, () => submitSaved(map, copy, line)),
