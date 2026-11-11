@@ -15,6 +15,9 @@ import {
 } from '../src/lib/admin.ts'
 import { kitFixture } from './kits-fixture.mjs'
 
+/** Acting admin the settings saves assert to CP (any stable UUID). */
+const ACTOR = 'd94f8b1e-2c3a-4d5e-8f70-91a2b3c4d5e6'
+
 const status = (error) =>
   error instanceof Response ? error.status : assert.fail(`expected Response, got ${error}`)
 const temp = (t) => {
@@ -208,8 +211,8 @@ test('CP settings CAS on a real handler: concurrent writers, one wins with 409',
     seed(dir, 'settings.json', { schema: 1, revision: 0 })
     const body = { expectedRevision: 0, rooms: { maxRooms: 2 } }
     const [first, second] = await Promise.allSettled([
-      saveSettingsCp(dir, body, 'A'),
-      saveSettingsCp(dir, { expectedRevision: 0, rooms: { maxRooms: 3 } }, 'B'),
+      saveSettingsCp(dir, body, 'A', ACTOR),
+      saveSettingsCp(dir, { expectedRevision: 0, rooms: { maxRooms: 3 } }, 'B', ACTOR),
     ])
     const won = [first, second].find((r) => r.status === 'fulfilled')
     const lost = [first, second].find((r) => r.status === 'rejected')
@@ -225,6 +228,21 @@ test('CP settings CAS on a real handler: concurrent writers, one wins with 409',
   })
 })
 
+test('CP settings PATCH carries the acting admin account to CP', async (t) => {
+  await withCp(t, async (dir, seen) => {
+    seed(dir, 'settings.json', { schema: 1, revision: 0 })
+    await saveSettingsCp(
+      dir,
+      { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} },
+      'A',
+      ACTOR,
+    )
+    const rooms = seen.filter(([ns]) => ns === 'rooms')
+    assert.equal(rooms.length, 1)
+    assert.equal(rooms[0][1].actorAccountId, ACTOR)
+  })
+})
+
 test('CP ai-limits is owner-only: admin is refused before any CP call', async (t) => {
   await withCp(t, async (dir, seen) => {
     seed(dir, 'ai-limits.json', {
@@ -236,9 +254,9 @@ test('CP ai-limits is owner-only: admin is refused before any CP call', async (t
       builders: {},
     })
     const body = { expectedRevision: 0, mode: 'builder', sessions: {}, builders: {} }
-    await assert.rejects(saveAiLimitsCp(dir, body, 'admin'), (e) => status(e) === 403)
+    await assert.rejects(saveAiLimitsCp(dir, body, 'admin', ACTOR), (e) => status(e) === 403)
     assert.equal(seen.length, 0)
-    const policy = await saveAiLimitsCp(dir, body, 'owner')
+    const policy = await saveAiLimitsCp(dir, body, 'owner', ACTOR)
     assert.equal(policy.policy.revision, 1)
     assert.equal(policy.policy.mode, 'builder')
     assert.equal(seen.length, 1)
@@ -255,6 +273,7 @@ test('CP maps round-trip: PATCH disabledMapIds, GET view shows it', async (t) =>
       dir,
       { mapId: 'arena1', enabled: false, expectedRevision: 0 },
       'A',
+      ACTOR,
     )
     assert.deepEqual(saved.settings.disabledMapIds, ['arena1'])
     const view = await readSettingsCpView(dir)
@@ -270,6 +289,7 @@ test('CP GET view overlays CP namespaces on the file mirror', async (t) => {
       dir,
       { expectedRevision: 0, lobby: { pvpEnabled: true }, rooms: { maxRooms: 2 } },
       'A',
+      ACTOR,
     )
     const view = await readSettingsCpView(dir)
     assert.deepEqual(view.settings.lobby, { pvpCooldownSeconds: 30, pvpEnabled: true })
@@ -283,10 +303,11 @@ test('CP settings requires the carried base revision: missing base is a 409', as
       dir,
       { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} },
       'A',
+      ACTOR,
     )
     assert.equal(first.settings.revision, 1)
     await assert.rejects(
-      saveSettingsCp(dir, { expectedRevision: 1, rooms: { maxRooms: 3 } }, 'B'),
+      saveSettingsCp(dir, { expectedRevision: 1, rooms: { maxRooms: 3 } }, 'B', ACTOR),
       (e) => status(e) === 409,
     )
     assert.equal(
@@ -300,12 +321,18 @@ test('CP settings requires the carried base revision: missing base is a 409', as
 test('CP settings surfaces a stale carried base as 409', async (t) => {
   await withCp(t, async (dir) => {
     seed(dir, 'settings.json', { schema: 1, revision: 0 })
-    await saveSettingsCp(dir, { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} }, 'A')
+    await saveSettingsCp(
+      dir,
+      { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} },
+      'A',
+      ACTOR,
+    )
     await assert.rejects(
       saveSettingsCp(
         dir,
         { expectedRevision: 1, rooms: { maxRooms: 3 }, cpRevisions: { rooms: 0 } },
         'B',
+        ACTOR,
       ),
       (e) => status(e) === 409,
     )
@@ -324,6 +351,7 @@ test('CP settings PATCHes only changed namespaces', async (t) => {
         cpRevisions: {},
       },
       'A',
+      ACTOR,
     )
     const roomsPatches = seen.filter(([ns]) => ns === 'rooms').length
     await saveSettingsCp(
@@ -335,6 +363,7 @@ test('CP settings PATCHes only changed namespaces', async (t) => {
         cpRevisions: { gameplay: 1, rooms: 1 },
       },
       'A',
+      ACTOR,
     )
     assert.equal(
       seen.filter(([ns]) => ns === 'rooms').length,
@@ -357,6 +386,7 @@ test('CP settings partial commit names what was saved', async (t) => {
         cpRevisions: {},
       },
       'A',
+      ACTOR,
     )
     const error = await saveSettingsCp(
       dir,
@@ -367,6 +397,7 @@ test('CP settings partial commit names what was saved', async (t) => {
         cpRevisions: { gameplay: 1, rooms: 0 },
       },
       'B',
+      ACTOR,
     ).then(
       () => assert.fail('expected a partial-commit failure'),
       (e) => e,
@@ -417,6 +448,7 @@ test('CP gun-only path PATCHes only gunBalance', async (t) => {
         cpRevisions: {},
       },
       'A',
+      ACTOR,
       true,
     )
     assert.equal(saved.settings.revision, 1)
@@ -454,7 +486,7 @@ test('CP reset-all gun overrides sends a null-delete PATCH', async (t) => {
         },
       ],
     })
-    const args = (body) => [dir, body, 'A', true]
+    const args = (body) => [dir, body, 'A', ACTOR, true]
     await saveSettingsCp(
       ...args({
         expectedRevision: 0,
@@ -483,7 +515,12 @@ test('CP reset-all gun overrides sends a null-delete PATCH', async (t) => {
 test('CP mirror is rebuilt from CP: sequential section saves keep each other', async (t) => {
   await withCp(t, async (dir) => {
     seed(dir, 'settings.json', { schema: 1, revision: 0 })
-    await saveSettingsCp(dir, { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} }, 'A')
+    await saveSettingsCp(
+      dir,
+      { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} },
+      'A',
+      ACTOR,
+    )
     const view = await readSettingsCpView(dir)
     await saveSettingsCp(
       dir,
@@ -493,6 +530,7 @@ test('CP mirror is rebuilt from CP: sequential section saves keep each other', a
         cpRevisions: { rooms: view.cpRevisions.rooms },
       },
       'B',
+      ACTOR,
     )
     const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
     assert.deepEqual(mirror.rooms, { maxRooms: 2 }, 'earlier section survives')
@@ -505,11 +543,17 @@ test('CP concurrent saves on disjoint sections both win without dropping', async
   await withCp(t, async (dir) => {
     seed(dir, 'settings.json', { schema: 1, revision: 0 })
     const [first, second] = await Promise.allSettled([
-      saveSettingsCp(dir, { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} }, 'A'),
+      saveSettingsCp(
+        dir,
+        { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} },
+        'A',
+        ACTOR,
+      ),
       saveSettingsCp(
         dir,
         { expectedRevision: 0, lobby: { pvpEnabled: false }, cpRevisions: {} },
         'B',
+        ACTOR,
       ),
     ])
     assert.equal(first.status, 'fulfilled', 'rooms save commits')
@@ -532,6 +576,7 @@ test('CP 500 is unknown, not "not applied"', async (t) => {
       dir,
       { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} },
       'A',
+      ACTOR,
     ).then(
       () => assert.fail('expected an unknown-outcome failure'),
       (e) => e,
@@ -564,6 +609,7 @@ test('CP rejects an unmapped lobby field with 422 and touches nothing', async (t
           cpRevisions: {},
         },
         'A',
+        ACTOR,
       ),
       (e) => status(e) === 422,
     )
@@ -577,7 +623,12 @@ test('CP rejects an unmapped lobby field with 422 and touches nothing', async (t
 test('CP GET settings view carries per-namespace base revisions', async (t) => {
   await withCp(t, async (dir) => {
     seed(dir, 'settings.json', { schema: 1, revision: 0 })
-    await saveSettingsCp(dir, { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} }, 'A')
+    await saveSettingsCp(
+      dir,
+      { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} },
+      'A',
+      ACTOR,
+    )
     const view = await readSettingsCpView(dir)
     assert.deepEqual(view.cpRevisions, { rooms: 1 })
   })
@@ -595,6 +646,7 @@ test('CP classLocks-only save keeps stored classCosts (absent CP key)', async (t
       dir,
       { expectedRevision: 0, classLocks: ['tech', 'sniper'], cpRevisions: {} },
       'A',
+      ACTOR,
     )
     assert.equal(saved.settings.revision, 1)
     assert.deepEqual(saved.settings.classLocks, ['tech', 'sniper'])
@@ -624,6 +676,7 @@ test('CP AI saves persist no transport metadata in the files', async (t) => {
       dir,
       { expectedRevision: 0, mode: 'builder', sessions: {}, builders: {} },
       'owner',
+      ACTOR,
     )
     assert.equal(policy.policy.revision, 1)
     assert.deepEqual(policy.cpRevisions, { 'ai-limits': 1 }, 'UI still gets its base revision')
@@ -676,6 +729,7 @@ test('CP AI saves persist no transport metadata in the files', async (t) => {
         inputGuardEnabled: false,
       },
       () => true,
+      ACTOR,
     )
     assert.ok(!('cpRevisions' in workshop.settings), 'response settings carry no transport key')
     const workshopFile = JSON.parse(readFileSync(join(dir, 'workshop-ai-settings.json')))
@@ -692,6 +746,7 @@ test('CP commit-then-timeout is treated as applied, not rejected', async (t) => 
         dir,
         { expectedRevision: 0, rooms: { maxRooms: 2 }, cpRevisions: {} },
         'A',
+        ACTOR,
       )
       assert.equal(saved.settings.revision, 1)
       assert.deepEqual(saved.settings.rooms, { maxRooms: 2 }, 'committed value is returned')
@@ -714,6 +769,7 @@ test('CP campaignBalance: nested removal sends nested nulls, reset sends a paren
         cpRevisions: {},
       },
       'A',
+      ACTOR,
     )
     assert.deepEqual(seen[seen.length - 1][1].patch, {
       campaignBalance: { '*': { max_tickets: 500 }, c1: { score_per_kill: 10 } },
@@ -727,6 +783,7 @@ test('CP campaignBalance: nested removal sends nested nulls, reset sends a paren
         cpRevisions: { campaign: view.cpRevisions.campaign },
       },
       'A',
+      ACTOR,
     )
     assert.deepEqual(
       seen[seen.length - 1][1].patch,
@@ -746,6 +803,7 @@ test('CP campaignBalance: nested removal sends nested nulls, reset sends a paren
         cpRevisions: { campaign: afterRemoval.cpRevisions.campaign },
       },
       'A',
+      ACTOR,
     )
     assert.deepEqual(
       seen[seen.length - 1][1].patch,
@@ -781,7 +839,7 @@ test('CP gunBalance: dropping one gun sends a per-gun null, untouched guns are a
         warnings: [],
       })),
     })
-    const args = (body) => [dir, body, 'A', true]
+    const args = (body) => [dir, body, 'A', ACTOR, true]
     await saveSettingsCp(
       ...args({
         expectedRevision: 0,
@@ -815,6 +873,7 @@ test('CP kits: dropped kit sends a null, cleared mode sends null as a value, oth
       dir,
       { expectedRevision: 0, kits: { custom }, fixedModeKits: { room: 'custom' }, cpRevisions: {} },
       'A',
+      ACTOR,
     )
     assert.equal(view0.settings.revision, 1)
     assert.deepEqual(seen[seen.length - 1][1].patch, {
@@ -825,6 +884,7 @@ test('CP kits: dropped kit sends a null, cleared mode sends null as a value, oth
       dir,
       { expectedRevision: 1, kits: {}, fixedModeKits: { room: null }, cpRevisions: { kits: 1 } },
       'A',
+      ACTOR,
     )
     assert.deepEqual(
       seen[seen.length - 1][1].patch,
@@ -838,6 +898,7 @@ test('CP kits: dropped kit sends a null, cleared mode sends null as a value, oth
       dir,
       { expectedRevision: 2, kits: {}, fixedModeKits: {}, cpRevisions: { kits: 2 } },
       'A',
+      ACTOR,
     )
     assert.equal(seen.length, patches, 'a mode missing from fixedModeKits is not a removal')
     assert.deepEqual(kept.settings.fixedModeKits, { room: null }, 'stored null survives')
@@ -862,6 +923,7 @@ test('CP ai-limits: dropped account sends a nested null, reset scopes send paren
       dir,
       { expectedRevision: 0, mode: 'session', sessions: { [u1]: 100, [u3]: 300 }, builders: {} },
       'owner',
+      ACTOR,
     )
     assert.deepEqual(
       seen[seen.length - 1][1].patch,
@@ -878,6 +940,7 @@ test('CP ai-limits: dropped account sends a nested null, reset scopes send paren
         cpRevisions: { 'ai-limits': 1 },
       },
       'owner',
+      ACTOR,
     )
     assert.deepEqual(
       seen[seen.length - 1][1].patch,
@@ -894,6 +957,7 @@ test('CP ai-limits: dropped account sends a nested null, reset scopes send paren
         cpRevisions: { 'ai-limits': 2 },
       },
       'owner',
+      ACTOR,
     )
     assert.deepEqual(
       seen[seen.length - 1][1].patch,
@@ -910,6 +974,7 @@ test('CP ai-limits: dropped account sends a nested null, reset scopes send paren
         cpRevisions: { 'ai-limits': 3 },
       },
       'owner',
+      ACTOR,
     )
     assert.deepEqual(seen[seen.length - 1][1].patch, { builders: null })
     const view = await readAiLimitsCpView(dir)
@@ -962,7 +1027,12 @@ test('CP workshop-ai sequential saves survive the stamped mirror (tolerant reade
       generationMaxPriceCompletionUsdPerM: 1.5,
       inputGuardEnabled: false,
     }
-    const first = await saveWorkshopAiSettingsCp(dir, { expectedRevision: 0, ...base }, () => true)
+    const first = await saveWorkshopAiSettingsCp(
+      dir,
+      { expectedRevision: 0, ...base },
+      () => true,
+      ACTOR,
+    )
     assert.equal(first.settings.revision, 1)
     const file1 = JSON.parse(readFileSync(join(dir, 'workshop-ai-settings.json')))
     assert.equal(file1.revision, 1)
@@ -973,6 +1043,7 @@ test('CP workshop-ai sequential saves survive the stamped mirror (tolerant reade
       dir,
       { expectedRevision: 1, ...base, maxBlocks: 2048, cpRevisions: { 'workshop-ai': 1 } },
       () => true,
+      ACTOR,
     )
     assert.equal(second.settings.revision, 2)
     assert.equal(second.settings.maxBlocks, 2048)
@@ -992,13 +1063,20 @@ test('CP streak table: saves without it keep it, null deletes the key in CP and 
       dir,
       { expectedRevision: 0, deathmatch: { streakRewards: table }, cpRevisions: {} },
       'A',
+      ACTOR,
     )
-    await saveSettingsCp(dir, { expectedRevision: 1, rooms: { maxRooms: 3 }, cpRevisions: {} }, 'A')
+    await saveSettingsCp(
+      dir,
+      { expectedRevision: 1, rooms: { maxRooms: 3 }, cpRevisions: {} },
+      'A',
+      ACTOR,
+    )
     assert.deepEqual((await readSettingsCpView(dir)).settings.deathmatch.streakRewards, table)
     await saveSettingsCp(
       dir,
       { expectedRevision: 2, deathmatch: { minPlayers: 3 }, cpRevisions: { deathmatch: 1 } },
       'A',
+      ACTOR,
     )
     assert.deepEqual(mirror().deathmatch, { minPlayers: 3, streakRewards: table })
     await saveSettingsCp(
@@ -1009,6 +1087,7 @@ test('CP streak table: saves without it keep it, null deletes the key in CP and 
         cpRevisions: { deathmatch: 2 },
       },
       'A',
+      ACTOR,
     )
     const patch = seen.filter(([ns]) => ns === 'deathmatch').at(-1)[1].patch
     assert.equal(patch.streakRewards, null, 'null is the RFC 7396 delete')
@@ -1025,6 +1104,7 @@ test('CP streak reset of a section holding only the table clears the mirror too'
       dir,
       { expectedRevision: 0, deathmatch: { streakRewards: table }, cpRevisions: {} },
       'A',
+      ACTOR,
     )
     await saveSettingsCp(
       dir,
@@ -1034,6 +1114,7 @@ test('CP streak reset of a section holding only the table clears the mirror too'
         cpRevisions: { deathmatch: 1 },
       },
       'A',
+      ACTOR,
     )
     const view = await readSettingsCpView(dir)
     assert.equal(view.settings.deathmatch?.streakRewards, undefined)

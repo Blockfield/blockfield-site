@@ -1,5 +1,7 @@
 name: Build and deploy the landing page
 on:
+  # Release flow: main moves only on the next→main release merge, so every
+  # push here ships prod (image :latest plus the Dokploy deploy below).
   push:
     branches: [main]
   workflow_dispatch:
@@ -12,7 +14,7 @@ permissions:
 jobs:
   check:
     needs: postgres
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     services:
       postgres:
@@ -62,7 +64,7 @@ jobs:
             ghcr.io/blockfield/blockfield-site:${{ github.sha }}
             ghcr.io/blockfield/blockfield-site:latest
   postgres:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
       postgres:
@@ -91,7 +93,7 @@ jobs:
           BLOCKFIELD_TEST_DATABASE_URL: postgres://blockfield:test-only@localhost:5432/blockfield_test
   deploy:
     needs: check
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Deploy through the Dokploy webhook

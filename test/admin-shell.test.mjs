@@ -43,7 +43,22 @@ const streakFns = [
 ]
 
 const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
-const script = page.split('<script>')[1].split('</script>')[0]
+// SITE95-U2: section helpers live in typed modules; extract from all sources.
+const libs = [
+  '../src/lib/admin-shell.ts',
+  '../src/lib/admin-settings.ts',
+  '../src/lib/admin-workshop.ts',
+  '../src/lib/admin-overview.ts',
+  '../src/lib/admin-players.ts',
+  '../src/lib/admin-stats.ts',
+  '../src/lib/admin-journal.ts',
+  '../src/lib/admin-health.ts',
+  '../src/lib/admin-console.ts',
+  '../src/lib/admin-tabs.ts',
+]
+  .map((file) => readFileSync(new URL(file, import.meta.url), 'utf8'))
+  .join('\n')
+const script = page.split('<script>')[1].split('</script>')[0] + '\n' + libs
 const source = ts.createSourceFile('admin.ts', script, ts.ScriptTarget.Latest, true)
 const functions = (names) =>
   ts.transpileModule(
@@ -134,7 +149,7 @@ test('live sidebar shows unavailable, empty and scored matches without placehold
       can: () => false,
     })
     dom.window.eval(
-      `const $ = (s) => document.querySelector(s); let controller, session, lastWorkshop; const PHASES = { VOTING: 'Голосование за карту' }; const describeGame = () => ({ tone: 'bad', title: 'недоступно', detail: '' }); const describeWorkshop = describeGame; const say = () => {}; const ago = () => 'только что'; const renderModes = () => {}; const renderRooms = () => {}; const renderWorkshopCard = () => {}; ${functions(['el', 'renderRoomSummary', 'renderGameOverview', 'renderOverview', 'loadOverview'])}`,
+      `const $ = (s) => document.querySelector(s); let controller, session, lastWorkshop; const setController = (v) => controller = v; const PHASES = { VOTING: 'Голосование за карту' }; const describeGame = () => ({ tone: 'bad', title: 'недоступно', detail: '' }); const describeWorkshop = describeGame; const say = () => {}; const ago = () => 'только что'; const renderModes = () => {}; const renderRooms = () => {}; const renderWorkshopCard = () => {}; ${functions(['el', 'renderRoomSummary', 'renderGameOverview', 'renderOverview', 'loadOverview'])}`,
     )
     await dom.window.loadOverview()
     const box = dom.window.document.querySelector('#side-now')
@@ -391,10 +406,11 @@ test('rooms event renders the real Game headline, lamp, detail and mode readines
       const switchView = () => ({ busy:false });
       const describeWorkshop = () => ({title:'Мастерская открыта',detail:'',tone:'ok'});
       const renderRooms = () => {}, renderProgress = () => {};
+      const getLastWorkshop = () => lastWorkshop;
       ${functions(['el', 'describeGame', 'renderRoomSummary', 'renderGameOverview', 'renderModes', 'workshopActions'])}
       window.handlers = {};
       const events = { addEventListener: (name, handler) => window.handlers[name] = handler };
-      ${ts.transpileModule(script.slice(script.indexOf("      events.addEventListener('rooms'"), script.indexOf("      events.addEventListener(\n        'settings'", script.indexOf("      events.addEventListener('rooms'"))), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}
+      ${ts.transpileModule(script.slice(script.indexOf("  events.addEventListener('rooms'"), script.indexOf("  events.addEventListener(\n    'settings'", script.indexOf("  events.addEventListener('rooms'"))), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}
     `)
     const send = (rooms) => dom.window.handlers.rooms({ data: JSON.stringify({ rooms }) })
     send({ available: true, rooms: [], online: 0 })

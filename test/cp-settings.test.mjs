@@ -19,6 +19,7 @@ function fakeSettingsCp() {
     'gameplay/*': { revision: 7, value: structuredClone(namespaces.gameplay) },
   }
   const ops = new Map()
+  const patches = []
   let counter = 0
   const server = http.createServer((req, res) => {
     if (req.headers.authorization !== 'Bearer settings-t')
@@ -43,6 +44,7 @@ function fakeSettingsCp() {
       }
       if (req.method !== 'PATCH') return json(res, 405, { error: 'method_not_allowed' })
       const payload = JSON.parse(body)
+      patches.push(payload)
       if (ops.has(payload.idempotencyKey)) {
         const prev = ops.get(payload.idempotencyKey)
         if (prev.body === body) return json(res, 202, prev.receipt)
@@ -60,16 +62,16 @@ function fakeSettingsCp() {
       return json(res, 202, receipt)
     })
   })
-  return { server, state }
+  return { server, state, patches }
 }
 
 async function withServer(fn) {
-  const { server } = fakeSettingsCp()
+  const { server, patches } = fakeSettingsCp()
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   try {
     process.env.BLOCKFIELD_CP_URL = `http://127.0.0.1:${server.address().port}`
     process.env.BLOCKFIELD_CP_SETTINGS_TOKEN = 'settings-t'
-    await fn(server)
+    await fn(server, patches)
   } finally {
     await new Promise((resolve) => server.close(resolve))
     delete process.env.BLOCKFIELD_CP_URL
@@ -166,5 +168,31 @@ test('CP settings rejects unknown namespace and unsafe path segments locally', a
       /Некорректный/,
     )
     assert.ok(seen.every((url) => !url.includes('..') && !url.includes('a/b')))
+  })
+})
+
+test('CP settings PATCH asserts the acting admin account (service_actor_required otherwise)', async () => {
+  await withServer(async (_server, patches) => {
+    const before = await readSettingsCp('gameplay')
+    await patchSettingsCp('gameplay', '*', {
+      expectedRevision: before.revision,
+      idempotencyKey: 'site-settings-actor',
+      patch: { lobby: { pvpEnabled: true } },
+      actorAccountId: 'd94f8b1e-2c3a-4d5e-8f70-91a2b3c4d5e6',
+    })
+    assert.equal(patches.length, 1)
+    assert.equal(patches[0].actorAccountId, 'd94f8b1e-2c3a-4d5e-8f70-91a2b3c4d5e6')
+  })
+})
+
+test('CP settings PATCH without an acting admin sends no actor field (gate path)', async () => {
+  await withServer(async (_server, patches) => {
+    await patchSettingsCp('gameplay', '*', {
+      expectedRevision: 7,
+      idempotencyKey: 'site-settings-no-actor',
+      patch: {},
+    })
+    assert.equal(patches.length, 1)
+    assert.ok(!Object.hasOwn(patches[0], 'actorAccountId'))
   })
 })

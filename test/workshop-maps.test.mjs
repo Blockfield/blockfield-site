@@ -5,7 +5,22 @@ import ts from 'typescript'
 
 // The workshop map cards decide which versions may return to the game without review; exercise the real page helpers.
 const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
-const script = page.split('<script>')[1].split('</script>')[0]
+// SITE95-U2: section helpers live in typed modules; extract from all sources.
+const libs = [
+  '../src/lib/admin-shell.ts',
+  '../src/lib/admin-settings.ts',
+  '../src/lib/admin-workshop.ts',
+  '../src/lib/admin-overview.ts',
+  '../src/lib/admin-players.ts',
+  '../src/lib/admin-stats.ts',
+  '../src/lib/admin-journal.ts',
+  '../src/lib/admin-health.ts',
+  '../src/lib/admin-console.ts',
+  '../src/lib/admin-tabs.ts',
+]
+  .map((file) => readFileSync(new URL(file, import.meta.url), 'utf8'))
+  .join('\n')
+const script = page.split('<script>')[1].split('</script>')[0] + '\n' + libs
 const source = ts.createSourceFile('admin.ts', script, ts.ScriptTarget.Latest, true)
 const helpers = source.statements
   .filter(

@@ -18,7 +18,22 @@ import {
 } from '../src/lib/streak-table.ts'
 
 const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
-const script = page.split('<script>')[1].split('</script>')[0]
+// SITE95-U2: section helpers live in typed modules; extract from all sources.
+const libs = [
+  '../src/lib/admin-shell.ts',
+  '../src/lib/admin-settings.ts',
+  '../src/lib/admin-workshop.ts',
+  '../src/lib/admin-overview.ts',
+  '../src/lib/admin-players.ts',
+  '../src/lib/admin-stats.ts',
+  '../src/lib/admin-journal.ts',
+  '../src/lib/admin-health.ts',
+  '../src/lib/admin-console.ts',
+  '../src/lib/admin-tabs.ts',
+]
+  .map((file) => readFileSync(new URL(file, import.meta.url), 'utf8'))
+  .join('\n')
+const script = page.split('<script>')[1].split('</script>')[0] + '\n' + libs
 const source = ts.createSourceFile('admin.ts', script, ts.ScriptTarget.Latest, true)
 const compile = (text) =>
   ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
@@ -81,8 +96,12 @@ const names = [
   'loadGunBalance',
   'filterGuns',
   'settingsEvent',
+  'run',
+  'moderate',
   'follow',
   'commitMessage',
+  'getSavedMessage',
+  'setSavedMessage',
   'waitMapAvailability',
   'gunBandInsert',
   'gunBandRemove',
@@ -99,10 +118,10 @@ const productionSelect = compile(
 const messageHandlers = compile(
   script.slice(
     script.indexOf(
-      "    $('#message-form').addEventListener('submit'",
+      "$('#message-form').addEventListener('submit'",
       script.indexOf('let savedMessage'),
     ),
-    script.indexOf('    const RANGE:'),
+    script.indexOf('const RANGE:'),
   ),
 )
 
@@ -161,7 +180,7 @@ async function setup(options = {}) {
         ok: true,
         json: async () =>
           path === 'message'
-            ? { id: 'message-1' }
+            ? { operationId: 'op-1' }
             : {
                 settings,
                 applied: { revision: 3 },
@@ -196,6 +215,10 @@ async function setup(options = {}) {
     const busyControls = new WeakSet(), queuedSettings = new Map();
     const pendingRequests = new Map(), followTokens = new WeakMap(), requestResults = new Map();
     let savedMessage = ${JSON.stringify(options.message ?? '')}, messageInFlight = false, messageTimer;
+    // Retry confirmations for unconfirmed CP posts: tests queue answers, like the native dialog.
+    let askAnswers = [];
+    const ask = async () => (askAnswers.length ? askAnswers.shift() : null) ? new FormData() : null;
+    window.askAnswers = (answers) => { askAnswers = [...answers]; };
     ${functions}
     autosaveKeys($('#settings-form')); autosaveKeys($('#gun-balance-form'));
     $('#settings-form').addEventListener('change', e => e.target.closest('#streak-table') ? commitStreak() : commitSetting(e.target));
@@ -650,7 +673,7 @@ test('changing the last body override back to one removes it and leaves all nume
   }
 })
 
-test('message idle commits trimmed text once and follows the application receipt', async () => {
+test('message idle commits trimmed text once with one client key', async () => {
   const { dom, calls } = await setup()
   try {
     const input = dom.window.document.querySelector('#message')
@@ -658,14 +681,13 @@ test('message idle commits trimmed text once and follows the application receipt
     input.dispatchEvent(new dom.window.Event('input'))
     await new Promise((resolve) => setTimeout(resolve, 1250))
     assert.equal(calls.length, 1)
-    assert.deepEqual(calls[0].body, { message: 'Обновляем карты' })
+    assert.equal(calls[0].body.message, 'Обновляем карты')
+    assert.match(calls[0].body.idempotencyKey, /^[0-9a-f-]{36}$/)
+    await new Promise((resolve) => setTimeout(resolve, 50))
     const line = dom.window.document.querySelector('#message-form .form-status')
-    assert.equal(line.textContent, 'применяем…')
-    dom.window.finishMessage({ ok: true })
-    await Promise.resolve()
     assert.equal(line.textContent, 'применено')
     input.dispatchEvent(new dom.window.Event('blur'))
-    await Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 50))
     assert.equal(calls.length, 1)
   } finally {
     dom.window.close()
@@ -931,24 +953,52 @@ test('early request receipts resolve immediately and cache only the last 50 ids'
   }
 })
 
-test('failed message receipts allow retrying identical text', async () => {
-  const { dom, calls } = await setup()
+test('unconfirmed message posts retry with the same client key after confirming', async () => {
+  let posts = 0
+  const { dom, calls } = await setup({
+    handle: ({ method, path }) => {
+      if (method === 'POST' && path === 'message' && ++posts === 1)
+        return { status: 200, data: { operationId: null, unknownOutcome: true } }
+      return null
+    },
+  })
   try {
+    dom.window.askAnswers([true])
     const input = dom.window.document.querySelector('#message')
     input.value = 'Технические работы'
-    const first = dom.window.commitMessage()
-    await Promise.resolve()
-    await Promise.resolve()
-    await Promise.resolve()
-    dom.window.finishMessage({ ok: false, error: 'failed' })
-    await first
-    const second = dom.window.commitMessage()
-    await Promise.resolve()
-    await Promise.resolve()
-    await Promise.resolve()
-    dom.window.finishMessage({ ok: true })
-    await second
+    const done = dom.window.commitMessage()
+    await done
     assert.equal(calls.length, 2)
+    assert.equal(calls[0].body.message, 'Технические работы')
+    assert.equal(calls[1].body.message, 'Технические работы')
+    assert.equal(calls[0].body.idempotencyKey, calls[1].body.idempotencyKey)
+    assert.equal(
+      dom.window.document.querySelector('#message-form .form-status').textContent,
+      'применено',
+    )
+  } finally {
+    dom.window.close()
+  }
+})
+
+test('declined message retry keeps the draft for a later attempt', async () => {
+  const { dom, calls } = await setup({
+    handle: ({ method, path }) =>
+      method === 'POST' && path === 'message'
+        ? { status: 200, data: { operationId: null, unknownOutcome: true } }
+        : null,
+  })
+  try {
+    dom.window.askAnswers([false])
+    const input = dom.window.document.querySelector('#message')
+    input.value = 'Технические работы'
+    await dom.window.commitMessage()
+    assert.equal(calls.length, 1)
+    assert.match(
+      dom.window.document.querySelector('#message-form .form-status').textContent,
+      /Не подтверждено/,
+    )
+    assert.equal(input.value, 'Технические работы')
   } finally {
     dom.window.close()
   }
@@ -1116,10 +1166,7 @@ test('message undo refuses a newer server message', async () => {
   try {
     const input = dom.window.document.querySelector('#message')
     input.value = 'Новое сообщение'
-    const done = dom.window.commitMessage()
-    await Promise.resolve()
-    dom.window.finishMessage({ ok: true })
-    await done
+    await dom.window.commitMessage()
     assert.equal(
       dom.window.document.querySelector('.toast span').textContent,
       'Сообщение мастерской: Прежнее сообщение → Новое сообщение',

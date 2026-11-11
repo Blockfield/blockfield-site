@@ -9,7 +9,6 @@ export type CpGate = {
   since: number | null
   observedAt: number
 }
-export type CpActor = { id: string; role: string }
 
 /** «Начать/Закончить техработы»: admin action to CP mode (pure, unit-tested). */
 export function gateToggle(body: any): { mode: 'maintenance' | 'open'; message: string } {
@@ -76,21 +75,31 @@ export async function readGateCp(
 export async function postGateCp(
   mode: CpMode,
   message: string,
-  actor: CpActor,
   idempotencyKey: string,
+  token: string | undefined = process.env.BLOCKFIELD_CP_GATE_TOKEN,
 ): Promise<{ operationId: string; revision: number }> {
   const read = await cp('/v1/gate', process.env.BLOCKFIELD_CP_GATE_READ_TOKEN)
   if (!validGate(read)) throw new Error('Control-plane отдал неверное состояние.')
-  return cp('/v1/gate', process.env.BLOCKFIELD_CP_GATE_WRITE_TOKEN, {
-    method: 'POST',
-    body: JSON.stringify({
-      expectedRevision: read.revision,
-      idempotencyKey,
-      mode,
-      message,
-      actor,
-    }),
-  })
+  try {
+    // Game gate on CP v2: PATCH /v2/settings/gate/* with the moderation.ban
+    // scope. The gate toggle sends no actor: that scope keeps the stable
+    // service-principal attribution, unlike game settings writes where the
+    // site asserts the acting admin.
+    return await patchSettingsCp(
+      'gate',
+      '*',
+      { expectedRevision: read.revision, idempotencyKey, patch: { mode, message } },
+      token,
+    )
+  } catch (error) {
+    // Callers (POST gate) map «ревизия N» to 409: keep that contract and the code.
+    if (isRevisionConflict(error)) {
+      const conflict = new Error(`Control-plane отклонил запрос (ревизия ${read.revision}).`)
+      ;(conflict as { code?: string }).code = 'revision_conflict'
+      throw conflict
+    }
+    throw error
+  }
 }
 
 export type CpSettingsView = {
@@ -104,6 +113,12 @@ export type CpSettingsPatch = {
   expectedRevision: number
   idempotencyKey: string
   patch: Record<string, unknown>
+  /**
+   * Logged-in admin the service credential asserts (CP re-resolves the
+   * account; required for game namespaces, omitted only for the gate
+   * toggle whose moderation.ban scope keeps stable-principal attribution).
+   */
+  actorAccountId?: string
 }
 
 const settingsSegment = (value: string, name: string) => {
@@ -205,12 +220,26 @@ export async function patchSettingsCp(
     typeof patch.patch !== 'object'
   )
     throw new Error('Некорректный патч настроек control-plane.')
+  // The site service credential asserts the logged-in admin for game
+  // namespaces (like staff grants): CP refuses unasserted service writes
+  // there. The gate toggle omits it: its moderation.ban scope keeps the
+  // stable-principal path.
+  const actor =
+    patch.actorAccountId === undefined
+      ? undefined
+      : patch.actorAccountId.replaceAll('-', '').toLowerCase()
+  if (actor !== undefined && !/^[0-9a-f]{32}$/.test(actor)) throw new Error('Некорректный запрос.')
   const data = await settingsRequest(namespace, target, token, {
     method: 'PATCH',
     body: JSON.stringify({
       expectedRevision: patch.expectedRevision,
       idempotencyKey: patch.idempotencyKey,
       patch: patch.patch,
+      ...(actor === undefined
+        ? {}
+        : {
+            actorAccountId: actor.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
+          }),
     }),
   })
   if (typeof data?.operationId !== 'string' || !Number.isSafeInteger(data?.revision))
@@ -218,7 +247,10 @@ export async function patchSettingsCp(
   return { operationId: data.operationId, revision: data.revision }
 }
 
-export type CpSettingsRollback = Pick<CpSettingsPatch, 'expectedRevision' | 'idempotencyKey'> & {
+export type CpSettingsRollback = Pick<
+  CpSettingsPatch,
+  'expectedRevision' | 'idempotencyKey' | 'actorAccountId'
+> & {
   revision: number
 }
 
@@ -240,6 +272,11 @@ export async function rollbackSettingsCp(
     rollback.revision < 1
   )
     throw new Error('Некорректный откат настроек control-plane.')
+  const actor =
+    rollback.actorAccountId === undefined
+      ? undefined
+      : rollback.actorAccountId.replaceAll('-', '').toLowerCase()
+  if (actor !== undefined && !/^[0-9a-f]{32}$/.test(actor)) throw new Error('Некорректный запрос.')
   const data = await settingsRequest(
     namespace,
     target,
@@ -250,6 +287,11 @@ export async function rollbackSettingsCp(
         expectedRevision: rollback.expectedRevision,
         idempotencyKey: rollback.idempotencyKey,
         revision: rollback.revision,
+        ...(actor === undefined
+          ? {}
+          : {
+              actorAccountId: actor.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
+            }),
       }),
     },
     '/rollback',
@@ -507,4 +549,203 @@ export async function revokeSessionCp(
   fetchImpl: FetchImpl = (url, init) => fetch(url, init),
 ): Promise<void> {
   await cpStaff('/v2/sessions/current', token, { method: 'DELETE' }, fetchImpl)
+}
+
+/**
+ * Typed moderation via control-plane v2 (control-plane cp#32):
+ * POST /v2/actions/moderation.<kind>. Only fire-and-forget commands move:
+ * `list` stays on RCON (a read; CP ACKs carry no output), kick/ban keep the
+ * RCON nickname flow until the UUID cutover, maintenance/raw/console have no
+ * typed kind. Active only when fully configured; otherwise RCON stays.
+ */
+export const moderationCpKinds = [
+  'say',
+  'pardon',
+  'team-kick',
+  'class-lock',
+  'class-unlock',
+  'range',
+  'stop-room',
+] as const
+export type ModerationCpKind = (typeof moderationCpKinds)[number]
+
+const uuidLoose = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export function cpModerationConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (
+    cpConfigured(env) &&
+    ((env.BLOCKFIELD_CP_MODERATION_TOKEN ?? '') as string).trim().length > 0 &&
+    uuidLoose.test(((env.BLOCKFIELD_CP_CONSUMER_GENERATION ?? '') as string).trim())
+  )
+}
+
+function moderationConfig() {
+  const url = config()
+  const token = (process.env.BLOCKFIELD_CP_MODERATION_TOKEN ?? '').trim()
+  if (!token) throw new Error('Control-plane не настроен на сайте (токен).')
+  const generation = (process.env.BLOCKFIELD_CP_CONSUMER_GENERATION ?? '').trim()
+  if (!uuidLoose.test(generation))
+    throw new Error('Control-plane не настроен на сайте (поколение получателя).')
+  const consumerId = (process.env.BLOCKFIELD_CP_CONSUMER_ID ?? 'game').trim() || 'game'
+  return { url, token, generation, consumerId, ...cpScope() }
+}
+
+const moderationMessages: Record<string, [number, string]> = {
+  invalid_action: [502, 'Control-plane отклонил запрос.'],
+  unknown_action: [500, 'Control-plane не знает это действие. Обратитесь к координатору.'],
+  consumer_generation_or_capability: [
+    503,
+    'Версия получателя в control-plane устарела. Обратитесь к координатору.',
+  ],
+  consumer_lag: [503, 'Сервер занят подтверждением команд. Попробуйте позже.'],
+  service_actor_required: [500, 'Сайт не передал автора изменения. Обратитесь к координатору.'],
+  actor_forbidden: [
+    500,
+    'Сайт не вправе подтверждать автора изменения. Обратитесь к координатору.',
+  ],
+  ineligible_account: [403, 'Этот аккаунт не может выполнять модерацию.'],
+  account_not_found: [404, 'Участник не найден.'],
+  forbidden: [503, 'У сайта нет доступа к модерации в control-plane. Обратитесь к координатору.'],
+}
+
+function moderationProblem(status: number, code: string): CpProblem {
+  const [mappedStatus, message] = moderationMessages[code] ?? [
+    status,
+    'Control-plane отклонил запрос.',
+  ]
+  const error = new Error(message) as CpProblem
+  error.status = mappedStatus
+  error.code = code
+  return error
+}
+
+/** One typed moderation command: validated fields go out, the operation receipt comes back. */
+export async function postModerationCp(
+  kind: string,
+  actorAccountId: string,
+  fields: Record<string, unknown>,
+  opts: { target?: string; idempotencyKey?: string; fetchImpl?: FetchImpl } = {},
+): Promise<{ operationId: string; status: string }> {
+  if (!(moderationCpKinds as readonly string[]).includes(kind))
+    throw new Error('Неизвестное действие.')
+  // The site service credential asserts the logged-in admin (like staff
+  // grants): CP refuses unasserted service calls, so the actor is required.
+  const actor = actorAccountId.replaceAll('-', '').toLowerCase()
+  if (!/^[0-9a-f]{32}$/.test(actor)) throw new Error('Некорректный запрос.')
+  const { url, token, generation, consumerId, environment, backend } = moderationConfig()
+  const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
+  const response = await fetchImpl(`${url}/v2/actions/moderation.${kind}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      idempotencyKey: opts.idempotencyKey ?? randomUUID(),
+      environment,
+      backend,
+      consumerId,
+      generation,
+      target: opts.target ?? '*',
+      ...fields,
+      actorAccountId: actor.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
+    }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok)
+    throw moderationProblem(
+      response.status,
+      typeof data?.error === 'string' ? data.error : 'control_plane_error',
+    )
+  if (typeof data?.operationId !== 'string')
+    throw new Error('Control-plane отдал неверное состояние.')
+  return { operationId: data.operationId, status: data.status ?? 'accepted' }
+}
+
+/**
+ * Typed Workshop operations via control-plane v2 (control-plane #33,
+ * workshop #72): POST /v2/workshop/<kind>. Only the service-holdable write
+ * kinds move: `members` needs a person session (plus the owner step-up for
+ * admin entries), which the site service credential can never hold, so the
+ * member list stays on the file inbox. Map/session/ai-key/mode ops have no
+ * CP kind. Active only when fully configured; otherwise the routes fail
+ * closed (no second transport, unlike the RCON fallback for moderation).
+ */
+export const workshopCpKinds = ['message', 'wake', 'cancel'] as const
+export type WorkshopCpKind = (typeof workshopCpKinds)[number]
+
+export function cpWorkshopConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (
+    cpConfigured(env) &&
+    ((env.BLOCKFIELD_CP_WORKSHOP_TOKEN ?? '') as string).trim().length > 0 &&
+    uuidLoose.test(((env.BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION ?? '') as string).trim())
+  )
+}
+
+function workshopConfig() {
+  const url = config()
+  const token = (process.env.BLOCKFIELD_CP_WORKSHOP_TOKEN ?? '').trim()
+  if (!token) throw new Error('Control-plane не настроен на сайте (токен).')
+  const generation = (process.env.BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION ?? '').trim()
+  if (!uuidLoose.test(generation))
+    throw new Error('Control-plane не настроен на сайте (поколение получателя).')
+  const consumerId = (process.env.BLOCKFIELD_CP_WORKSHOP_CONSUMER_ID ?? 'workshop').trim()
+  return { url, token, generation, consumerId: consumerId || 'workshop', ...cpScope() }
+}
+
+const workshopMessages: Record<string, [number, string]> = {
+  invalid_action: [502, 'Control-plane отклонил запрос.'],
+  unknown_action: [500, 'Control-plane не знает это действие. Обратитесь к координатору.'],
+  consumer_generation_or_capability: [
+    503,
+    'Версия получателя в control-plane устарела. Обратитесь к координатору.',
+  ],
+  consumer_lag: [503, 'Мастерская занята подтверждением команд. Попробуйте позже.'],
+  forbidden: [503, 'У сайта нет доступа к мастерской в control-plane. Обратитесь к координатору.'],
+}
+
+function workshopProblem(status: number, code: string): CpProblem {
+  const [mappedStatus, message] = workshopMessages[code] ?? [
+    status,
+    'Control-plane отклонил запрос.',
+  ]
+  const error = new Error(message) as CpProblem
+  error.status = mappedStatus
+  error.code = code
+  return error
+}
+
+/** One typed Workshop command: the CP-bound actor plus validated fields go out, the operation receipt comes back. */
+export async function postWorkshopCp(
+  kind: string,
+  actor: { draslId: string; name: string },
+  fields: Record<string, unknown> = {},
+  opts: { idempotencyKey?: string; fetchImpl?: FetchImpl } = {},
+): Promise<{ operationId: string; status: string }> {
+  if (!(workshopCpKinds as readonly string[]).includes(kind))
+    throw new Error('Неизвестное действие.')
+  const { url, token, generation, consumerId, environment, backend } = workshopConfig()
+  const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
+  const response = await fetchImpl(`${url}/v2/workshop/${kind}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      idempotencyKey: opts.idempotencyKey ?? randomUUID(),
+      environment,
+      backend,
+      consumerId,
+      generation,
+      target: '*',
+      actor,
+      ...fields,
+    }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok)
+    throw workshopProblem(
+      response.status,
+      typeof data?.error === 'string' ? data.error : 'control_plane_error',
+    )
+  if (typeof data?.operationId !== 'string')
+    throw new Error('Control-plane отдал неверное состояние.')
+  return { operationId: data.operationId, status: data.status ?? 'accepted' }
 }

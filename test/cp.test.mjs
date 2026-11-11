@@ -51,7 +51,7 @@ async function fakeCp(handler) {
   return server
 }
 
-test('CP client reads gate and toggles it end-to-end (fail-before for the API shape)', async () => {
+test('CP client reads gate via v1 and toggles it via v2 settings PATCH', async () => {
   let state = { schema: 1, revision: 4, mode: 'open', message: '', since: 1, observedAt: 2 }
   const seen = []
   const server = await fakeCp((req, res) => {
@@ -60,24 +60,33 @@ test('CP client reads gate and toggles it end-to-end (fail-before for the API sh
     req.on('data', (c) => (body += c))
     req.on('end', () => {
       res.setHeader('Content-Type', 'application/json')
-      if (req.method === 'GET') return res.end(JSON.stringify(state))
-      const payload = JSON.parse(body)
-      assert.equal(payload.expectedRevision, state.revision)
-      assert.match(payload.idempotencyKey, /.+/)
-      assert.deepEqual(payload.actor, { id: 'owner-1', role: 'owner' })
-      state = { ...state, revision: state.revision + 1, mode: payload.mode }
-      res.statusCode = 202
-      res.end(JSON.stringify({ operationId: 'op1', revision: state.revision }))
+      if (req.method === 'GET' && req.url === '/v1/gate') return res.end(JSON.stringify(state))
+      if (req.method === 'PATCH' && req.url === '/v2/settings/gate/*') {
+        const payload = JSON.parse(body)
+        assert.equal(payload.expectedRevision, state.revision)
+        assert.match(payload.idempotencyKey, /.+/)
+        assert.deepEqual(payload.patch, {
+          mode: state.mode === 'open' ? 'maintenance' : 'open',
+          message: '',
+        })
+        assert.ok(!('actor' in payload), 'v2 settings PATCH carries no actor field')
+        assert.ok(!('mode' in payload) && !('message' in payload), 'mode/message ride inside patch')
+        state = { ...state, revision: state.revision + 1, mode: payload.patch.mode }
+        res.statusCode = 202
+        return res.end(JSON.stringify({ operationId: 'op1', revision: state.revision }))
+      }
+      res.statusCode = 404
+      res.end(JSON.stringify({ error: 'not_found' }))
     })
   })
   try {
     Object.assign(process.env, {
       BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
       BLOCKFIELD_CP_GATE_READ_TOKEN: 'read-t',
-      BLOCKFIELD_CP_GATE_WRITE_TOKEN: 'write-t',
+      BLOCKFIELD_CP_GATE_TOKEN: 'gate-t',
     })
     assert.equal(await readGateCp(), null)
-    const out = await postGateCp('maintenance', '', { id: 'owner-1', role: 'owner' }, 'k1')
+    const out = await postGateCp('maintenance', '', 'k1')
     assert.equal(out.revision, 5)
     const closed = await readGateCp()
     assert.equal(
@@ -89,11 +98,53 @@ test('CP client reads gate and toggles it end-to-end (fail-before for the API sh
       [
         ['GET', '/v1/gate'],
         ['GET', '/v1/gate'],
-        ['POST', '/v1/gate'],
+        ['PATCH', '/v2/settings/gate/*'],
         ['GET', '/v1/gate'],
       ],
     )
-    assert.ok(seen.every(([, , auth]) => auth?.startsWith('Bearer ')))
+    assert.deepEqual(
+      seen.map(([, , auth]) => auth),
+      ['Bearer read-t', 'Bearer read-t', 'Bearer gate-t', 'Bearer read-t'],
+    )
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+    delete process.env.BLOCKFIELD_CP_URL
+  }
+})
+
+test('CP gate toggle maps a v2 revision conflict to the caller 409 contract', async () => {
+  const server = await fakeCp((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      res.setHeader('Content-Type', 'application/json')
+      if (req.method === 'GET') {
+        return res.end(
+          JSON.stringify({
+            schema: 1,
+            revision: 9,
+            mode: 'open',
+            message: '',
+            since: 1,
+            observedAt: 2,
+          }),
+        )
+      }
+      res.statusCode = 409
+      res.end(JSON.stringify({ error: 'revision_conflict' }))
+    })
+  })
+  try {
+    Object.assign(process.env, {
+      BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
+      BLOCKFIELD_CP_GATE_READ_TOKEN: 'read-t',
+      BLOCKFIELD_CP_GATE_TOKEN: 'gate-t',
+    })
+    await assert.rejects(postGateCp('maintenance', '', 'k-stale'), (error) => {
+      assert.match(error.message, /ревизия 9/)
+      assert.equal(error.code, 'revision_conflict')
+      return true
+    })
   } finally {
     await new Promise((resolve) => server.close(resolve))
     delete process.env.BLOCKFIELD_CP_URL

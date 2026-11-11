@@ -45,6 +45,16 @@ function cpEnv(t, server) {
     BLOCKFIELD_SESSION_SECRET: 'a'.repeat(64),
     NODE_ENV: 'test',
   })
+  // Owner names resolve through Drasl; stub it so the workshop push can be
+  // built offline (admin.test.mjs does the same for the non-CP path).
+  const realFetch = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+  globalThis.fetch = async (url, init) =>
+    String(url).includes(OWNER) || String(url).includes(dashed(OWNER))
+      ? Response.json({ id: dashed(OWNER), name: 'Nether' })
+      : realFetch(url, init)
   t.after(() => rmSync(inbox, { recursive: true, force: true }))
 }
 
@@ -400,7 +410,9 @@ test('CP mode role changes replace the other in-scope grants', async (t) => {
       ? realFetch(url, init)
       : String(url).endsWith('/minecraft/Oth')
         ? Response.json({ id: dashed(OTHER), name: 'Oth' })
-        : new Response('', { status: 404 })
+        : String(url).includes(OWNER) || String(url).includes(dashed(OWNER))
+          ? Response.json({ id: dashed(OWNER), name: 'Nether' })
+          : new Response('', { status: 404 })
   const revoked = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff', {
     name: 'Oth',
     role: null,
@@ -855,7 +867,22 @@ test('CP mode event refresh ignores stale replica roles', async (t) => {
 
 test('team page reports CP-held roles after a partial grant', async () => {
   const page = readFileSync(new URL('../src/pages/admin.astro', import.meta.url), 'utf8')
-  const script = page.split('<script>')[1].split('</script>')[0]
+  // SITE95-U2: section helpers live in typed modules; extract from all sources.
+  const libs = [
+    '../src/lib/admin-shell.ts',
+    '../src/lib/admin-settings.ts',
+    '../src/lib/admin-workshop.ts',
+    '../src/lib/admin-overview.ts',
+    '../src/lib/admin-players.ts',
+    '../src/lib/admin-stats.ts',
+    '../src/lib/admin-journal.ts',
+    '../src/lib/admin-health.ts',
+    '../src/lib/admin-console.ts',
+    '../src/lib/admin-tabs.ts',
+  ]
+    .map((file) => readFileSync(new URL(file, import.meta.url), 'utf8'))
+    .join('\n')
+  const script = page.split('<script>')[1].split('</script>')[0] + '\n' + libs
   const source = ts.createSourceFile('admin.ts', script, ts.ScriptTarget.Latest, true)
   const wanted = ['changeRole', 'CP_ROLE_GENITIVE']
   const defs = source.statements

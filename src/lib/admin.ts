@@ -7,7 +7,6 @@ import {
   readSync,
   readFileSync,
   closeSync,
-  readdirSync,
   renameSync,
   writeFileSync,
   unlinkSync,
@@ -290,6 +289,17 @@ export type MapBranch = {
   createdAt: number
   createdBy: Record<string, unknown>
 }
+// Linear history (workshop#65): named pointers beside the head. `branches`
+// below stays as a tolerant rollout read only; nothing writes it anymore.
+export type MapSnapshot = {
+  schema: 1
+  mapId: string
+  name: string
+  versionDigest: string
+  generation: number
+  createdAt: number
+  createdBy: Record<string, unknown>
+}
 export type MapCatalogEntry = {
   mapId: string
   kind: MapHead['kind']
@@ -297,6 +307,7 @@ export type MapCatalogEntry = {
   head: MapHead | null
   versions: MapVersion[]
   branches?: MapBranch[]
+  snapshots?: MapSnapshot[]
   draft?: { workingCopyId: string; name: string }
 }
 export type MapSession = {
@@ -546,6 +557,27 @@ export function readMapCatalog(directory: string): MapCatalogAvailability {
       }
       if (head !== null && !names.has('main')) return unavailable
     }
+    if (entry.snapshots !== undefined) {
+      const names = new Set<string>()
+      if (!Array.isArray(entry.snapshots) || entry.snapshots.length > 1024) return unavailable
+      for (const snapshot of entry.snapshots) {
+        if (
+          !plain(snapshot) ||
+          snapshot.schema !== 1 ||
+          snapshot.mapId !== entry.mapId ||
+          !mutableBranch(snapshot.name) ||
+          names.has(snapshot.name) ||
+          !digest(snapshot.versionDigest) ||
+          !versions.has(snapshot.versionDigest) ||
+          !Number.isSafeInteger(snapshot.generation) ||
+          (snapshot.generation as number) < 1 ||
+          !timestamp(snapshot.createdAt) ||
+          !plain(snapshot.createdBy)
+        )
+          return unavailable
+        names.add(snapshot.name)
+      }
+    }
   }
   const maps = value.maps as MapCatalogEntry[]
   if (
@@ -648,21 +680,17 @@ async function editableMap(actor: Actor, store: StatsStore, id: unknown) {
     throw fail(403, 'Нет права строить на этой карте.')
   return { catalog, entry }
 }
-function selectedMapBranch(
+function selectedMapSession(
   catalog: Extract<MapCatalogAvailability, { available: true }>,
   entry: MapCatalogEntry,
+  workingCopyId: unknown,
 ) {
-  const copy = catalog.session,
-    name = copy?.branches?.[entry.mapId]
-  const branch = entry.branches?.find((ref) => ref.name === name)
-  if (
-    !copy ||
-    !(copy.maps === null || copy.maps.includes(entry.mapId)) ||
-    !branch ||
-    !mutableBranch(name)
-  )
-    throw fail(409, 'Выберите ветку этой карты в действующем сеансе мастерской.')
-  return { copy, branch }
+  const copy = catalog.session
+  if (!copy || !(copy.maps === null || copy.maps.includes(entry.mapId)))
+    throw fail(409, 'Откройте эту карту в действующем сеансе мастерской.')
+  // A stale form must never submit a different session's copy: the caller pins its copy.
+  if (workingCopyId !== copy.id) throw fail(409, 'Рабочая копия изменилась. Обновите историю.')
+  return { copy }
 }
 function workshopMapIds() {
   const catalog = readMapCatalog(adminDir())
@@ -786,18 +814,9 @@ export function writeRequest(
         )
           throw bad('Некорректный список карт.')
         extra = { session: 'new', maps }
-        if (body.branches !== undefined) {
-          if (
-            !Array.isArray(maps) ||
-            !plain(body.branches) ||
-            Object.keys(body.branches).length !== maps.length ||
-            !Object.entries(body.branches).every(
-              ([id, name]) => maps.includes(id) && mutableBranch(name),
-            )
-          )
-            throw bad('Выберите одну рабочую ветку для каждой карты сеанса.')
-          extra.branches = body.branches
-        }
+        // Linear history (workshop#65): sessions track maps only. A stale
+        // client may still send `branches`; it is validated nowhere and never
+        // forwarded — the controller ignores it the same way during rollout.
       } else {
         if (
           body.sessionId !== undefined &&
@@ -867,17 +886,6 @@ export function writeRequest(
         expectedRevision: body.expectedRevision,
       }
     }
-  } else if (body?.kind === 'message') {
-    // Same rule as the controller: strip control characters (Unicode Cc) and §, keep format characters such as ZWJ.
-    const message =
-      typeof body.message === 'string' ? body.message.replace(/[\p{Cc}§]/gu, '').trim() : null
-    if (message === null || [...message].length > 200) throw bad('Сообщение: до 200 символов.')
-    request = { ...base, message }
-  } else if (body?.kind === 'cancel') {
-    request = { ...base }
-  } else if (body?.kind === 'wake') {
-    // Waking a sleeping Workshop carries no parameters: the controller starts the stored goal.
-    request = { ...base }
   } else if (body?.kind === 'members') {
     // `maps` absent/null: every map, including ones added later. `maps: []`: no map (the builder still gets a workshop account, just nothing to edit).
     const validMaps = (m: any) =>
@@ -919,50 +927,70 @@ export function writeRequest(
     )
       throw bad('Некорректная страница сохранённых черновиков.')
     request = { ...base, offset: body.offset, limit: body.limit ?? 100 }
-  } else if (['branch-create', 'commit', 'compare', 'merge-preview'].includes(body?.kind)) {
+  } else if (
+    ['commit', 'compare', 'snapshot-create', 'snapshot-delete', 'snapshots'].includes(body?.kind)
+  ) {
     if (!mapId(body.mapId) || !knownMaps.has(body.mapId)) throw bad('Неизвестная карта.')
     const common = { ...base, mapId: body.mapId }
-    if (body.kind === 'branch-create') {
-      if (!mutableBranch(body.branch) || !digest(body.versionDigest))
-        throw bad('Укажите имя рабочей ветки и сохранённую версию.')
-      request = { ...common, branch: body.branch, versionDigest: body.versionDigest }
-    } else if (body.kind === 'commit') {
+    if (body.kind === 'commit') {
       if (
-        !mutableBranch(body.branch) ||
         typeof body.workingCopyId !== 'string' ||
         !COPY_UUID.test(body.workingCopyId) ||
-        !digest(body.expectedBranchHead) ||
+        !Object.hasOwn(body, 'expectedHead') ||
+        (body.expectedHead !== null && !digest(body.expectedHead)) ||
         typeof body.note !== 'string' ||
         !body.note.trim() ||
         body.note.length > 200
       )
         throw bad(
-          'Коммит требует выбранную ветку, рабочую копию, её текущую версию и описание изменений до 200 символов.',
+          'Коммит требует рабочую копию, текущую версию карты и описание изменений до 200 символов.',
         )
       request = {
         ...common,
-        branch: body.branch,
         workingCopyId: body.workingCopyId,
-        expectedBranchHead: body.expectedBranchHead,
+        expectedHead: body.expectedHead,
         note: body.note.trim(),
       }
     } else if (body.kind === 'compare') {
       if (!digest(body.before) || !digest(body.after))
         throw bad('Выберите две сохранённые версии карты.')
       request = { ...common, before: body.before, after: body.after }
+    } else if (body.kind === 'snapshots') {
+      request = { ...common }
     } else {
-      if (
-        !digest(body.versionDigest) ||
-        !Object.hasOwn(body, 'expectedHead') ||
-        (body.expectedHead !== null && !digest(body.expectedHead))
-      )
-        throw bad('Слияние требует исходную версию и текущую main.')
-      request = {
-        ...common,
-        versionDigest: body.versionDigest,
-        expectedHead: body.expectedHead,
-        ...(body.resolutions === undefined ? {} : { resolutions: resolutions(body.resolutions) }),
+      if (!mutableBranch(body.name))
+        throw bad('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
+      if (body.kind === 'snapshot-create') {
+        if (!digest(body.versionDigest)) throw bad('Выберите сохранённую версию карты для снимка.')
+        request = { ...common, name: body.name, versionDigest: body.versionDigest }
+      } else {
+        request = { ...common, name: body.name }
       }
+    }
+  } else if (body?.kind === 'snapshot-copy' || body?.kind === 'checkout-fresh') {
+    // The stale-copy way out (workshop#65 linear history): snapshot-copy preserves
+    // the refused draft under a name, checkout-fresh restarts from the current head.
+    if (!mapId(body.mapId) || !knownMaps.has(body.mapId)) throw bad('Неизвестная карта.')
+    if (body.kind === 'snapshot-copy') {
+      // The workshop admits only admins to snapshot-copy; the rest restart fresh.
+      if (!can(actor.role, 'workshop'))
+        throw fail(403, 'Сохранение черновика снимком доступно администратору.')
+      if (!mutableBranch(body.name))
+        throw bad('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
+      if (typeof body.workingCopyId !== 'string' || !COPY_UUID.test(body.workingCopyId))
+        throw bad('Выберите рабочую копию карты для снимка.')
+      request = {
+        ...base,
+        mapId: body.mapId,
+        name: body.name,
+        workingCopyId: body.workingCopyId,
+      }
+    } else {
+      if (!can(actor.role, 'map-edit')) throw fail(403, 'Нет права строить на этой карте.')
+      // The inbox workingCopyId is the NEW copy: the workshop refuses existing ids,
+      // so the server mints it (like map-create mints sessionId). The route pins the
+      // panel copy from the request body before it reaches this serializer.
+      request = { ...base, mapId: body.mapId, workingCopyId: randomUUID() }
     }
   } else if (body?.kind === 'candidate' || body?.kind === 'rollback') {
     if (typeof body.mapId !== 'string' || !knownMaps.has(body.mapId))
@@ -978,29 +1006,34 @@ export function writeRequest(
         mapId: body.mapId,
         ...(body.workingCopyId === undefined ? {} : { workingCopyId: body.workingCopyId }),
       }
-      if (body.branch !== undefined || body.expectedBranchHead !== undefined) {
+      if (body.expectedHead !== undefined)
+        Object.assign(request, { expectedHead: body.expectedHead })
+      if (
+        request.workingCopyId !== undefined ||
+        request.expectedHead !== undefined ||
+        body.commit !== undefined ||
+        body.note !== undefined
+      ) {
         if (
-          !mutableBranch(body.branch) ||
-          !digest(body.expectedBranchHead) ||
-          typeof body.workingCopyId !== 'string'
+          typeof request.workingCopyId !== 'string' ||
+          !Object.hasOwn(request, 'expectedHead') ||
+          (request.expectedHead !== null && !digest(request.expectedHead))
         )
-          throw bad('Проверка требует выбранную ветку, её текущую версию и рабочую копию.')
-        Object.assign(request, { branch: body.branch, expectedBranchHead: body.expectedBranchHead })
-      }
-      if (body.commit !== undefined && typeof body.commit !== 'boolean')
-        throw bad('Некорректный запрос сохранения перед проверкой.')
-      if (body.commit === true) {
-        if (
-          body.branch === undefined ||
-          typeof body.note !== 'string' ||
-          !body.note.trim() ||
-          body.note.length > 200 ||
-          /\p{Cc}/u.test(body.note)
-        )
-          throw bad(
-            'Сохранение перед проверкой требует ветку и описание изменений до 200 символов.',
+          throw bad('Проверка требует рабочую копию и текущую версию карты.')
+        if (body.commit !== undefined && typeof body.commit !== 'boolean')
+          throw bad('Некорректный запрос сохранения перед проверкой.')
+        if (body.commit === true || body.note !== undefined) {
+          if (
+            typeof body.note !== 'string' ||
+            !body.note.trim() ||
+            body.note.length > 200 ||
+            /\p{Cc}/u.test(body.note)
           )
-        Object.assign(request, { commit: true, note: body.note.trim() })
+            throw bad('Сохранение перед проверкой требует описание изменений до 200 символов.')
+          Object.assign(request, { commit: body.commit === true, note: body.note.trim() })
+        } else if (body.commit !== undefined) {
+          Object.assign(request, { commit: false })
+        }
       }
     } else {
       if (
@@ -1066,27 +1099,6 @@ export function writeRequest(
     keyKinds.includes(request.kind as string) ? 0o600 : undefined,
   )
   return base.id
-}
-
-/**
- * A `wake` request already waiting in the inbox: its id, so callers reuse it instead of
- * queueing another. Answered (a result file exists) and malformed files do not count.
- */
-export function pendingWakeId(inboxDirectory: string, resultsDirectory: string): string | null {
-  let names: string[]
-  try {
-    names = readdirSync(inboxDirectory)
-  } catch {
-    return null
-  }
-  for (const name of names.filter((n) => n.endsWith('.json') && !n.startsWith('.')).sort()) {
-    const id = name.slice(0, -'.json'.length)
-    const request = readFile(join(inboxDirectory, name), 4096)
-    if (!request || request.schema !== 1 || request.kind !== 'wake' || request.id !== id) continue
-    if (readFile(join(resultsDirectory, `${id}.json`)) !== null) continue
-    return id
-  }
-  return null
 }
 
 const range = (min: number, max: number) => (v: unknown) =>
@@ -1697,6 +1709,106 @@ export function rconCommand(body: any): {
       throw bad('Неизвестное действие.')
   }
 }
+/** Typed-CP moderation actions (control-plane cp#32): fire-and-forget only.
+`list` stays on RCON (a read; CP ACKs carry no output), kick/ban keep the
+RCON nickname flow until the UUID cutover, maintenance/raw have no typed kind. */
+function moderationCpKind(body: any): string | null {
+  switch (body?.action) {
+    case 'say':
+    case 'pardon':
+    case 'team-kick':
+    case 'class-lock':
+    case 'class-unlock':
+    case 'range':
+    case 'stop-room':
+      return body.action
+    default:
+      return null
+  }
+}
+/** Per-kind CP fields; validation mirrors rconCommand so both paths refuse the same bodies. */
+function moderationCpFields(body: any): Record<string, unknown> {
+  switch (body?.action) {
+    case 'say':
+      return { text: text(body.text, true) }
+    case 'pardon':
+    case 'team-kick':
+      return { player: player(body.player) }
+    case 'class-lock':
+    case 'class-unlock':
+      if (typeof body.classId !== 'string' || !/^[a-z0-9_]{1,32}$/.test(body.classId))
+        throw bad('Некорректный класс.')
+      return { classId: body.classId }
+    case 'range':
+      if (!['open', 'close', 'reset'].includes(body.op))
+        throw bad('Полигон: open, close или reset.')
+      return { op: body.op }
+    case 'stop-room': {
+      if (typeof body.roomId !== 'string' || !roomId.test(body.roomId))
+        throw bad('Некорректная комната.')
+      if (!['none', 'draw', 'RED', 'BLUE'].includes(body.outcome))
+        throw bad('Итог: none, draw, RED или BLUE.')
+      const reason = text(body.reason, false)
+      if (body.outcome === 'none' && /^(win|draw)\b/.test(reason))
+        throw bad('Причина не может начинаться с win или draw.')
+      return { roomId: body.roomId, outcome: body.outcome, ...(reason ? { reason } : {}) }
+    }
+    default:
+      throw bad('Неизвестное действие.')
+  }
+}
+const uuidText = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+/** One client UUID per moderation action: the UI sends it and resends it on
+retry, so a retry after an unknown outcome dedupes in CP instead of
+double-applying. Absent (old UI) means a fresh key, as before. */
+function moderationIdempotencyKey(body: any): string {
+  if (body?.idempotencyKey === undefined) return randomUUID()
+  if (!uuidText(body.idempotencyKey)) throw bad('Некорректный ключ запроса.')
+  return body.idempotencyKey
+}
+/** One client UUID per Workshop action: same retry-dedupe contract as moderation. */
+function workshopIdempotencyKey(body: any): string {
+  if (body?.idempotencyKey === undefined) return randomUUID()
+  if (!uuidText(body.idempotencyKey)) throw bad('Некорректный ключ запроса.')
+  return body.idempotencyKey
+}
+/** CP-bound Workshop actor: the site service principal supplies it, CP binds it (workshop.act). */
+function workshopActor(actor: Actor): { draslId: string; name: string } {
+  if (!playerId(actor.uuid) || !nickname.test(actor.name)) throw bad('Некорректный запрос.')
+  return { draslId: actor.uuid, name: actor.name }
+}
+/** Workshop message rule (was the inbox writer): strip Cc/§, keep format
+characters such as ZWJ, count code points, ≤200. */
+function workshopMessage(value: unknown): string {
+  const message = typeof value === 'string' ? value.replace(/[\p{Cc}§]/gu, '').trim() : null
+  if (message === null || [...message].length > 200) throw bad('Сообщение: до 200 символов.')
+  return message
+}
+/** Typed-CP Workshop call: validated before the call, so a bad key is a 400,
+never an unconfirmed outcome; a dropped connection is unconfirmed, not
+failed. Unlike moderation there is no second transport, so an unconfigured
+site fails closed. */
+async function postWorkshopRoute(
+  kind: 'message' | 'wake' | 'cancel',
+  actor: Actor,
+  body: any,
+  fields: Record<string, unknown> = {},
+) {
+  const cp = await import('./cp.ts')
+  if (!cp.cpWorkshopConfigured()) throw fail(503, 'Мастерская недоступна.')
+  const idempotencyKey = workshopIdempotencyKey(body)
+  try {
+    const receipt = await cp.postWorkshopCp(kind, workshopActor(actor), fields, {
+      idempotencyKey,
+    })
+    return { operationId: receipt.operationId }
+  } catch (error) {
+    if (isCpProblem(error)) throw fail(error.status, error.message)
+    return { operationId: null, unknownOutcome: true }
+  }
+}
 /** Brigadier answers a bad command with text, not an error code. */
 export const rejectedByServer = (output: string) =>
   /^\s*(Unknown or incomplete command|Unknown command)/i.test(output) ||
@@ -2066,18 +2178,6 @@ const routes: Record<string, Route> = {
         if (!modes.includes(body.modeId))
           throw bad('Сохранённая версия карты не поддерживает этот режим.')
       }
-      if (body?.profile === 'workshop' && body?.session === 'new' && body.branches !== undefined) {
-        if (
-          !catalog.available ||
-          !plain(body.branches) ||
-          !Object.entries(body.branches).every(([id, name]) =>
-            catalog.maps
-              .find((entry) => entry.mapId === id)
-              ?.branches?.some((ref) => ref.name === name && ref.name !== 'main'),
-          )
-        )
-          throw bad('Выбранная ветка отсутствует в каталоге карт.')
-      }
       return {
         id: writeRequest(
           inboxDir(),
@@ -2102,32 +2202,78 @@ const routes: Record<string, Route> = {
   },
   'POST message': {
     permission: 'message',
-    handler: ({ actor, body }) => ({
-      id: writeRequest(inboxDir(), actor, { kind: 'message', message: body?.message }),
+    handler: ({ actor, body }) =>
+      postWorkshopRoute('message', actor, body, { message: workshopMessage(body?.message) }),
+    audit: (body, result) => ({
+      action: 'message',
+      detail: {
+        message: body?.message,
+        operationId: result?.operationId ?? null,
+        unknownOutcome: result?.unknownOutcome ?? null,
+      },
     }),
-    audit: (body) => ({ action: 'message', detail: { message: body?.message } }),
   },
   // Cancelling rolls back only the Workshop transition; recovery remains admin-only.
   'POST cancel': {
     permission: 'mode',
-    handler: ({ actor }) => ({ id: writeRequest(inboxDir(), actor, { kind: 'cancel' }) }),
-    audit: () => ({ action: 'cancel' }),
+    handler: ({ actor, body }) => postWorkshopRoute('cancel', actor, body),
+    audit: (_, result) => ({
+      action: 'cancel',
+      detail: {
+        operationId: result?.operationId ?? null,
+        unknownOutcome: result?.unknownOutcome ?? null,
+      },
+    }),
   },
-  // Waking is idempotent: a still-unanswered `wake` request is reused, never duplicated.
-  // Every staff member is a Workshop member (the site derives the controller ACL from staff
-  // roles), so this is open to all roles; POST maps/sessions sets the view-gated precedent.
+  // Waking is idempotent controller-side (an awake editor answers ok without
+  // side effects); the client UUID dedupes UI retries after unknown outcomes.
+  // Every staff member is a Workshop member (the site derives the controller
+  // ACL from staff roles), so this is open to all roles; POST maps/sessions
+  // sets the view-gated precedent.
   'POST wake': {
     permission: 'view',
-    handler: ({ actor }) => ({
-      id:
-        pendingWakeId(inboxDir(), join(adminDir(), 'results')) ??
-        writeRequest(inboxDir(), actor, { kind: 'wake' }),
+    handler: ({ actor, body }) => postWorkshopRoute('wake', actor, body),
+    audit: (_, result) => ({
+      action: 'workshop-wake',
+      detail: {
+        operationId: result?.operationId ?? null,
+        unknownOutcome: result?.unknownOutcome ?? null,
+      },
     }),
-    audit: () => ({ action: 'workshop-wake' }),
   },
   'POST rcon': {
     permission: 'moderate',
     handler: async ({ actor, body }) => {
+      // Typed control-plane path (cp#32): `list`/kick/ban/maintenance fall
+      // through to RCON (see moderationCpKind). Unconfigured sites keep RCON.
+      const cpKind = moderationCpKind(body)
+      if (cpKind) {
+        const cp = await import('./cp.ts')
+        if (cp.cpModerationConfigured()) {
+          const fields = moderationCpFields(body)
+          if (!can(actor.role, cpKind === 'pardon' ? 'ban' : 'moderate'))
+            throw fail(403, 'Недостаточно прав.')
+          const found =
+            body.action === 'stop-room'
+              ? (await currentRooms()).rooms.find((r) => r.id === body.roomId)
+              : undefined
+          const room = found ? { name: found.name, map: found.map } : undefined
+          // Validated before the call: a bad key is a 400, never an unconfirmed outcome.
+          const idempotencyKey = moderationIdempotencyKey(body)
+          try {
+            const receipt = await cp.postModerationCp(cpKind, actor.uuid, fields, {
+              idempotencyKey,
+            })
+            return { operationId: receipt.operationId, room }
+          } catch (error) {
+            if (isCpProblem(error)) throw fail(error.status, error.message)
+            // Timeout, dropped connection or a receipt without an operation id:
+            // CP may have applied the command, so this is unconfirmed, not
+            // failed — a retry resends the same key and dedupes in CP.
+            return { operationId: null, unknownOutcome: true, room }
+          }
+        }
+      }
       const { permission, commands } = rconCommand(body)
       if (!can(actor.role, permission)) throw fail(403, 'Недостаточно прав.')
       rconConfigured()
@@ -2157,13 +2303,20 @@ const routes: Record<string, Route> = {
     audit: (body, result) => ({
       action: `rcon:${body?.action}`,
       target: body?.player ?? body?.roomId ?? body?.classId ?? body?.op ?? null,
-      detail: { ...body, room: result?.room, output: result?.output?.slice(0, 500) },
+      detail: {
+        ...body,
+        room: result?.room,
+        output: result?.output?.slice(0, 500),
+        operationId: result?.operationId,
+        unknownOutcome: result?.unknownOutcome ?? null,
+      },
     }),
   },
-  // Entry gate via control-plane (U1): owner AND site admins; CP audits the actor too.
+  // Entry gate via control-plane v2: owner AND site admins; the service
+  // credential holds moderation.ban and CP attributes the service principal.
   'POST gate': {
     permission: 'maintenance',
-    handler: async ({ actor, body }) => {
+    handler: async ({ body }) => {
       let toggle
       try {
         toggle = gateToggle(body)
@@ -2173,12 +2326,7 @@ const routes: Record<string, Route> = {
       const { mode, message } = toggle
       const { postGateCp } = await import('./cp.ts')
       try {
-        return await postGateCp(
-          mode,
-          message,
-          { id: actor.uuid, role: actor.role === 'owner' ? 'owner' : 'admin' },
-          randomUUID(),
-        )
+        return await postGateCp(mode, message, randomUUID())
       } catch (error) {
         const text = error instanceof Error ? error.message : ''
         // Безопасно для показа: ревизия CP — только номер, «не настроен» — без секретов.
@@ -2320,7 +2468,12 @@ const routes: Record<string, Route> = {
     handler: async ({ actor, body }) => {
       const { cpConfigured } = await import('./cp.ts')
       if (cpConfigured()) {
-        const { settings, cpRevisions } = await saveSettingsCp(settingsDir(), body, actor.name)
+        const { settings, cpRevisions } = await saveSettingsCp(
+          settingsDir(),
+          body,
+          actor.name,
+          actor.uuid,
+        )
         return { settings, cpRevisions }
       }
       return { settings: saveSettings(settingsDir(), body, actor.name) }
@@ -2345,7 +2498,12 @@ const routes: Record<string, Route> = {
     handler: async ({ actor, body }) => {
       const { cpConfigured } = await import('./cp.ts')
       if (cpConfigured()) {
-        const { policy, cpRevisions } = await saveAiLimitsCp(settingsDir(), body, actor.role)
+        const { policy, cpRevisions } = await saveAiLimitsCp(
+          settingsDir(),
+          body,
+          actor.role,
+          actor.uuid,
+        )
         return { policy, cpRevisions }
       }
       return { policy: saveAiLimits(settingsDir(), body) }
@@ -2368,7 +2526,7 @@ const routes: Record<string, Route> = {
   'PUT workshop-ai-settings': {
     permission: 'ai',
     maxBody: 8192,
-    handler: async ({ body }) => {
+    handler: async ({ actor, body }) => {
       const hasKey = (provider) =>
         readWorkshopAiKeyStatus(adminDir(), workshopAiKeyStatusFile(provider)).set
       const { cpConfigured } = await import('./cp.ts')
@@ -2377,6 +2535,7 @@ const routes: Record<string, Route> = {
           settingsDir(),
           body,
           hasKey,
+          actor.uuid,
         )
         return { settings, cpRevisions }
       }
@@ -2484,7 +2643,12 @@ const routes: Record<string, Route> = {
     handler: async ({ actor, body }) => {
       const { cpConfigured } = await import('./cp.ts')
       if (cpConfigured()) {
-        const { settings, cpRevisions } = await saveKitSettingsCp(settingsDir(), body, actor.name)
+        const { settings, cpRevisions } = await saveKitSettingsCp(
+          settingsDir(),
+          body,
+          actor.name,
+          actor.uuid,
+        )
         return { settings, cpRevisions }
       }
       return { settings: saveKitSettings(settingsDir(), body, actor.name) }
@@ -2505,6 +2669,7 @@ const routes: Record<string, Route> = {
           settingsDir(),
           body,
           actor.name,
+          actor.uuid,
           true,
         )
         return { settings, cpRevisions }
@@ -2549,27 +2714,51 @@ const routes: Record<string, Route> = {
       }
     },
   },
-  'POST maps/branches': {
+  'POST maps/snapshots': {
     permission: 'map-edit',
     handler: async ({ actor, store, body }) => {
       const { catalog, entry } = await editableMap(actor, store, body?.mapId)
+      if (typeof body?.name !== 'string' || !mutableBranch(body.name))
+        throw bad('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
+      if (body?.action === 'delete') {
+        if (!entry.snapshots?.some((snapshot) => snapshot.name === body.name))
+          throw fail(404, 'Снимок не найден.')
+        return {
+          id: writeRequest(
+            inboxDir(),
+            actor,
+            { kind: 'snapshot-delete', mapId: entry.mapId, name: body.name },
+            new Set(catalog.maps.map((map) => map.mapId)),
+          ),
+        }
+      }
       if (!entry.versions.some((version) => version.versionDigest === body?.versionDigest))
         throw bad('Выбранная версия отсутствует в истории карты.')
-      if (entry.branches?.some((ref) => ref.name === body?.branch))
-        throw fail(409, 'Ветка с таким именем уже существует.')
+      if (
+        entry.snapshots?.some(
+          (snapshot) =>
+            snapshot.name === body.name && snapshot.versionDigest !== body.versionDigest,
+        )
+      )
+        throw fail(409, 'Снимок с таким именем уже указывает на другую версию.')
       return {
         id: writeRequest(
           inboxDir(),
           actor,
-          { ...body, kind: 'branch-create' },
+          {
+            kind: 'snapshot-create',
+            mapId: entry.mapId,
+            name: body.name,
+            versionDigest: body.versionDigest,
+          },
           new Set(catalog.maps.map((map) => map.mapId)),
         ),
       }
     },
     audit: (body) => ({
-      action: 'map-branch-create',
+      action: body?.action === 'delete' ? 'map-snapshot-delete' : 'map-snapshot-create',
       target: body?.mapId,
-      detail: { branch: body?.branch, versionDigest: body?.versionDigest },
+      detail: { name: body?.name, versionDigest: body?.versionDigest },
     }),
   },
   'POST maps/create': {
@@ -2604,6 +2793,7 @@ const routes: Record<string, Route> = {
           settingsDir(),
           body,
           actor.name,
+          actor.uuid,
         )
         return { settings, cpRevisions }
       }
@@ -2618,11 +2808,9 @@ const routes: Record<string, Route> = {
   'POST maps/properties': {
     permission: 'maps',
     handler: async ({ actor, store, body }) => {
-      const { catalog, entry } = await editableMap(actor, store, body?.mapId),
-        { copy } = selectedMapBranch(catalog, entry)
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId)
+      selectedMapSession(catalog, entry, body?.workingCopyId)
       editorRevision(body)
-      if (body?.workingCopyId !== copy.id)
-        throw fail(409, 'Рабочая копия изменилась. Обновите историю.')
       return {
         id: writeRequest(
           inboxDir(),
@@ -2648,14 +2836,10 @@ const routes: Record<string, Route> = {
   'POST maps/commit': {
     permission: 'map-edit',
     handler: async ({ actor, store, body }) => {
-      const { catalog, entry } = await editableMap(actor, store, body?.mapId),
-        { copy, branch } = selectedMapBranch(catalog, entry)
-      if (
-        body?.branch !== branch.name ||
-        body?.workingCopyId !== copy.id ||
-        body?.expectedBranchHead !== branch.versionDigest
-      )
-        throw fail(409, 'Ветка или рабочая копия изменилась. Обновите историю перед коммитом.')
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId)
+      selectedMapSession(catalog, entry, body?.workingCopyId)
+      if (body?.expectedHead !== (entry.head?.versionDigest ?? null))
+        throw fail(409, 'Версия карты уже изменилась. Обновите историю перед коммитом.')
       return {
         id: writeRequest(
           inboxDir(),
@@ -2669,11 +2853,53 @@ const routes: Record<string, Route> = {
       action: 'map-commit',
       target: body?.mapId,
       detail: {
-        branch: body?.branch,
-        expectedBranchHead: body?.expectedBranchHead,
+        expectedHead: body?.expectedHead,
         note: body?.note,
       },
     }),
+  },
+  'POST maps/snapshot-copy': {
+    permission: 'workshop',
+    handler: async ({ actor, store, body }) => {
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId),
+        { copy } = selectedMapSession(catalog, entry, body?.workingCopyId)
+      if (typeof body?.name !== 'string' || !mutableBranch(body.name))
+        throw bad('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
+      return {
+        id: writeRequest(
+          inboxDir(),
+          actor,
+          {
+            kind: 'snapshot-copy',
+            mapId: entry.mapId,
+            name: body.name,
+            workingCopyId: copy.id,
+          },
+          new Set(catalog.maps.map((map) => map.mapId)),
+        ),
+      }
+    },
+    audit: (body) => ({
+      action: 'map-snapshot-copy',
+      target: body?.mapId,
+      detail: { name: body?.name },
+    }),
+  },
+  'POST maps/checkout-fresh': {
+    permission: 'map-edit',
+    handler: async ({ actor, store, body }) => {
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId)
+      selectedMapSession(catalog, entry, body?.workingCopyId)
+      return {
+        id: writeRequest(
+          inboxDir(),
+          actor,
+          { kind: 'checkout-fresh', mapId: entry.mapId },
+          new Set(catalog.maps.map((map) => map.mapId)),
+        ),
+      }
+    },
+    audit: (body) => ({ action: 'map-checkout-fresh', target: body?.mapId ?? null }),
   },
   'POST maps/compare': {
     permission: 'map-edit',
@@ -2698,28 +2924,6 @@ const routes: Record<string, Route> = {
       action: 'map-compare',
       target: body?.mapId,
       detail: { before: body?.before, after: body?.after },
-    }),
-  },
-  'POST maps/merge-preview': {
-    maxBody: 8 * 1024 * 1024,
-    permission: 'map-edit',
-    handler: async ({ actor, store, body }) => {
-      const { catalog, entry } = await editableMap(actor, store, body?.mapId)
-      if (!entry.versions.some((version) => version.versionDigest === body?.versionDigest))
-        throw bad('Исходная версия не принадлежит этой карте.')
-      return {
-        id: writeRequest(
-          inboxDir(),
-          actor,
-          { ...body, kind: 'merge-preview', expectedHead: expectedMapHead(body, entry) },
-          new Set(catalog.maps.map((map) => map.mapId)),
-        ),
-      }
-    },
-    audit: (body) => ({
-      action: 'map-merge-preview',
-      target: body?.mapId,
-      detail: { versionDigest: body?.versionDigest, expectedHead: body?.expectedHead },
     }),
   },
   'GET candidates/download': {
@@ -2757,16 +2961,9 @@ const routes: Record<string, Route> = {
     permission: 'map-edit',
     handler: async ({ actor, store, body }) => {
       const { catalog, entry } = await editableMap(actor, store, body?.mapId),
-        { copy, branch } = selectedMapBranch(catalog, entry)
-      if (
-        ((body.commit === true || body.branch !== undefined) && body.branch !== branch.name) ||
-        ((body.commit === true || body.expectedBranchHead !== undefined) &&
-          body.expectedBranchHead !== branch.versionDigest) ||
-        (body.commit === true && body.workingCopyId !== copy.id)
-      )
-        throw fail(409, 'Ветка уже изменилась. Обновите историю перед отправкой на проверку.')
-      if (body.commit !== true && branch.versionDigest === entry.head?.versionDigest)
-        throw fail(409, 'Сначала зафиксируйте изменения в ветке: её коммит совпадает с main.')
+        { copy } = selectedMapSession(catalog, entry, body?.workingCopyId)
+      if (body?.expectedHead !== (entry.head?.versionDigest ?? null))
+        throw fail(409, 'Версия карты уже изменилась. Обновите историю перед отправкой.')
       return {
         id: writeRequest(
           inboxDir(),
@@ -2775,10 +2972,9 @@ const routes: Record<string, Route> = {
             kind: 'candidate',
             mapId: entry.mapId,
             workingCopyId: copy.id,
-            branch: branch.name,
-            expectedBranchHead: branch.versionDigest,
-            commit: body.commit,
-            note: body.note,
+            expectedHead: entry.head?.versionDigest ?? null,
+            commit: body?.commit,
+            note: body?.note,
           },
           new Set(catalog.maps.map((map) => map.mapId)),
         ),
@@ -2795,15 +2991,10 @@ const routes: Record<string, Route> = {
       const entry = catalog.maps.find((map) => map.mapId === candidate?.mapId)
       if (!candidate || !entry) throw fail(404, 'Кандидат или карта не найдены.')
       const expectedHead = expectedMapHead(body, entry)
-      if (
-        candidate.sourceBranch !== undefined &&
-        (body.force === true || candidate.targetHead !== expectedHead)
-      )
+      if (candidate.targetHead !== undefined && candidate.targetHead !== expectedHead)
         throw fail(
-          body.force === true ? 400 : 409,
-          body.force === true
-            ? 'Конфликты слияния требуют точного выбора main или версии на проверке.'
-            : 'Main изменилась после отправки. Нужна новая проверка из ветки.',
+          409,
+          'Версия в игре сменилась после отправки. Попросите автора отправить версию заново.',
         )
       return {
         id: writeRequest(inboxDir(), actor, {
@@ -3531,9 +3722,7 @@ export async function handleWorkshopSubmit(
   let applied = false
   try {
     const { catalog, entry } = await editableMap(actor, store, mapId),
-      { copy, branch } = selectedMapBranch(catalog, entry)
-    if (body.workingCopyId !== copy.id)
-      throw fail(409, 'Рабочая копия карты уже изменилась. Вернитесь в действующую мастерскую.')
+      { copy } = selectedMapSession(catalog, entry, body.workingCopyId)
     id = writeRequest(
       inboxDir(),
       actor,
@@ -3541,8 +3730,7 @@ export async function handleWorkshopSubmit(
         kind: 'candidate',
         mapId,
         workingCopyId: copy.id,
-        branch: branch.name,
-        expectedBranchHead: branch.versionDigest,
+        expectedHead: entry.head?.versionDigest ?? null,
         commit: true,
         note: `С планшета: ${actor.name}`
           .replace(/\p{Cc}/gu, ' ')
@@ -4179,6 +4367,7 @@ async function cpSettleSave(args: {
   fileName: string
   revision: number
   actorName: string
+  actorUuid: string
   jobs: CpJob[]
   rebuild: () => Promise<{ value: any; cpRevisions: Record<string, number> }>
   stamp?: boolean
@@ -4195,6 +4384,7 @@ async function cpSettleSave(args: {
         expectedRevision: base,
         idempotencyKey: `site:${revision}:${job.namespace}:${job.kind}:${index}`,
         patch: job.patch,
+        actorAccountId: args.actorUuid,
       })) as { operationId: string; revision: number }
       revs.set(job.namespace, receipt.revision)
     } catch (error) {
@@ -4236,6 +4426,7 @@ export async function saveSettingsCp(
   directory: string,
   body: any,
   actorName: string,
+  actorUuid: string,
   gunBalanceOnly = false,
 ) {
   if (!plain(body)) throw bad('Некорректные настройки.')
@@ -4355,6 +4546,7 @@ export async function saveSettingsCp(
       fileName: 'settings.json',
       revision,
       actorName,
+      actorUuid,
       jobs,
       rebuild: async () => {
         const view = await readSettingsCpView(directory)
@@ -4364,7 +4556,12 @@ export async function saveSettingsCp(
     return { settings: built.value, cpRevisions: built.cpRevisions }
   })
 }
-export async function saveKitSettingsCp(directory: string, body: any, actorName: string) {
+export async function saveKitSettingsCp(
+  directory: string,
+  body: any,
+  actorName: string,
+  actorUuid: string,
+) {
   if (
     !plain(body) ||
     Object.keys(body).some(
@@ -4442,6 +4639,7 @@ export async function saveKitSettingsCp(directory: string, body: any, actorName:
       fileName: 'settings.json',
       revision: current.revision,
       actorName,
+      actorUuid,
       jobs,
       rebuild: async () => {
         const view = await readSettingsCpView(directory)
@@ -4452,7 +4650,12 @@ export async function saveKitSettingsCp(directory: string, body: any, actorName:
   })
 }
 
-export async function saveMapAvailabilityCp(directory: string, body: any, actorName: string) {
+export async function saveMapAvailabilityCp(
+  directory: string,
+  body: any,
+  actorName: string,
+  actorUuid: string,
+) {
   if (
     !plain(body) ||
     !mapId(body.mapId) ||
@@ -4491,6 +4694,7 @@ export async function saveMapAvailabilityCp(directory: string, body: any, actorN
       fileName: 'settings.json',
       revision: availability.revision,
       actorName,
+      actorUuid,
       jobs,
       rebuild: async () => {
         const view = await readSettingsCpView(directory)
@@ -4501,7 +4705,12 @@ export async function saveMapAvailabilityCp(directory: string, body: any, actorN
   })
 }
 
-export async function saveAiLimitsCp(directory: string, body: any, actorRole: Role | null) {
+export async function saveAiLimitsCp(
+  directory: string,
+  body: any,
+  actorRole: Role | null,
+  actorUuid: string,
+) {
   if (actorRole !== 'owner') throw fail(403, 'Недостаточно прав.')
   if (
     !plain(body) ||
@@ -4559,6 +4768,7 @@ export async function saveAiLimitsCp(directory: string, body: any, actorRole: Ro
       fileName: 'ai-limits.json',
       revision: current.revision,
       actorName: String(actorRole),
+      actorUuid,
       jobs,
       stamp: false,
       rebuild: async () => {
@@ -4574,6 +4784,7 @@ export async function saveWorkshopAiSettingsCp(
   directory: string,
   body: any,
   hasKey: (provider: string) => boolean,
+  actorUuid: string,
 ) {
   if (
     !plain(body) ||
@@ -4674,6 +4885,7 @@ export async function saveWorkshopAiSettingsCp(
       fileName: 'workshop-ai-settings.json',
       revision: (current as Record<string, unknown>).revision as number,
       actorName: 'owner',
+      actorUuid,
       jobs,
       rebuild: async () => {
         const view = (await readWorkshopAiSettingsCpView(directory)) as Record<string, unknown>

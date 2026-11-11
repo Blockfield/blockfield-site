@@ -62,7 +62,21 @@ test('mode switch and cancel are admin-only; map create stays with the moderator
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
     Object.assign(process.env, saved)
   })
-  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  const http = await import('node:http')
+  const cp = http.createServer((req, res) => {
+    res.setHeader('Content-Type', 'application/json')
+    res.statusCode = 202
+    res.end(JSON.stringify({ operationId: 'op-1', revision: null, status: 'accepted' }))
+  })
+  await new Promise((resolve) => cp.listen(0, '127.0.0.1', resolve))
+  t.after(() => cp.close())
+  Object.assign(process.env, dirs, {
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${cp.address().port}`,
+    BLOCKFIELD_CP_WORKSHOP_TOKEN: 'wsh-t',
+    BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
+  })
   const s = await store(t)
   await s.setStaff(MOD, 'Mod', 'moderator', 'seed')
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
@@ -366,6 +380,19 @@ test('finalize failure: low-risk warns on 200, high-risk fails closed', async (t
   Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const http = await import('node:http')
+  const cp = http.createServer((req, res) => {
+    res.setHeader('Content-Type', 'application/json')
+    res.statusCode = 202
+    res.end(JSON.stringify({ operationId: 'op-flaky', revision: null, status: 'accepted' }))
+  })
+  await new Promise((resolve) => cp.listen(0, '127.0.0.1', resolve))
+  t.after(() => cp.close())
+  Object.assign(process.env, {
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${cp.address().port}`,
+    BLOCKFIELD_CP_WORKSHOP_TOKEN: 'wsh-t',
+    BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
+  })
   const flaky = new Proxy(s, {
     get: (target, prop) =>
       prop === 'auditFinalize'
@@ -397,7 +424,11 @@ test('finalize failure: low-risk warns on 200, high-risk fails closed', async (t
     503,
     'high-risk fails closed when the finalize is lost',
   )
-  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 2, 'both effects ran exactly once')
+  assert.equal(
+    readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length,
+    1,
+    'only the inbox effect wrote a file',
+  )
 })
 
 test('admin writes are throttled per user: a flood ends in 429, reads are untouched', async (t) => {
@@ -545,7 +576,6 @@ test('inbox request is validated and written atomically as <id>.json', (t) => {
     [admin, { kind: 'mode', profile: 'maintenance', expectedRevision: 3 }, 400],
     [admin, { kind: 'mode', profile: 'game' }, 400],
     [admin, { kind: 'mode', profile: 'workshop', expectedRevision: 3 }, 400, 'no session'],
-    [admin, { kind: 'message', message: 'x'.repeat(201) }, 400],
     [admin, { kind: 'members', members: [{ draslId: 'bad', name: 'Bob', role: 'admin' }] }, 400],
     [admin, { kind: 'shell' }, 400],
   ])
@@ -657,17 +687,6 @@ test('publish request: optional force must be boolean, only written when true', 
   assert.throws(
     () => writeRequest(dir, admin, { kind: 'publish', candidateId: 'a'.repeat(32), force: 'yes' }),
     (e) => status(e) === 400,
-  )
-})
-
-test('cancel request: same shape as mode/message, no extra fields, no extra validation to bypass', (t) => {
-  const dir = temp(t),
-    lead = { uuid: MOD, name: 'Mod', role: 'moderator' }
-  const id = writeRequest(dir, lead, { kind: 'cancel' })
-  const request = JSON.parse(readFileSync(join(dir, `${id}.json`)))
-  assert.deepEqual(
-    { ...request, createdAt: 0 },
-    { schema: 1, id, kind: 'cancel', actor: { draslId: MOD, name: 'Mod' }, createdAt: 0 },
   )
 })
 
@@ -830,6 +849,11 @@ test('API: role gate, audit of success and refusal, members request on role chan
     Object.assign(process.env, saved)
   })
   Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  Object.assign(process.env, {
+    BLOCKFIELD_CP_URL: 'http://127.0.0.1:9',
+    BLOCKFIELD_CP_WORKSHOP_TOKEN: 'wsh-t',
+    BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
+  })
   delete process.env.BLOCKFIELD_RCON_HOST
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
@@ -856,16 +880,22 @@ test('API: role gate, audit of success and refusal, members request on role chan
 
   mkdirSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'results'))
   // Owner names resolve through Drasl; stub it so the members request can be built offline.
+  // The same stub answers the typed Workshop calls (cancel goes through CP here).
   const realFetch = globalThis.fetch
   t.after(() => {
     globalThis.fetch = realFetch
   })
   globalThis.fetch = async (url) =>
-    String(url).includes(`/session/minecraft/profile/${OWNER}`)
-      ? Response.json({ id: OWNER, name: 'Nether' })
-      : String(url).endsWith('/Moddy')
-        ? Response.json({ id: MOD, name: 'Moddy' })
-        : new Response('', { status: 404 })
+    String(url).includes('/v2/workshop/')
+      ? Response.json(
+          { operationId: 'op-cancel', revision: null, status: 'accepted' },
+          { status: 202 },
+        )
+      : String(url).includes(`/session/minecraft/profile/${OWNER}`)
+        ? Response.json({ id: OWNER, name: 'Nether' })
+        : String(url).endsWith('/Moddy')
+          ? Response.json({ id: MOD, name: 'Moddy' })
+          : new Response('', { status: 404 })
 
   assert.equal(
     (await call(`${ADMIN}:Adm`, 'POST', 'staff', { name: 'Moddy', role: 'admin' })).status,
@@ -893,16 +923,13 @@ test('API: role gate, audit of success and refusal, members request on role chan
     403,
   )
 
-  // cancel switches the server like mode does: admin-only.
+  // cancel switches the server like mode does: admin-only. The command goes
+  // through CP (operationId receipt); the member list still goes to the inbox.
   assert.equal((await call(`${OTHER}:Nobody`, 'POST', 'cancel', {})).status, 403)
   assert.equal((await call(`${MOD}:Moddy`, 'POST', 'cancel', {})).status, 403)
   const cancelled = await call(`${ADMIN}:Adm`, 'POST', 'cancel', {})
   assert.equal(cancelled.status, 200)
-  const { id: cancelId } = await cancelled.json()
-  assert.deepEqual(
-    JSON.parse(readFileSync(join(dirs.BLOCKFIELD_INBOX_DIR, `${cancelId}.json`))).kind,
-    'cancel',
-  )
+  assert.deepEqual(await cancelled.json(), { operationId: 'op-cancel' })
 
   const log = (await (await call(`${OWNER}:Nether`, 'GET', 'audit')).json()).entries
   assert.deepEqual(
@@ -981,22 +1008,6 @@ test('review: range goes through /bf, Brigadier rejections are detected', () => 
   ])
     assert.equal(rejectedByServer(reply), true, reply)
   assert.equal(rejectedByServer('[BlockField] Полигон закрыт, выведено игроков: 0'), false)
-})
-
-test('review: message strips exactly Cc and §, keeps ZWJ emoji, counts code points', (t) => {
-  const dir = temp(t),
-    actor = { uuid: MOD, name: 'Mod', role: 'moderator' },
-    family = '👨\u200d👩\u200d👧'
-  const id = writeRequest(dir, actor, {
-    kind: 'message',
-    message: `  §cРаботы\n\u0085${family}\t `,
-  })
-  assert.equal(JSON.parse(readFileSync(join(dir, `${id}.json`))).message, `cРаботы${family}`)
-  writeRequest(dir, actor, { kind: 'message', message: '😀'.repeat(200) })
-  assert.throws(
-    () => writeRequest(dir, actor, { kind: 'message', message: 'x'.repeat(201) }),
-    (e) => status(e) === 400,
-  )
 })
 
 test('review: balance types, per-key ranges and merged cross-checks match the mod', () => {
@@ -1653,8 +1664,7 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
     ['candidate', 'fields', 'Bob'],
   )
   assert.equal(request.workingCopyId, workingCopyId)
-  assert.equal(request.branch, 'layout-work')
-  assert.equal(request.expectedBranchHead, 'a'.repeat(64))
+  assert.equal(request.expectedHead, 'a'.repeat(64))
   assert.equal(request.commit, true)
   assert.equal(request.note, 'С планшета: Bob')
   const { id } = await ok.json()
@@ -1701,21 +1711,19 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
       s,
     ).catch((error) => error)
   }
-  const draft = {
-    mapId: 'fields',
-    branch: 'layout-work',
-    workingCopyId,
-    expectedBranchHead: 'a'.repeat(64),
-  }
-  assert.equal((await web(draft)).status, 409, 'review-only still requires a saved change')
+  const draft = { mapId: 'fields', workingCopyId, expectedHead: 'a'.repeat(64) }
+  assert.equal((await web({ mapId: 'fields' })).status, 409, 'review pins the working copy')
+  assert.equal(
+    (await web({ ...draft, workingCopyId: '00000000-0000-0000-0000-000000000000' })).status,
+    409,
+    'stale copy is refused',
+  )
+  assert.equal((await web(draft)).status, 200, 'plain review queues')
   assert.equal((await web({ ...draft, commit: true, note: '' })).status, 400)
   assert.equal(
-    (await web({ ...draft, expectedBranchHead: 'b'.repeat(64), commit: true, note: 'Update' }))
-      .status,
+    (await web({ ...draft, expectedHead: 'b'.repeat(64), commit: true, note: 'Update' })).status,
     409,
   )
-  for (const workingCopyId of [undefined, '00000000-0000-0000-0000-000000000000'])
-    assert.equal((await web({ ...draft, workingCopyId, commit: true, note: 'Update' })).status, 409)
   const combined = await web({ ...draft, commit: true, note: ' Layout update ' })
   assert.equal(combined.status, 200)
   const combinedId = (await combined.json()).id
@@ -1726,7 +1734,8 @@ test('POST /api/workshop/submit: a builder only for maps they build on; writes a
   assert.equal(combinedRequest.commit, true)
   assert.equal(combinedRequest.note, 'Layout update')
   assert.equal(combinedRequest.workingCopyId, workingCopyId)
-  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 2, 'one request per submission')
+  assert.equal(combinedRequest.expectedHead, 'a'.repeat(64))
+  assert.equal(readdirSync(dirs.BLOCKFIELD_INBOX_DIR).length, 3, 'one request per submission')
   assert.ok(
     (await s.auditLog(5)).some(
       (e) => e.action === 'workshop-candidate' && e.ok && e.target === 'fields',
@@ -1741,9 +1750,8 @@ test('writeRequest: candidate/rollback take a real map, publish/reject a candida
   const combined = {
     kind: 'candidate',
     mapId: 'konstaxa',
-    branch: 'layout',
     workingCopyId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
-    expectedBranchHead: 'a'.repeat(64),
+    expectedHead: 'a'.repeat(64),
     commit: true,
     note: 'Update',
   }
@@ -1752,7 +1760,8 @@ test('writeRequest: candidate/rollback take a real map, publish/reject a candida
     { note: '' },
     { note: 'a'.repeat(201) },
     { note: 'line\nbreak' },
-    { branch: undefined },
+    { workingCopyId: undefined },
+    { expectedHead: undefined },
     { commit: 'true' },
   ])
     assert.throws(() => writeRequest(dir, actor, { ...combined, ...overrides }))
@@ -2206,4 +2215,179 @@ test('console link: logs and suggestions proxy the mod endpoint with the console
   assert.equal((await call(`${OWNER}:Nether`, 'console/logs?since=0')).status, 503)
   assert.equal(seen.length, before, 'no token: the link is never called')
   assert.equal((await s.auditLog()).length, 0, 'link reads are not audited')
+})
+
+test('POST rcon moderation goes through typed CP actions when configured, RCON otherwise', async (t) => {
+  const http = await import('node:http')
+  const dirs = {
+    BLOCKFIELD_ADMIN_DIR: temp(t),
+    BLOCKFIELD_INBOX_DIR: temp(t),
+    BLOCKFIELD_SETTINGS_DIR: temp(t),
+  }
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  const seen = []
+  const server = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      seen.push([req.method, req.url, JSON.parse(body)])
+      res.setHeader('Content-Type', 'application/json')
+      res.statusCode = 202
+      res.end(JSON.stringify({ operationId: 'op-1', revision: null, status: 'accepted' }))
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  Object.assign(process.env, dirs, {
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
+    BLOCKFIELD_CP_MODERATION_TOKEN: 'mod-t',
+    BLOCKFIELD_CP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
+  })
+  delete process.env.BLOCKFIELD_RCON_HOST
+  const s = await store(t)
+  await s.setStaff(MOD, 'Moddy', 'moderator', 'seed')
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const call = async (as, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL('http://site/api/admin/rcon')
+    const request = new Request(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, 'rcon', s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  const said = await call(`${MOD}:Moddy`, { action: 'say', text: 'Рестарт через 5 минут' })
+  assert.equal(said.status, 200)
+  assert.deepEqual(await said.json(), { operationId: 'op-1' })
+  assert.deepEqual(
+    seen.map(([m, u, b]) => [m, u, b.text]),
+    [['POST', '/v2/actions/moderation.say', 'Рестарт через 5 минут']],
+  )
+  // Same bodies RCON refused stay refused before any CP call.
+  assert.equal((await call(`${MOD}:Moddy`, { action: 'say', text: '/op x' })).status, 400)
+  assert.equal(seen.length, 1)
+  // Pardon needs the ban permission, like its RCON path.
+  assert.equal((await call(`${MOD}:Moddy`, { action: 'pardon', player: 'Bob' })).status, 403)
+  const pardoned = await call(`${ADMIN}:Adm`, { action: 'pardon', player: 'Bob' })
+  assert.equal(pardoned.status, 200)
+  assert.deepEqual(seen[1][1], '/v2/actions/moderation.pardon')
+  const log = await s.auditLog()
+  assert.deepEqual(
+    log.map((e) => [e.actorName, e.action, e.ok]),
+    [
+      ['Adm', 'rcon:pardon', 1],
+      ['Moddy', 'rcon:pardon', 0],
+      ['Moddy', 'rcon:say', 0],
+      ['Moddy', 'rcon:say', 1],
+    ],
+  )
+  assert.equal(JSON.parse(log[0].detail).operationId, 'op-1')
+  // Unconfigured sites keep the RCON path (here: no RCON host, so 503).
+  delete process.env.BLOCKFIELD_CP_MODERATION_TOKEN
+  assert.equal((await call(`${MOD}:Moddy`, { action: 'say', text: 'hi' })).status, 503)
+})
+
+test('POST rcon moderation reuses the client key and reports unknown outcomes as unconfirmed', async (t) => {
+  const http = await import('node:http')
+  const dirs = {
+    BLOCKFIELD_ADMIN_DIR: temp(t),
+    BLOCKFIELD_INBOX_DIR: temp(t),
+    BLOCKFIELD_SETTINGS_DIR: temp(t),
+  }
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  // dropNext makes the next request die mid-flight (applied or not: unknown).
+  // badReceiptNext answers 2xx without an operation id (also unknown).
+  const seen = []
+  let dropNext = false,
+    badReceiptNext = false
+  const server = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      if (dropNext) {
+        dropNext = false
+        req.socket.destroy()
+        return
+      }
+      seen.push(JSON.parse(body))
+      res.setHeader('Content-Type', 'application/json')
+      res.statusCode = 202
+      res.end(
+        badReceiptNext
+          ? ((badReceiptNext = false), JSON.stringify({ status: 'accepted' }))
+          : JSON.stringify({ operationId: 'op-9', revision: null, status: 'accepted' }),
+      )
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  Object.assign(process.env, dirs, {
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
+    BLOCKFIELD_CP_MODERATION_TOKEN: 'mod-t',
+    BLOCKFIELD_CP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
+  })
+  delete process.env.BLOCKFIELD_RCON_HOST
+  const s = await store(t)
+  await s.setStaff(MOD, 'Moddy', 'moderator', 'seed')
+  const call = async (body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = `${MOD}:Moddy`
+    const url = new URL('http://site/api/admin/rcon')
+    const request = new Request(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, 'rcon', s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  const key = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+  const first = await call({ action: 'say', text: 'Тихо', idempotencyKey: key })
+  assert.equal(first.status, 200)
+  const retry = await call({ action: 'say', text: 'Тихо', idempotencyKey: key })
+  assert.equal(retry.status, 200)
+  assert.deepEqual(
+    seen.map((b) => b.idempotencyKey),
+    [key, key],
+    'a retry resends the same key so CP dedupes instead of double-applying',
+  )
+  // An invalid key is rejected before any CP call.
+  const bad = await call({ action: 'say', text: 'Тихо', idempotencyKey: 'not-a-uuid' })
+  assert.equal(bad.status, 400)
+  assert.match((await bad.json()).error, /ключ/i)
+  assert.equal(seen.length, 2)
+  // A 2xx receipt without an operation id is unconfirmed, not failed.
+  badReceiptNext = true
+  const receiptless = await call({ action: 'say', text: 'Тихо', idempotencyKey: key })
+  assert.equal(receiptless.status, 200)
+  assert.deepEqual(await receiptless.json(), { operationId: null, unknownOutcome: true })
+  // A dropped connection is unconfirmed too.
+  dropNext = true
+  const dropped = await call({ action: 'say', text: 'Тихо', idempotencyKey: key })
+  assert.equal(dropped.status, 200)
+  assert.deepEqual(await dropped.json(), { operationId: null, unknownOutcome: true })
+  const log = await s.auditLog()
+  const unconfirmed = log.filter((e) => JSON.parse(e.detail).unknownOutcome === true)
+  assert.equal(unconfirmed.length, 2)
+  for (const entry of unconfirmed) {
+    assert.equal(entry.ok, 1, 'unconfirmed rows are not failures')
+    assert.equal(JSON.parse(entry.detail).operationId, null)
+  }
 })
