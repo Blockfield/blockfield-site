@@ -45,6 +45,9 @@ const names = [
   'commitMap',
   'submitSaved',
   'mapRequestError',
+  'mapRequest',
+  'follow',
+  'requestResult',
   'renderSavedMapSessions',
   'newMapControls',
   'testMapCandidate',
@@ -88,9 +91,9 @@ function dom(t) {
   window.mapNotes = new Map()
   window.busyMaps = new Set()
   window.staleCopyIds = new Map()
-  // Workshop contract (candidates.py STALE_COPY_MESSAGE): module state like the rest.
-  window.STALE_COPY_MESSAGE =
-    'stale working copy: the map has a newer version; save your draft as a snapshot and start from the current version'
+  window.followTokens = new WeakMap()
+  window.pendingRequests = new Map()
+  window.requestResults = new Map()
   window.kept = (key, make) => make()
   window.mapLine = () => window.document.createElement('p')
   window.versionLabel = () => '8 октября 2026'
@@ -528,17 +531,74 @@ test('review preview compares the frozen target and publishes fast-forward', asy
   )
 })
 
-test('only the workshop stale refusal marks the copy, not other errors', (t) => {
+test('the stale working copy is keyed off the refusal code, not the message text', (t) => {
   const window = dom(t)
+  assert.equal(window.isStaleCopy('stale_working_copy'), true)
+  // The old contract matched the exact English text; any wording change must
+  // not move the mark (coord#31), so text alone never counts.
   assert.equal(
     window.isStaleCopy(
       'stale working copy: the map has a newer version; save your draft as a snapshot and start from the current version',
     ),
-    true,
+    false,
   )
   assert.equal(window.isStaleCopy('stale map head: refresh the map history'), false)
-  assert.equal(window.isStaleCopy('Версия в игре успела измениться. Обновите историю.'), false)
   assert.equal(window.isStaleCopy(null), false)
+  assert.equal(window.isStaleCopy(undefined), false)
+})
+
+test('a stale refusal code reaches the map error path even when the message changes', async (t) => {
+  const window = dom(t),
+    line = window.document.createElement('p'),
+    seen = []
+  window.requestResult('stale-task', {
+    id: 'stale-task',
+    ok: false,
+    error: 'new wording nobody matches',
+    code: 'stale_working_copy',
+  })
+  const result = await window.follow(line, 'stale-task', 'done', (error, code) => {
+    seen.push([error, code])
+    return window.mapRequestError(line, error)
+  })
+  assert.equal(result, null)
+  assert.deepEqual(seen, [['new wording nobody matches', 'stale_working_copy']])
+})
+
+test('a refused commit marks the copy stale by code and clears it without one', async (t) => {
+  const window = dom(t),
+    line = window.document.createElement('p')
+  window.api = async () => ({ id: 'stale-task' })
+  window.requestResult('stale-task', {
+    id: 'stale-task',
+    ok: false,
+    error: 'new wording nobody matches',
+    code: 'stale_working_copy',
+  })
+  let staled = 0
+  assert.equal(
+    await window.mapRequest('maps/commit', { mapId: 'fields' }, line, 'done', () => {
+      staled++
+    }),
+    null,
+  )
+  assert.equal(staled, 1)
+  // The exact old message without the code is not the stale signal anymore.
+  window.api = async () => ({ id: 'plain-task' })
+  window.requestResult('plain-task', {
+    id: 'plain-task',
+    ok: false,
+    error:
+      'stale working copy: the map has a newer version; save your draft as a snapshot and start from the current version',
+  })
+  staled = 0
+  assert.equal(
+    await window.mapRequest('maps/commit', { mapId: 'fields' }, line, 'done', () => {
+      staled++
+    }),
+    null,
+  )
+  assert.equal(staled, 0)
 })
 
 test('a refused save marks the copy stale and offers the way out with role gating', async (t) => {

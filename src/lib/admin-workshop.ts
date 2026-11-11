@@ -779,13 +779,11 @@ function newMapControls() {
   return form
 }
 
-// Workshop#74 refuses saves from an outdated copy with this exact message. The
-// catalog carries no stale flag (drafts are {workingCopyId,name} only), so this
-// refusal is the signal: match the message itself, not the loose error regex.
-const STALE_COPY_MESSAGE =
-  'stale working copy: the map has a newer version; save your draft as a snapshot and start from the current version'
-function isStaleCopy(error: unknown): boolean {
-  return typeof error === 'string' && error.includes(STALE_COPY_MESSAGE)
+// Workshop#74 refuses saves from an outdated copy with StaleWorkingCopyError;
+// the inbox refusal carries its machine-readable code, so the site keys off the
+// code, not the message text (coord#31): a reworded message must not hide the way out.
+function isStaleCopy(code: unknown): boolean {
+  return code === 'stale_working_copy'
 }
 
 // Refused copies by map: a session switch while the notice is open must not offer
@@ -819,8 +817,8 @@ async function mapRequest(
 ) {
   const { id } = await api(path, 'POST', body)
   let stale = false
-  const result = await follow(line, id, done, (error) => {
-    stale = isStaleCopy(error)
+  const result = await follow(line, id, done, (error, code) => {
+    stale = isStaleCopy(code)
     return mapRequestError(line, error)
   })
   if (!result?.ok) {
