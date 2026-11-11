@@ -50,6 +50,15 @@ test('PostgreSQL placeholders preserve quoted question marks', () => {
   assert.equal(postgresSql(`SELECT '?', "?", 'it''s ?', ?`), `SELECT '?', "?", 'it''s ?', $1`)
 })
 
+test('sessions expire server-side after 30 days even when used (site#116 item 4)', async (t) => {
+  const store = await database(t)
+  const id = 'a'.repeat(32)
+  const old = Date.now() - 31 * 86_400_000
+  await store.insertSession(id, 'sealed-token', 'b'.repeat(32), old)
+  await store.touchSession(id, Date.now())
+  assert.equal(await store.getSession(id), undefined, '31-day-old session is dead')
+})
+
 test('concurrent replay inserts once, conflicting replay cannot alter the result', async (t) => {
   const store = await database(t)
   const responses = await Promise.all(Array.from({ length: 8 }, () => store.ingest(result())))

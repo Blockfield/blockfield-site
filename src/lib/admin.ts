@@ -206,7 +206,12 @@ export async function siteIdentity(
 ): Promise<{ name: string; hasAdminAccess: boolean } | null> {
   const dev = devUser()
   if (dev)
-    return { name: dev.name, hasAdminAccess: (await roleOf(dev.uuid, await statsStore())) !== null }
+    return {
+      name: dev.name,
+      hasAdminAccess:
+        (await refreshRole({ uuid: dev.uuid, name: dev.name, role: null }, await statsStore())) !==
+        null,
+    }
   const value = cookies.get(session)?.value
   if (!value) return null
   try {
@@ -218,7 +223,9 @@ export async function siteIdentity(
     const id = playerId(uuid)
     return {
       name: String(username),
-      hasAdminAccess: id !== null && (await roleOf(id, store)) !== null,
+      hasAdminAccess:
+        id !== null &&
+        (await refreshRole({ uuid: id, name: String(username), role: null }, store)) !== null,
     }
   } catch {
     return null
@@ -2040,6 +2047,17 @@ export async function refreshRole(actor: Actor, store: StatsStore): Promise<Role
     return cpActorRole(cp, actor)
   }
   return roleOf(actor.uuid, store)
+}
+
+/** Ping guard for the admin event stream: the session must still exist, then the role.
+A throw closes the stream, so logout and password change (deleteUserSessions) end it. */
+export async function adminEventRole(
+  context: Pick<APIContext, 'cookies'>,
+  actor: Actor,
+  store: StatsStore,
+): Promise<Role | null> {
+  if (!devUser()) await sessionToken(context.cookies, store)
+  return refreshRole(actor, store)
 }
 
 /** A CP answer with a status code (denied, conflict, unknown account). */
@@ -3947,7 +3965,7 @@ export async function handleAdmin(
   if ((method === 'GET' && path === 'events') || (method === 'POST' && path === 'presence')) {
     if (!can(actor.role, 'view')) return fail(403, 'Нет доступа.')
     if (path === 'events')
-      return eventStream(context.request, actor, () => refreshRole(actor, store))
+      return eventStream(context.request, actor, () => adminEventRole(context, actor, store))
     // Heartbeats describe transient presence, not administrative changes.
     const body = await readJson(context.request, 4096)
     if (typeof body?.tab !== 'string' || !/^[a-z-]{1,24}$/.test(body.tab))

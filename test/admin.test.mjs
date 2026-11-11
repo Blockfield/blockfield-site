@@ -2397,3 +2397,103 @@ test('POST rcon moderation reuses the client key and reports unknown outcomes as
     assert.equal(JSON.parse(entry.detail).operationId, null)
   }
 })
+
+test('site#116 item 1: admin event stream role check requires the session (logout/password change closes it)', async (t) => {
+  const { adminEventRole } = await import('../src/lib/admin.ts')
+  const { database: db } = await import('./storage.mjs')
+  const s = await db(t)
+  const prevSecret = process.env.BLOCKFIELD_SESSION_SECRET
+  const prevDev = process.env.BLOCKFIELD_ADMIN_DEV_USER
+  process.env.BLOCKFIELD_SESSION_SECRET = '1'.repeat(64)
+  delete process.env.BLOCKFIELD_ADMIN_DEV_USER
+  t.after(() => {
+    if (prevSecret === undefined) delete process.env.BLOCKFIELD_SESSION_SECRET
+    else process.env.BLOCKFIELD_SESSION_SECRET = prevSecret
+    if (prevDev === undefined) delete process.env.BLOCKFIELD_ADMIN_DEV_USER
+    else process.env.BLOCKFIELD_ADMIN_DEV_USER = prevDev
+  })
+  const { sealTokenRaw } = await import('../src/lib/session-crypto.ts')
+  const { sessionKeyBytes } = await import('../src/lib/session-crypto.ts')
+  const key = sessionKeyBytes()
+  const id = 'd'.repeat(32)
+  const uuid = OTHER
+  await s.insertSession(id, sealTokenRaw('drasl-token', key), uuid, Date.now())
+  await s.setStaff(uuid, 'Oth', 'admin', 'seed')
+  const actor = { uuid, name: 'Oth', role: 'admin' }
+  const context = {
+    cookies: { get: (name) => (name === 'bf_session' ? { value: id } : undefined) },
+    request: new Request('http://site/api/admin/events'),
+  }
+  assert.equal(await adminEventRole(context, actor, s), 'admin')
+  await s.deleteSession(id)
+  await assert.rejects(
+    () => adminEventRole(context, actor, s),
+    (e) => e instanceof Response && e.status === 401,
+    'logout closes the stream on next ping',
+  )
+  const id2 = 'e'.repeat(32)
+  await s.insertSession(id2, sealTokenRaw('drasl-token', key), uuid, Date.now())
+  const context2 = {
+    cookies: { get: (name) => (name === 'bf_session' ? { value: id2 } : undefined) },
+    request: new Request('http://site/api/admin/events'),
+  }
+  assert.equal(await adminEventRole(context2, actor, s), 'admin')
+  await s.deleteUserSessions(uuid)
+  await assert.rejects(
+    () => adminEventRole(context2, actor, s),
+    (e) => e instanceof Response && e.status === 401,
+    'password change closes the stream on next ping',
+  )
+})
+
+test('site#116 item 5: header identity reads CP, not the replica (revoked admin has no link)', async (t) => {
+  const http = (await import('node:http')).default
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://cp')
+    if (req.method === 'GET' && url.pathname === '/v2/staff/grants') {
+      res.setHeader('Content-Type', 'application/json')
+      res.statusCode = 404
+      return res.end(JSON.stringify({ error: 'account_not_found' }))
+    }
+    res.statusCode = 404
+    res.end(JSON.stringify({ error: 'not_found' }))
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, {
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
+    BLOCKFIELD_CP_STAFF_TOKEN: 'staff-t',
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_SESSION_SECRET: '1'.repeat(64),
+    BLOCKFIELD_ADMIN_DEV_USER: '',
+    DRASL_URL: 'http://drasl.test',
+  })
+  delete process.env.BLOCKFIELD_ADMIN_DEV_USER
+  const { siteIdentity: identity } = await import('../src/lib/admin.ts')
+  const { statsStore: singleton } = await import('../src/lib/stats.ts')
+  const s = await singleton()
+  const { sealTokenRaw, sessionKeyBytes } = await import('../src/lib/session-crypto.ts')
+  const key = sessionKeyBytes()
+  const id = 'f'.repeat(32)
+  const realFetch = globalThis.fetch
+  const user = { username: 'Oth', players: [{ uuid: OTHER, name: 'Oth' }] }
+  globalThis.fetch = async (url, init) => {
+    if (String(url).startsWith('http://drasl.test')) return Response.json(user)
+    return realFetch(url, init)
+  }
+  t.after(() => {
+    globalThis.fetch = realFetch
+  })
+  await s.insertSession(id, sealTokenRaw('drasl-token', key), OTHER, Date.now())
+  await s.setStaff(OTHER, 'Oth', 'admin', 'seed')
+  const cookies = { get: (name) => (name === 'bf_session' ? { value: id } : undefined) }
+  const me = await identity(cookies)
+  assert.deepEqual(me, { name: 'Oth', hasAdminAccess: false }, 'CP revoke hides the header link')
+  await s.deleteSession(id)
+})

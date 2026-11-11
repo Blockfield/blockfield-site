@@ -199,3 +199,42 @@ test('history presentation distinguishes personal winners, draws and unknown leg
     ' · поражение',
   )
 })
+
+test('site#116 item 6: winner_uuid column is filled at ingest and drives the leaderboard', async (t) => {
+  const { database } = await import('./storage.mjs')
+  const store = await database(t)
+  const { handleStatsRequest } = await import('../src/lib/stats.ts')
+  const deps = { store, keys: { [server]: [token] } }
+  const result = { ...fixture(), winnerUuid: alpha }
+  assert.equal((await handleStatsRequest(post(result), deps)).status, 201)
+  const row = await store.db.prepare('SELECT winner_uuid "winnerUuid",payload FROM results').get()
+  assert.equal(row.winnerUuid, alpha, 'ingest fills the column')
+  const board1 = await (
+    await handleStatsRequest(
+      new Request('https://example.test/api/stats/leaderboard?mode=deathmatch&sort=wins'),
+      deps,
+    )
+  ).json()
+  assert.deepEqual(
+    board1.players.map((p) => [p.uuid, p.wins]),
+    [
+      [alpha, 1],
+      [beta, 0],
+    ],
+  )
+  await store.db.prepare('UPDATE results SET winner_uuid=NULL').run()
+  const board2 = await (
+    await handleStatsRequest(
+      new Request('https://example.test/api/stats/leaderboard?mode=deathmatch&sort=wins'),
+      deps,
+    )
+  ).json()
+  assert.deepEqual(
+    board2.players.map((p) => [p.uuid, p.wins]),
+    [
+      [alpha, 0],
+      [beta, 0],
+    ],
+    'leaderboard compares the column, not the payload',
+  )
+})

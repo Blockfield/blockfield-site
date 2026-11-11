@@ -3,7 +3,7 @@ import { Database } from './database.ts'
 import { publish } from './admin-events.ts'
 import { openTokenRaw, sessionKeyBytes } from './session-crypto.ts'
 import { saveReport, validateReport } from './diagnostics.ts'
-import { playerId, roleOf } from './admin.ts'
+import { playerId, refreshRole } from './admin.ts'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { composite, inflate, initial, softReset, update, RULES_VERSION } from './glicko2.ts'
 
@@ -586,7 +586,7 @@ const SCHEMA = `
       CREATE TABLE IF NOT EXISTS results (
         server_id TEXT NOT NULL, event_id TEXT NOT NULL, kind TEXT NOT NULL, mode TEXT NOT NULL,
         campaign_id TEXT, ended_at INTEGER NOT NULL, reason TEXT NOT NULL, winner TEXT NOT NULL,
-        digest TEXT NOT NULL, payload TEXT NOT NULL, voided_at INTEGER, voided_by TEXT, PRIMARY KEY(server_id,event_id)
+        digest TEXT NOT NULL, payload TEXT NOT NULL, voided_at INTEGER, voided_by TEXT, winner_uuid TEXT, PRIMARY KEY(server_id,event_id)
       );
       CREATE INDEX IF NOT EXISTS results_mode_time ON results(mode,ended_at);
       CREATE TABLE IF NOT EXISTS profiles (uuid TEXT PRIMARY KEY, name TEXT NOT NULL, last_seen INTEGER NOT NULL);
@@ -659,7 +659,7 @@ export class StatsStore {
     await this.db.transaction(async () => {
       await this.db
         .exec(`CREATE TABLE IF NOT EXISTS blockfield_schema (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL);
-          INSERT INTO blockfield_schema VALUES (1,7) ON CONFLICT(id) DO NOTHING;`)
+          INSERT INTO blockfield_schema VALUES (1,8) ON CONFLICT(id) DO NOTHING;`)
       const { version } = await this.db
         .prepare('SELECT version FROM blockfield_schema WHERE id=1')
         .get()
@@ -667,7 +667,16 @@ export class StatsStore {
       if (version === 6)
         await this.db.exec(`DROP TABLE IF EXISTS revoked_sessions;
           UPDATE blockfield_schema SET version=7 WHERE id=1;`)
-      if (version !== 6 && version !== 7)
+      // v7 -> v8: deathmatch winner lives in its own column so the leaderboard
+      // no longer parses every payload per player per request.
+      if (version === 7 || version === 6) {
+        await this.db.exec('ALTER TABLE results ADD COLUMN IF NOT EXISTS winner_uuid TEXT;')
+        await this.db.exec(
+          `UPDATE results SET winner_uuid=payload::jsonb->>'winnerUuid' WHERE winner_uuid IS NULL;`,
+        )
+        await this.db.exec('UPDATE blockfield_schema SET version=8 WHERE id=1;')
+      }
+      if (version !== 6 && version !== 7 && version !== 8)
         throw new Error('Unsupported statistics schema; restore/migrate explicitly')
       await this.db
         .exec(`CREATE OR REPLACE FUNCTION uuid_like(name TEXT) RETURNS INTEGER LANGUAGE SQL IMMUTABLE AS
@@ -725,7 +734,7 @@ export class StatsStore {
       }
       await this.db
         .prepare(
-          'INSERT INTO results (server_id,event_id,kind,mode,campaign_id,ended_at,reason,winner,digest,payload) VALUES (?,?,?,?,?,?,?,?,?,?)',
+          'INSERT INTO results (server_id,event_id,kind,mode,campaign_id,ended_at,reason,winner,digest,payload,winner_uuid) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
         )
         .run(
           result.serverId,
@@ -738,6 +747,7 @@ export class StatsStore {
           result.winner,
           digest,
           payload,
+          (result as { winnerUuid?: string }).winnerUuid ?? null,
         )
       const participant = this.db.prepare(
         'INSERT INTO participants VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
@@ -1091,9 +1101,15 @@ export class StatsStore {
   }
   async getSession(id: string): Promise<{ token: string; uuid: string } | undefined> {
     const row = (await this.db
-      .prepare('SELECT drasl_token "token",uuid FROM site_sessions WHERE id=?')
-      .get(id)) as { token: string; uuid: string } | undefined
-    return row ?? undefined
+      .prepare(
+        'SELECT drasl_token "token",uuid,created_at "createdAt" FROM site_sessions WHERE id=?',
+      )
+      .get(id)) as { token: string; uuid: string; createdAt: number } | undefined
+    if (!row) return undefined
+    // Server-side lifetime matches the cookie maxAge (account.ts: 30 d): use
+    // does not extend it, only last_seen moves.
+    if (Date.now() - row.createdAt > 30 * 86_400_000) return undefined
+    return { token: row.token, uuid: row.uuid }
   }
   async touchSession(id: string, now: number) {
     await this.db.prepare('UPDATE site_sessions SET last_seen=? WHERE id=?').run(now, id)
@@ -1317,7 +1333,7 @@ export class StatsStore {
       SUM(p.captures) captures,SUM(p.neutralizations) neutralizations,SUM(p.point_seconds) "pointSeconds",
       SUM(p.play_seconds) "playSeconds",SUM(p.suicides) suicides,SUM(p.team_kills) "teamKills",MAX(p.max_streak) "maxKillstreak",
       COUNT(*) matches,SUM(CASE WHEN r.reason='completed' AND (
-        (r.mode='deathmatch' AND (r.payload::jsonb->>'winnerUuid')=p.uuid) OR
+        (r.mode='deathmatch' AND r.winner_uuid=p.uuid) OR
         (r.mode!='deathmatch' AND p.team!='NONE' AND r.winner=p.team)
       ) THEN 1 ELSE 0 END) wins,
       ROUND(CAST(SUM(p.kills)*1.0/greatest(1,SUM(p.deaths)) AS NUMERIC),3) kd,
@@ -1364,7 +1380,7 @@ export class StatsStore {
       (await this.leaderboard({ ...query, page: 1, limit: 1 }, uuid)).players[0] || null
     const history = await this.db
       .prepare(
-        `SELECT r.event_id "eventId",r.server_id "serverId",r.kind,r.mode,r.campaign_id "campaignSessionId",r.ended_at "endedAt",r.reason,r.winner,(r.payload::jsonb->>'winnerUuid') "winnerUuid",p.team,p.score,p.kills,p.deaths
+        `SELECT r.event_id "eventId",r.server_id "serverId",r.kind,r.mode,r.campaign_id "campaignSessionId",r.ended_at "endedAt",r.reason,r.winner,r.winner_uuid "winnerUuid",p.team,p.score,p.kills,p.deaths
       FROM participants p JOIN results r USING(server_id,event_id) WHERE p.uuid=? AND r.voided_at IS NULL AND r.ended_at>=? AND r.ended_at<=? AND (CAST(? AS TEXT) IS NULL OR r.mode=?)
       ORDER BY r.ended_at DESC,r.server_id,r.event_id LIMIT ? OFFSET ?`,
       )
@@ -1647,7 +1663,12 @@ export async function handleStatsRequest(
       const data = (await store.player(player[1], query)) as any
       await named([data.profile, ...(data.totals ? [data.totals] : [])])
       // ponytail: staff without recorded gameplay 404 above, so the launcher shows them as a player; add a role endpoint if that matters.
-      data.profile.role = await roleOf(playerId(player[1])!, store)
+      // CP is authority when configured: a replica row lingering after a revoke shows no role.
+      const id = playerId(player[1])
+      data.profile.role =
+        id === null
+          ? null
+          : await refreshRole({ uuid: id, name: data.profile.name, role: null }, store)
       return Response.json(data, { headers })
     }
     throw new StatsError(404, 'Unknown statistics endpoint')
