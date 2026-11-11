@@ -2217,7 +2217,7 @@ test('console link: logs and suggestions proxy the mod endpoint with the console
   assert.equal((await s.auditLog()).length, 0, 'link reads are not audited')
 })
 
-test('POST rcon moderation goes through typed CP actions when configured, RCON otherwise', async (t) => {
+test('POST rcon moderation goes through typed CP actions when configured, 503 without CP (no RCON fallback)', async (t) => {
   const http = await import('node:http')
   const dirs = {
     BLOCKFIELD_ADMIN_DIR: temp(t),
@@ -2292,7 +2292,13 @@ test('POST rcon moderation goes through typed CP actions when configured, RCON o
     ],
   )
   assert.equal(JSON.parse(log[0].detail).operationId, 'op-1')
-  // Unconfigured sites keep the RCON path (here: no RCON host, so 503).
+  // Without CP there is no RCON fallback: even with RCON configured the CP
+  // kinds fail closed (before the cutover this fell through to RCON).
+  Object.assign(process.env, {
+    BLOCKFIELD_RCON_HOST: '127.0.0.1',
+    BLOCKFIELD_RCON_PORT: '1',
+    BLOCKFIELD_RCON_PASSWORD: 'x',
+  })
   delete process.env.BLOCKFIELD_CP_MODERATION_TOKEN
   assert.equal((await call(`${MOD}:Moddy`, { action: 'say', text: 'hi' })).status, 503)
 })

@@ -552,11 +552,12 @@ export async function revokeSessionCp(
 }
 
 /**
- * Typed moderation via control-plane v2 (control-plane cp#32):
+ * Typed moderation via control-plane v2:
  * POST /v2/actions/moderation.<kind>. Only fire-and-forget commands move:
  * `list` stays on RCON (a read; CP ACKs carry no output), kick/ban keep the
  * RCON nickname flow until the UUID cutover, maintenance/raw/console have no
- * typed kind. Active only when fully configured; otherwise RCON stays.
+ * typed kind. The moved kinds never fall back: without full CP config the
+ * route fails closed instead of reaching RCON.
  */
 export const moderationCpKinds = [
   'say',
@@ -667,7 +668,7 @@ export async function postModerationCp(
  * admin entries), which the site service credential can never hold, so the
  * member list stays on the file inbox. Map/session/ai-key/mode ops have no
  * CP kind. Active only when fully configured; otherwise the routes fail
- * closed (no second transport, unlike the RCON fallback for moderation).
+ * closed (no second transport, like the typed moderation kinds).
  */
 export const workshopCpKinds = ['message', 'wake', 'cancel'] as const
 export type WorkshopCpKind = (typeof workshopCpKinds)[number]
