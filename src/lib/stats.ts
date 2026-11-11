@@ -1,9 +1,10 @@
 /** Durable, Minecraft-independent result ingestion. Node >=22.19; no browser imports. */
 import { Database } from './database.ts'
 import { publish } from './admin-events.ts'
+import { draslBase } from './skins.ts'
 import { openTokenRaw, sessionKeyBytes } from './session-crypto.ts'
 import { saveReport, validateReport } from './diagnostics.ts'
-import { playerId, roleOf } from './admin.ts'
+import { playerId, refreshRole } from './admin.ts'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { composite, inflate, initial, softReset, update, RULES_VERSION } from './glicko2.ts'
 
@@ -586,7 +587,7 @@ const SCHEMA = `
       CREATE TABLE IF NOT EXISTS results (
         server_id TEXT NOT NULL, event_id TEXT NOT NULL, kind TEXT NOT NULL, mode TEXT NOT NULL,
         campaign_id TEXT, ended_at INTEGER NOT NULL, reason TEXT NOT NULL, winner TEXT NOT NULL,
-        digest TEXT NOT NULL, payload TEXT NOT NULL, voided_at INTEGER, voided_by TEXT, PRIMARY KEY(server_id,event_id)
+        digest TEXT NOT NULL, payload TEXT NOT NULL, voided_at INTEGER, voided_by TEXT, winner_uuid TEXT, PRIMARY KEY(server_id,event_id)
       );
       CREATE INDEX IF NOT EXISTS results_mode_time ON results(mode,ended_at);
       CREATE TABLE IF NOT EXISTS profiles (uuid TEXT PRIMARY KEY, name TEXT NOT NULL, last_seen INTEGER NOT NULL);
@@ -638,6 +639,11 @@ const SCHEMA = `
       `
 /** Newest matches one hit-reg report reads; the scan stops here and `truncated` says so. */
 export const HITREG_SCAN_CAP = 5000
+/** FFA winner read as the top-level key only, for rows a schema-7 replica writes
+ * during the rollout window (no winner_uuid column yet): payloads PostgreSQL
+ * cannot cast to jsonb (lone-surrogate escapes) read as NULL here and are
+ * repaired by the Node backfill on the next start instead. */
+const WINNER_UUID_SQL = `CASE WHEN pg_input_is_valid(payload, 'jsonb') THEN payload::jsonb->>'winnerUuid' END`
 export class StatsStore {
   db: Database
   private constructor(location: string) {
@@ -659,7 +665,7 @@ export class StatsStore {
     await this.db.transaction(async () => {
       await this.db
         .exec(`CREATE TABLE IF NOT EXISTS blockfield_schema (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL);
-          INSERT INTO blockfield_schema VALUES (1,7) ON CONFLICT(id) DO NOTHING;`)
+          INSERT INTO blockfield_schema VALUES (1,8) ON CONFLICT(id) DO NOTHING;`)
       const { version } = await this.db
         .prepare('SELECT version FROM blockfield_schema WHERE id=1')
         .get()
@@ -667,7 +673,13 @@ export class StatsStore {
       if (version === 6)
         await this.db.exec(`DROP TABLE IF EXISTS revoked_sessions;
           UPDATE blockfield_schema SET version=7 WHERE id=1;`)
-      if (version !== 6 && version !== 7)
+      // v7 -> v8: deathmatch winner lives in its own column so the leaderboard
+      // no longer parses every payload per player per request.
+      if (version === 7 || version === 6) {
+        await this.db.exec('ALTER TABLE results ADD COLUMN IF NOT EXISTS winner_uuid TEXT;')
+        await this.db.exec('UPDATE blockfield_schema SET version=8 WHERE id=1;')
+      }
+      if (version !== 6 && version !== 7 && version !== 8)
         throw new Error('Unsupported statistics schema; restore/migrate explicitly')
       await this.db
         .exec(`CREATE OR REPLACE FUNCTION uuid_like(name TEXT) RETURNS INTEGER LANGUAGE SQL IMMUTABLE AS
@@ -687,6 +699,11 @@ export class StatsStore {
       )
       await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS client TEXT;')
       await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS correlation TEXT;')
+      // Every start, not just migration: JSON.parse tolerates the lone-surrogate
+      // escapes PostgreSQL jsonb rejects, and this also repairs rows a schema-7
+      // replica wrote after the migration. Only NULL rows are read; a set winner
+      // is never overwritten, so reruns are no-ops.
+      await this.backfillWinners()
       // Crash orphans (pending rows from a killed request) are marked interrupted, never hidden.
       // A live row mis-marked by a concurrent replica still finalizes normally afterwards.
       await this.db
@@ -710,6 +727,43 @@ export class StatsStore {
   async close() {
     await this.db.close()
   }
+  private async backfillWinners() {
+    const update = this.db.prepare(
+      'UPDATE results SET winner_uuid=? WHERE server_id=? AND event_id=? AND winner_uuid IS NULL',
+    )
+    let unparseable = 0
+    // Keyset pages: rows that legitimately have no winner stay NULL and must
+    // not be re-read forever, so each pass resumes after the last key seen.
+    let after: [string, string] = ['', '']
+    for (;;) {
+      const rows = (await this.db
+        .prepare(
+          'SELECT server_id "serverId",event_id "eventId",payload FROM results WHERE winner_uuid IS NULL AND (server_id,event_id)>(?,?) ORDER BY server_id,event_id LIMIT 500',
+        )
+        .all(after[0], after[1])) as { serverId: string; eventId: string; payload: string }[]
+      if (rows.length === 0) break
+      for (const row of rows) {
+        let winner: string | null = null
+        try {
+          const parsed: unknown = JSON.parse(row.payload)
+          const candidate =
+            parsed !== null && typeof parsed === 'object'
+              ? (parsed as { winnerUuid?: unknown }).winnerUuid
+              : undefined
+          if (typeof candidate === 'string' && UUID.test(candidate)) winner = candidate
+        } catch {
+          unparseable += 1
+          continue
+        }
+        if (winner === null) continue
+        await update.run(winner, row.serverId, row.eventId)
+      }
+      const last = rows[rows.length - 1]
+      after = [last.serverId, last.eventId]
+    }
+    if (unparseable > 0)
+      console.warn(`winner backfill: ${unparseable} payload(s) unparseable, winner left NULL`)
+  }
   async ingest(input: unknown): Promise<{ inserted: boolean; eventId: string }> {
     const result = validateResult(input),
       payload = canonical(result),
@@ -725,7 +779,7 @@ export class StatsStore {
       }
       await this.db
         .prepare(
-          'INSERT INTO results (server_id,event_id,kind,mode,campaign_id,ended_at,reason,winner,digest,payload) VALUES (?,?,?,?,?,?,?,?,?,?)',
+          'INSERT INTO results (server_id,event_id,kind,mode,campaign_id,ended_at,reason,winner,digest,payload,winner_uuid) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
         )
         .run(
           result.serverId,
@@ -738,6 +792,7 @@ export class StatsStore {
           result.winner,
           digest,
           payload,
+          (result as { winnerUuid?: string }).winnerUuid ?? null,
         )
       const participant = this.db.prepare(
         'INSERT INTO participants VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
@@ -931,35 +986,42 @@ export class StatsStore {
     const { total } = (await this.db
       .prepare('SELECT COUNT(*) total FROM results WHERE (CAST(? AS TEXT) IS NULL OR mode=?)')
       .get(mode, mode)) as { total: number }
-    const known = this.db.prepare('SELECT name FROM profiles WHERE uuid=?')
+    const parsed = rows.map(({ payload, ...row }) => ({
+      row,
+      result: JSON.parse(payload) as Result,
+    }))
+    const uuids = [
+      ...new Set(parsed.flatMap(({ result }) => result.participants.map((p) => p.uuid))),
+    ]
+    const nameByUuid = new Map<string, string>()
+    if (uuids.length) {
+      const found = (await this.db
+        .prepare('SELECT uuid,name FROM profiles WHERE uuid = ANY(?)')
+        .all(uuids)) as { uuid: string; name: string }[]
+      for (const { uuid, name } of found) nameByUuid.set(uuid, name)
+    }
     return {
       total,
       page,
       limit,
-      results: await Promise.all(
-        rows.map(async ({ payload, ...row }) => {
-          const result: Result = JSON.parse(payload),
-            name = async (p: Participant) =>
-              ((await known.get(p.uuid)) as { name: string } | undefined)?.name ?? p.name
-          const players = [...result.participants].sort((a, b) => b.score - a.score)
-          return {
-            ...row,
-            rated: rated(result),
-            mapId: result.mapId,
-            participants: players.length,
-            winnerName: result.winnerUuid
-              ? displayName(await name(players.find((p) => p.uuid === result.winnerUuid)!))
-              : null,
-            players: await Promise.all(
-              players.slice(0, 12).map(async (p) => ({
-                uuid: p.uuid,
-                name: displayName(await name(p)),
-                team: p.team,
-              })),
-            ),
-          }
-        }),
-      ),
+      results: parsed.map(({ row, result }) => {
+        const name = (p: Participant) => nameByUuid.get(p.uuid) ?? p.name
+        const players = [...result.participants].sort((a, b) => b.score - a.score)
+        return {
+          ...row,
+          rated: rated(result),
+          mapId: result.mapId,
+          participants: players.length,
+          winnerName: result.winnerUuid
+            ? displayName(name(players.find((p) => p.uuid === result.winnerUuid)!))
+            : null,
+          players: players.slice(0, 12).map((p) => ({
+            uuid: p.uuid,
+            name: displayName(name(p)),
+            team: p.team,
+          })),
+        }
+      }),
     }
   }
   /** Hit-reg telemetry aggregated over a window. The sums and per-match percentiles come
@@ -1091,9 +1153,15 @@ export class StatsStore {
   }
   async getSession(id: string): Promise<{ token: string; uuid: string } | undefined> {
     const row = (await this.db
-      .prepare('SELECT drasl_token "token",uuid FROM site_sessions WHERE id=?')
-      .get(id)) as { token: string; uuid: string } | undefined
-    return row ?? undefined
+      .prepare(
+        'SELECT drasl_token "token",uuid,created_at "createdAt" FROM site_sessions WHERE id=?',
+      )
+      .get(id)) as { token: string; uuid: string; createdAt: number } | undefined
+    if (!row) return undefined
+    // Server-side lifetime matches the cookie maxAge (account.ts: 30 d): use
+    // does not extend it, only last_seen moves.
+    if (Date.now() - row.createdAt > 30 * 86_400_000) return undefined
+    return { token: row.token, uuid: row.uuid }
   }
   async touchSession(id: string, now: number) {
     await this.db.prepare('UPDATE site_sessions SET last_seen=? WHERE id=?').run(now, id)
@@ -1317,7 +1385,7 @@ export class StatsStore {
       SUM(p.captures) captures,SUM(p.neutralizations) neutralizations,SUM(p.point_seconds) "pointSeconds",
       SUM(p.play_seconds) "playSeconds",SUM(p.suicides) suicides,SUM(p.team_kills) "teamKills",MAX(p.max_streak) "maxKillstreak",
       COUNT(*) matches,SUM(CASE WHEN r.reason='completed' AND (
-        (r.mode='deathmatch' AND (r.payload::jsonb->>'winnerUuid')=p.uuid) OR
+        (r.mode='deathmatch' AND COALESCE(r.winner_uuid,${WINNER_UUID_SQL})=p.uuid) OR
         (r.mode!='deathmatch' AND p.team!='NONE' AND r.winner=p.team)
       ) THEN 1 ELSE 0 END) wins,
       ROUND(CAST(SUM(p.kills)*1.0/greatest(1,SUM(p.deaths)) AS NUMERIC),3) kd,
@@ -1364,7 +1432,7 @@ export class StatsStore {
       (await this.leaderboard({ ...query, page: 1, limit: 1 }, uuid)).players[0] || null
     const history = await this.db
       .prepare(
-        `SELECT r.event_id "eventId",r.server_id "serverId",r.kind,r.mode,r.campaign_id "campaignSessionId",r.ended_at "endedAt",r.reason,r.winner,(r.payload::jsonb->>'winnerUuid') "winnerUuid",p.team,p.score,p.kills,p.deaths
+        `SELECT r.event_id "eventId",r.server_id "serverId",r.kind,r.mode,r.campaign_id "campaignSessionId",r.ended_at "endedAt",r.reason,r.winner,COALESCE(r.winner_uuid,${WINNER_UUID_SQL}) "winnerUuid",p.team,p.score,p.kills,p.deaths
       FROM participants p JOIN results r USING(server_id,event_id) WHERE p.uuid=? AND r.voided_at IS NULL AND r.ended_at>=? AND r.ended_at<=? AND (CAST(? AS TEXT) IS NULL OR r.mode=?)
       ORDER BY r.ended_at DESC,r.server_id,r.event_id LIMIT ? OFFSET ?`,
       )
@@ -1440,7 +1508,7 @@ export async function resolveNames(
   budgetMs = 1500,
   fetcher: typeof fetch = fetch,
 ): Promise<Map<string, string>> {
-  const base = (process.env.DRASL_URL || 'https://skins.blockfield.pro').replace(/\/+$/, ''),
+  const base = draslBase(),
     now = Date.now(),
     found = new Map<string, string>()
   const pending = (await store.unnamed(uuids))
@@ -1647,7 +1715,16 @@ export async function handleStatsRequest(
       const data = (await store.player(player[1], query)) as any
       await named([data.profile, ...(data.totals ? [data.totals] : [])])
       // ponytail: staff without recorded gameplay 404 above, so the launcher shows them as a player; add a role endpoint if that matters.
-      data.profile.role = await roleOf(playerId(player[1])!, store)
+      // CP is authority when configured: a replica row lingering after a revoke shows no role.
+      const id = playerId(player[1])
+      // A CP outage must not cost the player's statistics (CP staff reads time out
+      // in cp.ts): degrade to no role link instead of failing the request.
+      data.profile.role =
+        id === null
+          ? null
+          : await refreshRole({ uuid: id, name: data.profile.name, role: null }, store).catch(
+              () => null,
+            )
       return Response.json(data, { headers })
     }
     throw new StatsError(404, 'Unknown statistics endpoint')

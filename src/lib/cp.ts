@@ -247,60 +247,6 @@ export async function patchSettingsCp(
   return { operationId: data.operationId, revision: data.revision }
 }
 
-export type CpSettingsRollback = Pick<
-  CpSettingsPatch,
-  'expectedRevision' | 'idempotencyKey' | 'actorAccountId'
-> & {
-  revision: number
-}
-
-/** Rollback to a stored revision (used to clear merge-only dict state). */
-export async function rollbackSettingsCp(
-  namespace: string,
-  target: string,
-  rollback: CpSettingsRollback,
-  token: string | undefined = process.env.BLOCKFIELD_CP_SETTINGS_TOKEN,
-): Promise<{ operationId: string; revision: number }> {
-  if (
-    !rollback ||
-    typeof rollback !== 'object' ||
-    !Number.isSafeInteger(rollback.expectedRevision) ||
-    typeof rollback.idempotencyKey !== 'string' ||
-    rollback.idempotencyKey.length < 1 ||
-    rollback.idempotencyKey.length > 128 ||
-    !Number.isSafeInteger(rollback.revision) ||
-    rollback.revision < 1
-  )
-    throw new Error('Некорректный откат настроек control-plane.')
-  const actor =
-    rollback.actorAccountId === undefined
-      ? undefined
-      : rollback.actorAccountId.replaceAll('-', '').toLowerCase()
-  if (actor !== undefined && !/^[0-9a-f]{32}$/.test(actor)) throw new Error('Некорректный запрос.')
-  const data = await settingsRequest(
-    namespace,
-    target,
-    token,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        expectedRevision: rollback.expectedRevision,
-        idempotencyKey: rollback.idempotencyKey,
-        revision: rollback.revision,
-        ...(actor === undefined
-          ? {}
-          : {
-              actorAccountId: actor.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
-            }),
-      }),
-    },
-    '/rollback',
-  )
-  if (typeof data?.operationId !== 'string' || !Number.isSafeInteger(data?.revision))
-    throw new Error('Control-plane отдал неверное состояние.')
-  return { operationId: data.operationId, revision: data.revision }
-}
-
 export type CpScope = { environment: string; backend: string; resource: string }
 
 /** v2 staff scope: game backend; environment follows the deployment, default prod. */
@@ -541,14 +487,6 @@ export async function postStaffGrantCp(
   const authorizationEpoch =
     typeof data?.result?.authorizationEpoch === 'number' ? data.result.authorizationEpoch : null
   return { operationId: data.operationId, status: data.status ?? 'accepted', authorizationEpoch }
-}
-
-/** Выход и в CP: отзывает текущую центральную сессию и её потомков. */
-export async function revokeSessionCp(
-  token: string = staffConfig().token,
-  fetchImpl: FetchImpl = (url, init) => fetch(url, init),
-): Promise<void> {
-  await cpStaff('/v2/sessions/current', token, { method: 'DELETE' }, fetchImpl)
 }
 
 /**

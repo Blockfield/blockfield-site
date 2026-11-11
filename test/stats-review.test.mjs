@@ -199,3 +199,358 @@ test('history presentation distinguishes personal winners, draws and unknown leg
     ' · поражение',
   )
 })
+
+test('site#116 item 6: winner_uuid column is filled at ingest and drives the leaderboard', async (t) => {
+  const { database } = await import('./storage.mjs')
+  const store = await database(t)
+  const { handleStatsRequest } = await import('../src/lib/stats.ts')
+  const deps = { store, keys: { [server]: [token] } }
+  const result = { ...fixture(), winnerUuid: alpha }
+  assert.equal((await handleStatsRequest(post(result), deps)).status, 201)
+  const row = await store.db.prepare('SELECT winner_uuid "winnerUuid",payload FROM results').get()
+  assert.equal(row.winnerUuid, alpha, 'ingest fills the column')
+  const board1 = await (
+    await handleStatsRequest(
+      new Request('https://example.test/api/stats/leaderboard?mode=deathmatch&sort=wins'),
+      deps,
+    )
+  ).json()
+  assert.deepEqual(
+    board1.players.map((p) => [p.uuid, p.wins]),
+    [
+      [alpha, 1],
+      [beta, 0],
+    ],
+  )
+  await store.db.prepare('UPDATE results SET winner_uuid=NULL').run()
+  const board2 = await (
+    await handleStatsRequest(
+      new Request('https://example.test/api/stats/leaderboard?mode=deathmatch&sort=wins'),
+      deps,
+    )
+  ).json()
+  assert.deepEqual(
+    board2.players.map((p) => [p.uuid, p.wins]),
+    [
+      [alpha, 1],
+      [beta, 0],
+    ],
+    'leaderboard falls back to the payload when the column is NULL (rolling-deploy replica row)',
+  )
+  assert.equal(
+    (await store.player(alpha, query())).history[0].winnerUuid,
+    alpha,
+    'history falls back to the payload when the column is NULL',
+  )
+})
+
+test('site#116c-1: v8 backfill survives payloads PostgreSQL cannot cast to jsonb', async (t) => {
+  const { databaseUrl } = await import('./storage.mjs')
+  const { StatsStore } = await import('../src/lib/stats.ts')
+  const url = await databaseUrl(t)
+  const first = await StatsStore.open(url)
+  // A schema-7 database: winner column gone, version back, one legacy row whose
+  // name carries a lone-surrogate escape (validly ingested before, uncastable to jsonb).
+  const payload = (winner) =>
+    JSON.stringify({ winnerUuid: winner, participants: [{ uuid: alpha, name: 'Alpha' }] })
+  const insert = first.db.prepare(
+    'INSERT INTO results (server_id,event_id,kind,mode,campaign_id,ended_at,reason,winner,digest,payload) VALUES (?,?,?,?,?,?,?,?,?,?)',
+  )
+  await insert.run(
+    server,
+    match,
+    'match',
+    'deathmatch',
+    null,
+    1735689600000,
+    'completed',
+    'NONE',
+    'good',
+    payload(alpha),
+  )
+  await insert.run(
+    server,
+    beta,
+    'match',
+    'deathmatch',
+    null,
+    1735689600000,
+    'completed',
+    'NONE',
+    'bad',
+    payload(beta).replace('Alpha', 'a\\ud800b'),
+  )
+  await first.db.exec('ALTER TABLE results DROP COLUMN winner_uuid')
+  await first.db.exec('UPDATE blockfield_schema SET version=7 WHERE id=1')
+  await first.close()
+  const store = await StatsStore.open(url)
+  t.after(() => store.close())
+  assert.equal((await store.db.prepare('SELECT version FROM blockfield_schema').get()).version, 8)
+  assert.deepEqual(
+    (
+      await store.db
+        .prepare('SELECT event_id "event",winner_uuid "winner" FROM results ORDER BY event_id')
+        .all()
+    ).map((r) => [r.event, r.winner]),
+    [
+      [match, alpha],
+      [beta, beta],
+    ],
+    'Node backfill parses the top-level winner even when PostgreSQL cannot cast the payload',
+  )
+})
+
+test('site#116c-2: rows a schema-7 replica wrote after the backfill still read their FFA win', async (t) => {
+  const { database } = await import('./storage.mjs')
+  const store = await database(t)
+  await store.ingest({ ...fixture(), winnerUuid: alpha })
+  await store.db.prepare('UPDATE results SET winner_uuid=NULL').run()
+  assert.deepEqual(
+    (await store.leaderboard(query())).players
+      .map((p) => [p.uuid, p.wins])
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1)),
+    [
+      [alpha, 1],
+      [beta, 0],
+    ],
+  )
+  assert.equal((await store.player(alpha, query())).history[0].winnerUuid, alpha)
+})
+
+test('site#116d-1: only the top-level winnerUuid backfills and reads, never a nested one', async (t) => {
+  const { database } = await import('./storage.mjs')
+  const store = await database(t)
+  await store.ingest({ ...fixture(), winnerUuid: alpha })
+  await store.ingest({ ...fixture(), eventId: beta, matchId: beta, winnerUuid: beta })
+  const nested = (parsed, winner) => {
+    const payload = JSON.parse(parsed)
+    payload.telemetry = { disputes: [{ winnerUuid: winner }] }
+    return JSON.stringify(payload)
+  }
+  const first = await store.db.prepare('SELECT payload FROM results WHERE event_id=?').get(match)
+  await store.db
+    .prepare('UPDATE results SET payload=? WHERE event_id=?')
+    .run(nested(first.payload, foreign), match)
+  const second = await store.db.prepare('SELECT payload FROM results WHERE event_id=?').get(beta)
+  const withoutTop = JSON.parse(nested(second.payload, beta))
+  delete withoutTop.winnerUuid
+  await store.db
+    .prepare('UPDATE results SET payload=? WHERE event_id=?')
+    .run(JSON.stringify(withoutTop), beta)
+  await store.db.prepare('UPDATE results SET winner_uuid=NULL').run()
+  assert.deepEqual(
+    (await store.leaderboard(query())).players
+      .map((p) => [p.uuid, p.wins])
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1)),
+    [
+      [alpha, 1],
+      [beta, 0],
+    ],
+    'nested telemetry winnerUuid wins nothing; top-level still falls back',
+  )
+  assert.equal(
+    (await store.player(alpha, query())).history.find((h) => h.eventId === match).winnerUuid,
+    alpha,
+  )
+  assert.equal(
+    (await store.player(beta, query())).history.find((h) => h.eventId === beta).winnerUuid,
+    null,
+  )
+})
+
+test('site#116e-1: startup backfill repairs lone-surrogate winners, ignores nested keys, reruns cleanly', async (t) => {
+  const { databaseUrl } = await import('./storage.mjs')
+  const { StatsStore } = await import('../src/lib/stats.ts')
+  const url = await databaseUrl(t)
+  const gamma = '00000000-0000-4000-8000-000000000006'
+  const seed = await StatsStore.open(url)
+  const insert = seed.db.prepare(
+    'INSERT INTO results (server_id,event_id,kind,mode,campaign_id,ended_at,reason,winner,digest,payload) VALUES (?,?,?,?,?,?,?,?,?,?)',
+  )
+  const payload = (winner) =>
+    JSON.stringify({ winnerUuid: winner, participants: [{ uuid: alpha, name: 'Alpha' }] })
+  await insert.run(
+    server,
+    match,
+    'match',
+    'deathmatch',
+    null,
+    1735689600000,
+    'completed',
+    'NONE',
+    'good',
+    payload(alpha),
+  )
+  await insert.run(
+    server,
+    beta,
+    'match',
+    'deathmatch',
+    null,
+    1735689600000,
+    'completed',
+    'NONE',
+    'bad',
+    payload(beta).replace('Alpha', 'a\\ud800b'),
+  )
+  const nested = JSON.parse(payload(alpha))
+  delete nested.winnerUuid
+  nested.telemetry = { disputes: [{ winnerUuid: foreign }] }
+  await insert.run(
+    server,
+    gamma,
+    'match',
+    'deathmatch',
+    null,
+    1735689600000,
+    'completed',
+    'NONE',
+    'nested',
+    JSON.stringify(nested),
+  )
+  await insert.run(
+    server,
+    foreign,
+    'match',
+    'deathmatch',
+    null,
+    1735689600000,
+    'completed',
+    'NONE',
+    'broken',
+    '{not json',
+  )
+  await seed.close()
+  const warnings = []
+  const realWarn = console.warn
+  console.warn = (...args) => void warnings.push(args.join(' '))
+  const store = await StatsStore.open(url)
+  console.warn = realWarn
+  try {
+    const winners = async () =>
+      (
+        await store.db
+          .prepare('SELECT event_id "event",winner_uuid "winner" FROM results ORDER BY event_id')
+          .all()
+      ).map((r) => [r.event, r.winner])
+    assert.deepEqual(await winners(), [
+      [match, alpha],
+      [beta, beta],
+      [foreign, null],
+      [gamma, null],
+    ])
+    assert.deepEqual(
+      warnings.filter((w) => w.includes('winner backfill')),
+      ['winner backfill: 1 payload(s) unparseable, winner left NULL'],
+      'unparseable rows stay NULL and are logged once by count',
+    )
+    await store.db.prepare('UPDATE results SET winner_uuid=? WHERE event_id=?').run(foreign, match)
+  } finally {
+    await store.close()
+  }
+  const reopened = await StatsStore.open(url)
+  t.after(() => reopened.close())
+  assert.deepEqual(
+    (
+      await reopened.db
+        .prepare('SELECT event_id "event",winner_uuid "winner" FROM results ORDER BY event_id')
+        .all()
+    ).map((r) => [r.event, r.winner]),
+    [
+      [match, foreign],
+      [beta, beta],
+      [foreign, null],
+      [gamma, null],
+    ],
+    'a second start fills nothing new and never overwrites a set winner',
+  )
+})
+
+test('site#116c-3: player statistics degrade to role null when CP fails', async (t) => {
+  const { database } = await import('./storage.mjs')
+  const { handleStatsRequest } = await import('../src/lib/stats.ts')
+  const store = await database(t),
+    deps = { store, keys: { [server]: [token] } }
+  assert.equal(
+    (await handleStatsRequest(post({ ...fixture(), winnerUuid: alpha }), deps)).status,
+    201,
+  )
+  const saved = {
+    url: process.env.BLOCKFIELD_CP_URL,
+    staff: process.env.BLOCKFIELD_CP_STAFF_TOKEN,
+    owners: process.env.BLOCKFIELD_OWNER_UUIDS,
+  }
+  process.env.BLOCKFIELD_CP_URL = 'http://127.0.0.1:9'
+  process.env.BLOCKFIELD_CP_STAFF_TOKEN = 'test-only-cp-staff-token'
+  delete process.env.BLOCKFIELD_OWNER_UUIDS
+  const realFetch = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = realFetch
+    if (saved.url === undefined) delete process.env.BLOCKFIELD_CP_URL
+    else process.env.BLOCKFIELD_CP_URL = saved.url
+    if (saved.staff === undefined) delete process.env.BLOCKFIELD_CP_STAFF_TOKEN
+    else process.env.BLOCKFIELD_CP_STAFF_TOKEN = saved.staff
+    if (saved.owners === undefined) delete process.env.BLOCKFIELD_OWNER_UUIDS
+    else process.env.BLOCKFIELD_OWNER_UUIDS = saved.owners
+  })
+  for (const stub of [
+    async () => {
+      throw new TypeError('fetch failed')
+    },
+    async () => new Response(JSON.stringify({ error: 'boom' }), { status: 500 }),
+  ]) {
+    globalThis.fetch = stub
+    const response = await handleStatsRequest(
+      new Request(`https://example.test/api/stats/players/${alpha}`),
+      deps,
+    )
+    assert.equal(response.status, 200, 'statistics are served without CP')
+    assert.equal((await response.json()).profile.role, null, 'role degrades to no link')
+  }
+})
+
+test('site#116f-1: backfill pages past more than 500 rows that have no winner', async (t) => {
+  const { databaseUrl } = await import('./storage.mjs')
+  const { StatsStore } = await import('../src/lib/stats.ts')
+  const url = await databaseUrl(t)
+  const seed = await StatsStore.open(url)
+  const insert = seed.db.prepare(
+    'INSERT INTO results (server_id,event_id,kind,mode,campaign_id,ended_at,reason,winner,digest,payload) VALUES (?,?,?,?,?,?,?,?,?,?)',
+  )
+  const noWinner = JSON.stringify({ participants: [{ uuid: alpha, name: 'Alpha' }] })
+  for (let i = 0; i < 501; i += 1) {
+    const id = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+    await insert.run(
+      server,
+      id,
+      'match',
+      'tdm',
+      null,
+      1735689600000,
+      'completed',
+      'RED',
+      `n${i}`,
+      noWinner,
+    )
+  }
+  const last = 'ffffffff-0000-4000-8000-000000000001'
+  await insert.run(
+    server,
+    last,
+    'match',
+    'deathmatch',
+    null,
+    1735689600000,
+    'completed',
+    'NONE',
+    'eligible',
+    JSON.stringify({ winnerUuid: alpha, participants: [{ uuid: alpha, name: 'Alpha' }] }),
+  )
+  await seed.close()
+  const store = await StatsStore.open(url)
+  t.after(() => store.close())
+  const row = await store.db
+    .prepare('SELECT winner_uuid "winner" FROM results WHERE event_id=?')
+    .get(last)
+  assert.equal(row.winner, alpha)
+})

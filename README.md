@@ -65,7 +65,7 @@ GitHub, а релиз меняется редко — так что почти �
 
 ## CI
 
-Ручной Deploy после подтверждения владельца: тесты (в том числе на PostgreSQL) на Blacksmith, образ `ghcr.io/blockfield/blockfield-site:<sha>` и `:latest`,
+Push в `main` (только release-merge `next` → `main`) деплоит прод: тесты (в том числе на PostgreSQL) на `ubuntu-24.04`, образ `ghcr.io/blockfield/blockfield-site:<sha>` и `:latest`,
 затем вебхук Dokploy. Приложение Dokploy `blockfield-site` разворачивает `:latest`; откат без пересборки — ручной запуск
 workflow `Roll back the site without rebuild` с `sha` предыдущего коммита: он переставляет тег `:latest` на уже собранный
 образ этого коммита, дёргает вебхук Dokploy и ждёт `/api/version`. Запасной путь — указать тег `<sha>` в приложении
@@ -104,21 +104,19 @@ Dokploy вручную. Откат через обновление схемы с
 ## Статистика
 
 История матчей, таблица лидеров и статистика аккаунта: [docs/statistics.md](docs/statistics.md).
-Сайт хранит данные в PostgreSQL (`BLOCKFIELD_DATABASE_URL`) или SQLite на постоянном
-томе (`BLOCKFIELD_STATS_DB`), отдельно от игрового сервера. Оба варианта хранят статистику,
-сезонные рейтинги и роли администраторов. Перед сменой базы следуйте инструкции миграции.
+Сайт хранит данные в PostgreSQL (`BLOCKFIELD_DATABASE_URL`), отдельно от игрового сервера. Перед сменой базы следуйте инструкции миграции.
 
 ## Проверки и развёртывание
 
 Установите Node.js 22 и pnpm 11.18.0; затем `pnpm install --frozen-lockfile`. Команды `pnpm lint` и
 `pnpm format:check` проверяют весь TypeScript/JavaScript/Astro и формат;
 `pnpm format` применяет форматирование, `pnpm check` запускает оба
-контроля. Коммиты main и PR выполняют проверки без публикации образа и без
+контроля. PR выполняют проверки без публикации образа и без
 обращений к продовому webhook.
 
-Прод развёртывается только ручным запуском workflow `Build and deploy the
-landing page` после явного подтверждения владельца. Этот workflow повторяет
-проверки, запускает тесты, публикует образ и ожидает появления выбранного SHA
-на сайте. Push в main сам по себе прод не обновляет.
+Прод развёртывается workflow `Build and deploy the
+landing page` на каждый push в `main` (release-merge `next` → `main`).
+Этот workflow повторяет проверки, запускает тесты, публикует образ и ожидает появления выбранного SHA
+на сайте.
 
 Условия использования: [LICENSE](LICENSE).
