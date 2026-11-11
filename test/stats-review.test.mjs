@@ -294,9 +294,9 @@ test('site#116c-1: v8 backfill survives payloads PostgreSQL cannot cast to jsonb
     ).map((r) => [r.event, r.winner]),
     [
       [match, alpha],
-      [beta, beta],
+      [beta, null],
     ],
-    'backfill extracts the winner as text without casting the payload',
+    'backfill extracts the top-level winner only; the uncastable payload migrates as NULL',
   )
 })
 
@@ -315,6 +315,47 @@ test('site#116c-2: rows a schema-7 replica wrote after the backfill still read t
     ],
   )
   assert.equal((await store.player(alpha, query())).history[0].winnerUuid, alpha)
+})
+
+test('site#116d-1: only the top-level winnerUuid backfills and reads, never a nested one', async (t) => {
+  const { database } = await import('./storage.mjs')
+  const store = await database(t)
+  await store.ingest({ ...fixture(), winnerUuid: alpha })
+  await store.ingest({ ...fixture(), eventId: beta, matchId: beta, winnerUuid: beta })
+  const nested = (parsed, winner) => {
+    const payload = JSON.parse(parsed)
+    payload.telemetry = { disputes: [{ winnerUuid: winner }] }
+    return JSON.stringify(payload)
+  }
+  const first = await store.db.prepare('SELECT payload FROM results WHERE event_id=?').get(match)
+  await store.db
+    .prepare('UPDATE results SET payload=? WHERE event_id=?')
+    .run(nested(first.payload, foreign), match)
+  const second = await store.db.prepare('SELECT payload FROM results WHERE event_id=?').get(beta)
+  const withoutTop = JSON.parse(nested(second.payload, beta))
+  delete withoutTop.winnerUuid
+  await store.db
+    .prepare('UPDATE results SET payload=? WHERE event_id=?')
+    .run(JSON.stringify(withoutTop), beta)
+  await store.db.prepare('UPDATE results SET winner_uuid=NULL').run()
+  assert.deepEqual(
+    (await store.leaderboard(query())).players
+      .map((p) => [p.uuid, p.wins])
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1)),
+    [
+      [alpha, 1],
+      [beta, 0],
+    ],
+    'nested telemetry winnerUuid wins nothing; top-level still falls back',
+  )
+  assert.equal(
+    (await store.player(alpha, query())).history.find((h) => h.eventId === match).winnerUuid,
+    alpha,
+  )
+  assert.equal(
+    (await store.player(beta, query())).history.find((h) => h.eventId === beta).winnerUuid,
+    null,
+  )
 })
 
 test('site#116c-3: player statistics degrade to role null when CP fails', async (t) => {

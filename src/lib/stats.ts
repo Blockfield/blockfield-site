@@ -639,10 +639,11 @@ const SCHEMA = `
       `
 /** Newest matches one hit-reg report reads; the scan stops here and `truncated` says so. */
 export const HITREG_SCAN_CAP = 5000
-/** FFA winner read as text, never parsed: payloads PostgreSQL cannot cast to jsonb
- * (lone-surrogate escapes) backfill safely, and rows a schema-7 replica writes after
- * the backfill still read correctly during a rolling deploy. */
-const WINNER_UUID_SQL = `substring(payload from '"winnerUuid":"([0-9a-f-]{36})"')`
+/** FFA winner read as the top-level key only: payloads PostgreSQL cannot cast to
+ * jsonb (lone-surrogate escapes) yield NULL instead of failing, so the backfill
+ * migrates every row and rows a schema-7 replica writes after the backfill still
+ * read correctly during a rolling deploy. */
+const WINNER_UUID_SQL = `CASE WHEN pg_input_is_valid(payload, 'jsonb') THEN payload::jsonb->>'winnerUuid' END`
 export class StatsStore {
   db: Database
   private constructor(location: string) {
