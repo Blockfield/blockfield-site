@@ -1,6 +1,7 @@
 /** Durable, Minecraft-independent result ingestion. Node >=22.19; no browser imports. */
 import { Database } from './database.ts'
 import { publish } from './admin-events.ts'
+import { draslBase } from './skins.ts'
 import { openTokenRaw, sessionKeyBytes } from './session-crypto.ts'
 import { saveReport, validateReport } from './diagnostics.ts'
 import { playerId, refreshRole } from './admin.ts'
@@ -941,35 +942,42 @@ export class StatsStore {
     const { total } = (await this.db
       .prepare('SELECT COUNT(*) total FROM results WHERE (CAST(? AS TEXT) IS NULL OR mode=?)')
       .get(mode, mode)) as { total: number }
-    const known = this.db.prepare('SELECT name FROM profiles WHERE uuid=?')
+    const parsed = rows.map(({ payload, ...row }) => ({
+      row,
+      result: JSON.parse(payload) as Result,
+    }))
+    const uuids = [
+      ...new Set(parsed.flatMap(({ result }) => result.participants.map((p) => p.uuid))),
+    ]
+    const nameByUuid = new Map<string, string>()
+    if (uuids.length) {
+      const found = (await this.db
+        .prepare('SELECT uuid,name FROM profiles WHERE uuid = ANY(?)')
+        .all(uuids)) as { uuid: string; name: string }[]
+      for (const { uuid, name } of found) nameByUuid.set(uuid, name)
+    }
     return {
       total,
       page,
       limit,
-      results: await Promise.all(
-        rows.map(async ({ payload, ...row }) => {
-          const result: Result = JSON.parse(payload),
-            name = async (p: Participant) =>
-              ((await known.get(p.uuid)) as { name: string } | undefined)?.name ?? p.name
-          const players = [...result.participants].sort((a, b) => b.score - a.score)
-          return {
-            ...row,
-            rated: rated(result),
-            mapId: result.mapId,
-            participants: players.length,
-            winnerName: result.winnerUuid
-              ? displayName(await name(players.find((p) => p.uuid === result.winnerUuid)!))
-              : null,
-            players: await Promise.all(
-              players.slice(0, 12).map(async (p) => ({
-                uuid: p.uuid,
-                name: displayName(await name(p)),
-                team: p.team,
-              })),
-            ),
-          }
-        }),
-      ),
+      results: parsed.map(({ row, result }) => {
+        const name = (p: Participant) => nameByUuid.get(p.uuid) ?? p.name
+        const players = [...result.participants].sort((a, b) => b.score - a.score)
+        return {
+          ...row,
+          rated: rated(result),
+          mapId: result.mapId,
+          participants: players.length,
+          winnerName: result.winnerUuid
+            ? displayName(name(players.find((p) => p.uuid === result.winnerUuid)!))
+            : null,
+          players: players.slice(0, 12).map((p) => ({
+            uuid: p.uuid,
+            name: displayName(name(p)),
+            team: p.team,
+          })),
+        }
+      }),
     }
   }
   /** Hit-reg telemetry aggregated over a window. The sums and per-match percentiles come
@@ -1456,7 +1464,7 @@ export async function resolveNames(
   budgetMs = 1500,
   fetcher: typeof fetch = fetch,
 ): Promise<Map<string, string>> {
-  const base = (process.env.DRASL_URL || 'https://skins.blockfield.pro').replace(/\/+$/, ''),
+  const base = draslBase(),
     now = Date.now(),
     found = new Map<string, string>()
   const pending = (await store.unnamed(uuids))

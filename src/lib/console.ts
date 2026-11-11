@@ -1,7 +1,6 @@
 /** Owner's raw RCON console: shared by the API (validation) and the page (confirmation). No server-only imports. */
 
 export type RconTarget = 'game' | 'workshop'
-export const RCON_TARGETS: readonly RconTarget[] = ['game', 'workshop'] as const
 
 /** Validates the console target enum: defaults to 'game', rejects unknown values. */
 export function rconTarget(value: unknown): RconTarget {

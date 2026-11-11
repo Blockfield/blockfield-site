@@ -46,6 +46,7 @@ import {
   workshopAiKeyStatusFile,
 } from './workshop-ai.ts'
 import { parseKitCatalog, validateKitChanges } from './kit-schema.ts'
+import { draslBase } from './skins.ts'
 import { parseStreakEntries } from './streak-table.ts'
 import {
   filters,
@@ -91,13 +92,6 @@ const PERMISSIONS: Record<Role, string[]> = {
 export const permissions = (role: Role | null) =>
   role && Object.hasOwn(PERMISSIONS, role) ? PERMISSIONS[role] : []
 export const can = (role: Role | null, permission: string) => permissions(role).includes(permission)
-export const ROLE_NAMES: Record<Role, string> = {
-  builder: 'Строитель',
-  moderator: 'Модератор',
-  admin: 'Администратор',
-  owner: 'Владелец',
-}
-
 export type Actor = { uuid: string; name: string; role: Role | null }
 const noStore = { 'Cache-Control': 'no-store' }
 const dir = (name: string, fallback: string) => process.env[name] || fallback
@@ -217,7 +211,7 @@ export async function siteIdentity(
   try {
     const store = await statsStore()
     const { username, uuid } = account(
-      await drasl('/user', { token: await sessionToken(cookies, store) }),
+      await drasl('/user', { token: await sessionToken(cookies, store), timeoutMs: 2000 }),
     )
     if (!username) return null
     const id = playerId(uuid)
@@ -1906,7 +1900,7 @@ async function fetchConsole(target: RconTarget, path: 'logs' | 'suggest', search
 async function lookupName(name: unknown): Promise<{ uuid: string; name: string }> {
   if (typeof name !== 'string' || !nickname.test(name))
     throw bad('Никнейм: 3–16 символов, латинские буквы, цифры и _.')
-  const base = (process.env.DRASL_URL || 'https://skins.blockfield.pro').replace(/\/+$/, '')
+  const base = draslBase()
   const response = await fetch(`${base}/account/users/profiles/minecraft/${name}`, {
     signal: AbortSignal.timeout(10_000),
   }).catch(() => null)
@@ -1928,7 +1922,7 @@ async function knownName(store: StatsStore, uuid: string): Promise<string | null
 }
 async function ownerName(uuid: string): Promise<string> {
   if (ownerNames.has(uuid)) return ownerNames.get(uuid)!
-  const base = (process.env.DRASL_URL || 'https://skins.blockfield.pro').replace(/\/+$/, '')
+  const base = draslBase()
   const data = await fetch(`${base}/session/minecraft/profile/${uuid}`, {
     signal: AbortSignal.timeout(10_000),
   })
@@ -3761,16 +3755,7 @@ export async function handleWorkshopSubmit(
     store.emitAudit(await finalize(true, null, id))
     return Response.json({ id }, { headers: noStore })
   } catch (thrown) {
-    error =
-      thrown instanceof Response
-        ? await thrown
-            .clone()
-            .json()
-            .then(
-              (d) => d.error,
-              () => 'error',
-            )
-        : 'internal error'
+    ;({ message: error } = await adminError(thrown))
     if (!applied) {
       try {
         store.emitAudit(await finalize(false, error, null))
@@ -3912,16 +3897,7 @@ export async function handleWorkshopAccess(
     return result instanceof Response ? result : Response.json(result, { headers: noStore })
   } catch (thrown) {
     ;({ actor, role } = outer)
-    error =
-      thrown instanceof Response
-        ? await thrown
-            .clone()
-            .json()
-            .then(
-              (d) => d.error,
-              () => 'error',
-            )
-        : 'internal error'
+    ;({ message: error } = await adminError(thrown))
     if (!applied) {
       try {
         store.emitAudit(await finalize(false, error))
