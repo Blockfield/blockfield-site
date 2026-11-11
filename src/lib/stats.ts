@@ -639,6 +639,10 @@ const SCHEMA = `
       `
 /** Newest matches one hit-reg report reads; the scan stops here and `truncated` says so. */
 export const HITREG_SCAN_CAP = 5000
+/** FFA winner read as text, never parsed: payloads PostgreSQL cannot cast to jsonb
+ * (lone-surrogate escapes) backfill safely, and rows a schema-7 replica writes after
+ * the backfill still read correctly during a rolling deploy. */
+const WINNER_UUID_SQL = `substring(payload from '"winnerUuid":"([0-9a-f-]{36})"')`
 export class StatsStore {
   db: Database
   private constructor(location: string) {
@@ -673,7 +677,7 @@ export class StatsStore {
       if (version === 7 || version === 6) {
         await this.db.exec('ALTER TABLE results ADD COLUMN IF NOT EXISTS winner_uuid TEXT;')
         await this.db.exec(
-          `UPDATE results SET winner_uuid=payload::jsonb->>'winnerUuid' WHERE winner_uuid IS NULL;`,
+          `UPDATE results SET winner_uuid=${WINNER_UUID_SQL} WHERE winner_uuid IS NULL;`,
         )
         await this.db.exec('UPDATE blockfield_schema SET version=8 WHERE id=1;')
       }
@@ -1341,7 +1345,7 @@ export class StatsStore {
       SUM(p.captures) captures,SUM(p.neutralizations) neutralizations,SUM(p.point_seconds) "pointSeconds",
       SUM(p.play_seconds) "playSeconds",SUM(p.suicides) suicides,SUM(p.team_kills) "teamKills",MAX(p.max_streak) "maxKillstreak",
       COUNT(*) matches,SUM(CASE WHEN r.reason='completed' AND (
-        (r.mode='deathmatch' AND r.winner_uuid=p.uuid) OR
+        (r.mode='deathmatch' AND COALESCE(r.winner_uuid,${WINNER_UUID_SQL})=p.uuid) OR
         (r.mode!='deathmatch' AND p.team!='NONE' AND r.winner=p.team)
       ) THEN 1 ELSE 0 END) wins,
       ROUND(CAST(SUM(p.kills)*1.0/greatest(1,SUM(p.deaths)) AS NUMERIC),3) kd,
@@ -1388,7 +1392,7 @@ export class StatsStore {
       (await this.leaderboard({ ...query, page: 1, limit: 1 }, uuid)).players[0] || null
     const history = await this.db
       .prepare(
-        `SELECT r.event_id "eventId",r.server_id "serverId",r.kind,r.mode,r.campaign_id "campaignSessionId",r.ended_at "endedAt",r.reason,r.winner,r.winner_uuid "winnerUuid",p.team,p.score,p.kills,p.deaths
+        `SELECT r.event_id "eventId",r.server_id "serverId",r.kind,r.mode,r.campaign_id "campaignSessionId",r.ended_at "endedAt",r.reason,r.winner,COALESCE(r.winner_uuid,${WINNER_UUID_SQL}) "winnerUuid",p.team,p.score,p.kills,p.deaths
       FROM participants p JOIN results r USING(server_id,event_id) WHERE p.uuid=? AND r.voided_at IS NULL AND r.ended_at>=? AND r.ended_at<=? AND (CAST(? AS TEXT) IS NULL OR r.mode=?)
       ORDER BY r.ended_at DESC,r.server_id,r.event_id LIMIT ? OFFSET ?`,
       )
@@ -1673,10 +1677,14 @@ export async function handleStatsRequest(
       // ponytail: staff without recorded gameplay 404 above, so the launcher shows them as a player; add a role endpoint if that matters.
       // CP is authority when configured: a replica row lingering after a revoke shows no role.
       const id = playerId(player[1])
+      // A CP outage must not cost the player's statistics (CP staff reads time out
+      // in cp.ts): degrade to no role link instead of failing the request.
       data.profile.role =
         id === null
           ? null
-          : await refreshRole({ uuid: id, name: data.profile.name, role: null }, store)
+          : await refreshRole({ uuid: id, name: data.profile.name, role: null }, store).catch(
+              () => null,
+            )
       return Response.json(data, { headers })
     }
     throw new StatsError(404, 'Unknown statistics endpoint')

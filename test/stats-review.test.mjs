@@ -232,9 +232,130 @@ test('site#116 item 6: winner_uuid column is filled at ingest and drives the lea
   assert.deepEqual(
     board2.players.map((p) => [p.uuid, p.wins]),
     [
-      [alpha, 0],
+      [alpha, 1],
       [beta, 0],
     ],
-    'leaderboard compares the column, not the payload',
+    'leaderboard falls back to the payload when the column is NULL (rolling-deploy replica row)',
   )
+  assert.equal(
+    (await store.player(alpha, query())).history[0].winnerUuid,
+    alpha,
+    'history falls back to the payload when the column is NULL',
+  )
+})
+
+test('site#116c-1: v8 backfill survives payloads PostgreSQL cannot cast to jsonb', async (t) => {
+  const { databaseUrl } = await import('./storage.mjs')
+  const { StatsStore } = await import('../src/lib/stats.ts')
+  const url = await databaseUrl(t)
+  const first = await StatsStore.open(url)
+  // A schema-7 database: winner column gone, version back, one legacy row whose
+  // name carries a lone-surrogate escape (validly ingested before, uncastable to jsonb).
+  const payload = (winner) =>
+    JSON.stringify({ winnerUuid: winner, participants: [{ uuid: alpha, name: 'Alpha' }] })
+  const insert = first.db.prepare(
+    'INSERT INTO results (server_id,event_id,kind,mode,campaign_id,ended_at,reason,winner,digest,payload) VALUES (?,?,?,?,?,?,?,?,?,?)',
+  )
+  await insert.run(
+    server,
+    match,
+    'match',
+    'deathmatch',
+    null,
+    1735689600000,
+    'completed',
+    'NONE',
+    'good',
+    payload(alpha),
+  )
+  await insert.run(
+    server,
+    beta,
+    'match',
+    'deathmatch',
+    null,
+    1735689600000,
+    'completed',
+    'NONE',
+    'bad',
+    payload(beta).replace('Alpha', 'a\\ud800b'),
+  )
+  await first.db.exec('ALTER TABLE results DROP COLUMN winner_uuid')
+  await first.db.exec('UPDATE blockfield_schema SET version=7 WHERE id=1')
+  await first.close()
+  const store = await StatsStore.open(url)
+  t.after(() => store.close())
+  assert.equal((await store.db.prepare('SELECT version FROM blockfield_schema').get()).version, 8)
+  assert.deepEqual(
+    (
+      await store.db
+        .prepare('SELECT event_id "event",winner_uuid "winner" FROM results ORDER BY event_id')
+        .all()
+    ).map((r) => [r.event, r.winner]),
+    [
+      [match, alpha],
+      [beta, beta],
+    ],
+    'backfill extracts the winner as text without casting the payload',
+  )
+})
+
+test('site#116c-2: rows a schema-7 replica wrote after the backfill still read their FFA win', async (t) => {
+  const { database } = await import('./storage.mjs')
+  const store = await database(t)
+  await store.ingest({ ...fixture(), winnerUuid: alpha })
+  await store.db.prepare('UPDATE results SET winner_uuid=NULL').run()
+  assert.deepEqual(
+    (await store.leaderboard(query())).players
+      .map((p) => [p.uuid, p.wins])
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1)),
+    [
+      [alpha, 1],
+      [beta, 0],
+    ],
+  )
+  assert.equal((await store.player(alpha, query())).history[0].winnerUuid, alpha)
+})
+
+test('site#116c-3: player statistics degrade to role null when CP fails', async (t) => {
+  const { database } = await import('./storage.mjs')
+  const { handleStatsRequest } = await import('../src/lib/stats.ts')
+  const store = await database(t),
+    deps = { store, keys: { [server]: [token] } }
+  assert.equal(
+    (await handleStatsRequest(post({ ...fixture(), winnerUuid: alpha }), deps)).status,
+    201,
+  )
+  const saved = {
+    url: process.env.BLOCKFIELD_CP_URL,
+    staff: process.env.BLOCKFIELD_CP_STAFF_TOKEN,
+    owners: process.env.BLOCKFIELD_OWNER_UUIDS,
+  }
+  process.env.BLOCKFIELD_CP_URL = 'http://127.0.0.1:9'
+  process.env.BLOCKFIELD_CP_STAFF_TOKEN = 'test-only-cp-staff-token'
+  delete process.env.BLOCKFIELD_OWNER_UUIDS
+  const realFetch = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = realFetch
+    if (saved.url === undefined) delete process.env.BLOCKFIELD_CP_URL
+    else process.env.BLOCKFIELD_CP_URL = saved.url
+    if (saved.staff === undefined) delete process.env.BLOCKFIELD_CP_STAFF_TOKEN
+    else process.env.BLOCKFIELD_CP_STAFF_TOKEN = saved.staff
+    if (saved.owners === undefined) delete process.env.BLOCKFIELD_OWNER_UUIDS
+    else process.env.BLOCKFIELD_OWNER_UUIDS = saved.owners
+  })
+  for (const stub of [
+    async () => {
+      throw new TypeError('fetch failed')
+    },
+    async () => new Response(JSON.stringify({ error: 'boom' }), { status: 500 }),
+  ]) {
+    globalThis.fetch = stub
+    const response = await handleStatsRequest(
+      new Request(`https://example.test/api/stats/players/${alpha}`),
+      deps,
+    )
+    assert.equal(response.status, 200, 'statistics are served without CP')
+    assert.equal((await response.json()).profile.role, null, 'role degrades to no link')
+  }
 })

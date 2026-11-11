@@ -121,7 +121,7 @@ An unavailable or invalid PostgreSQL configuration returns an error; the app nev
 Storage methods and `StatsStore.open()` are asynchronous.
 PostgreSQL uses `pg`, parameterized queries, a pool and one connection per transaction. Ingestion and rating rebuilds take a transaction-level advisory lock across site replicas.
 Schema 7 gives ingestion keys explicit IDs.
-Schema 8 adds `results.winner_uuid` (deathmatch winner, null otherwise) so the leaderboard compares a column instead of parsing every payload; it is filled at ingest and backfilled once from `payload->>'winnerUuid'` on startup.
+Schema 8 adds `results.winner_uuid` (deathmatch winner, null otherwise) so the leaderboard compares a column instead of parsing every payload; it is filled at ingest and backfilled once from the payload text on startup (text extraction, so payloads PostgreSQL cannot cast to `jsonb` still migrate). Reads fall back to the payload value when the column is `NULL`, covering rows a pre-upgrade replica writes during a rolling deploy.
 
 Rollback for schema 8: before deploying, take a `pg_dump` backup. To roll back after PostgreSQL has accepted v8 writes, restore the dump on an isolated instance (or, when no v8-only data must be kept, `ALTER TABLE results DROP COLUMN winner_uuid` and `UPDATE blockfield_schema SET version=7 WHERE id=1`, then redeploy the previous image).
 
