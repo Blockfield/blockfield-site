@@ -639,10 +639,10 @@ const SCHEMA = `
       `
 /** Newest matches one hit-reg report reads; the scan stops here and `truncated` says so. */
 export const HITREG_SCAN_CAP = 5000
-/** FFA winner read as the top-level key only: payloads PostgreSQL cannot cast to
- * jsonb (lone-surrogate escapes) yield NULL instead of failing, so the backfill
- * migrates every row and rows a schema-7 replica writes after the backfill still
- * read correctly during a rolling deploy. */
+/** FFA winner read as the top-level key only, for rows a schema-7 replica writes
+ * during the rollout window (no winner_uuid column yet): payloads PostgreSQL
+ * cannot cast to jsonb (lone-surrogate escapes) read as NULL here and are
+ * repaired by the Node backfill on the next start instead. */
 const WINNER_UUID_SQL = `CASE WHEN pg_input_is_valid(payload, 'jsonb') THEN payload::jsonb->>'winnerUuid' END`
 export class StatsStore {
   db: Database
@@ -677,9 +677,6 @@ export class StatsStore {
       // no longer parses every payload per player per request.
       if (version === 7 || version === 6) {
         await this.db.exec('ALTER TABLE results ADD COLUMN IF NOT EXISTS winner_uuid TEXT;')
-        await this.db.exec(
-          `UPDATE results SET winner_uuid=${WINNER_UUID_SQL} WHERE winner_uuid IS NULL;`,
-        )
         await this.db.exec('UPDATE blockfield_schema SET version=8 WHERE id=1;')
       }
       if (version !== 6 && version !== 7 && version !== 8)
@@ -702,6 +699,11 @@ export class StatsStore {
       )
       await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS client TEXT;')
       await this.db.exec('ALTER TABLE admin_audit ADD COLUMN IF NOT EXISTS correlation TEXT;')
+      // Every start, not just migration: JSON.parse tolerates the lone-surrogate
+      // escapes PostgreSQL jsonb rejects, and this also repairs rows a schema-7
+      // replica wrote after the migration. Only NULL rows are read; a set winner
+      // is never overwritten, so reruns are no-ops.
+      await this.backfillWinners()
       // Crash orphans (pending rows from a killed request) are marked interrupted, never hidden.
       // A live row mis-marked by a concurrent replica still finalizes normally afterwards.
       await this.db
@@ -724,6 +726,47 @@ export class StatsStore {
   }
   async close() {
     await this.db.close()
+  }
+  private async backfillWinners() {
+    const update = this.db.prepare(
+      'UPDATE results SET winner_uuid=? WHERE server_id=? AND event_id=? AND winner_uuid IS NULL',
+    )
+    let unparseable = 0
+    const counted = new Set<string>()
+    for (;;) {
+      const rows = (await this.db
+        .prepare(
+          'SELECT server_id "serverId",event_id "eventId",payload FROM results WHERE winner_uuid IS NULL LIMIT 500',
+        )
+        .all()) as { serverId: string; eventId: string; payload: string }[]
+      if (rows.length === 0) break
+      let filled = 0
+      for (const row of rows) {
+        let winner: string | null = null
+        try {
+          const parsed: unknown = JSON.parse(row.payload)
+          const candidate =
+            parsed !== null && typeof parsed === 'object'
+              ? (parsed as { winnerUuid?: unknown }).winnerUuid
+              : undefined
+          if (typeof candidate === 'string' && UUID.test(candidate)) winner = candidate
+        } catch {
+          // Later batches re-read the rows this pass cannot fix; count each once.
+          const key = `${row.serverId}/${row.eventId}`
+          if (!counted.has(key)) {
+            counted.add(key)
+            unparseable += 1
+          }
+          continue
+        }
+        if (winner === null) continue
+        await update.run(winner, row.serverId, row.eventId)
+        filled += 1
+      }
+      if (filled === 0) break
+    }
+    if (unparseable > 0)
+      console.warn(`winner backfill: ${unparseable} payload(s) unparseable, winner left NULL`)
   }
   async ingest(input: unknown): Promise<{ inserted: boolean; eventId: string }> {
     const result = validateResult(input),
