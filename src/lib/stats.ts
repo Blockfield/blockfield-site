@@ -732,15 +732,16 @@ export class StatsStore {
       'UPDATE results SET winner_uuid=? WHERE server_id=? AND event_id=? AND winner_uuid IS NULL',
     )
     let unparseable = 0
-    const counted = new Set<string>()
+    // Keyset pages: rows that legitimately have no winner stay NULL and must
+    // not be re-read forever, so each pass resumes after the last key seen.
+    let after: [string, string] = ['', '']
     for (;;) {
       const rows = (await this.db
         .prepare(
-          'SELECT server_id "serverId",event_id "eventId",payload FROM results WHERE winner_uuid IS NULL LIMIT 500',
+          'SELECT server_id "serverId",event_id "eventId",payload FROM results WHERE winner_uuid IS NULL AND (server_id,event_id)>(?,?) ORDER BY server_id,event_id LIMIT 500',
         )
-        .all()) as { serverId: string; eventId: string; payload: string }[]
+        .all(after[0], after[1])) as { serverId: string; eventId: string; payload: string }[]
       if (rows.length === 0) break
-      let filled = 0
       for (const row of rows) {
         let winner: string | null = null
         try {
@@ -751,19 +752,14 @@ export class StatsStore {
               : undefined
           if (typeof candidate === 'string' && UUID.test(candidate)) winner = candidate
         } catch {
-          // Later batches re-read the rows this pass cannot fix; count each once.
-          const key = `${row.serverId}/${row.eventId}`
-          if (!counted.has(key)) {
-            counted.add(key)
-            unparseable += 1
-          }
+          unparseable += 1
           continue
         }
         if (winner === null) continue
         await update.run(winner, row.serverId, row.eventId)
-        filled += 1
       }
-      if (filled === 0) break
+      const last = rows[rows.length - 1]
+      after = [last.serverId, last.eventId]
     }
     if (unparseable > 0)
       console.warn(`winner backfill: ${unparseable} payload(s) unparseable, winner left NULL`)

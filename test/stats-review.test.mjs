@@ -508,3 +508,49 @@ test('site#116c-3: player statistics degrade to role null when CP fails', async 
     assert.equal((await response.json()).profile.role, null, 'role degrades to no link')
   }
 })
+
+test('site#116f-1: backfill pages past more than 500 rows that have no winner', async (t) => {
+  const { databaseUrl } = await import('./storage.mjs')
+  const { StatsStore } = await import('../src/lib/stats.ts')
+  const url = await databaseUrl(t)
+  const seed = await StatsStore.open(url)
+  const insert = seed.db.prepare(
+    'INSERT INTO results (server_id,event_id,kind,mode,campaign_id,ended_at,reason,winner,digest,payload) VALUES (?,?,?,?,?,?,?,?,?,?)',
+  )
+  const noWinner = JSON.stringify({ participants: [{ uuid: alpha, name: 'Alpha' }] })
+  for (let i = 0; i < 501; i += 1) {
+    const id = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+    await insert.run(
+      server,
+      id,
+      'match',
+      'tdm',
+      null,
+      1735689600000,
+      'completed',
+      'RED',
+      `n${i}`,
+      noWinner,
+    )
+  }
+  const last = 'ffffffff-0000-4000-8000-000000000001'
+  await insert.run(
+    server,
+    last,
+    'match',
+    'deathmatch',
+    null,
+    1735689600000,
+    'completed',
+    'NONE',
+    'eligible',
+    JSON.stringify({ winnerUuid: alpha, participants: [{ uuid: alpha, name: 'Alpha' }] }),
+  )
+  await seed.close()
+  const store = await StatsStore.open(url)
+  t.after(() => store.close())
+  const row = await store.db
+    .prepare('SELECT winner_uuid "winner" FROM results WHERE event_id=?')
+    .get(last)
+  assert.equal(row.winner, alpha)
+})
