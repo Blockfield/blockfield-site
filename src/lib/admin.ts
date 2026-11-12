@@ -2354,6 +2354,11 @@ const routes: Record<string, Route> = {
         return await postGateCp(mode, message, randomUUID())
       } catch (error) {
         const text = error instanceof Error ? error.message : ''
+        const status = (error as { status?: unknown }).status
+        // cp.ts gate errors carry the HTTP status (409/403/503 with an admin
+        // message); keep the text fallbacks for the unconfigured CP case.
+        if (status === 409 || status === 403 || status === 422 || status === 503)
+          throw fail(status, text)
         // Безопасно для показа: ревизия CP — только номер, «не настроен» — без секретов.
         if (/ревизия \d+/.test(text)) throw fail(409, text)
         if (/не настроен/.test(text)) throw fail(503, text)

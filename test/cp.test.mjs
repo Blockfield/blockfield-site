@@ -51,8 +51,8 @@ async function fakeCp(handler) {
   return server
 }
 
-test('CP client reads gate via v1 and toggles it via v2 settings PATCH', async () => {
-  let state = { schema: 1, revision: 4, mode: 'open', message: '', since: 1, observedAt: 2 }
+test('CP client toggles the gate with one POST /v2/gate/toggle call', async () => {
+  let state = { revision: 4, mode: 'open' }
   const seen = []
   const server = await fakeCp((req, res) => {
     seen.push([req.method, req.url, req.headers.authorization])
@@ -60,18 +60,27 @@ test('CP client reads gate via v1 and toggles it via v2 settings PATCH', async (
     req.on('data', (c) => (body += c))
     req.on('end', () => {
       res.setHeader('Content-Type', 'application/json')
-      if (req.method === 'GET' && req.url === '/v1/gate') return res.end(JSON.stringify(state))
-      if (req.method === 'PATCH' && req.url === '/v2/settings/gate/*') {
+      if (req.method === 'GET' && req.url === '/v1/gate')
+        return res.end(
+          JSON.stringify({
+            schema: 1,
+            revision: state.revision,
+            mode: state.mode,
+            message: '',
+            since: 1,
+            observedAt: 2,
+          }),
+        )
+      if (req.method === 'POST' && req.url === '/v2/gate/toggle') {
         const payload = JSON.parse(body)
-        assert.equal(payload.expectedRevision, state.revision)
         assert.match(payload.idempotencyKey, /.+/)
-        assert.deepEqual(payload.patch, {
-          mode: state.mode === 'open' ? 'maintenance' : 'open',
-          message: '',
-        })
-        assert.ok(!('actor' in payload), 'v2 settings PATCH carries no actor field')
-        assert.ok(!('mode' in payload) && !('message' in payload), 'mode/message ride inside patch')
-        state = { ...state, revision: state.revision + 1, mode: payload.patch.mode }
+        assert.equal(payload.environment, 'prod')
+        assert.equal(payload.backend, 'game')
+        assert.equal(payload.mode, 'maintenance')
+        assert.equal(payload.message, '')
+        assert.ok(!('expectedRevision' in payload), 'no client-side revision read')
+        assert.ok(!('patch' in payload), 'no patch envelope')
+        state = { ...state, revision: state.revision + 1, mode: payload.mode }
         res.statusCode = 202
         return res.end(JSON.stringify({ operationId: 'op1', revision: state.revision }))
       }
@@ -87,24 +96,25 @@ test('CP client reads gate via v1 and toggles it via v2 settings PATCH', async (
     })
     assert.equal(await readGateCp(), null)
     const out = await postGateCp('maintenance', '', 'k1')
+    assert.equal(out.operationId, 'op1')
     assert.equal(out.revision, 5)
     const closed = await readGateCp()
     assert.equal(
       closed?.message,
       'На сервере проводятся технические работы. Обычный вход временно недоступен.',
     )
+    // One write round-trip: no GET /v1/gate + PATCH pair around the toggle.
     assert.deepEqual(
       seen.map(([m, u]) => [m, u]),
       [
         ['GET', '/v1/gate'],
-        ['GET', '/v1/gate'],
-        ['PATCH', '/v2/settings/gate/*'],
+        ['POST', '/v2/gate/toggle'],
         ['GET', '/v1/gate'],
       ],
     )
     assert.deepEqual(
       seen.map(([, , auth]) => auth),
-      ['Bearer read-t', 'Bearer read-t', 'Bearer gate-t', 'Bearer read-t'],
+      ['Bearer read-t', 'Bearer gate-t', 'Bearer read-t'],
     )
   } finally {
     await new Promise((resolve) => server.close(resolve))
@@ -112,37 +122,35 @@ test('CP client reads gate via v1 and toggles it via v2 settings PATCH', async (
   }
 })
 
-test('CP gate toggle maps a v2 revision conflict to the caller 409 contract', async () => {
+test('CP gate toggle surfaces clear admin errors with status', async () => {
   const server = await fakeCp((req, res) => {
     let body = ''
     req.on('data', (c) => (body += c))
     req.on('end', () => {
       res.setHeader('Content-Type', 'application/json')
-      if (req.method === 'GET') {
-        return res.end(
-          JSON.stringify({
-            schema: 1,
-            revision: 9,
-            mode: 'open',
-            message: '',
-            since: 1,
-            observedAt: 2,
-          }),
-        )
+      const key = JSON.parse(body).idempotencyKey
+      if (key === 'k-noaccess') {
+        res.statusCode = 403
+        return res.end(JSON.stringify({ error: 'forbidden' }))
       }
       res.statusCode = 409
-      res.end(JSON.stringify({ error: 'revision_conflict' }))
+      res.end(JSON.stringify({ error: 'idempotency_conflict' }))
     })
   })
   try {
     Object.assign(process.env, {
       BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
-      BLOCKFIELD_CP_GATE_READ_TOKEN: 'read-t',
       BLOCKFIELD_CP_GATE_TOKEN: 'gate-t',
     })
-    await assert.rejects(postGateCp('maintenance', '', 'k-stale'), (error) => {
-      assert.match(error.message, /ревизия 9/)
-      assert.equal(error.code, 'revision_conflict')
+    await assert.rejects(postGateCp('maintenance', '', 'k-busy'), (error) => {
+      assert.equal(error.status, 409)
+      assert.equal(error.code, 'idempotency_conflict')
+      assert.match(error.message, /уже обрабатывается/)
+      return true
+    })
+    await assert.rejects(postGateCp('maintenance', '', 'k-noaccess'), (error) => {
+      assert.equal(error.status, 403)
+      assert.match(error.message, /нет доступа/)
       return true
     })
   } finally {
