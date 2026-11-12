@@ -1,6 +1,7 @@
 import type { APIContext, APIRoute, AstroCookies } from 'astro'
 import { randomBytes } from 'node:crypto'
 import { openTokenRaw, sealTokenRaw, sessionKeyBytes } from './session-crypto.ts'
+import { draslBase } from './skins.ts'
 import { statsStore, type StatsStore } from './stats.ts'
 
 export const nickname = /^[A-Za-z0-9_]{3,16}$/
@@ -47,9 +48,14 @@ export const fail = (status: number, error: string) =>
 
 export async function drasl(
   path: string,
-  { method = 'GET', token, body }: { method?: string; token?: string; body?: unknown } = {},
+  {
+    method = 'GET',
+    token,
+    body,
+    timeoutMs = 10_000,
+  }: { method?: string; token?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<any> {
-  const base = (process.env.DRASL_URL || 'https://skins.blockfield.pro').replace(/\/+$/, '')
+  const base = draslBase()
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (token) headers.Authorization = `Bearer ${token}`
   if (body !== undefined) headers['Content-Type'] = 'application/json'
@@ -57,7 +63,7 @@ export async function drasl(
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(timeoutMs),
   }).catch(() => {
     throw fail(502, unavailable)
   })

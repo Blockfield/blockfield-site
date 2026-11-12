@@ -3,6 +3,10 @@ import { fail } from './account.ts'
 import { rcon } from './rcon.ts'
 
 // The text is fixed here so the deploy token can never turn into an arbitrary RCON command.
+// Stays on RCON by design: CP exposes POST /v2/actions/moderation.say
+// (cpv2/core.py MODERATION_COMMANDS), but every service call there must assert
+// the acting human account (service_actor_required) and the deploy token
+// carries no human actor, so the announce keeps the single fixed RCON command.
 export const RESTART_NOTICE =
   'tellraw @a {"text":"[Сервер] Через несколько минут сервер перезапустится для обновления.","color":"yellow"}'
 

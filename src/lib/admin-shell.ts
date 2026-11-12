@@ -265,7 +265,7 @@ async function follow(
   line: HTMLElement,
   id: string,
   done: string,
-  onError?: (error: string) => Promise<boolean> | boolean,
+  onError?: (error: string, code?: unknown) => Promise<boolean> | boolean,
 ) {
   followTokens.set(line, id)
   say(line, 'применяем…', 'pending')
@@ -289,7 +289,7 @@ async function follow(
   if (followTokens.get(line) !== id) return
   if (!result) say(line, 'Нет подтверждения. Проверьте состояние позже.', 'error')
   else if (result.ok) say(line, done)
-  else if (!(await onError?.(String(result.error))))
+  else if (!(await onError?.(String(result.error), result.code)))
     say(
       line,
       /revision/i.test(String(result.error))

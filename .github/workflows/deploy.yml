@@ -13,7 +13,6 @@ permissions:
   packages: write
 jobs:
   check:
-    needs: postgres
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     services:
@@ -79,7 +78,9 @@ jobs:
           --health-cmd "pg_isready -U blockfield -d blockfield_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11.18.0
@@ -92,7 +93,7 @@ jobs:
         env:
           BLOCKFIELD_TEST_DATABASE_URL: postgres://blockfield:test-only@localhost:5432/blockfield_test
   deploy:
-    needs: check
+    needs: [check, postgres]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

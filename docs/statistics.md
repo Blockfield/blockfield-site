@@ -4,7 +4,7 @@ Refs: netherg-io/blockfield-releases#3 and #6. This service is part of the exist
 
 ## Runtime and storage
 
-Use Node 22.19+ (the existing Astro dependency graph also requires this). PostgreSQL through `pg` is the only store: `StatsStore.open()` accepts only `BLOCKFIELD_DATABASE_URL`. No `node:sqlite` code remains. See [PostgreSQL storage and the SQLite export](#postgresql-storage-schema-7) for deployment and migration.
+Use Node 22.19+ (the existing Astro dependency graph also requires this). PostgreSQL through `pg` is the only store: `StatsStore.open()` accepts only `BLOCKFIELD_DATABASE_URL`. No `node:sqlite` code remains. See [PostgreSQL storage and the SQLite export](#postgresql-storage-schema-8) for deployment and migration.
 
 Site environment (PostgreSQL is required):
 
@@ -19,7 +19,7 @@ Statistics live in PostgreSQL; the image keeps no local stats volume. Do not com
 
 Without a configured database, reads return 503 rather than an empty leaderboard. An invalid PostgreSQL configuration fails instead of serving anything else. Producer keys can also be created and revoked in `/admin` (stored as SHA-256 hashes in `ingest_keys`); env and DB keys are both accepted. Without any ingestion key, writes are unauthorized. Bad key configuration fails closed. Restore to an isolated instance and replay the producer outbox to verify a backup. Unknown database schema versions are rejected, not overwritten.
 
-Current schema is 7. Schema 6 gave ingestion keys explicit IDs. There are no automatic deletes or destructive migrations.
+Current schema is 8. Schema 6 gave ingestion keys explicit IDs. There are no automatic deletes or destructive migrations.
 
 There are no automatic deletes or destructive migrations. MMR is recalculated only when an administrator voids/restores a rated campaign. Add retention/administration policies explicitly before a large public rollout. Put public read endpoints behind reverse-proxy rate limits appropriate to the deployment.
 
@@ -114,13 +114,16 @@ Local review: submit the test fixture with a configured producer key, replay it,
 
 Legacy CamelCase import is provided below. Recomputing later seasons after late results, class-filtered leaderboard and large-dataset load testing remain separate work. Existing log files are never silently reinterpreted or rewritten.
 
-## PostgreSQL storage (schema 7)
+## PostgreSQL storage (schema 8)
 
 PostgreSQL is the only store. Set `BLOCKFIELD_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DATABASE`.
 An unavailable or invalid PostgreSQL configuration returns an error; the app never serves from anything else.
 Storage methods and `StatsStore.open()` are asynchronous.
 PostgreSQL uses `pg`, parameterized queries, a pool and one connection per transaction. Ingestion and rating rebuilds take a transaction-level advisory lock across site replicas.
 Schema 7 gives ingestion keys explicit IDs.
+Schema 8 adds `results.winner_uuid` (deathmatch winner, null otherwise) so the leaderboard compares a column instead of parsing every payload; it is filled at ingest and backfilled once from the payload text on startup (text extraction, so payloads PostgreSQL cannot cast to `jsonb` still migrate). Reads fall back to the payload value when the column is `NULL`, covering rows a pre-upgrade replica writes during a rolling deploy.
+
+Rollback for schema 8: before deploying, take a `pg_dump` backup. To roll back after PostgreSQL has accepted v8 writes, restore the dump on an isolated instance (or, when no v8-only data must be kept, `ALTER TABLE results DROP COLUMN winner_uuid` and `UPDATE blockfield_schema SET version=7 WHERE id=1`, then redeploy the previous image).
 
 ### Migration from SQLite
 

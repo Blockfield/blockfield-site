@@ -46,6 +46,7 @@ import {
   workshopAiKeyStatusFile,
 } from './workshop-ai.ts'
 import { parseKitCatalog, validateKitChanges } from './kit-schema.ts'
+import { draslBase } from './skins.ts'
 import { parseStreakEntries } from './streak-table.ts'
 import {
   filters,
@@ -91,13 +92,6 @@ const PERMISSIONS: Record<Role, string[]> = {
 export const permissions = (role: Role | null) =>
   role && Object.hasOwn(PERMISSIONS, role) ? PERMISSIONS[role] : []
 export const can = (role: Role | null, permission: string) => permissions(role).includes(permission)
-export const ROLE_NAMES: Record<Role, string> = {
-  builder: 'Строитель',
-  moderator: 'Модератор',
-  admin: 'Администратор',
-  owner: 'Владелец',
-}
-
 export type Actor = { uuid: string; name: string; role: Role | null }
 const noStore = { 'Cache-Control': 'no-store' }
 const dir = (name: string, fallback: string) => process.env[name] || fallback
@@ -206,22 +200,39 @@ export async function siteIdentity(
 ): Promise<{ name: string; hasAdminAccess: boolean } | null> {
   const dev = devUser()
   if (dev)
-    return { name: dev.name, hasAdminAccess: (await roleOf(dev.uuid, await statsStore())) !== null }
+    return {
+      name: dev.name,
+      hasAdminAccess:
+        (await refreshRole({ uuid: dev.uuid, name: dev.name, role: null }, await statsStore())) !==
+        null,
+    }
   const value = cookies.get(session)?.value
   if (!value) return null
+  let store, username, uuid
   try {
-    const store = await statsStore()
-    const { username, uuid } = account(
-      await drasl('/user', { token: await sessionToken(cookies, store) }),
-    )
-    if (!username) return null
-    const id = playerId(uuid)
-    return {
-      name: String(username),
-      hasAdminAccess: id !== null && (await roleOf(id, store)) !== null,
-    }
+    store = await statsStore()
+    ;({ username, uuid } = account(
+      await drasl('/user', { token: await sessionToken(cookies, store), timeoutMs: 2000 }),
+    ))
   } catch {
     return null
+  }
+  if (!username) return null
+  const name = String(username)
+  const id = playerId(uuid)
+  if (id === null) return { name, hasAdminAccess: false }
+  try {
+    return {
+      name,
+      hasAdminAccess: (await refreshRole({ uuid: id, name, role: null }, store)) !== null,
+    }
+  } catch (error) {
+    // A CP outage must not sign the user out (the player route degrades the same way): keep the name, hide the admin link.
+    console.error(
+      'siteIdentity role lookup failed',
+      error instanceof Error ? error.message : 'unknown',
+    )
+    return { name, hasAdminAccess: false }
   }
 }
 
@@ -1709,7 +1720,7 @@ export function rconCommand(body: any): {
       throw bad('Неизвестное действие.')
   }
 }
-/** Typed-CP moderation actions (control-plane cp#32): fire-and-forget only.
+/** Typed-CP moderation actions: fire-and-forget only, RCON never carries them.
 `list` stays on RCON (a read; CP ACKs carry no output), kick/ban keep the
 RCON nickname flow until the UUID cutover, maintenance/raw have no typed kind. */
 function moderationCpKind(body: any): string | null {
@@ -1726,7 +1737,7 @@ function moderationCpKind(body: any): string | null {
       return null
   }
 }
-/** Per-kind CP fields; validation mirrors rconCommand so both paths refuse the same bodies. */
+/** Per-kind CP fields; validation matches the retired RCON shapes so the same bodies stay refused. */
 function moderationCpFields(body: any): Record<string, unknown> {
   switch (body?.action) {
     case 'say':
@@ -1899,7 +1910,7 @@ async function fetchConsole(target: RconTarget, path: 'logs' | 'suggest', search
 async function lookupName(name: unknown): Promise<{ uuid: string; name: string }> {
   if (typeof name !== 'string' || !nickname.test(name))
     throw bad('Никнейм: 3–16 символов, латинские буквы, цифры и _.')
-  const base = (process.env.DRASL_URL || 'https://skins.blockfield.pro').replace(/\/+$/, '')
+  const base = draslBase()
   const response = await fetch(`${base}/account/users/profiles/minecraft/${name}`, {
     signal: AbortSignal.timeout(10_000),
   }).catch(() => null)
@@ -1921,7 +1932,7 @@ async function knownName(store: StatsStore, uuid: string): Promise<string | null
 }
 async function ownerName(uuid: string): Promise<string> {
   if (ownerNames.has(uuid)) return ownerNames.get(uuid)!
-  const base = (process.env.DRASL_URL || 'https://skins.blockfield.pro').replace(/\/+$/, '')
+  const base = draslBase()
   const data = await fetch(`${base}/session/minecraft/profile/${uuid}`, {
     signal: AbortSignal.timeout(10_000),
   })
@@ -2040,6 +2051,17 @@ export async function refreshRole(actor: Actor, store: StatsStore): Promise<Role
     return cpActorRole(cp, actor)
   }
   return roleOf(actor.uuid, store)
+}
+
+/** Ping guard for the admin event stream: the session must still exist, then the role.
+A throw closes the stream, so logout and password change (deleteUserSessions) end it. */
+export async function adminEventRole(
+  context: Pick<APIContext, 'cookies'>,
+  actor: Actor,
+  store: StatsStore,
+): Promise<Role | null> {
+  if (!devUser()) await sessionToken(context.cookies, store)
+  return refreshRole(actor, store)
 }
 
 /** A CP answer with a status code (denied, conflict, unknown account). */
@@ -2244,34 +2266,34 @@ const routes: Record<string, Route> = {
   'POST rcon': {
     permission: 'moderate',
     handler: async ({ actor, body }) => {
-      // Typed control-plane path (cp#32): `list`/kick/ban/maintenance fall
-      // through to RCON (see moderationCpKind). Unconfigured sites keep RCON.
+      // Typed control-plane path: the 7 CP kinds (see moderationCpKind) never
+      // reach RCON. `list`/kick/ban/maintenance/raw stay on RCON (no typed kind).
       const cpKind = moderationCpKind(body)
       if (cpKind) {
         const cp = await import('./cp.ts')
-        if (cp.cpModerationConfigured()) {
-          const fields = moderationCpFields(body)
-          if (!can(actor.role, cpKind === 'pardon' ? 'ban' : 'moderate'))
-            throw fail(403, 'Недостаточно прав.')
-          const found =
-            body.action === 'stop-room'
-              ? (await currentRooms()).rooms.find((r) => r.id === body.roomId)
-              : undefined
-          const room = found ? { name: found.name, map: found.map } : undefined
-          // Validated before the call: a bad key is a 400, never an unconfirmed outcome.
-          const idempotencyKey = moderationIdempotencyKey(body)
-          try {
-            const receipt = await cp.postModerationCp(cpKind, actor.uuid, fields, {
-              idempotencyKey,
-            })
-            return { operationId: receipt.operationId, room }
-          } catch (error) {
-            if (isCpProblem(error)) throw fail(error.status, error.message)
-            // Timeout, dropped connection or a receipt without an operation id:
-            // CP may have applied the command, so this is unconfirmed, not
-            // failed — a retry resends the same key and dedupes in CP.
-            return { operationId: null, unknownOutcome: true, room }
-          }
+        if (!cp.cpModerationConfigured())
+          throw fail(503, 'Модерация через control-plane не настроена.')
+        const fields = moderationCpFields(body)
+        if (!can(actor.role, cpKind === 'pardon' ? 'ban' : 'moderate'))
+          throw fail(403, 'Недостаточно прав.')
+        const found =
+          body.action === 'stop-room'
+            ? (await currentRooms()).rooms.find((r) => r.id === body.roomId)
+            : undefined
+        const room = found ? { name: found.name, map: found.map } : undefined
+        // Validated before the call: a bad key is a 400, never an unconfirmed outcome.
+        const idempotencyKey = moderationIdempotencyKey(body)
+        try {
+          const receipt = await cp.postModerationCp(cpKind, actor.uuid, fields, {
+            idempotencyKey,
+          })
+          return { operationId: receipt.operationId, room }
+        } catch (error) {
+          if (isCpProblem(error)) throw fail(error.status, error.message)
+          // Timeout, dropped connection or a receipt without an operation id:
+          // CP may have applied the command, so this is unconfirmed, not
+          // failed — a retry resends the same key and dedupes in CP.
+          return { operationId: null, unknownOutcome: true, room }
         }
       }
       const { permission, commands } = rconCommand(body)
@@ -3743,16 +3765,7 @@ export async function handleWorkshopSubmit(
     store.emitAudit(await finalize(true, null, id))
     return Response.json({ id }, { headers: noStore })
   } catch (thrown) {
-    error =
-      thrown instanceof Response
-        ? await thrown
-            .clone()
-            .json()
-            .then(
-              (d) => d.error,
-              () => 'error',
-            )
-        : 'internal error'
+    ;({ message: error } = await adminError(thrown))
     if (!applied) {
       try {
         store.emitAudit(await finalize(false, error, null))
@@ -3894,16 +3907,7 @@ export async function handleWorkshopAccess(
     return result instanceof Response ? result : Response.json(result, { headers: noStore })
   } catch (thrown) {
     ;({ actor, role } = outer)
-    error =
-      thrown instanceof Response
-        ? await thrown
-            .clone()
-            .json()
-            .then(
-              (d) => d.error,
-              () => 'error',
-            )
-        : 'internal error'
+    ;({ message: error } = await adminError(thrown))
     if (!applied) {
       try {
         store.emitAudit(await finalize(false, error))
@@ -3947,7 +3951,7 @@ export async function handleAdmin(
   if ((method === 'GET' && path === 'events') || (method === 'POST' && path === 'presence')) {
     if (!can(actor.role, 'view')) return fail(403, 'Нет доступа.')
     if (path === 'events')
-      return eventStream(context.request, actor, () => refreshRole(actor, store))
+      return eventStream(context.request, actor, () => adminEventRole(context, actor, store))
     // Heartbeats describe transient presence, not administrative changes.
     const body = await readJson(context.request, 4096)
     if (typeof body?.tab !== 'string' || !/^[a-z-]{1,24}$/.test(body.tab))
