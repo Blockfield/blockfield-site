@@ -133,7 +133,12 @@ test('Drasl resolves uuid-like names into profiles; misses and slow lookups show
   assert.equal(found.size, 0)
   assert.ok(Date.now() - started < 1000, 'render is not blocked past the budget')
   release()
-  await new Promise((r) => setTimeout(r, 20))
+  // Join the still-running lookup instead of sleeping a fixed 20ms: the
+  // shared in-flight lookup settles only after caching the name, so this
+  // returns once the DB write landed (or at once when it already did).
+  await resolveNames(other, [uid(77)], 5000, () =>
+    Promise.resolve(Response.json({ name: 'LateName' })),
+  )
   assert.equal(
     (await other.db.prepare('SELECT name FROM profiles WHERE uuid=?').get(uid(77))).name,
     'LateName',
