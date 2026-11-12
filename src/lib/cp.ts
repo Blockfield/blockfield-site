@@ -790,7 +790,9 @@ function validDiagSample(sample: any): sample is CpDiagSample {
     isNum(sample.msptAvg) &&
     isNum(sample.msptMax) &&
     (sample.msptP95 === null || sample.msptP95 === undefined || isNum(sample.msptP95)) &&
-    (sample.startedAt === null || sample.startedAt === undefined || Number.isSafeInteger(sample.startedAt))
+    (sample.startedAt === null ||
+      sample.startedAt === undefined ||
+      Number.isSafeInteger(sample.startedAt))
   )
 }
 
@@ -837,5 +839,10 @@ export async function readDiagnosticsCp(
       typeof data?.error === 'string' ? data.error : 'control_plane_error',
     )
   if (!validDiagnostics(data)) throw new Error('Control-plane отдал неверное состояние.')
-  return { hours: data.hours, lastSampleAt: data.lastSampleAt, samples: data.samples, events: data.events }
+  return {
+    hours: data.hours,
+    lastSampleAt: data.lastSampleAt,
+    samples: data.samples,
+    events: data.events,
+  }
 }
