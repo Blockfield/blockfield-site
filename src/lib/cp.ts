@@ -726,3 +726,142 @@ export async function postWorkshopCp(
     throw new Error('Control-plane отдал неверное состояние.')
   return { operationId: data.operationId, status: data.status ?? 'accepted' }
 }
+
+export type CpDiagSample = {
+  serverId: string
+  at: number
+  tps: number
+  msptAvg: number
+  msptP95: number | null
+  msptMax: number
+  players: number | null
+  heapUsedMb: number | null
+  heapMaxMb: number | null
+  gcPauseMs: number | null
+  startedAt: number | null
+}
+
+export type CpDiagEvent = {
+  serverId: string
+  id: string
+  at: number
+  kind: string
+  durationMs: number | null
+  source: string | null
+  message: string
+  repeats: number
+}
+
+export type CpDiagnostics = {
+  hours: number
+  lastSampleAt: number | null
+  samples: CpDiagSample[]
+  events: CpDiagEvent[]
+}
+
+/** Здоровье серверов через control-plane v2: тот же URL, отдельный токен. Без токена — чтение из site Postgres. */
+export function cpDiagConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return cpConfigured(env) && ((env.BLOCKFIELD_CP_STATS_TOKEN ?? '') as string).trim().length > 0
+}
+
+const diagMessages: Record<string, [number, string]> = {
+  invalid_diagnostics: [502, 'Control-plane отклонил запрос здоровья.'],
+  forbidden: [503, 'У сайта нет доступа к здоровью в control-plane. Обратитесь к координатору.'],
+}
+
+function diagProblem(status: number, code: string): CpProblem {
+  const [mappedStatus, message] = diagMessages[code] ?? [status, 'Control-plane отклонил запрос.']
+  const error = new Error(message) as CpProblem
+  error.status = mappedStatus
+  error.code = code
+  return error
+}
+
+const isNum = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value)
+
+function validDiagSample(sample: any): sample is CpDiagSample {
+  return (
+    !!sample &&
+    typeof sample === 'object' &&
+    typeof sample.serverId === 'string' &&
+    Number.isSafeInteger(sample.at) &&
+    isNum(sample.tps) &&
+    isNum(sample.msptAvg) &&
+    isNum(sample.msptMax) &&
+    (sample.msptP95 === null || sample.msptP95 === undefined || isNum(sample.msptP95)) &&
+    (sample.players === null || sample.players === undefined || isNum(sample.players)) &&
+    (sample.heapUsedMb === null || sample.heapUsedMb === undefined || isNum(sample.heapUsedMb)) &&
+    (sample.heapMaxMb === null || sample.heapMaxMb === undefined || isNum(sample.heapMaxMb)) &&
+    (sample.gcPauseMs === null || sample.gcPauseMs === undefined || isNum(sample.gcPauseMs)) &&
+    (sample.startedAt === null ||
+      sample.startedAt === undefined ||
+      Number.isSafeInteger(sample.startedAt))
+  )
+}
+
+function validDiagEvent(event: any): event is CpDiagEvent {
+  return (
+    !!event &&
+    typeof event === 'object' &&
+    typeof event.serverId === 'string' &&
+    typeof event.id === 'string' &&
+    typeof event.kind === 'string' &&
+    typeof event.message === 'string' &&
+    Number.isSafeInteger(event.at) &&
+    (event.durationMs === null || event.durationMs === undefined || isNum(event.durationMs)) &&
+    (event.source === null || event.source === undefined || typeof event.source === 'string') &&
+    Number.isSafeInteger(event.repeats)
+  )
+}
+
+function validDiagnostics(data: any): data is CpDiagnostics {
+  return (
+    !!data &&
+    typeof data === 'object' &&
+    Number.isSafeInteger(data.hours) &&
+    (data.lastSampleAt === null || Number.isSafeInteger(data.lastSampleAt)) &&
+    Array.isArray(data.samples) &&
+    Array.isArray(data.events) &&
+    data.samples.every(validDiagSample) &&
+    data.events.every(validDiagEvent)
+  )
+}
+
+/** Malformed CP diagnostics payload (wrong-shaped JSON): fall back to local, never render it. */
+export function isDiagnosticsInvalid(error: unknown): boolean {
+  return (error as { code?: unknown })?.code === 'invalid_diagnostics'
+}
+
+/** Admin «Производительность» из CP: та же форма, что у локального readDiagnostics. */
+export async function readDiagnosticsCp(
+  opts: { fetchImpl?: FetchImpl } = {},
+): Promise<CpDiagnostics> {
+  const token = (process.env.BLOCKFIELD_CP_STATS_TOKEN ?? '').trim()
+  if (!token) throw new Error('Control-plane не настроен на сайте (токен).')
+  const fetchImpl = opts.fetchImpl ?? ((url, init) => fetch(url, init))
+  const response = await fetchImpl(`${config()}/v2/stats/diagnostics`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok)
+    throw diagProblem(
+      response.status,
+      typeof data?.error === 'string' ? data.error : 'control_plane_error',
+    )
+  if (!validDiagnostics(data)) {
+    // Malformed payload: never render partial objects; GET diagnostics falls back to local.
+    const error = new Error('Control-plane отдал неверное состояние.') as Error & {
+      code: string
+    }
+    error.code = 'invalid_diagnostics'
+    throw error
+  }
+  return {
+    hours: data.hours,
+    lastSampleAt: data.lastSampleAt,
+    samples: data.samples,
+    events: data.events,
+  }
+}
