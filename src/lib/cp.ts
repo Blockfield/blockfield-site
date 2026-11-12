@@ -76,30 +76,70 @@ export async function postGateCp(
   mode: CpMode,
   message: string,
   idempotencyKey: string,
+  actorAccountId: string,
   token: string | undefined = process.env.BLOCKFIELD_CP_GATE_TOKEN,
 ): Promise<{ operationId: string; revision: number }> {
-  const read = await cp('/v1/gate', process.env.BLOCKFIELD_CP_GATE_READ_TOKEN)
-  if (!validGate(read)) throw new Error('Control-plane отдал неверное состояние.')
-  try {
-    // Game gate on CP v2: PATCH /v2/settings/gate/* with the moderation.ban
-    // scope. The gate toggle sends no actor: that scope keeps the stable
-    // service-principal attribution, unlike game settings writes where the
-    // site asserts the acting admin.
-    return await patchSettingsCp(
-      'gate',
-      '*',
-      { expectedRevision: read.revision, idempotencyKey, patch: { mode, message } },
-      token,
-    )
-  } catch (error) {
-    // Callers (POST gate) map «ревизия N» to 409: keep that contract and the code.
-    if (isRevisionConflict(error)) {
-      const conflict = new Error(`Control-plane отклонил запрос (ревизия ${read.revision}).`)
-      ;(conflict as { code?: string }).code = 'revision_conflict'
-      throw conflict
-    }
-    throw error
-  }
+  // Single-call toggle (control-plane#49: POST /v2/gate/toggle): the server
+  // does the read-modify-write under lock, so the site sends one POST with
+  // the absolute state instead of GET /v1/gate + PATCH. Same moderation.ban
+  // scope, audit and fan-out as the old pair. The site asserts the logged-in
+  // admin (control-plane#52): CP stores account_id=actor, so the proxy frame
+  // executes instead of fencing as account-less.
+  if (
+    typeof idempotencyKey !== 'string' ||
+    idempotencyKey.length < 1 ||
+    idempotencyKey.length > 128
+  )
+    throw new Error('Некорректный ключ идемпотентности.')
+  const actor = actorAccountId.replaceAll('-', '').toLowerCase()
+  if (!/^[0-9a-f]{32}$/.test(actor)) throw new Error('Некорректный запрос.')
+  const url = config()
+  if (!token) throw new Error('Control-plane не настроен на сайте (токен).')
+  const scope = cpScope()
+  const response = await fetch(`${url}/v2/gate/toggle`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      idempotencyKey,
+      environment: scope.environment,
+      backend: scope.backend,
+      mode,
+      message,
+      actorAccountId: actor.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
+    }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw gateToggleError(response.status, data)
+  if (typeof data?.operationId !== 'string' || !Number.isSafeInteger(data?.revision))
+    throw new Error('Control-plane отдал неверное состояние.')
+  return { operationId: data.operationId, revision: data.revision }
+}
+
+const gateToggleMessages: Record<string, [number, string]> = {
+  idempotency_conflict: [409, 'Запрос уже обрабатывается: обновите страницу.'],
+  revision_conflict: [409, 'Запрос устарел: обновите страницу и повторите.'],
+  forbidden: [
+    403,
+    'У сайта нет доступа к переключателю врат в control-plane. Обратитесь к координатору.',
+  ],
+  gate_not_initialized: [
+    503,
+    'Control-plane ещё не инициализировал врата. Обратитесь к координатору.',
+  ],
+  control_unavailable: [503, 'Control-plane недоступен. Повторите позже.'],
+}
+
+function gateToggleError(status: number, data: any): Error {
+  const code = typeof data?.error === 'string' ? data.error : `http_${status}`
+  const [mappedStatus, message] = gateToggleMessages[code] ?? [
+    status,
+    `Control-plane отклонил запрос (${code}).`,
+  ]
+  const error = new Error(message) as Error & { code?: string; status?: number }
+  error.code = code
+  error.status = mappedStatus
+  return error
 }
 
 export type CpSettingsView = {
@@ -115,8 +155,7 @@ export type CpSettingsPatch = {
   patch: Record<string, unknown>
   /**
    * Logged-in admin the service credential asserts (CP re-resolves the
-   * account; required for game namespaces, omitted only for the gate
-   * toggle whose moderation.ban scope keeps stable-principal attribution).
+   * account; required for game namespaces and the gate toggle).
    */
   actorAccountId?: string
 }
@@ -221,9 +260,8 @@ export async function patchSettingsCp(
   )
     throw new Error('Некорректный патч настроек control-plane.')
   // The site service credential asserts the logged-in admin for game
-  // namespaces (like staff grants): CP refuses unasserted service writes
-  // there. The gate toggle omits it: its moderation.ban scope keeps the
-  // stable-principal path.
+  // namespaces and the gate toggle (like staff grants): CP refuses
+  // unasserted service writes there.
   const actor =
     patch.actorAccountId === undefined
       ? undefined

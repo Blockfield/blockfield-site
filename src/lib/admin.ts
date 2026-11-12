@@ -2338,10 +2338,10 @@ const routes: Record<string, Route> = {
     }),
   },
   // Entry gate via control-plane v2: owner AND site admins; the service
-  // credential holds moderation.ban and CP attributes the service principal.
+  // credential holds moderation.ban and CP attributes the asserted admin.
   'POST gate': {
     permission: 'maintenance',
-    handler: async ({ body }) => {
+    handler: async ({ actor, body }) => {
       let toggle
       try {
         toggle = gateToggle(body)
@@ -2351,9 +2351,14 @@ const routes: Record<string, Route> = {
       const { mode, message } = toggle
       const { postGateCp } = await import('./cp.ts')
       try {
-        return await postGateCp(mode, message, randomUUID())
+        return await postGateCp(mode, message, randomUUID(), actor.uuid)
       } catch (error) {
         const text = error instanceof Error ? error.message : ''
+        const status = (error as { status?: unknown }).status
+        // cp.ts gate errors carry the HTTP status (409/403/503 with an admin
+        // message); keep the text fallbacks for the unconfigured CP case.
+        if (status === 409 || status === 403 || status === 422 || status === 503)
+          throw fail(status, text)
         // Безопасно для показа: ревизия CP — только номер, «не настроен» — без секретов.
         if (/ревизия \d+/.test(text)) throw fail(409, text)
         if (/не настроен/.test(text)) throw fail(503, text)
