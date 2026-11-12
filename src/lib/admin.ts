@@ -2416,7 +2416,33 @@ const routes: Record<string, Route> = {
   },
   'GET diagnostics': {
     permission: 'diagnostics',
-    handler: async ({ store }) => readDiagnostics(store.db),
+    handler: async ({ store }) => {
+      // U4: admin health reads from CP when configured, so the page works
+      // with the site diagnostics tables gone; otherwise the local Postgres.
+      if ((await import('./cp.ts')).cpDiagConfigured()) {
+        const cp = await import('./cp.ts')
+        const view = await cpCall(async () => {
+          try {
+            return await cp.readDiagnosticsCp()
+          } catch (error) {
+            // Wrong-shaped CP payload: never render partial objects, serve local rows.
+            if (cp.isDiagnosticsInvalid(error)) {
+              console.error('diagnostics: malformed CP payload, falling back to local')
+              return null
+            }
+            throw error
+          }
+        })
+        if (view === null) return readDiagnostics(store.db)
+        // shortcut: the producer cuts over to CP separately, so CP can hold
+        // no fresh sample yet; fall back to the local tables instead of an
+        // empty page. Removed with the site tables at U7.
+        if (view.lastSampleAt != null && Date.now() - view.lastSampleAt <= 3 * 60 * 1000)
+          return view
+        return readDiagnostics(store.db)
+      }
+      return readDiagnostics(store.db)
+    },
   },
   // Live server log stream and Brigadier completion from the mod's console link (read-only, unaudited).
   'GET console/logs': {
