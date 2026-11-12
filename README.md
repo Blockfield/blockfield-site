@@ -65,8 +65,8 @@ GitHub, а релиз меняется редко — так что почти �
 
 ## CI
 
-Push в `main` (только release-merge `next` → `main`) деплоит прод: тесты (в том числе на PostgreSQL) на `ubuntu-24.04`, образ `ghcr.io/blockfield/blockfield-site:<sha>` и `:latest`,
-затем вебхук Dokploy. Приложение Dokploy `blockfield-site` разворачивает `:latest`; откат без пересборки — ручной запуск
+Push в `main` (только release-merge `next` → `main`) деплоит прод: сначала на `ubuntu-24.04` должны пройти оба джоба `deploy.yml` — `check` (линт, типы, формат, весь `pnpm test`, включая тесты на PostgreSQL, и сборка) и `postgres` (`pnpm test:postgres` на сервисе `postgres:18`); затем собираются образ `ghcr.io/blockfield/blockfield-site:<sha>` и `:latest`,
+затем вебхук Dokploy. Без обоих зелёных джобов деплой не стартует. Приложение Dokploy `blockfield-site` разворачивает `:latest`; откат без пересборки — ручной запуск
 workflow `Roll back the site without rebuild` с `sha` предыдущего коммита: он переставляет тег `:latest` на уже собранный
 образ этого коммита, дёргает вебхук Dokploy и ждёт `/api/version`. Запасной путь — указать тег `<sha>` в приложении
 Dokploy вручную. Откат через обновление схемы статистики требует восстановления дампа: старый код новую схему не открывает.
