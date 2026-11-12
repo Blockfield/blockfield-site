@@ -1,4 +1,4 @@
-import { currentRooms } from '../../lib/rooms'
+import { cachedRooms } from '../../lib/rooms'
 export async function GET() {
-  return Response.json(await currentRooms(), { headers: { 'Cache-Control': 'no-store' } })
+  return Response.json(await cachedRooms(), { headers: { 'Cache-Control': 'no-store' } })
 }

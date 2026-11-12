@@ -129,7 +129,7 @@ function fakeCp(opts = {}) {
     if (!known.has(namespace)) return answer(404, { error: 'unknown_namespace' })
     let body = ''
     req.on('data', (c) => (body += c))
-    req.on('end', () => {
+    req.on('end', async () => {
       const key = `${namespace}/${target}`
       const payload = body ? JSON.parse(body) : {}
       if (req.method === 'GET') {
@@ -145,8 +145,12 @@ function fakeCp(opts = {}) {
       }
       seen.push([namespace, payload])
       if (opts.failPatch === 500 && !rollback) return answer(500, { error: 'internal' })
+      if (opts.failNamespaces?.includes(namespace) && !rollback)
+        return answer(500, { error: 'internal' })
       const idemKey = `${key}/${payload.idempotencyKey ?? ''}`
       if (req.method === 'PATCH' || (req.method === 'POST' && rollback)) {
+        if (opts.patchDelayMs)
+          await new Promise((resolve) => setTimeout(resolve, opts.patchDelayMs))
         if (payload.patch && payload.patch.$fail === '500')
           return answer(500, { error: 'internal' })
         if (payload.patch && payload.patch.$fail === 'timeout') {
@@ -410,6 +414,80 @@ test('CP settings partial commit names what was saved', async (t) => {
     assert.deepEqual(mirror.lobby, { pvpEnabled: false }, 'committed section mirrored')
     assert.deepEqual(mirror.rooms, { maxRooms: 2 }, 'failed section keeps the old mirror')
   })
+})
+
+test('CP settings save settles namespaces in parallel (wall clock)', async (t) => {
+  // 4 namespaces x 400 ms per PATCH: sequential settle would take >= 1600 ms.
+  const started = Date.now()
+  await withCp(
+    t,
+    async (dir, seen) => {
+      seed(dir, 'settings.json', { schema: 1, revision: 0 })
+      const saved = await saveSettingsCp(
+        dir,
+        {
+          expectedRevision: 0,
+          lobby: { pvpEnabled: true },
+          rooms: { maxRooms: 2 },
+          deathmatch: { minPlayers: 3 },
+          classLocks: ['tech'],
+          cpRevisions: {},
+        },
+        'A',
+        ACTOR,
+      )
+      assert.equal(saved.settings.revision, 1)
+      assert.deepEqual(
+        seen.map(([namespace]) => namespace).sort(),
+        ['classLocks', 'deathmatch', 'gameplay', 'rooms'],
+        'one PATCH per changed namespace',
+      )
+      const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
+      assert.deepEqual(mirror.lobby, { pvpEnabled: true })
+      assert.deepEqual(mirror.rooms, { maxRooms: 2 })
+      assert.deepEqual(mirror.deathmatch, { minPlayers: 3 })
+      assert.deepEqual(mirror.classLocks, ['tech'])
+    },
+    { patchDelayMs: 400 },
+  )
+  const elapsed = Date.now() - started
+  assert.ok(elapsed < 1200, `4 x 400 ms PATCHes settled in ${elapsed} ms, expected ~400 ms`)
+})
+
+test('CP settings parallel save names every failed namespace, claims none saved', async (t) => {
+  await withCp(
+    t,
+    async (dir) => {
+      seed(dir, 'settings.json', { schema: 1, revision: 0 })
+      const error = await saveSettingsCp(
+        dir,
+        {
+          expectedRevision: 0,
+          lobby: { pvpEnabled: true },
+          rooms: { maxRooms: 2 },
+          deathmatch: { minPlayers: 3 },
+          classLocks: ['tech'],
+          cpRevisions: {},
+        },
+        'A',
+        ACTOR,
+      ).then(
+        () => assert.fail('expected a partial failure'),
+        (error) => error,
+      )
+      assert.equal(status(error), 503)
+      const text = await error.text()
+      assert.match(text, /rooms/, 'names the first failed namespace')
+      assert.match(text, /deathmatch/, 'names the second failed namespace')
+      assert.doesNotMatch(text, /Сохранено/, 'unknown outcome claims nothing as saved')
+      const mirror = JSON.parse(readFileSync(join(dir, 'settings.json')))
+      assert.deepEqual(mirror.lobby, { pvpEnabled: true }, 'succeeded namespace mirrored')
+      assert.deepEqual(mirror.classLocks, ['tech'], 'succeeded namespace mirrored')
+      assert.equal(mirror.rooms, undefined, 'failed namespace keeps the old mirror')
+      assert.equal(mirror.deathmatch, undefined, 'failed namespace keeps the old mirror')
+    },
+    { failNamespaces: ['rooms', 'deathmatch'] },
+  )
 })
 
 test('CP gun-only path PATCHes only gunBalance', async (t) => {

@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
 import { account, drasl, fail, nickname, readJson, session, sessionToken } from './account.ts'
-import { rcon } from './rcon.ts'
+import { rconReuse } from './rcon.ts'
 import { eventStream, heartbeat, redactKeyResult } from './admin-events.ts'
 import {
   consoleLogPage,
@@ -30,7 +30,7 @@ import {
   stripColors,
 } from './console.ts'
 import { parseTickQuery, readDiagnostics, redact } from './diagnostics.ts'
-import { currentRooms, roomId } from './rooms.ts'
+import { cachedRooms, roomId } from './rooms.ts'
 import { gateToggle } from './cp.ts'
 import { readGunBalance, validateGunOverrides, type GunBalanceCatalog } from './gun-balance.ts'
 import { readAiLimits, validateAiAccounts } from './ai-limits.ts'
@@ -1847,7 +1847,7 @@ function sendRcon(commands: string[], target: RconTarget = 'game') {
     (isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_PORT : env.BLOCKFIELD_RCON_PORT) || 25575,
   )
   const password = isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_PASSWORD : env.BLOCKFIELD_RCON_PASSWORD
-  return rcon(commands, {
+  return rconReuse(commands, {
     host: host!,
     port,
     password: password!,
@@ -2009,7 +2009,7 @@ const page = (url: URL) => {
 }
 
 export async function overviewSnapshot() {
-  const rooms = await currentRooms()
+  const rooms = await cachedRooms()
   return {
     status: readFile(join(adminDir(), 'status.json')),
     session: readFile(join(adminDir(), 'session.json')),
@@ -2278,7 +2278,7 @@ const routes: Record<string, Route> = {
           throw fail(403, 'Недостаточно прав.')
         const found =
           body.action === 'stop-room'
-            ? (await currentRooms()).rooms.find((r) => r.id === body.roomId)
+            ? (await cachedRooms()).rooms.find((r) => r.id === body.roomId)
             : undefined
         const room = found ? { name: found.name, map: found.map } : undefined
         // Validated before the call: a bad key is a 400, never an unconfirmed outcome.
@@ -2302,7 +2302,7 @@ const routes: Record<string, Route> = {
       // Room ids are not meaningful to people: keep the room's name and map for the audit log.
       const found =
         body.action === 'stop-room'
-          ? (await currentRooms()).rooms.find((r) => r.id === body.roomId)
+          ? (await cachedRooms()).rooms.find((r) => r.id === body.roomId)
           : undefined
       const room = found ? { name: found.name, map: found.map } : undefined
       const outputs = await sendRcon(commands)
@@ -2313,6 +2313,9 @@ const routes: Record<string, Route> = {
       return {
         output,
         room,
+        // The server accepts the confirm only within 60 s of the arm: the panel
+        // counts this window down from the confirmed apply (read-back only).
+        ...(body.action === 'interrupt' ? { interruptAt: Date.now() } : {}),
         players:
           body.action === 'list'
             ? (output.split(':')[1] ?? '')
@@ -4360,10 +4363,15 @@ async function cpRebuildMirror(args: {
 }
 
 /**
- * Shared settle: run the jobs in order with deterministic idempotency keys,
- * then rebuild the mirror from CP. 409/4xx means not applied (report what was
- * saved vs pending); timeout/network/5xx means unknown — re-read CP, and if
- * it shows the intended value treat the job as applied, else report unknown.
+ * Shared settle: run the jobs in parallel with deterministic per-job
+ * idempotency keys, then rebuild the mirror from CP. Jobs address disjoint
+ * CP namespaces (each save queues at most one job per namespace and no patch
+ * reads another namespace), so no pair needs a sequential order; a retry
+ * keeps the same keys and dedupes per namespace. 409/4xx means not applied
+ * (report what was saved vs pending); timeout/network/5xx means unknown —
+ * re-read CP, and if it shows the intended value treat the job as applied,
+ * else report unknown. On failure the first failed job in queue order decides
+ * the error kind and every failed namespace is named, never claimed as saved.
  */
 async function cpSettleSave(args: {
   cp: any
@@ -4379,42 +4387,48 @@ async function cpSettleSave(args: {
   const { cp, jobs, revision } = args
   const joined = (list: CpJob[]) =>
     list.length ? ` (${list.map((job) => labelOf(job.namespace)).join(', ')})` : ''
-  const revs = new Map<string, number>()
-  for (let index = 0; index < jobs.length; index++) {
-    const job = jobs[index]
-    const base = job.base === 0 && revs.has(job.namespace) ? revs.get(job.namespace)! : job.base
-    try {
-      const receipt = (await cp.patchSettingsCp(job.namespace, cpSettingsTarget, {
-        expectedRevision: base,
-        idempotencyKey: `site:${revision}:${job.namespace}:${job.kind}:${index}`,
-        patch: job.patch,
-        actorAccountId: args.actorUuid,
-      })) as { operationId: string; revision: number }
-      revs.set(job.namespace, receipt.revision)
-    } catch (error) {
-      const problem = cpClassify(error)
-      if (
-        problem.kind === 'unknown' &&
-        cpPatchApplied(await cpReadOne(cp, job.namespace), job.patch)
-      )
-        continue
-      const built = await cpRebuildMirror(args)
-      const mirrorNote = built ? ' Зеркало обновлено.' : ''
-      if (problem.kind === 'unknown')
-        throw fail(
-          503,
-          `Неизвестный итог (${labelOf(job.namespace)}): control-plane не подтвердил изменение. Обновите страницу перед повтором.${mirrorNote}`,
+  const settled = await Promise.all(
+    jobs.map(async (job, index) => {
+      try {
+        const receipt = (await cp.patchSettingsCp(job.namespace, cpSettingsTarget, {
+          expectedRevision: job.base,
+          idempotencyKey: `site:${revision}:${job.namespace}:${job.kind}:${index}`,
+          patch: job.patch,
+          actorAccountId: args.actorUuid,
+        })) as { operationId: string; revision: number }
+        return { job, ok: true as const, receipt }
+      } catch (error) {
+        const problem = cpClassify(error)
+        if (
+          problem.kind === 'unknown' &&
+          cpPatchApplied(await cpReadOne(cp, job.namespace), job.patch)
         )
-      if (problem.kind === 'conflict')
-        throw fail(
-          409,
-          `${job.conflict} Сохранено${joined(jobs.slice(0, index))}; не применено${joined(jobs.slice(index))}.${mirrorNote}`,
-        )
+          return { job, ok: true as const, receipt: null }
+        return { job, ok: false as const, error, problem }
+      }
+    }),
+  )
+  const failed = settled.filter((result) => !result.ok)
+  if (failed.length) {
+    const first = failed[0]
+    const saved = settled.filter((result) => result.ok).map((result) => result.job)
+    const pending = failed.map((result) => result.job)
+    const built = await cpRebuildMirror(args)
+    const mirrorNote = built ? ' Зеркало обновлено.' : ''
+    if (first.problem.kind === 'unknown')
       throw fail(
-        problem.status || 503,
-        `Control-plane отклонил запрос (${problem.code || 'unknown'}).${jobs.slice(0, index).length ? ` Сохранено${joined(jobs.slice(0, index))}.` : ' Ничего не сохранено.'}${jobs.slice(index).length ? ` Не применено${joined(jobs.slice(index))}.` : ''}${mirrorNote}`,
+        503,
+        `Неизвестный итог${joined(pending)}: control-plane не подтвердил изменение. Обновите страницу перед повтором.${mirrorNote}`,
       )
-    }
+    if (first.problem.kind === 'conflict')
+      throw fail(
+        409,
+        `${first.job.conflict} Сохранено${joined(saved)}; не применено${joined(pending)}.${mirrorNote}`,
+      )
+    throw fail(
+      first.problem.status || 503,
+      `Control-plane отклонил запрос (${first.problem.code || 'unknown'}).${saved.length ? ` Сохранено${joined(saved)}.` : ' Ничего не сохранено.'}${pending.length ? ` Не применено${joined(pending)}.` : ''}${mirrorNote}`,
+    )
   }
   const built = await cpRebuildMirror(args)
   if (!built)

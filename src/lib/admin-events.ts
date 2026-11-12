@@ -2,7 +2,7 @@ import { watch, type FSWatcher } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { can, overviewSnapshot, readFile, readSettings, type Actor, type Role } from './admin.ts'
-import { currentRooms } from './rooms.ts'
+import { cachedRooms } from './rooms.ts'
 
 export type AdminEvent = {
   type: 'status' | 'rooms' | 'settings' | 'audit' | 'presence' | 'request'
@@ -147,7 +147,7 @@ function start() {
       })
   })
   roomsTimer = setInterval(() => {
-    void currentRooms().then((rooms) => {
+    void cachedRooms().then((rooms) => {
       if (!subscribers.size) return
       const json = JSON.stringify({ ...rooms, checkedAt: 0 })
       if (json !== roomsJson) {
