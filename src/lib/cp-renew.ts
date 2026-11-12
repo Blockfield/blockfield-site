@@ -107,6 +107,8 @@ export class Renewer {
       return 0
     }
     if (me.status !== 200) return RETRY_MS
+    // A CP without renewal support (no expiry in /v2/me): check back hourly.
+    if (!me.body?.issuedAt || !me.body?.expiresAt) return MAX_SLEEP_MS
     const due = renewAt(Date.parse(me.body.issuedAt), Date.parse(me.body.expiresAt))
     if (now() < due) return Math.max(1_000, Math.min(MAX_SLEEP_MS, due - now()))
     const renewed = await call('POST', '/v2/credentials/renew', token)

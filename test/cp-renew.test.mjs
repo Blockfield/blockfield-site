@@ -127,3 +127,17 @@ test('falls back to env without state, for a re-issued env token, or on rejectio
   await s.renewer.tick(KEY)
   assert.equal(s.env[KEY], 'env')
 })
+
+test('a CP without renewal support is checked hourly, not hammered', async () => {
+  const env = { [KEY]: 'env' }
+  const renewer = new Renewer({
+    call: async () => ({ status: 200, body: { client: 'site-gate' } }),
+    env,
+    statePath: join(mkdtempSync(join(tmpdir(), 'cp-renew-')), 's.json'),
+    now: Date.now,
+    log: () => {},
+  })
+  renewer.load()
+  assert.equal(await renewer.tick(KEY), 3_600_000)
+  assert.equal(env[KEY], 'env')
+})
