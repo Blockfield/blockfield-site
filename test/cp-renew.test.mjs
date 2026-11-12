@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Renewer, persist, renewAt } from '../src/lib/cp-renew.ts'
@@ -126,6 +126,38 @@ test('falls back to env without state, for a re-issued env token, or on rejectio
   assert.equal(s.env[KEY], 'next-env')
   await s.renewer.tick(KEY)
   assert.equal(s.env[KEY], 'env')
+  // The rejected successor must not come back on the next restart.
+  assert.equal(JSON.parse(readFileSync(statePath, 'utf8'))[KEY], undefined)
+  s = setup(opts)
+  s.renewer.load()
+  assert.equal(s.env[KEY], 'env')
+})
+
+test('unusable CP dates retry later instead of renewing in a loop', async () => {
+  const day = new Date(DAY).toISOString()
+  for (const body of [
+    { issuedAt: 'garbage', expiresAt: 'garbage' },
+    { issuedAt: day, expiresAt: new Date(0).toISOString() },
+  ]) {
+    const calls = []
+    const renewer = new Renewer({
+      call: async (method, path) => (calls.push(path), { status: 200, body }),
+      env: { [KEY]: 'env' },
+      statePath: join(mkdtempSync(join(tmpdir(), 'cp-renew-')), 's.json'),
+      now: Date.now,
+      log: () => {},
+    })
+    renewer.load()
+    assert.equal(await renewer.tick(KEY), 30_000)
+    assert.deepEqual(calls, ['/v2/me'])
+  }
+})
+
+test('concurrent persists never share a temp file', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cp-renew-'))
+  const statePath = join(dir, 'state.json')
+  await Promise.all(['A', 'B', 'C'].map((key) => persist(statePath, key, `next-${key}`, 'env')))
+  assert.deepEqual(readdirSync(dir), ['state.json'])
 })
 
 test('a CP without renewal support is checked hourly, not hammered', async () => {

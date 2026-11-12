@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
@@ -46,11 +46,12 @@ function readState(path: string): Record<string, Entry> {
   }
 }
 
-export async function persist(path: string, key: string, token: string, envToken: string) {
+async function update(path: string, change: (state: Record<string, Entry>) => void) {
   const state = readState(path)
-  state[key] = { token, base: sha256(envToken) }
+  change(state)
   await mkdir(dirname(path), { recursive: true })
-  const temp = `${path}.${process.pid}.tmp`
+  // Unique per write: overlapping deploys share the volume and often the same pid.
+  const temp = `${path}.${process.pid}.${randomUUID()}.tmp`
   try {
     await writeFile(temp, JSON.stringify(state), { mode: 0o600 })
     await rename(temp, path)
@@ -58,6 +59,11 @@ export async function persist(path: string, key: string, token: string, envToken
     await rm(temp, { force: true })
   }
 }
+
+export const persist = (path: string, key: string, token: string, envToken: string) =>
+  update(path, (state) => {
+    state[key] = { token, base: sha256(envToken) }
+  })
 
 export class Renewer {
   readonly original: Record<string, string> = {}
@@ -104,12 +110,22 @@ export class Renewer {
     if (me.status === 401 && envToken && token !== envToken) {
       log(`${key}: persisted CP credential rejected, falling back to the env token`)
       env[key] = envToken
+      // Otherwise the next restart would adopt the rejected successor again.
+      await update(this.deps.statePath, (state) => {
+        delete state[key]
+      })
       return 0
     }
     if (me.status !== 200) return RETRY_MS
     // A CP without renewal support (no expiry in /v2/me): check back hourly.
     if (!me.body?.issuedAt || !me.body?.expiresAt) return MAX_SLEEP_MS
-    const due = renewAt(Date.parse(me.body.issuedAt), Date.parse(me.body.expiresAt))
+    const issuedMs = Date.parse(me.body.issuedAt)
+    const expiresMs = Date.parse(me.body.expiresAt)
+    if (!(expiresMs > issuedMs)) {
+      log(`${key}: CP returned unusable credential dates`)
+      return RETRY_MS
+    }
+    const due = renewAt(issuedMs, expiresMs)
     if (now() < due) return Math.max(1_000, Math.min(MAX_SLEEP_MS, due - now()))
     const renewed = await call('POST', '/v2/credentials/renew', token)
     if (renewed.status !== 201 || typeof renewed.body?.token !== 'string') {
