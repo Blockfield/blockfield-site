@@ -87,13 +87,15 @@ test('battle data preserves capture state and rejects invalid progress and score
   assert.throws(() => parse({ ...battle, points: [{ ...battle.points[0], progress: 101 }] }))
   assert.throws(() => parse({ ...battle, points: [{ ...battle.points[0], owner: 'unknown' }] }))
 })
-const statusServer = (json, onConnect = () => {}) =>
+const statusServer = (json, onConnect = () => {}, delayMs = 0) =>
   net.createServer((socket) => {
     onConnect()
     socket.once('data', () => {
       const body = Buffer.from(JSON.stringify(json))
       const packet = Buffer.concat([Buffer.from([0]), varint(body.length), body])
-      socket.end(Buffer.concat([varint(packet.length), packet]))
+      const reply = Buffer.concat([varint(packet.length), packet])
+      if (delayMs) setTimeout(() => socket.end(reply), delayMs)
+      else socket.end(reply)
     })
   })
 test('parseRooms tolerates blockfield-mod#28 status fields and drops top-level maintenance', () => {
@@ -422,4 +424,42 @@ test('missing or unreadable controller status keeps live rooms and build', async
     await rm(dir, { recursive: true, force: true })
     if (game.listening) await new Promise((resolve) => game.close(resolve))
   }
+})
+
+test('cachedRooms serves the snapshot without waiting on a slow SLP refresh', async (t) => {
+  const fresh = statusServer({ blockfield: { checkedAt: Date.now(), rooms: [room] } })
+  await new Promise((resolve) => fresh.listen(0, '127.0.0.1', resolve))
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  delete process.env.BLOCKFIELD_GATE_FILE
+  delete process.env.BLOCKFIELD_GATE_SOURCE
+  delete process.env.BLOCKFIELD_ADMIN_DIR
+  Object.assign(process.env, {
+    BLOCKFIELD_SERVER_HOST: '127.0.0.1',
+    BLOCKFIELD_SERVER_PORT: String(fresh.address().port),
+    BLOCKFIELD_LOBBY_HOST: '127.0.0.1',
+    BLOCKFIELD_LOBBY_PORT: '1',
+  })
+  const mod = await import('../src/lib/rooms.ts?cached')
+  assert.deepEqual((await mod.currentRooms()).rooms, [room])
+  await new Promise((resolve) => fresh.close(resolve))
+  // Slow SLP: answers after 2 s with different rooms. The action path must not wait for it.
+  const changed = { ...room, name: 'Комната 2' }
+  const slow = statusServer(
+    { blockfield: { checkedAt: Date.now(), rooms: [changed] } },
+    () => {},
+    2000,
+  )
+  await new Promise((resolve) => slow.listen(0, '127.0.0.1', resolve))
+  t.after(() => slow.close())
+  process.env.BLOCKFIELD_SERVER_PORT = String(slow.address().port)
+  await new Promise((resolve) => setTimeout(resolve, 5100))
+  const started = Date.now()
+  assert.deepEqual((await mod.cachedRooms()).rooms, [room])
+  assert.ok(Date.now() - started < 1000, 'cached read does not block on SLP')
+  await new Promise((resolve) => setTimeout(resolve, 2500))
+  assert.deepEqual((await mod.cachedRooms()).rooms, [changed])
 })

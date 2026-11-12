@@ -416,6 +416,25 @@ if (maintStart && maintStop) {
   })
 }
 
+// The server re-arms interrupt for 60 s after the confirm: count the remaining
+// window down in the status line from the confirmed apply (read-back only).
+let interruptTimer: ReturnType<typeof setInterval> | null = null
+function showInterruptWindow(line: HTMLElement, confirmedAt: number) {
+  if (interruptTimer) clearInterval(interruptTimer)
+  const tick = () => {
+    const left = 60 - Math.floor((Date.now() - confirmedAt) / 1000)
+    if (left <= 0) {
+      if (interruptTimer) clearInterval(interruptTimer)
+      interruptTimer = null
+      say(line, 'Все матчи прерваны.', 'ok')
+      return
+    }
+    say(line, `Все матчи прерваны. Окно подтверждения: ${left} с.`, 'ok')
+  }
+  tick()
+  interruptTimer = setInterval(tick, 1000)
+}
+
 $('#interrupt').addEventListener('click', async () => {
   const answer = await ask({
     title: 'Прервать все матчи?',
@@ -428,10 +447,16 @@ $('#interrupt').addEventListener('click', async () => {
   run(
     $('#maint-status'),
     async () => {
-      await api('rcon', 'POST', { action: 'interrupt', reason: String(answer.get('reason')) })
+      const data = await api('rcon', 'POST', {
+        action: 'interrupt',
+        reason: String(answer.get('reason')),
+      })
       loadOverview()
       loadMaintState().catch(() => {})
-      return 'Все матчи прерваны.'
+      showInterruptWindow(
+        $('#maint-status'),
+        typeof data?.interruptAt === 'number' ? data.interruptAt : Date.now(),
+      )
     },
     $('#interrupt').parentElement,
   )
