@@ -2416,7 +2416,15 @@ const routes: Record<string, Route> = {
   },
   'GET diagnostics': {
     permission: 'diagnostics',
-    handler: async ({ store }) => readDiagnostics(store.db),
+    handler: async ({ store }) => {
+      // U4: admin health reads from CP when configured, so the page works
+      // with the site diagnostics tables gone; otherwise the local Postgres.
+      if ((await import('./cp.ts')).cpDiagConfigured()) {
+        const cp = await import('./cp.ts')
+        return await cpCall(() => cp.readDiagnosticsCp())
+      }
+      return readDiagnostics(store.db)
+    },
   },
   // Live server log stream and Brigadier completion from the mod's console link (read-only, unaudited).
   'GET console/logs': {
