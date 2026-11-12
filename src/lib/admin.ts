@@ -4360,10 +4360,15 @@ async function cpRebuildMirror(args: {
 }
 
 /**
- * Shared settle: run the jobs in order with deterministic idempotency keys,
- * then rebuild the mirror from CP. 409/4xx means not applied (report what was
- * saved vs pending); timeout/network/5xx means unknown — re-read CP, and if
- * it shows the intended value treat the job as applied, else report unknown.
+ * Shared settle: run the jobs in parallel with deterministic per-job
+ * idempotency keys, then rebuild the mirror from CP. Jobs address disjoint
+ * CP namespaces (each save queues at most one job per namespace and no patch
+ * reads another namespace), so no pair needs a sequential order; a retry
+ * keeps the same keys and dedupes per namespace. 409/4xx means not applied
+ * (report what was saved vs pending); timeout/network/5xx means unknown —
+ * re-read CP, and if it shows the intended value treat the job as applied,
+ * else report unknown. On failure the first failed job in queue order decides
+ * the error kind and every failed namespace is named, never claimed as saved.
  */
 async function cpSettleSave(args: {
   cp: any
@@ -4379,42 +4384,48 @@ async function cpSettleSave(args: {
   const { cp, jobs, revision } = args
   const joined = (list: CpJob[]) =>
     list.length ? ` (${list.map((job) => labelOf(job.namespace)).join(', ')})` : ''
-  const revs = new Map<string, number>()
-  for (let index = 0; index < jobs.length; index++) {
-    const job = jobs[index]
-    const base = job.base === 0 && revs.has(job.namespace) ? revs.get(job.namespace)! : job.base
-    try {
-      const receipt = (await cp.patchSettingsCp(job.namespace, cpSettingsTarget, {
-        expectedRevision: base,
-        idempotencyKey: `site:${revision}:${job.namespace}:${job.kind}:${index}`,
-        patch: job.patch,
-        actorAccountId: args.actorUuid,
-      })) as { operationId: string; revision: number }
-      revs.set(job.namespace, receipt.revision)
-    } catch (error) {
-      const problem = cpClassify(error)
-      if (
-        problem.kind === 'unknown' &&
-        cpPatchApplied(await cpReadOne(cp, job.namespace), job.patch)
-      )
-        continue
-      const built = await cpRebuildMirror(args)
-      const mirrorNote = built ? ' Зеркало обновлено.' : ''
-      if (problem.kind === 'unknown')
-        throw fail(
-          503,
-          `Неизвестный итог (${labelOf(job.namespace)}): control-plane не подтвердил изменение. Обновите страницу перед повтором.${mirrorNote}`,
+  const settled = await Promise.all(
+    jobs.map(async (job, index) => {
+      try {
+        const receipt = (await cp.patchSettingsCp(job.namespace, cpSettingsTarget, {
+          expectedRevision: job.base,
+          idempotencyKey: `site:${revision}:${job.namespace}:${job.kind}:${index}`,
+          patch: job.patch,
+          actorAccountId: args.actorUuid,
+        })) as { operationId: string; revision: number }
+        return { job, ok: true as const, receipt }
+      } catch (error) {
+        const problem = cpClassify(error)
+        if (
+          problem.kind === 'unknown' &&
+          cpPatchApplied(await cpReadOne(cp, job.namespace), job.patch)
         )
-      if (problem.kind === 'conflict')
-        throw fail(
-          409,
-          `${job.conflict} Сохранено${joined(jobs.slice(0, index))}; не применено${joined(jobs.slice(index))}.${mirrorNote}`,
-        )
+          return { job, ok: true as const, receipt: null }
+        return { job, ok: false as const, error, problem }
+      }
+    }),
+  )
+  const failed = settled.filter((result) => !result.ok)
+  if (failed.length) {
+    const first = failed[0]
+    const saved = settled.filter((result) => result.ok).map((result) => result.job)
+    const pending = failed.map((result) => result.job)
+    const built = await cpRebuildMirror(args)
+    const mirrorNote = built ? ' Зеркало обновлено.' : ''
+    if (first.problem.kind === 'unknown')
       throw fail(
-        problem.status || 503,
-        `Control-plane отклонил запрос (${problem.code || 'unknown'}).${jobs.slice(0, index).length ? ` Сохранено${joined(jobs.slice(0, index))}.` : ' Ничего не сохранено.'}${jobs.slice(index).length ? ` Не применено${joined(jobs.slice(index))}.` : ''}${mirrorNote}`,
+        503,
+        `Неизвестный итог${joined(pending)}: control-plane не подтвердил изменение. Обновите страницу перед повтором.${mirrorNote}`,
       )
-    }
+    if (first.problem.kind === 'conflict')
+      throw fail(
+        409,
+        `${first.job.conflict} Сохранено${joined(saved)}; не применено${joined(pending)}.${mirrorNote}`,
+      )
+    throw fail(
+      first.problem.status || 503,
+      `Control-plane отклонил запрос (${first.problem.code || 'unknown'}).${saved.length ? ` Сохранено${joined(saved)}.` : ' Ничего не сохранено.'}${pending.length ? ` Не применено${joined(pending)}.` : ''}${mirrorNote}`,
+    )
   }
   const built = await cpRebuildMirror(args)
   if (!built)
