@@ -133,6 +133,63 @@ test('readDiagnosticsCp maps denial and refuses a malformed view', async (t) => 
   await assert.rejects(readDiagnosticsCp(), /неверное состояние/)
 })
 
+test('readDiagnosticsCp rejects an event missing repeats/durationMs/source', async (t) => {
+  const view = cpView()
+  delete view.events[0].repeats
+  delete view.events[0].durationMs
+  delete view.events[0].source
+  const server = await fakeCp(t, (req, res) => {
+    res.statusCode = 200
+    res.end(JSON.stringify(view))
+  })
+  cpEnv(t, server)
+  await assert.rejects(readDiagnosticsCp(), /неверное состояние/)
+})
+
+test('readDiagnosticsCp rejects a sample with non-numeric players/heap/gcPause', async (t) => {
+  for (const patch of [
+    { players: '12' },
+    { heapUsedMb: '1800' },
+    { heapMaxMb: '3072' },
+    { gcPauseMs: '5' },
+  ]) {
+    const view = cpView()
+    Object.assign(view.samples[0], patch)
+    const server = await fakeCp(t, (req, res) => {
+      res.statusCode = 200
+      res.end(JSON.stringify(view))
+    })
+    cpEnv(t, server)
+    await assert.rejects(readDiagnosticsCp(), /неверное состояние/, JSON.stringify(patch))
+  }
+})
+
+test('GET diagnostics falls back to local on a malformed CP payload', async (t) => {
+  const view = cpView()
+  delete view.events[0].repeats
+  const server = await fakeCp(t, (req, res) => {
+    res.statusCode = 200
+    res.end(JSON.stringify(view))
+  })
+  cpEnv(t, server)
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const at = Date.now() - 60_000
+  await s.db
+    .prepare('INSERT INTO server_samples (server_id,at,tps,mspt_avg,mspt_max) VALUES (?,?,?,?,?)')
+    .run(SERVER, at, 19.5, 21, 340)
+  const request = new Request('http://site/api/admin/diagnostics', { method: 'GET' })
+  const res = await handleAdmin(
+    { request, url: new URL(request.url), cookies: { get: () => undefined } },
+    'diagnostics',
+    s,
+  )
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.equal(body.lastSampleAt, at)
+  assert.equal(body.samples.length, 1)
+})
+
 test('GET diagnostics falls back to local while CP holds no fresh sample', async (t) => {
   const empty = {
     schemaVersion: 1,

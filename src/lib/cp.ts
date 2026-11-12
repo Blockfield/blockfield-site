@@ -790,6 +790,10 @@ function validDiagSample(sample: any): sample is CpDiagSample {
     isNum(sample.msptAvg) &&
     isNum(sample.msptMax) &&
     (sample.msptP95 === null || sample.msptP95 === undefined || isNum(sample.msptP95)) &&
+    (sample.players === null || sample.players === undefined || isNum(sample.players)) &&
+    (sample.heapUsedMb === null || sample.heapUsedMb === undefined || isNum(sample.heapUsedMb)) &&
+    (sample.heapMaxMb === null || sample.heapMaxMb === undefined || isNum(sample.heapMaxMb)) &&
+    (sample.gcPauseMs === null || sample.gcPauseMs === undefined || isNum(sample.gcPauseMs)) &&
     (sample.startedAt === null ||
       sample.startedAt === undefined ||
       Number.isSafeInteger(sample.startedAt))
@@ -804,7 +808,10 @@ function validDiagEvent(event: any): event is CpDiagEvent {
     typeof event.id === 'string' &&
     typeof event.kind === 'string' &&
     typeof event.message === 'string' &&
-    Number.isSafeInteger(event.at)
+    Number.isSafeInteger(event.at) &&
+    (event.durationMs === null || event.durationMs === undefined || isNum(event.durationMs)) &&
+    (event.source === null || event.source === undefined || typeof event.source === 'string') &&
+    Number.isSafeInteger(event.repeats)
   )
 }
 
@@ -819,6 +826,11 @@ function validDiagnostics(data: any): data is CpDiagnostics {
     data.samples.every(validDiagSample) &&
     data.events.every(validDiagEvent)
   )
+}
+
+/** Malformed CP diagnostics payload (wrong-shaped JSON): fall back to local, never render it. */
+export function isDiagnosticsInvalid(error: unknown): boolean {
+  return (error as { code?: unknown })?.code === 'invalid_diagnostics'
 }
 
 /** Admin «Производительность» из CP: та же форма, что у локального readDiagnostics. */
@@ -838,7 +850,14 @@ export async function readDiagnosticsCp(
       response.status,
       typeof data?.error === 'string' ? data.error : 'control_plane_error',
     )
-  if (!validDiagnostics(data)) throw new Error('Control-plane отдал неверное состояние.')
+  if (!validDiagnostics(data)) {
+    // Malformed payload: never render partial objects; GET diagnostics falls back to local.
+    const error = new Error('Control-plane отдал неверное состояние.') as Error & {
+      code: string
+    }
+    error.code = 'invalid_diagnostics'
+    throw error
+  }
   return {
     hours: data.hours,
     lastSampleAt: data.lastSampleAt,

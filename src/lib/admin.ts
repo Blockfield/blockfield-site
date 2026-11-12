@@ -2421,7 +2421,19 @@ const routes: Record<string, Route> = {
       // with the site diagnostics tables gone; otherwise the local Postgres.
       if ((await import('./cp.ts')).cpDiagConfigured()) {
         const cp = await import('./cp.ts')
-        const view = await cpCall(() => cp.readDiagnosticsCp())
+        const view = await cpCall(async () => {
+          try {
+            return await cp.readDiagnosticsCp()
+          } catch (error) {
+            // Wrong-shaped CP payload: never render partial objects, serve local rows.
+            if (cp.isDiagnosticsInvalid(error)) {
+              console.error('diagnostics: malformed CP payload, falling back to local')
+              return null
+            }
+            throw error
+          }
+        })
+        if (view === null) return readDiagnostics(store.db)
         // shortcut: the producer cuts over to CP separately, so CP can hold
         // no fresh sample yet; fall back to the local tables instead of an
         // empty page. Removed with the site tables at U7.
