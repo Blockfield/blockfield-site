@@ -2421,7 +2421,13 @@ const routes: Record<string, Route> = {
       // with the site diagnostics tables gone; otherwise the local Postgres.
       if ((await import('./cp.ts')).cpDiagConfigured()) {
         const cp = await import('./cp.ts')
-        return await cpCall(() => cp.readDiagnosticsCp())
+        const view = await cpCall(() => cp.readDiagnosticsCp())
+        // shortcut: the producer cuts over to CP separately, so CP can hold
+        // no fresh sample yet; fall back to the local tables instead of an
+        // empty page. Removed with the site tables at U7.
+        if (view.lastSampleAt != null && Date.now() - view.lastSampleAt <= 3 * 60 * 1000)
+          return view
+        return readDiagnostics(store.db)
       }
       return readDiagnostics(store.db)
     },

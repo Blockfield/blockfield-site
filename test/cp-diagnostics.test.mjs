@@ -133,6 +133,64 @@ test('readDiagnosticsCp maps denial and refuses a malformed view', async (t) => 
   await assert.rejects(readDiagnosticsCp(), /неверное состояние/)
 })
 
+test('GET diagnostics falls back to local while CP holds no fresh sample', async (t) => {
+  const empty = {
+    schemaVersion: 1,
+    now: Date.now(),
+    hours: 24,
+    lastSampleAt: null,
+    samples: [],
+    events: [],
+  }
+  const server = await fakeCp(t, (req, res) => {
+    res.statusCode = 200
+    res.end(JSON.stringify(empty))
+  })
+  cpEnv(t, server)
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const at = Date.now() - 60_000
+  await s.db
+    .prepare('INSERT INTO server_samples (server_id,at,tps,mspt_avg,mspt_max) VALUES (?,?,?,?,?)')
+    .run(SERVER, at, 19.5, 21, 340)
+  const request = new Request('http://site/api/admin/diagnostics', { method: 'GET' })
+  const res = await handleAdmin(
+    { request, url: new URL(request.url), cookies: { get: () => undefined } },
+    'diagnostics',
+    s,
+  )
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.equal(body.lastSampleAt, at)
+  assert.equal(body.samples.length, 1)
+})
+
+test('GET diagnostics falls back to local when the CP sample is stale', async (t) => {
+  const at = Date.now() - 10 * 60_000
+  const stale = { ...cpView(), lastSampleAt: at, samples: [{ ...cpView().samples[0], at }] }
+  const server = await fakeCp(t, (req, res) => {
+    res.statusCode = 200
+    res.end(JSON.stringify(stale))
+  })
+  cpEnv(t, server)
+  const s = await store(t)
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const fresh = Date.now() - 60_000
+  await s.db
+    .prepare('INSERT INTO server_samples (server_id,at,tps,mspt_avg,mspt_max) VALUES (?,?,?,?,?)')
+    .run(SERVER, fresh, 19.5, 21, 340)
+  const request = new Request('http://site/api/admin/diagnostics', { method: 'GET' })
+  const res = await handleAdmin(
+    { request, url: new URL(request.url), cookies: { get: () => undefined } },
+    'diagnostics',
+    s,
+  )
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.equal(body.lastSampleAt, fresh)
+  assert.equal(body.samples.length, 1)
+})
+
 test('GET diagnostics reads from CP when configured, even with the local tables gone', async (t) => {
   const view = cpView()
   const server = await fakeCp(t, (req, res) => {
