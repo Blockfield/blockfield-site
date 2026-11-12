@@ -975,6 +975,18 @@ export class StatsStore {
       }
     })
   }
+  /** Result IDs/digests for the dual-write reconcile: non-voided results ended at or
+   * after `since` (ms). Read-only; CP rows come from the CP read API (U3) or a direct
+   * stand query, never from a second writer. */
+  async resultRefs(
+    since: number,
+  ): Promise<Array<{ serverId: string; eventId: string; digest: string }>> {
+    return (await this.db
+      .prepare(
+        'SELECT server_id "serverId",event_id "eventId",digest FROM results WHERE voided_at IS NULL AND ended_at>=? ORDER BY server_id,event_id',
+      )
+      .all(since)) as Array<{ serverId: string; eventId: string; digest: string }>
+  }
   async results(mode: string | null, page: number, limit = 25) {
     if (mode !== null && !MODES.includes(mode)) throw new StatsError(400, 'Unknown mode')
     const rows = (await this.db

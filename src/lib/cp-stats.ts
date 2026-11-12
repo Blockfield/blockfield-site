@@ -54,3 +54,45 @@ export function resolveTestEligibility(
   if (cpIsTest) return { eligible: false, needsReview: false }
   return { eligible: true, needsReview: false }
 }
+
+export type SeasonDrift = {
+  season: string
+  since: string
+  siteCount: number
+  cpCount: number
+  drift: number
+} & ShadowDiff
+
+/** Dual-write reconcile for one season window (both inputs already filtered to
+ * it): site vs CP result counts plus the ID/digest diff. Read-only. */
+export function reconcileSeasonCounts(
+  season: { id: string; startsAt: string },
+  site: ResultRef[],
+  cp: ResultRef[],
+): SeasonDrift {
+  const diff = shadowCompareResults(site, cp)
+  return {
+    season: season.id,
+    since: season.startsAt,
+    siteCount: site.length,
+    cpCount: cp.length,
+    drift: diff.missingInCentral.length + diff.missingLocally.length + diff.digestMismatch.length,
+    ...diff,
+  }
+}
+
+/** One log line per check; detail lines only when the counts drift. */
+export function formatSeasonDrift(drift: SeasonDrift): string {
+  const head =
+    `cp-stats reconcile ${drift.season} since ${drift.since}:` +
+    ` site=${drift.siteCount} cp=${drift.cpCount} drift=${drift.drift}`
+  if (!drift.drift) return head
+  const lines = [head]
+  for (const ref of drift.missingInCentral)
+    lines.push(`  missing in CP: ${ref.serverId}/${ref.eventId}`)
+  for (const ref of drift.missingLocally)
+    lines.push(`  missing in site: ${ref.serverId}/${ref.eventId}`)
+  for (const ref of drift.digestMismatch)
+    lines.push(`  digest mismatch: ${ref.serverId}/${ref.eventId}`)
+  return lines.join('\n')
+}
