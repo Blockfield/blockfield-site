@@ -1182,6 +1182,56 @@ test('siteIdentity: dev user short-circuits, missing/invalid cookie is anonymous
   )
 })
 
+test('siteIdentity keeps the name when the CP role read fails (site#120 major)', async (t) => {
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, {
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_SESSION_SECRET: 'b'.repeat(64),
+    BLOCKFIELD_CP_URL: 'http://cp.test',
+    BLOCKFIELD_CP_STAFF_TOKEN: 'staff-t',
+    DRASL_URL: 'http://drasl.test',
+  })
+  delete process.env.BLOCKFIELD_ADMIN_DEV_USER
+  const { startSession } = await import('../src/lib/account.ts')
+  // siteIdentity resolves the session through the statsStore() singleton, so the
+  // session row must live there (not in a separate isolated schema).
+  const { statsStore } = await import('../src/lib/stats.ts')
+  const s = await statsStore()
+  const jar = new Map()
+  const cookies = {
+    get: (name) => (jar.has(name) ? { value: jar.get(name) } : undefined),
+    set: (name, value) => jar.set(name, value),
+  }
+  const uuid = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+  await startSession(cookies, s, 'drasl-token', OTHER)
+  const realFetch = globalThis.fetch
+  const errors = []
+  const realError = console.error
+  console.error = (...args) => errors.push(args)
+  t.after(() => {
+    globalThis.fetch = realFetch
+    console.error = realError
+  })
+  // CP staff read 500s while Drasl answers: the user stays signed in, only the admin link hides.
+  globalThis.fetch = async (url) =>
+    String(url).startsWith('http://drasl.test')
+      ? new Response(JSON.stringify({ username: 'Hero', players: [{ uuid }] }), { status: 200 })
+      : new Response(JSON.stringify({ error: 'boom' }), { status: 500 })
+  assert.deepEqual(await siteIdentity(cookies), { name: 'Hero', hasAdminAccess: false })
+  assert.equal(errors.length, 1, 'one log line for the failed role lookup')
+  // Drasl itself failing still means signed out.
+  globalThis.fetch = async (url) =>
+    String(url).startsWith('http://drasl.test')
+      ? new Response(JSON.stringify({ error: 'down' }), { status: 500 })
+      : new Response(JSON.stringify({ error: 'boom' }), { status: 500 })
+  assert.equal(await siteIdentity(cookies), null)
+})
+
 test('POST staff/maps: only a builder row accepts a map list, ids must be known and unique', async (t) => {
   const dirs = {
     BLOCKFIELD_ADMIN_DIR: temp(t),

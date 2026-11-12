@@ -208,21 +208,31 @@ export async function siteIdentity(
     }
   const value = cookies.get(session)?.value
   if (!value) return null
+  let store, username, uuid
   try {
-    const store = await statsStore()
-    const { username, uuid } = account(
+    store = await statsStore()
+    ;({ username, uuid } = account(
       await drasl('/user', { token: await sessionToken(cookies, store), timeoutMs: 2000 }),
-    )
-    if (!username) return null
-    const id = playerId(uuid)
-    return {
-      name: String(username),
-      hasAdminAccess:
-        id !== null &&
-        (await refreshRole({ uuid: id, name: String(username), role: null }, store)) !== null,
-    }
+    ))
   } catch {
     return null
+  }
+  if (!username) return null
+  const name = String(username)
+  const id = playerId(uuid)
+  if (id === null) return { name, hasAdminAccess: false }
+  try {
+    return {
+      name,
+      hasAdminAccess: (await refreshRole({ uuid: id, name, role: null }, store)) !== null,
+    }
+  } catch (error) {
+    // A CP outage must not sign the user out (the player route degrades the same way): keep the name, hide the admin link.
+    console.error(
+      'siteIdentity role lookup failed',
+      error instanceof Error ? error.message : 'unknown',
+    )
+    return { name, hasAdminAccess: false }
   }
 }
 
