@@ -247,3 +247,26 @@ test('RCON reuse survives a reset on the idle pooled connection', async (t) => {
   assert.equal(uncaught, null)
   assert.deepEqual(await rconReuse(['list'], opts), ['ran list'])
 })
+
+test('RCON reuse retries once when the pooled connection resets mid-command', async (t) => {
+  let resets = 0
+  const server = net.createServer((socket) => {
+    socket.on('error', () => {})
+    socket.on('data', (chunk) => {
+      const id = chunk.readInt32LE(4),
+        type = chunk.readInt32LE(8),
+        body = chunk.subarray(12, chunk.readInt32LE(0) + 2).toString()
+      if (type === 3) return void socket.write(frame(id, 2, ''))
+      if (body === 'flaky' && resets++ === 0) return void socket.resetAndDestroy()
+      socket.write(frame(id, 0, `ran ${body}`))
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  t.after(() => server.close())
+  t.after(() => closeRconPools())
+  const opts = { host: '127.0.0.1', port, password: 'secret' }
+  assert.deepEqual(await rconReuse(['list'], opts), ['ran list'])
+  assert.deepEqual(await rconReuse(['flaky'], opts), ['ran flaky'])
+  assert.deepEqual(await rconReuse(['list'], opts), ['ran list'])
+})

@@ -226,10 +226,9 @@ export function rconReuse(commands: string[], options: RconOptions): Promise<str
 /** Pool a socket: a persistent error listener keeps an idle connection's reset from
 crashing the process (an unhandled socket 'error' is fatal in Node) and drops it. */
 function adopt(entry: PoolEntry, socket: net.Socket): net.Socket {
-  socket.on('error', () => {
-    if (entry.socket === socket) entry.socket = null
-    socket.destroy()
-  })
+  // Only destroy: an in-flight execCommands handles its own error, and the next call
+  // replaces a destroyed socket, so the entry is never cleared from under a caller.
+  socket.on('error', () => socket.destroy())
   entry.socket = socket
   return socket
 }
@@ -260,7 +259,7 @@ async function execPooled(
     try {
       return await execCommands(entry.socket, commands, timeout, () => completed++)
     } catch (error) {
-      entry.socket.destroy()
+      entry.socket?.destroy()
       entry.socket = null
       if (
         completed === 0 &&
