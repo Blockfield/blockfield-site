@@ -244,6 +244,23 @@ let until = 0
 let inflight: Promise<RoomStatus> | undefined
 export function currentRooms(): Promise<RoomStatus> {
   if (Date.now() < until) return Promise.resolve(cache)
+  return refreshRooms()
+}
+
+/**
+ * Stale-while-revalidate for the action path and the panel: a known snapshot is
+ * served immediately and refreshed in the background, so an admin action never
+ * blocks on the ≤4s SLP query. The first read (no snapshot yet) still awaits.
+ */
+export function cachedRooms(): Promise<RoomStatus> {
+  if (cache.checkedAt !== 0) {
+    if (Date.now() >= until) void refreshRooms().catch(() => {})
+    return Promise.resolve(cache)
+  }
+  return refreshRooms()
+}
+
+function refreshRooms(): Promise<RoomStatus> {
   const env = process.env
   const publicHost = 'play.blockfield.pro'
   // За Velocity комнаты отдаёт только игровой сервер (внутренний адрес), а публичный адрес — это прокси с лобби.

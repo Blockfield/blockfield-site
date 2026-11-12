@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
 import { account, drasl, fail, nickname, readJson, session, sessionToken } from './account.ts'
-import { rcon } from './rcon.ts'
+import { rconReuse } from './rcon.ts'
 import { eventStream, heartbeat, redactKeyResult } from './admin-events.ts'
 import {
   consoleLogPage,
@@ -30,7 +30,7 @@ import {
   stripColors,
 } from './console.ts'
 import { parseTickQuery, readDiagnostics, redact } from './diagnostics.ts'
-import { currentRooms, roomId } from './rooms.ts'
+import { cachedRooms, roomId } from './rooms.ts'
 import { gateToggle } from './cp.ts'
 import { readGunBalance, validateGunOverrides, type GunBalanceCatalog } from './gun-balance.ts'
 import { readAiLimits, validateAiAccounts } from './ai-limits.ts'
@@ -1847,7 +1847,7 @@ function sendRcon(commands: string[], target: RconTarget = 'game') {
     (isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_PORT : env.BLOCKFIELD_RCON_PORT) || 25575,
   )
   const password = isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_PASSWORD : env.BLOCKFIELD_RCON_PASSWORD
-  return rcon(commands, {
+  return rconReuse(commands, {
     host: host!,
     port,
     password: password!,
@@ -2009,7 +2009,7 @@ const page = (url: URL) => {
 }
 
 export async function overviewSnapshot() {
-  const rooms = await currentRooms()
+  const rooms = await cachedRooms()
   return {
     status: readFile(join(adminDir(), 'status.json')),
     session: readFile(join(adminDir(), 'session.json')),
@@ -2278,7 +2278,7 @@ const routes: Record<string, Route> = {
           throw fail(403, 'Недостаточно прав.')
         const found =
           body.action === 'stop-room'
-            ? (await currentRooms()).rooms.find((r) => r.id === body.roomId)
+            ? (await cachedRooms()).rooms.find((r) => r.id === body.roomId)
             : undefined
         const room = found ? { name: found.name, map: found.map } : undefined
         // Validated before the call: a bad key is a 400, never an unconfirmed outcome.
@@ -2302,7 +2302,7 @@ const routes: Record<string, Route> = {
       // Room ids are not meaningful to people: keep the room's name and map for the audit log.
       const found =
         body.action === 'stop-room'
-          ? (await currentRooms()).rooms.find((r) => r.id === body.roomId)
+          ? (await cachedRooms()).rooms.find((r) => r.id === body.roomId)
           : undefined
       const room = found ? { name: found.name, map: found.map } : undefined
       const outputs = await sendRcon(commands)
@@ -2313,6 +2313,9 @@ const routes: Record<string, Route> = {
       return {
         output,
         room,
+        // The server accepts the confirm only within 60 s of the arm: the panel
+        // counts this window down from the confirmed apply (read-back only).
+        ...(body.action === 'interrupt' ? { interruptAt: Date.now() } : {}),
         players:
           body.action === 'list'
             ? (output.split(':')[1] ?? '')

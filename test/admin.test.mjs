@@ -2001,6 +2001,82 @@ test('raw console: owner only, one validated line, every call audited including 
   assert.ok(sanitized.includes('[secret]'))
 })
 
+test('POST rcon interrupt reuses one connection and reports the confirmation window', async (t) => {
+  const net = await import('node:net')
+  const { closeRconPools } = await import('../src/lib/rcon.ts')
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  t.after(() => closeRconPools())
+  let connections = 0
+  const seen = []
+  const frame = (id, type, body) => {
+    const text = Buffer.from(body),
+      out = Buffer.alloc(14 + text.length)
+    out.writeInt32LE(10 + text.length, 0)
+    out.writeInt32LE(id, 4)
+    out.writeInt32LE(type, 8)
+    text.copy(out, 12)
+    return out
+  }
+  const server = net.createServer((socket) => {
+    connections++
+    socket.on('data', (chunk) => {
+      const id = chunk.readInt32LE(4),
+        type = chunk.readInt32LE(8),
+        body = chunk.subarray(12, chunk.readInt32LE(0) + 2).toString()
+      if (type === 3) socket.write(frame(id, 2, ''))
+      else if (type === 2) {
+        seen.push(body)
+        socket.write(frame(id, 0, 'Done'))
+      } else socket.write(frame(id, 0, 'Unknown request'))
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  Object.assign(process.env, {
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_RCON_HOST: '127.0.0.1',
+    BLOCKFIELD_RCON_PORT: String(server.address().port),
+    BLOCKFIELD_RCON_PASSWORD: 'x',
+  })
+  delete process.env.BLOCKFIELD_GATE_FILE
+  const s = await store(t)
+  const call = async (body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = `${OWNER}:Nether`
+    const url = new URL('http://site/api/admin/rcon')
+    const request = new Request(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, 'rcon', s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  const before = Date.now()
+  const first = await call({ action: 'interrupt', reason: 'авария' })
+  assert.equal(first.status, 200)
+  const firstBody = await first.json()
+  assert.ok(
+    Number.isInteger(firstBody.interruptAt) && firstBody.interruptAt >= before,
+    'interrupt reports when the confirm applied',
+  )
+  const second = await call({ action: 'interrupt', reason: 'авария' })
+  assert.equal(second.status, 200)
+  assert.deepEqual(seen, [
+    'bf maintenance interrupt',
+    'bf maintenance interrupt confirm авария',
+    'bf maintenance interrupt',
+    'bf maintenance interrupt confirm авария',
+  ])
+  assert.equal(connections, 1, 'both interrupts share one authenticated connection')
+})
+
 test('raw console target selector: routes to game or workshop, enforces config and rejects unknown enums', async (t) => {
   const net = await import('node:net')
   const saved = { ...process.env }
