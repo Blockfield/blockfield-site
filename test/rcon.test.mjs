@@ -216,3 +216,34 @@ test('RCON reuse reconnects after the server drops the pooled connection', async
   await new Promise((resolve) => setTimeout(resolve, 100))
   assert.deepEqual(await rconReuse(['list'], opts), ['ran list'])
 })
+
+test('RCON reuse survives a reset on the idle pooled connection', async (t) => {
+  const sockets = new Set()
+  const server = net.createServer((socket) => {
+    sockets.add(socket)
+    socket.on('error', () => {})
+    socket.on('close', () => sockets.delete(socket))
+    socket.on('data', (chunk) => {
+      const id = chunk.readInt32LE(4),
+        type = chunk.readInt32LE(8),
+        body = chunk.subarray(12, chunk.readInt32LE(0) + 2).toString()
+      if (type === 3) socket.write(frame(id, 2, ''))
+      else socket.write(frame(id, 0, `ran ${body}`))
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  t.after(() => server.close())
+  t.after(() => closeRconPools())
+  const opts = { host: '127.0.0.1', port, password: 'secret' }
+  let uncaught = null
+  const onUncaught = (error) => (uncaught = error)
+  process.prependListener('uncaughtException', onUncaught)
+  t.after(() => process.removeListener('uncaughtException', onUncaught))
+  assert.deepEqual(await rconReuse(['list'], opts), ['ran list'])
+  // RST while the pooled socket sits idle: ECONNRESET must not escape as an uncaught error.
+  for (const socket of sockets) socket.resetAndDestroy()
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  assert.equal(uncaught, null)
+  assert.deepEqual(await rconReuse(['list'], opts), ['ran list'])
+})
