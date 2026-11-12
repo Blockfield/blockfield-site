@@ -51,6 +51,8 @@ async function fakeCp(handler) {
   return server
 }
 
+const ACTOR = 'd94f8b1e-2c3a-4d5e-8f70-91a2b3c4d5e6'
+
 test('CP client toggles the gate with one POST /v2/gate/toggle call', async () => {
   let state = { revision: 4, mode: 'open' }
   const seen = []
@@ -78,6 +80,7 @@ test('CP client toggles the gate with one POST /v2/gate/toggle call', async () =
         assert.equal(payload.backend, 'game')
         assert.equal(payload.mode, 'maintenance')
         assert.equal(payload.message, '')
+        assert.equal(payload.actorAccountId, ACTOR)
         assert.ok(!('expectedRevision' in payload), 'no client-side revision read')
         assert.ok(!('patch' in payload), 'no patch envelope')
         state = { ...state, revision: state.revision + 1, mode: payload.mode }
@@ -95,7 +98,7 @@ test('CP client toggles the gate with one POST /v2/gate/toggle call', async () =
       BLOCKFIELD_CP_GATE_TOKEN: 'gate-t',
     })
     assert.equal(await readGateCp(), null)
-    const out = await postGateCp('maintenance', '', 'k1')
+    const out = await postGateCp('maintenance', '', 'k1', ACTOR)
     assert.equal(out.operationId, 'op1')
     assert.equal(out.revision, 5)
     const closed = await readGateCp()
@@ -142,13 +145,17 @@ test('CP gate toggle surfaces clear admin errors with status', async () => {
       BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
       BLOCKFIELD_CP_GATE_TOKEN: 'gate-t',
     })
-    await assert.rejects(postGateCp('maintenance', '', 'k-busy'), (error) => {
+    await assert.rejects(postGateCp('maintenance', '', 'k-bad', 'not-a-uuid'), (error) => {
+      assert.match(error.message, /Некорректный запрос/)
+      return true
+    })
+    await assert.rejects(postGateCp('maintenance', '', 'k-busy', ACTOR), (error) => {
       assert.equal(error.status, 409)
       assert.equal(error.code, 'idempotency_conflict')
       assert.match(error.message, /уже обрабатывается/)
       return true
     })
-    await assert.rejects(postGateCp('maintenance', '', 'k-noaccess'), (error) => {
+    await assert.rejects(postGateCp('maintenance', '', 'k-noaccess', ACTOR), (error) => {
       assert.equal(error.status, 403)
       assert.match(error.message, /нет доступа/)
       return true

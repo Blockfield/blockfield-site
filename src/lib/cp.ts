@@ -76,18 +76,23 @@ export async function postGateCp(
   mode: CpMode,
   message: string,
   idempotencyKey: string,
+  actorAccountId: string,
   token: string | undefined = process.env.BLOCKFIELD_CP_GATE_TOKEN,
 ): Promise<{ operationId: string; revision: number }> {
   // Single-call toggle (control-plane#49: POST /v2/gate/toggle): the server
   // does the read-modify-write under lock, so the site sends one POST with
   // the absolute state instead of GET /v1/gate + PATCH. Same moderation.ban
-  // scope, audit and fan-out as the old pair.
+  // scope, audit and fan-out as the old pair. The site asserts the logged-in
+  // admin (control-plane#52): CP stores account_id=actor, so the proxy frame
+  // executes instead of fencing as account-less.
   if (
     typeof idempotencyKey !== 'string' ||
     idempotencyKey.length < 1 ||
     idempotencyKey.length > 128
   )
     throw new Error('Некорректный ключ идемпотентности.')
+  const actor = actorAccountId.replaceAll('-', '').toLowerCase()
+  if (!/^[0-9a-f]{32}$/.test(actor)) throw new Error('Некорректный запрос.')
   const url = config()
   if (!token) throw new Error('Control-plane не настроен на сайте (токен).')
   const scope = cpScope()
@@ -100,6 +105,7 @@ export async function postGateCp(
       backend: scope.backend,
       mode,
       message,
+      actorAccountId: actor.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
     }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   })
@@ -149,8 +155,7 @@ export type CpSettingsPatch = {
   patch: Record<string, unknown>
   /**
    * Logged-in admin the service credential asserts (CP re-resolves the
-   * account; required for game namespaces, omitted only for the gate
-   * toggle whose moderation.ban scope keeps stable-principal attribution).
+   * account; required for game namespaces and the gate toggle).
    */
   actorAccountId?: string
 }
@@ -255,9 +260,8 @@ export async function patchSettingsCp(
   )
     throw new Error('Некорректный патч настроек control-plane.')
   // The site service credential asserts the logged-in admin for game
-  // namespaces (like staff grants): CP refuses unasserted service writes
-  // there. The gate toggle omits it: its moderation.ban scope keeps the
-  // stable-principal path.
+  // namespaces and the gate toggle (like staff grants): CP refuses
+  // unasserted service writes there.
   const actor =
     patch.actorAccountId === undefined
       ? undefined
