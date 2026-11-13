@@ -2376,7 +2376,7 @@ test('diagnostics are admin-only and never report health without data', async (t
   )
 })
 
-test('console link: logs and suggestions proxy the mod endpoint with the console-read token, reads stay unaudited', async (t) => {
+test('console via CP: log tail + suggest ride the console token, reads stay unaudited', async (t) => {
   const { createServer } = await import('node:http')
   const saved = { ...process.env }
   t.after(() => {
@@ -2385,41 +2385,111 @@ test('console link: logs and suggestions proxy the mod endpoint with the console
   })
   const seen = []
   const server = createServer((req, res) => {
-    seen.push(`${req.method} ${req.url} auth=${req.headers.authorization}`)
-    if (req.headers.authorization !== 'Bearer read-token') {
-      res.writeHead(401, { 'content-type': 'application/json' })
-      res.end('{"error":"Unauthorized."}')
+    const url = new URL(req.url, 'http://cp')
+    seen.push(`${req.method} ${url.pathname}${url.search} auth=${req.headers.authorization}`)
+    res.setHeader('Content-Type', 'application/json')
+    if (req.headers.authorization !== 'Bearer console-t') {
+      res.writeHead(401)
+      res.end(JSON.stringify({ error: 'unauthorized' }))
       return
     }
-    const url = new URL(req.url, 'http://game')
-    res.writeHead(200, { 'content-type': 'application/json' })
-    if (url.pathname.endsWith('/logs'))
+    if (req.method === 'GET' && url.pathname === '/v2/console/logs') {
+      const since = url.searchParams.get('since')
+      if (url.searchParams.get('consumerId') !== 'game') {
+        res.writeHead(404)
+        res.end(JSON.stringify({ error: 'consumer_not_found' }))
+        return
+      }
+      if (since === '7') {
+        res.writeHead(403)
+        res.end(JSON.stringify({ error: 'forbidden' }))
+        return
+      }
+      if (since === '8') {
+        res.writeHead(500)
+        res.end(JSON.stringify({ error: 'control_plane_error' }))
+        return
+      }
+      if (since === '9') {
+        res.writeHead(200)
+        res.end(JSON.stringify({ nope: true }))
+        return
+      }
+      const n = Number(since)
+      res.writeHead(200)
       res.end(
-        JSON.stringify({
-          next: 2,
-          entries: [
-            { seq: 1, at: 1000, level: 'INFO', logger: 'net.Foo', message: 'hello' },
-            { seq: 2, at: 2000, level: 'WARN', logger: 'net.Foo', message: 'careful' },
-          ],
-        }),
+        JSON.stringify(
+          n === 0
+            ? {
+                next: 2,
+                entries: [
+                  { seq: 1, at: 1000, level: 'INFO', logger: 'net.Foo', message: 'hello' },
+                  { seq: 2, at: 2000, level: 'WARN', logger: 'net.Foo', message: 'careful' },
+                ],
+              }
+            : { next: n, entries: [] },
+        ),
       )
-    else
-      res.end(
-        JSON.stringify({
-          from: 5,
-          suggestions: [{ text: 'set', hint: '' }],
-        }),
-      )
+      return
+    }
+    if (req.method === 'POST' && url.pathname === '/v2/console/suggest') {
+      let raw = ''
+      req.on('data', (c) => (raw += c))
+      req.on('end', () => {
+        const body = JSON.parse(raw)
+        seen.push(`suggest input=${body.input} generation=${body.generation}`)
+        if (body.consumerId !== 'game' || body.generation !== GENERATION) {
+          res.writeHead(409)
+          res.end(JSON.stringify({ error: 'consumer_generation_or_capability' }))
+          return
+        }
+        if (body.input === 'forbidden-line') {
+          res.writeHead(403)
+          res.end(JSON.stringify({ error: 'forbidden' }))
+          return
+        }
+        if (body.input === 'stale') {
+          res.writeHead(409)
+          res.end(JSON.stringify({ error: 'consumer_generation_or_capability' }))
+          return
+        }
+        if (body.input === 'busy') {
+          res.writeHead(409)
+          res.end(JSON.stringify({ error: 'consumer_lag' }))
+          return
+        }
+        if (body.input === 'silent') {
+          res.writeHead(504)
+          res.end(JSON.stringify({ error: 'suggest_timeout' }))
+          return
+        }
+        if (body.input === 'garbage') {
+          res.writeHead(200)
+          res.end(JSON.stringify({ oops: 1 }))
+          return
+        }
+        res.writeHead(200)
+        res.end(JSON.stringify({ from: 5, suggestions: [{ text: 'set', hint: '' }] }))
+      })
+      return
+    }
+    res.writeHead(404)
+    res.end('{}')
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   t.after(() => server.close())
   Object.assign(process.env, {
     BLOCKFIELD_OWNER_UUIDS: OWNER,
     NODE_ENV: 'test',
-    BLOCKFIELD_CONSOLE_HOST: '127.0.0.1',
-    BLOCKFIELD_CONSOLE_PORT: String(server.address().port),
-    BLOCKFIELD_CONSOLE_READ_TOKEN: 'read-token',
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
+    BLOCKFIELD_CP_CONSOLE_TOKEN: 'console-t',
+    BLOCKFIELD_CP_CONSUMER_GENERATION: GENERATION,
   })
+  // The direct mod link is gone: no BLOCKFIELD_CONSOLE_* env may remain.
+  assert.deepEqual(
+    Object.keys(process.env).filter((k) => k.startsWith('BLOCKFIELD_CONSOLE')),
+    [],
+  )
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
   const call = (as, path) => {
@@ -2438,8 +2508,10 @@ test('console link: logs and suggestions proxy the mod endpoint with the console
       (e) => e,
     )
   }
-  // Moderators keep their old console: only the raw-console permission may read the link.
+  // Only the raw-console permission reads the tail: moderators stay refused before any CP call.
   assert.equal((await call(`${MOD}:Moddy`, 'console/logs?since=0')).status, 403)
+  assert.equal((await call(`${MOD}:Moddy`, 'console/suggest?input=time')).status, 403)
+  assert.equal(seen.length, 0)
   const logs = await call(`${OWNER}:Nether`, 'console/logs?since=0')
   assert.equal(logs.status, 200)
   assert.deepEqual(await logs.json(), {
@@ -2452,16 +2524,36 @@ test('console link: logs and suggestions proxy the mod endpoint with the console
   const suggest = await call(`${OWNER}:Nether`, 'console/suggest?input=time%20s')
   assert.equal(suggest.status, 200)
   assert.deepEqual(await suggest.json(), { from: 5, suggestions: [{ text: 'set', hint: '' }] })
-  assert.equal((await call(`${OWNER}:Nether`, 'console/logs?since=nope')).status, 400)
   assert.ok(
-    seen.length > 0 && seen.every((line) => line.includes('auth=Bearer read-token')),
-    'the console-read token is the only link secret',
+    seen.some((line) => line === `suggest input=time s generation=${GENERATION}`),
+    'the suggest frame carries the game consumer generation',
   )
-  delete process.env.BLOCKFIELD_CONSOLE_READ_TOKEN
+  // Site-side validation never reaches CP.
+  assert.equal((await call(`${OWNER}:Nether`, 'console/logs?since=nope')).status, 400)
+  assert.equal((await call(`${OWNER}:Nether`, 'console/suggest?input=a%0Ab')).status, 400)
+  // CP error codes map through: 403 stays 403, unknown/malformed become 502.
+  assert.equal((await call(`${OWNER}:Nether`, 'console/logs?since=7')).status, 403)
+  assert.equal((await call(`${OWNER}:Nether`, 'console/logs?since=8')).status, 502)
+  assert.equal((await call(`${OWNER}:Nether`, 'console/logs?since=9')).status, 502)
+  assert.equal((await call(`${OWNER}:Nether`, 'console/suggest?input=forbidden-line')).status, 403)
+  assert.equal((await call(`${OWNER}:Nether`, 'console/suggest?input=stale')).status, 503)
+  assert.equal((await call(`${OWNER}:Nether`, 'console/suggest?input=busy')).status, 503)
+  assert.equal((await call(`${OWNER}:Nether`, 'console/suggest?input=silent')).status, 504)
+  assert.equal((await call(`${OWNER}:Nether`, 'console/suggest?input=garbage')).status, 502)
+  assert.ok(
+    seen.every(
+      (line) => line.includes('auth=Bearer console-t') || line.startsWith('suggest input='),
+    ),
+    'the console token is the only CP secret',
+  )
+  // The Workshop game target is unconfigured here: 503 without touching CP.
   const before = seen.length
+  assert.equal((await call(`${OWNER}:Nether`, 'console/logs?target=workshop&since=0')).status, 503)
+  assert.equal(seen.length, before, 'unconfigured target: CP is never called')
+  delete process.env.BLOCKFIELD_CP_CONSOLE_TOKEN
   assert.equal((await call(`${OWNER}:Nether`, 'console/logs?since=0')).status, 503)
-  assert.equal(seen.length, before, 'no token: the link is never called')
-  assert.equal((await s.auditLog()).length, 0, 'link reads are not audited')
+  assert.equal(seen.length, before, 'no token: CP is never called')
+  assert.equal((await s.auditLog()).length, 0, 'tail/suggest reads are not audited')
 })
 
 test('POST rcon moderation goes through typed CP actions when configured, 503 without CP', async (t) => {
