@@ -155,7 +155,7 @@ credentials as CI):
 
 ```sh
 podman run -d --name bf-test-pg -e POSTGRES_USER=blockfield -e POSTGRES_PASSWORD=test-only \
-  -e POSTGRES_DB=blockfield_test -p 5432:5432 docker.io/library/postgres:18
+  -e POSTGRES_DB=blockfield_test -p 127.0.0.1:5432:5432 docker.io/library/postgres:18
 export BLOCKFIELD_TEST_DATABASE_URL=postgres://blockfield:test-only@localhost:5432/blockfield_test
 pnpm test
 ```

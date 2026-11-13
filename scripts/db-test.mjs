@@ -27,17 +27,18 @@ if (url) {
     'POSTGRES_PASSWORD=test-only',
     '-e',
     'POSTGRES_DB=blockfield_test',
+    // Loopback only, random free host port: never expose the test DB to the
+    // LAN or collide with a PostgreSQL the owner already runs on 5432.
     '-p',
-    '5432:5432',
+    '127.0.0.1::5432',
     'docker.io/library/postgres:18',
   ])
-  if (start.status !== 0)
-    throw new Error(
-      `podman run failed (is port 5432 busy? set BLOCKFIELD_TEST_DATABASE_URL instead): ${start.stderr}`,
-    )
+  if (start.status !== 0) throw new Error(`podman run failed: ${start.stderr}`)
   const stop = () => run(['rm', '-f', name])
   process.on('exit', stop)
-  runTests('postgres://blockfield:test-only@localhost:5432/blockfield_test', stop)
+  const port = run(['port', name, '5432/tcp']).stdout.trim().split(':').pop()
+  if (!/^\d+$/.test(port)) throw new Error(`podman port gave no host port for ${name}`)
+  runTests(`postgres://blockfield:test-only@127.0.0.1:${port}/blockfield_test`, stop)
 }
 
 async function runTests(dbUrl, stop) {
