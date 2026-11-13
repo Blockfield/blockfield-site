@@ -15,6 +15,7 @@ import {
   moderationCpFields,
   roleOf,
   saveSettings,
+  siteBans,
   siteIdentity,
   validateSettings,
   workshopMembers,
@@ -2181,6 +2182,25 @@ test('POST rcon list/kick/ban/maintenance wait for the game through CP', async (
     ['rcon:maintenance-status', 0, null],
     ['rcon:ban', 0, 'Nobody'],
   ])
+  // Only the confirmed ban lists Bob; an unconfirmed ban never does.
+  assert.deepEqual(
+    (await siteBans(s)).map((b) => b.player),
+    ['Bob'],
+  )
+  await s.audit({
+    actorUuid: ADMIN,
+    actorName: 'Adm',
+    role: 'admin',
+    action: 'rcon:ban',
+    target: 'Carol',
+    detail: { player: 'Carol', operationId: 'op-x', unknownOutcome: true },
+    ok: true,
+    error: null,
+  })
+  assert.deepEqual(
+    (await siteBans(s)).map((b) => b.player),
+    ['Bob'],
+  )
 })
 
 test('raw console target selector: routes to game or workshop, enforces config and rejects unknown enums', async (t) => {

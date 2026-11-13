@@ -1914,7 +1914,17 @@ export async function siteBans(store: StatsStore) {
     )
     .all()) as any[]
   const latest = new Map<string, any>()
-  for (const row of rows) latest.set(String(row.target).toLowerCase(), row)
+  for (const row of rows) {
+    // An unconfirmed ban or pardon (the game never acknowledged it) changes nothing here;
+    // the confirmed retry writes its own row.
+    let unconfirmed = false
+    try {
+      unconfirmed = JSON.parse(row.detail)?.unknownOutcome === true
+    } catch {
+      // Older journal entries can contain plain text instead of JSON.
+    }
+    if (!unconfirmed) latest.set(String(row.target).toLowerCase(), row)
+  }
   return [...latest.values()]
     .filter((r) => r.action === 'rcon:ban')
     .reverse()
