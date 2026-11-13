@@ -62,6 +62,7 @@ BLOCKFIELD_CP_CONSUMER_GENERATION=...                # UUID; current generation 
 BLOCKFIELD_CP_WORKSHOP_TOKEN=...                    # secret; typed workshop bearer for POST /v2/workshop/message|wake|cancel (needs workshop.act + the kind scopes on the site credential); when set with BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION, message/wake/cancel go through control-plane and fail closed without it (no second transport, unlike RCON for moderation); members stays on the file inbox (needs a person session, never a service credential)
 BLOCKFIELD_CP_WORKSHOP_CONSUMER_ID=workshop           # default; the workshop consumer addressed by typed workshop actions
 BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION=...       # UUID; current generation of the workshop consumer (stale = 503, ask the coordinator)
+BLOCKFIELD_CP_STATE_FILE=/blockfield-admin/.site-cp-credentials.json  # default; 0600, the six BLOCKFIELD_CP_*_TOKEN credentials renew themselves ~7 days before expiry, the successor is stored here and wins over env while it descends from the env token
 BLOCKFIELD_CONSOLE_READ_TOKEN=...                    # secret; console link bearer, equal to the game server's BLOCKFIELD_CP_CONSOLE_READ_TOKEN (BLOCKFIELD_WORKSHOP_CONSOLE_READ_TOKEN for Workshop)
 BLOCKFIELD_DEPLOY_ANNOUNCE_TOKEN=...                 # secret; modpack Deploy workflow (DEPLOY_ANNOUNCE_TOKEN) → POST /api/deploy-announce, fixed restart notice
 BLOCKFIELD_WORKSHOP_KEY=...                          # optional; default: the file workshop.key in BLOCKFIELD_ADMIN_DIR (host /srv/minecraft/workshop/admin, root:1000 0640), shared with the workshop server
@@ -70,12 +71,12 @@ BLOCKFIELD_SESSION_SECRET=...                        # secret; 64 hex chars (32 
 
 Mounts for the site container (host → container):
 
-| Host                                    | Container           | Mode | Written by                                                                                                          |
-| --------------------------------------- | ------------------- | ---- | ------------------------------------------------------------------------------------------------------------------- |
-| `/srv/minecraft/workshop/admin`         | `/workshop-admin`   | ro   | host controller: `status.json`, `session.json`, `members.json`, `maps.json`, `candidates.json`, `results/<id>.json` |
-| `/srv/minecraft/workshop/inbox`         | `/workshop-inbox`   | rw   | site: one `<id>.json` request per file (written as a dot temp file, then renamed)                                   |
-| `/srv/minecraft/lobby/blockfield-admin` | `/blockfield-admin` | rw   | site: `settings.json`, `ai-limits.json`; game server (`/data/blockfield-admin`): `applied.json`, `gun-balance.json` |
-| Controller `BF_MAP_PACKAGES_DIR` (HDD)  | `/map-packages`     | ro   | host controller: derived `<sha256>.zip` cache; set `BLOCKFIELD_MAP_PACKAGES_DIR` to this mount                      |
+| Host                                    | Container           | Mode | Written by                                                                                                                                       |
+| --------------------------------------- | ------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/srv/minecraft/workshop/admin`         | `/workshop-admin`   | ro   | host controller: `status.json`, `session.json`, `members.json`, `maps.json`, `candidates.json`, `results/<id>.json`                              |
+| `/srv/minecraft/workshop/inbox`         | `/workshop-inbox`   | rw   | site: one `<id>.json` request per file (written as a dot temp file, then renamed)                                                                |
+| `/srv/minecraft/lobby/blockfield-admin` | `/blockfield-admin` | rw   | site: `settings.json`, `ai-limits.json`, `.site-cp-credentials.json`; game server (`/data/blockfield-admin`): `applied.json`, `gun-balance.json` |
+| Controller `BF_MAP_PACKAGES_DIR` (HDD)  | `/map-packages`     | ro   | host controller: derived `<sha256>.zip` cache; set `BLOCKFIELD_MAP_PACKAGES_DIR` to this mount                                                   |
 
 The image runs as `node` (UID 1000): the rw directories must be writable by it. The site joins `dokploy-network` to reach RCON; do not publish the RCON port.
 
