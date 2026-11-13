@@ -75,6 +75,9 @@ export async function archiveSiteStats(siteDsn, outDir, opts = {}) {
     for (const table of LEGACY_STATS_TABLES) {
       const reg = await client.query('SELECT to_regclass($1) AS oid', [table.name])
       const present = Boolean(reg.rows[0]?.oid)
+      // A missing table means a wrong schema or a partial cleanup: an archive without it is not history.
+      if (!present)
+        throw new Error(`Legacy table ${table.name} is missing; refusing an incomplete archive`)
       const file = `${table.name}.ndjson`
       let body = ''
       let rowCount = 0
@@ -122,6 +125,11 @@ export async function verifyArchive(outDir) {
   const manifest = JSON.parse(manifestRaw)
   if (manifest?.format !== ARCHIVE_FORMAT || !Array.isArray(manifest.tables)) {
     throw new Error(`Invalid archive manifest in ${outDir}`)
+  }
+  const archived = new Map(manifest.tables.map((entry) => [entry.name, entry]))
+  for (const table of LEGACY_STATS_TABLES) {
+    if (archived.get(table.name)?.present !== true)
+      throw new Error(`Archive in ${outDir} lacks legacy table ${table.name}`)
   }
   for (const entry of manifest.tables) {
     const bytes = await readFile(join(outDir, entry.file))

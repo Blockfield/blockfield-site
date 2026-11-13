@@ -1617,7 +1617,9 @@ export async function handleStatsRequest(
       // Never query or require the site DB when CP staff reads are configured (or DB is absent).
       let roleStore = dependencies?.store
       if (!roleStore && !cpStaffConfigured() && process.env.BLOCKFIELD_DATABASE_URL)
-        roleStore = await statsStore().catch(() => undefined)
+        roleStore = await Promise.resolve()
+          .then(() => statsStore())
+          .catch(() => undefined)
       data.profile.role =
         id === null
           ? null
