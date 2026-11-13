@@ -1798,46 +1798,43 @@ async function runConsole(target: RconTarget, command: string, actor: Actor) {
   return outcome
 }
 /**
- * The mod's console link (log stream + Brigadier completion): a read-only HTTP
- * endpoint next to the game, bearer = its console-read token. Commands never go
- * through it, only through CP.
+ * Site console tail + completion through control-plane (site#135): the game pushes its
+ * log ring to CP and answers completion frames there, so the site never opens a direct
+ * game link. Commands still go through `runConsole` above; both only need `console.read`.
  */
-function consoleLink(target: RconTarget = 'game') {
-  const env = process.env
-  const isWorkshop = target === 'workshop'
-  const host = isWorkshop ? env.BLOCKFIELD_WORKSHOP_CONSOLE_HOST : env.BLOCKFIELD_CONSOLE_HOST
-  const token = isWorkshop
-    ? env.BLOCKFIELD_WORKSHOP_CONSOLE_READ_TOKEN
-    : env.BLOCKFIELD_CONSOLE_READ_TOKEN
-  if (!host || !token) throw fail(503, 'Журнал консоли не настроен.')
-  const port = Number(
-    (isWorkshop ? env.BLOCKFIELD_WORKSHOP_CONSOLE_PORT : env.BLOCKFIELD_CONSOLE_PORT) || 25576,
-  )
-  if (!Number.isSafeInteger(port) || port < 1 || port > 65535)
-    throw fail(503, 'Порт консоли настроен неверно.')
-  return { host, port, token }
-}
-/** One proxied call to the mod's console link: structured data only, never raw JSON to the browser. */
-async function fetchConsole(target: RconTarget, path: 'logs' | 'suggest', search: string) {
-  const { host, port, token } = consoleLink(target)
-  const response = await fetch(`http://${host}:${port}/blockfield/console/v1/${path}?${search}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-    redirect: 'manual',
-    signal: AbortSignal.timeout(8000),
-  }).catch((error: Error) => {
-    console.error(`Console [${target}] failed`, error.message)
-    const serverDesc = target === 'workshop' ? 'Сервер Workshop' : 'Игровой сервер'
-    throw hidden(502, `${serverDesc} не отвечает.`, error.message)
-  })
-  if (response.status === 401 || response.status === 403)
-    throw fail(502, 'Консоль сервера отвергла ключ сайта.')
-  if (response.status !== 200) throw fail(502, 'Консоль сервера вернула ошибку.')
-  const type = response.headers.get('content-type')?.split(';', 1)[0].trim()
-  const data = type === 'application/json' ? await response.json().catch(() => null) : null
+async function readConsole(target: RconTarget, since: number) {
+  const cp = await import('./cp.ts')
+  if (!cp.cpConsoleConfigured(target)) throw fail(503, 'Журнал консоли не настроен.')
+  let data: unknown
   try {
-    return path === 'logs' ? consoleLogPage(data) : consoleSuggestPage(data)
+    data = await cp.readConsoleLogsCp(target, since)
+  } catch (error) {
+    if (isCpProblem(error)) throw fail(error.status, error.message)
+    console.error(`Console [${target}] failed`, (error as Error).message)
+    throw hidden(502, 'Сервер не отвечает.', (error as Error).message)
+  }
+  try {
+    return consoleLogPage(data)
   } catch {
-    throw fail(502, 'Консоль сервера ответила непонятно.')
+    throw fail(502, 'Control-plane отдал непонятный журнал.')
+  }
+}
+/** One Brigadier completion through CP `console.suggest` (the game answers over its channel). */
+async function suggestConsole(target: RconTarget, input: string) {
+  const cp = await import('./cp.ts')
+  if (!cp.cpConsoleConfigured(target)) throw fail(503, 'Журнал консоли не настроен.')
+  let data: unknown
+  try {
+    data = await cp.requestSuggestCp(target, input)
+  } catch (error) {
+    if (isCpProblem(error)) throw fail(error.status, error.message)
+    console.error(`Console [${target}] failed`, (error as Error).message)
+    throw hidden(502, 'Сервер не отвечает.', (error as Error).message)
+  }
+  try {
+    return consoleSuggestPage(data)
+  } catch {
+    throw fail(502, 'Control-plane отдал непонятные подсказки.')
   }
 }
 
@@ -2410,7 +2407,8 @@ const routes: Record<string, Route> = {
       }
     },
   },
-  // Live server log stream and Brigadier completion from the mod's console link (read-only, unaudited).
+  // Live server log stream and Brigadier completion through control-plane (site#135):
+  // the game pushes its ring and answers frames there; the site opens no direct link.
   'GET console/logs': {
     permission: 'rcon-raw',
     handler: async ({ context }) => {
@@ -2421,7 +2419,7 @@ const routes: Record<string, Route> = {
       } catch (error) {
         throw bad((error as Error).message)
       }
-      return fetchConsole(target, 'logs', `since=${since}`)
+      return readConsole(target, since)
     },
   },
   'GET console/suggest': {
@@ -2434,7 +2432,7 @@ const routes: Record<string, Route> = {
       } catch (error) {
         throw bad((error as Error).message)
       }
-      return fetchConsole(target, 'suggest', `input=${encodeURIComponent(input)}`)
+      return suggestConsole(target, input)
     },
   },
   // The server's own tick window right now (vanilla `tick query`, read-only), independent of pushed samples.

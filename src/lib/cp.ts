@@ -827,6 +827,86 @@ export async function runConsoleCp(
 }
 
 /**
+ * Site console log tail + Brigadier completion through control-plane (site#135):
+ * the game pushes its ring to CP and answers completion frames there, so the
+ * site never opens a direct game link. Both ride the console token
+ * (`console.read` covers them; completing a line is not running it).
+ */
+export async function readConsoleLogsCp(
+  target: ConsoleTarget,
+  since: number,
+  opts: { fetchImpl?: FetchImpl; timeoutMs?: number } = {},
+): Promise<unknown> {
+  const url = config()
+  const { token, consumerId } = consoleConfig(target)
+  if (!token || !consumerId || !cpConfigured())
+    throw new Error('Control-plane не настроен на сайте (консоль).')
+  if (!Number.isSafeInteger(since) || since < 0) throw new Error('Некорректный запрос.')
+  const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
+  const response = await fetchImpl(
+    `${url}/v2/console/logs?consumerId=${encodeURIComponent(consumerId)}&since=${since}`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(opts.timeoutMs ?? TIMEOUT_MS),
+    },
+  )
+  const data = await response.json().catch(() => null)
+  if (!response.ok) {
+    const code = typeof data?.error === 'string' ? data.error : 'control_plane_error'
+    const [status, message] = consoleMessages[code] ?? [502, 'Control-plane отклонил запрос.']
+    throw Object.assign(new Error(message), { status, code }) as CpProblem
+  }
+  return data
+}
+
+const SUGGEST_TIMEOUT_MS = 8000
+
+const suggestMessages: Record<string, [number, string]> = {
+  invalid_console_input: [400, 'Ввод — одна строка без управляющих символов.'],
+  forbidden: [403, 'Недостаточно прав для этой команды.'],
+  consumer_generation_or_capability: [
+    503,
+    'Версия получателя в control-plane устарела. Обратитесь к координатору.',
+  ],
+  consumer_lag: [503, 'Сервер занят подтверждением команд. Попробуйте позже.'],
+  suggest_timeout: [504, 'Сервер не отвечает.'],
+}
+
+export async function requestSuggestCp(
+  target: ConsoleTarget,
+  input: string,
+  opts: { idempotencyKey?: string; fetchImpl?: FetchImpl; timeoutMs?: number } = {},
+): Promise<unknown> {
+  const url = config()
+  const { token, consumerId, generation } = consoleConfig(target)
+  // console.suggest takes no resource or target: completion always acts on the whole server.
+  const { environment, backend } = cpScope()
+  if (!token || !consumerId || !uuidLoose.test(generation))
+    throw new Error('Control-plane не настроен на сайте (консоль).')
+  const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
+  const response = await fetchImpl(`${url}/v2/console/suggest`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      idempotencyKey: opts.idempotencyKey ?? randomUUID(),
+      environment,
+      backend,
+      consumerId,
+      generation,
+      input,
+    }),
+    signal: AbortSignal.timeout(opts.timeoutMs ?? SUGGEST_TIMEOUT_MS),
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok) {
+    const code = typeof data?.error === 'string' ? data.error : 'control_plane_error'
+    const [status, message] = suggestMessages[code] ?? [502, 'Control-plane отклонил запрос.']
+    throw Object.assign(new Error(message), { status, code }) as CpProblem
+  }
+  return data
+}
+
+/**
  * Typed Workshop operations via control-plane v2 (control-plane #33,
  * workshop #72): POST /v2/workshop/<kind>. Only the service-holdable write
  * kinds move: `members` needs a person session (plus the owner step-up for
