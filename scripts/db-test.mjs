@@ -16,6 +16,20 @@ if (url) {
   const run = (args) => spawnSync('podman', args, { stdio: 'pipe', encoding: 'utf8' })
   if (run(['--version']).error)
     throw new Error('podman is required for pnpm test:local (or set BLOCKFIELD_TEST_DATABASE_URL)')
+  const stop = () => run(['rm', '-f', name])
+  process.on('exit', stop)
+  // Registered before `podman run`: 'exit' does not fire on an unhandled
+  // signal, and a signal during the synchronous start is delivered right
+  // after it, so an interrupted run never leaks the container.
+  for (const [signal, code] of [
+    ['SIGINT', 130],
+    ['SIGTERM', 143],
+    ['SIGHUP', 129],
+  ])
+    process.on(signal, () => {
+      tests?.kill(signal)
+      process.exit(code)
+    })
   const start = run([
     'run',
     '-d',
@@ -35,19 +49,6 @@ if (url) {
     'docker.io/library/postgres:18',
   ])
   if (start.status !== 0) throw new Error(`podman run failed: ${start.stderr}`)
-  const stop = () => run(['rm', '-f', name])
-  process.on('exit', stop)
-  // 'exit' does not fire on an unhandled signal: remove the container (and
-  // the test run) explicitly so an interrupted run never leaks it.
-  for (const [signal, code] of [
-    ['SIGINT', 130],
-    ['SIGTERM', 143],
-    ['SIGHUP', 129],
-  ])
-    process.on(signal, () => {
-      tests?.kill(signal)
-      process.exit(code)
-    })
   const port = run(['port', name, '5432/tcp']).stdout.trim().split(':').pop()
   if (!/^\d+$/.test(port)) throw new Error(`podman port gave no host port for ${name}`)
   runTests(`postgres://blockfield:test-only@127.0.0.1:${port}/blockfield_test`, stop)
