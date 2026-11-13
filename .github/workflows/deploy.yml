@@ -13,7 +13,7 @@ permissions:
   packages: write
 jobs:
   check:
-    runs-on: ubuntu-24.04
+    runs-on: tenki-standard-autoscale
     timeout-minutes: 40
     services:
       postgres:
@@ -63,7 +63,7 @@ jobs:
             ghcr.io/blockfield/blockfield-site:${{ github.sha }}
             ghcr.io/blockfield/blockfield-site:latest
   postgres:
-    runs-on: ubuntu-24.04
+    runs-on: tenki-standard-autoscale
     timeout-minutes: 15
     services:
       postgres:
@@ -94,7 +94,7 @@ jobs:
           BLOCKFIELD_TEST_DATABASE_URL: postgres://blockfield:test-only@localhost:5432/blockfield_test
   deploy:
     needs: [check, postgres]
-    runs-on: ubuntu-24.04
+    runs-on: tenki-standard-autoscale
     timeout-minutes: 15
     steps:
       - name: Deploy through the Dokploy webhook

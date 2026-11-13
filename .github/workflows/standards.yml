@@ -50,7 +50,7 @@ jobs:
     # so the gate fails closed and the PR stays blocked until the bot
     # approves. The bot's own `bot-review` commit status blocks merge
     # independently.
-    runs-on: ubuntu-24.04
+    runs-on: tenki-standard-autoscale
     timeout-minutes: 5
     if: github.event_name == 'pull_request_review' && github.event.review.user.login == 'blockfield-review-bot[bot]' && github.event.review.state == 'approved'
     outputs:
@@ -112,7 +112,7 @@ jobs:
     # Same gate as bot-gate: a non-approving or non-bot review must not start
     # a runner here either. Push and manual-dispatch runs always run.
     if: github.event_name != 'pull_request_review' || (github.event.review.user.login == 'blockfield-review-bot[bot]' && github.event.review.state == 'approved')
-    runs-on: ubuntu-24.04
+    runs-on: tenki-standard-autoscale
     timeout-minutes: 10
     outputs:
       tested: ${{ steps.same.outputs.tested }}
@@ -137,7 +137,7 @@ jobs:
     # `always()` keeps push CI working even though `bot-gate` is skipped on
     # push; review heads additionally need the gate permit on the exact SHA.
     if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (needs.bot-gate.outputs.verdict == 'permit' && needs.bot-gate.outputs.sha_match == 'true')) && needs.decide.outputs.tested != 'true'
-    runs-on: ubuntu-24.04
+    runs-on: tenki-standard-autoscale
     timeout-minutes: 30
     services:
       postgres:
@@ -205,7 +205,7 @@ jobs:
     name: ${{ (github.event_name == 'pull_request_review' && (github.event.review.user.login != 'blockfield-review-bot[bot]' || github.event.review.state != 'approved')) && 'postgres (skipped review)' || 'postgres' }}
     needs: [decide, bot-gate]
     if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (needs.bot-gate.outputs.verdict == 'permit' && needs.bot-gate.outputs.sha_match == 'true')) && needs.decide.outputs.tested != 'true'
-    runs-on: ubuntu-24.04
+    runs-on: tenki-standard-autoscale
     timeout-minutes: 15
     services:
       postgres:

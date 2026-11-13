@@ -1,3 +1,4 @@
 self-hosted-runner:
   labels:
+    - tenki-standard-autoscale
     - blacksmith-2vcpu-ubuntu-2404
