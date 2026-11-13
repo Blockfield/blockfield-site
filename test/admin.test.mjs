@@ -1983,6 +1983,16 @@ test('raw console: owner only, one validated line through CP, every call audited
     target: 'game',
   })
   assert.equal((await (await call(`${OWNER}:Nether`, 'bogus')).json()).rejected, true)
+  // Exactly the ConsoleRun fields: CP refuses unknown keys (no resource or target).
+  assert.deepEqual(Object.keys(cp.seen[0][1]).sort(), [
+    'actorAccountId',
+    'backend',
+    'command',
+    'consumerId',
+    'environment',
+    'generation',
+    'idempotencyKey',
+  ])
   assert.deepEqual(
     cp.seen.map(([kind, body, auth]) => [kind, body.command, body.actorAccountId, auth]),
     [

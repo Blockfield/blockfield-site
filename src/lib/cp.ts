@@ -773,6 +773,8 @@ export async function runConsoleCp(
 ): Promise<CpOutcome & { operationId: string }> {
   const url = config()
   const { token, consumerId, generation } = consoleConfig(target)
+  // console.run takes no resource or target: a line always acts on the whole server.
+  const { environment, backend } = cpScope()
   if (!token || !consumerId || !uuidLoose.test(generation))
     throw new Error('Control-plane не настроен на сайте (консоль).')
   const actor = actorAccountId.replaceAll('-', '').toLowerCase()
@@ -783,7 +785,8 @@ export async function runConsoleCp(
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       idempotencyKey: opts.idempotencyKey ?? randomUUID(),
-      ...cpScope(),
+      environment,
+      backend,
       consumerId,
       generation,
       command,
