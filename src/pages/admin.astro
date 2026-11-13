@@ -833,65 +833,13 @@ const cpGate = cpConfigured()
             Статистика
           </h2>
           <p class="muted">
-            Матчи, которые попали в лидерборд. Время местное. Нечестный или сломанный матч можно
-            убрать из статистики — и вернуть обратно, если передумаете.
+            Статистика матчей, диагностика и приём результатов перенесены в control-plane. Публичный{' '}
+            <a href="/leaderboard">лидерборд</a> и профили игроков читают данные напрямую из
+            control-plane; аннулирование матчей выполняется через control-plane (права
+            <code>stats.void</code>).
           </p>
-          <div class="scope">
-            <label for="result-mode">Показать</label>
-            <select id="result-mode">
-              <option value="">Все матчи</option>
-              <option value="campaign">Ranked-кампании</option>
-              <option value="room">Обычные бои</option>
-              <option value="deathmatch">Каждый сам за себя</option>
-            </select>
-          </div>
-          <p class="form-status" id="result-status" role="status"></p>
-          <div class="group" aria-labelledby="result-list-title">
-            <header>
-              <h3 id="result-list-title">Матчи</h3>
-            </header>
-            <ul id="result-list" class="rows"></ul>
-          </div>
-          <div class="actions pager">
-            <button type="button" id="prev" class="small">
-              ← Новее
-            </button>
-            <span id="page" class="muted"></span>
-            <button type="button" id="next" class="small">
-              Старее →
-            </button>
-          </div>
           <h3>Сезоны</h3>
           <ul id="season-list" class="plain-list"></ul>
-          <details class="disclosure">
-            <summary>Ключи для игровых серверов</summary>
-            <p class="muted">
-              Заведите ключ, когда подключаете новый сервер, и отзовите, если он мог утечь. Ключ
-              показывается один раз.
-            </p>
-            <form id="key-form" class="form-stack">
-              <label for="key-server">ID игрового сервера</label>
-              <input
-                id="key-server"
-                name="serverId"
-                required
-                autocomplete="off"
-                aria-describedby="key-server-hint"
-              />
-              <small id="key-server-hint">Лежит в настройках статистики на самом сервере.</small>
-              <label for="key-label">Как его называть</label>
-              <input
-                id="key-label"
-                name="label"
-                required
-                maxlength="64"
-                placeholder="Например: основной сервер"
-              />
-              <button type="submit">Создать ключ</button>
-              <p class="form-status" role="status"></p>
-            </form>
-            <ul id="key-list" class="rows"></ul>
-          </details>
         </section>
 
         <section

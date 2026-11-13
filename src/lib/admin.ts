@@ -29,7 +29,7 @@ import {
   type RconTarget,
   stripColors,
 } from './console.ts'
-import { parseTickQuery, readDiagnostics, redact } from './diagnostics.ts'
+import { parseTickQuery, redact } from './diagnostics.ts'
 import { cachedRooms, roomId } from './rooms.ts'
 import { gateToggle } from './cp.ts'
 import { readGunBalance, validateGunOverrides, type GunBalanceCatalog } from './gun-balance.ts'
@@ -48,15 +48,8 @@ import {
 import { parseKitCatalog, validateKitChanges } from './kit-schema.ts'
 import { draslBase } from './skins.ts'
 import { parseStreakEntries } from './streak-table.ts'
-import {
-  filters,
-  resolveNames,
-  seasons,
-  statsStore,
-  StatsError,
-  UNKNOWN_PLAYER,
-  type StatsStore,
-} from './stats.ts'
+import { cpStatsConfigured, readHitregCp, readLeaderboardCp, readSeasonsCp } from './cp-stats.ts'
+import { statsStore, StatsError, UNKNOWN_PLAYER, type StatsStore } from './stats.ts'
 import {
   BALANCE_LABELS,
   BALANCE_SCOPES,
@@ -1925,10 +1918,14 @@ const ownerNames = new Map<string, string>()
 /** Last name seen in match results; used when Drasl cannot be reached. */
 async function knownName(store: StatsStore, uuid: string): Promise<string | null> {
   const dashed = uuid.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5')
-  const row = (await store.db.prepare('SELECT name FROM profiles WHERE uuid=?').get(dashed)) as
-    | { name: string }
-    | undefined
-  return row && nickname.test(row.name) ? row.name : null
+  try {
+    const row = (await store.db.prepare('SELECT name FROM profiles WHERE uuid=?').get(dashed)) as
+      | { name: string }
+      | undefined
+    return row && nickname.test(row.name) ? row.name : null
+  } catch {
+    return null
+  }
 }
 async function ownerName(uuid: string): Promise<string> {
   if (ownerNames.has(uuid)) return ownerNames.get(uuid)!
@@ -2002,11 +1999,6 @@ type Route = {
   /** Effect is a pure DB write: run it in the same transaction as the audit finalize. */
   tx?: boolean
 }
-const page = (url: URL) => {
-  const n = Number(url.searchParams.get('page') || '1')
-  if (!Number.isSafeInteger(n) || n < 1 || n > 1000) throw bad('Некорректная страница.')
-  return n
-}
 
 export async function overviewSnapshot() {
   const rooms = await cachedRooms()
@@ -2045,12 +2037,12 @@ type CpLib = typeof import('./cp.ts')
 const SITE_ROLE_RANK: Record<string, number> = { builder: 1, moderator: 2, admin: 3 }
 
 /** Role refresh for the admin event stream: CP authority in CP mode, replica otherwise. */
-export async function refreshRole(actor: Actor, store: StatsStore): Promise<Role | null> {
+export async function refreshRole(actor: Actor, store?: StatsStore): Promise<Role | null> {
   if ((await import('./cp.ts')).cpStaffConfigured()) {
     const cp = await import('./cp.ts')
     return cpActorRole(cp, actor)
   }
-  return roleOf(actor.uuid, store)
+  return store ? roleOf(actor.uuid, store) : null
 }
 
 /** Ping guard for the admin event stream: the session must still exist, then the role.
@@ -2416,32 +2408,27 @@ const routes: Record<string, Route> = {
   },
   'GET diagnostics': {
     permission: 'diagnostics',
-    handler: async ({ store }) => {
-      // U4: admin health reads from CP when configured, so the page works
-      // with the site diagnostics tables gone; otherwise the local Postgres.
-      if ((await import('./cp.ts')).cpDiagConfigured()) {
-        const cp = await import('./cp.ts')
-        const view = await cpCall(async () => {
-          try {
-            return await cp.readDiagnosticsCp()
-          } catch (error) {
-            // Wrong-shaped CP payload: never render partial objects, serve local rows.
-            if (cp.isDiagnosticsInvalid(error)) {
-              console.error('diagnostics: malformed CP payload, falling back to local')
-              return null
-            }
-            throw error
-          }
-        })
-        if (view === null) return readDiagnostics(store.db)
-        // shortcut: the producer cuts over to CP separately, so CP can hold
-        // no fresh sample yet; fall back to the local tables instead of an
-        // empty page. Removed with the site tables at U7.
-        if (view.lastSampleAt != null && Date.now() - view.lastSampleAt <= 3 * 60 * 1000)
-          return view
-        return readDiagnostics(store.db)
+    handler: async () => {
+      const cp = await import('./cp.ts')
+      if (!cp.cpDiagConfigured())
+        throw fail(503, 'Диагностика через control-plane не настроена на сайте.')
+      try {
+        return await cp.readDiagnosticsCp()
+      } catch (error) {
+        if (cp.isDiagnosticsInvalid(error))
+          throw fail(502, 'Control-plane вернул неверные данные диагностики.')
+        if (isCpProblem(error)) {
+          if (error.status === 401 || error.status === 403 || error.code === 'forbidden')
+            throw fail(
+              503,
+              'У сайта нет доступа к диагностике в control-plane. Обратитесь к координатору.',
+            )
+          if (error.status === 503) throw fail(503, error.message)
+          throw fail(error.status >= 500 ? 502 : error.status, error.message)
+        }
+        if (isUnknownOutcome(error)) throw fail(503, 'Control-plane диагностики недоступен.')
+        throw error
       }
-      return readDiagnostics(store.db)
     },
   },
   // Live server log stream and Brigadier completion from the mod's console link (read-only, unaudited).
@@ -2486,20 +2473,20 @@ const routes: Record<string, Route> = {
     permission: 'ban',
     handler: async ({ store }) => ({ bans: await siteBans(store) }),
   },
-  // Подсказки к полям с никнеймом: кого сайт уже видел в матчах, начиная с недавних.
+  // Подсказки к полям с никнеймом: известные игроки из control-plane, без запросов в site DB.
   'GET players': {
     permission: 'moderate',
-    handler: async ({ store }) => ({
-      players: (
-        (await store.db
-          .prepare(
-            'SELECT name FROM profiles WHERE uuid_like(name)=0 ORDER BY last_seen DESC LIMIT 300',
-          )
-          .all()) as { name: string }[]
-      )
-        .map((row) => row.name)
-        .filter((name) => nickname.test(name)),
-    }),
+    handler: async () => {
+      if (!cpStatsConfigured()) return { players: [] }
+      try {
+        const board = await readLeaderboardCp({ sort: 'score', limit: '100', page: '1' })
+        return {
+          players: board.players.map((row) => row.name).filter((name) => nickname.test(name)),
+        }
+      } catch {
+        return { players: [] }
+      }
+    },
   },
   'GET settings': {
     permission: 'settings',
@@ -3602,81 +3589,29 @@ const routes: Record<string, Route> = {
       detail: { changed: result?.changed, sync: result?.sync },
     }),
   },
-  'GET results': {
-    permission: 'stats',
-    handler: async ({ context, store }) => {
-      const load = async () =>
-          await store.results(context.url.searchParams.get('mode') || null, page(context.url)),
-        data = await load()
-      const unknown = data.results.flatMap((r) =>
-        r.players.filter((p) => p.name === UNKNOWN_PLAYER).map((p) => p.uuid),
-      )
-      return unknown.length && (await resolveNames(store, unknown)).size ? await load() : data
-    },
-  },
-  'POST results/void': {
-    permission: 'stats',
-    handler: async ({ actor, store, body }) => {
-      if (
-        !UUID.test(body?.serverId) ||
-        !UUID.test(body?.eventId) ||
-        typeof body.voided !== 'boolean'
-      )
-        throw bad('Некорректный результат.')
-      return await store.setVoided(body.serverId, body.eventId, body.voided ? actor.name : null)
-    },
-    audit: (body, result) => ({
-      action: body?.voided ? 'result-void' : 'result-restore',
-      target: `${body?.serverId}/${body?.eventId}`,
-      detail: result?.match,
-    }),
-  },
-  'GET keys': {
-    permission: 'stats',
-    handler: async ({ store }) => ({ keys: await store.ingestKeys() }),
-  },
-  'POST keys': {
-    tx: true,
-    permission: 'stats',
-    handler: async ({ store, body }) => {
-      if (!UUID.test(body?.serverId)) throw bad('ID сервера — UUID.')
-      if (
-        typeof body.label !== 'string' ||
-        !body.label.trim() ||
-        body.label.length > 64 ||
-        // eslint-disable-next-line no-control-regex -- Rejecting control characters is deliberate.
-        /[\x00-\x1f\x7f]/.test(body.label)
-      )
-        throw bad('Подпись: до 64 символов.')
-      return { key: await store.createIngestKey(body.serverId, body.label.trim()) }
-    },
-    audit: (body) => ({
-      action: 'ingest-key-create',
-      target: body?.serverId ?? null,
-      detail: { label: body?.label },
-    }),
-  },
-  'POST keys/revoke': {
-    tx: true,
-    permission: 'stats',
-    handler: async ({ store, body }) => {
-      if (!Number.isSafeInteger(body?.id) || !(await store.revokeIngestKey(body.id)))
-        throw fail(404, 'Ключ не найден или уже отозван.')
-      return { revoked: body.id }
-    },
-    audit: (body) => ({ action: 'ingest-key-revoke', target: String(body?.id) }),
-  },
-  // Aggregated in PostgreSQL over up to HITREG_SCAN_CAP matches, so it is staff-only; the window defaults to the last 7 days.
+  // Hit-reg telemetry and seasons read exclusively from control-plane (coordination#29 U4/U6, #64 row 7).
   'GET hitreg': {
     permission: 'stats',
-    handler: ({ context, store }) => {
-      const params = new URLSearchParams(context.url.searchParams)
-      if (!params.has('season') && !params.has('period')) params.set('period', 'week')
-      const query = filters(params)
-      return store.hitreg(query.mode, query.since, query.until)
+    handler: async ({ context }) => {
+      try {
+        return await readHitregCp(context.url.searchParams)
+      } catch (error) {
+        if (error instanceof StatsError) throw fail(error.status, error.message)
+        throw error
+      }
     },
   },
-  'GET seasons': { permission: 'stats', handler: () => ({ seasons: seasons() }) },
+  'GET seasons': {
+    permission: 'stats',
+    handler: async () => {
+      try {
+        return { seasons: (await readSeasonsCp()).seasons }
+      } catch (error) {
+        if (error instanceof StatsError) throw fail(error.status, error.message)
+        throw error
+      }
+    },
+  },
   'GET audit': {
     permission: 'audit',
     handler: async ({ store }) => ({

@@ -152,7 +152,7 @@ test('telemetry over the serialized cap is dropped even when structurally valid'
   assert.ok(Object.hasOwn(validateResult(fixture(2, { telemetry: telemetry() })), 'telemetry'))
 })
 
-test('POST /api/stats/results stores a match whose telemetry is invalid', async (t) => {
+test('POST /api/stats/results is retired (404); ingest strips invalid telemetry', async (t) => {
   t.mock.method(console, 'warn', () => {})
   const store = await database(t),
     deps = { store, keys: { [server]: [token] } }
@@ -168,7 +168,8 @@ test('POST /api/stats/results stores a match whose telemetry is invalid', async 
     }),
     deps,
   )
-  assert.equal(response.status, 201)
+  assert.equal(response.status, 404)
+  await store.ingest(fixture(2, { telemetry: telemetry({ shots: 0, fallbackShare: null }) }))
   const row = await store.db.prepare('SELECT payload FROM results').get()
   assert.ok(!Object.hasOwn(JSON.parse(row.payload), 'telemetry'))
 })
@@ -268,6 +269,46 @@ test('hitreg is staff-only, defaults to the last 7 days and caps the scan', asyn
   }
   assert.equal((await call(null)).status, 401)
   assert.equal((await call(`${builder}:Bld`)).status, 403)
+  assert.equal(
+    (await call(`${admin}:Adm`)).status,
+    503,
+    'unconfigured CP does not fall back to site DB',
+  )
+
+  const { createServer } = await import('node:http')
+  const cpServer = createServer(async (req, res) => {
+    const reqUrl = new URL(req.url, 'http://cp')
+    res.setHeader('Content-Type', 'application/json')
+    if (reqUrl.pathname === '/v2/stats/hitreg') {
+      const season = reqUrl.searchParams.get('season')
+      const period = reqUrl.searchParams.get('period')
+      if (season === 's99') {
+        res.statusCode = 400
+        return res.end(
+          JSON.stringify({ error: 'invalid_stats_filter', message: 'Неизвестный сезон.' }),
+        )
+      }
+      const range =
+        period === 'month'
+          ? await store.hitreg(null, Date.now() - 30 * day, Date.now() + 300000)
+          : await store.hitreg(null, Date.now() - 7 * day, Date.now() + 300000)
+      return res.end(
+        JSON.stringify({
+          schemaVersion: 1,
+          checkedAt: new Date().toISOString(),
+          season: null,
+          period: period || 'week',
+          ...range,
+        }),
+      )
+    }
+    res.statusCode = 404
+    res.end(JSON.stringify({ error: 'not_found' }))
+  })
+  await new Promise((r) => cpServer.listen(0, '127.0.0.1', r))
+  t.after(() => cpServer.close())
+  process.env.BLOCKFIELD_CP_URL = `http://127.0.0.1:${cpServer.address().port}`
+  process.env.BLOCKFIELD_CP_STATS_TOKEN = 'hitreg-stats-t'
   const week = await call(`${admin}:Adm`)
   assert.equal(week.status, 200)
   assert.equal((await week.json()).shots, 10)

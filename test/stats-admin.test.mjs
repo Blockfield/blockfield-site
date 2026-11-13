@@ -156,16 +156,15 @@ test('DB ingest keys: accepted until revoked, only hashes are stored, env keys k
       }),
       { store: db, keys: { [uid(2)]: [envToken] } },
     )
-  assert.equal((await post(key, 30)).status, 201)
-  assert.equal((await post(key, 31, uid(2))).status, 401, 'a DB key is bound to its server')
+  assert.equal((await post(key, 30)).status, 404, 'HTTP stats ingest is retired')
   assert.equal(
     (await post(envToken, 32, uid(2))).status,
-    403,
-    'env key still authenticates (body is for another server)',
+    404,
+    'HTTP stats ingest is retired even for env keys',
   )
   assert.equal(await db.revokeIngestKey((await db.ingestKeys())[0].id), true)
   assert.equal(await db.revokeIngestKey((await db.ingestKeys())[0].id), false)
-  assert.equal((await post(key, 33)).status, 401)
+  assert.equal((await post(key, 33)).status, 404)
 })
 
 test('audit entries are stored newest first and capped', async (t) => {

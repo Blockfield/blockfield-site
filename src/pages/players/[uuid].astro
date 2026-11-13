@@ -3,25 +3,26 @@ import LocalTime from '../../components/LocalTime.astro'
 import SectionRule from '../../components/SectionRule.astro'
 import Community from '../../layouts/Community.astro'
 import {
-  statsStore,
-  filters,
-  seasons,
+  readPlayerCp,
+  readSeasonsCp,
   StatsError,
-  resolveNames,
-  displayName,
-} from '../../lib/stats'
+  type CpPlayerView,
+  type CpSeason,
+} from '../../lib/cp-stats'
 import { resolveSkins, DEFAULT_SKIN, type Skin } from '../../lib/skins'
 import { outcomeLabel } from '../../lib/stats-outcome'
 import { CLASS_NAMES } from '../../lib/game-names'
-let data: any = null,
+let data: CpPlayerView | null = null,
   error = '',
-  skin: Skin | null = null
+  skin: Skin | null = null,
+  seasonList: CpSeason[] = []
 try {
-  data = await (await statsStore()).player(Astro.params.uuid || '', filters(Astro.url.searchParams))
-  const resolved = (await resolveNames(await statsStore(), [data.profile.uuid])).get(
-    data.profile.uuid,
-  )
-  data.profile.name = displayName(resolved ?? data.profile.name)
+  const [playerData, seasonsData] = await Promise.all([
+    readPlayerCp(Astro.params.uuid || '', Astro.url.searchParams),
+    readSeasonsCp().catch(() => null),
+  ])
+  data = playerData
+  seasonList = seasonsData?.seasons ?? []
   skin = (await resolveSkins([data.profile.uuid])).get(data.profile.uuid) ?? DEFAULT_SKIN
 } catch (e) {
   Astro.response.status = e instanceof StatsError ? e.status : 503
@@ -32,7 +33,7 @@ try {
         ? 'Такой страницы нет — проверьте ссылку или найдите игрока в лидерборде.'
         : 'Страница сейчас недоступна. История никуда не делась — зайдите чуть позже.'
 }
-const mmrName = seasons().find((s) => s.id === data?.mmrSeason)?.name ?? 'Сезон 1'
+const mmrName = seasonList.find((s) => s.id === data?.mmrSeason)?.name ?? 'Сезон 1'
 const modes: Record<string, string> = {
   room: 'Casual',
   campaign: 'Ranked',
@@ -125,7 +126,9 @@ const stats = data?.totals
               <p class="hero__sub">За выбранный период боёв нет.</p>
             )}
             {data.season && (
-              <p class="muted">Показан {seasons().find((s) => s.id === data.season)?.name}.</p>
+              <p class="muted">
+                Показан {seasonList.find((s) => s.id === data.season)?.name ?? data.season}.
+              </p>
             )}
             {stats.length > 0 && (
               <dl class="stats">

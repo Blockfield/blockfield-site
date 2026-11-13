@@ -1,7 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { parseTickQuery, readDiagnostics, redact, validateReport } from '../src/lib/diagnostics.ts'
+import {
+  parseTickQuery,
+  readDiagnostics,
+  redact,
+  saveReport,
+  validateReport,
+} from '../src/lib/diagnostics.ts'
 import { handleStatsRequest } from '../src/lib/stats.ts'
 import { database as store } from './storage.mjs'
 
@@ -32,7 +38,7 @@ const event = (at, extra = {}) => ({
   ...extra,
 })
 
-test('diagnostics ingestion: producer key and own server identity required, resends are idempotent', async (t) => {
+test('diagnostics HTTP ingest is retired (404); saveReport resends are idempotent', async (t) => {
   const s = await store(t),
     now = Date.now()
   const body = {
@@ -42,10 +48,11 @@ test('diagnostics ingestion: producer key and own server identity required, rese
     samples: [sample(now - 60_000, { players: 12, heapUsedMb: 1800, heapMaxMb: 3072 })],
     events: [event(now - 30_000, { kind: 'freeze', durationMs: 3400, source: 'Server thread' })],
   }
-  assert.equal((await post(s, body, { key: 'x'.repeat(40) })).status, 401)
-  assert.equal((await post(s, { ...body, serverId: OTHER })).status, 403)
-  assert.equal((await post(s, body)).status, 200)
-  assert.equal((await post(s, body)).status, 200, 'a retried batch is accepted')
+  assert.equal((await post(s, body)).status, 404)
+  assert.equal((await post(s, { ...body, serverId: OTHER }, { key: 'wrong' })).status, 404)
+  const report = validateReport(body, now)
+  await saveReport(s.db, report, now)
+  await saveReport(s.db, report, now)
   const view = await readDiagnostics(s.db)
   assert.equal(view.samples.length, 1)
   assert.equal(view.events.length, 1)
@@ -95,7 +102,11 @@ test('retention prunes old rows on every ingest', async (t) => {
       'INSERT INTO server_events (server_id,event_id,at,kind,message,repeats) VALUES (?,?,?,?,?,?)',
     )
     .run(SERVER, randomUUID(), now - 15 * DAY, 'error', 'old', 1)
-  await post(s, { schemaVersion: 1, serverId: SERVER, samples: [sample(now)] })
+  await saveReport(
+    s.db,
+    validateReport({ schemaVersion: 1, serverId: SERVER, samples: [sample(now)] }, now),
+    now,
+  )
   assert.equal((await s.db.prepare('SELECT count(*) n FROM server_samples').get()).n, 1)
   assert.equal((await s.db.prepare('SELECT count(*) n FROM server_events').get()).n, 0)
 })
@@ -112,9 +123,10 @@ test('bounded journal retains errors and crashes before newer warnings, includin
     .run(SERVER, now)
   const error = event(now - 1000),
     crash = event(now - 2000, { kind: 'crash' })
-  assert.equal(
-    (await post(s, { schemaVersion: 1, serverId: SERVER, events: [error, crash] })).status,
-    200,
+  await saveReport(
+    s.db,
+    validateReport({ schemaVersion: 1, serverId: SERVER, events: [error, crash] }, now),
+    now,
   )
   assert.equal((await s.db.prepare('SELECT count(*) n FROM server_events').get()).n, 5000)
   for (const e of [error, crash])
