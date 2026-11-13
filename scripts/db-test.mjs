@@ -16,7 +16,10 @@ if (url) {
   const run = (args) => spawnSync('podman', args, { stdio: 'pipe', encoding: 'utf8' })
   if (run(['--version']).error)
     throw new Error('podman is required for pnpm test:local (or set BLOCKFIELD_TEST_DATABASE_URL)')
-  const stop = () => run(['rm', '-f', name])
+  let started = false
+  // Only remove a container this run created: a failed `podman run` (name
+  // already taken) must not delete someone else's container.
+  const stop = () => started && run(['rm', '-f', name])
   process.on('exit', stop)
   // Registered before `podman run`: 'exit' does not fire on an unhandled
   // signal, and a signal during the synchronous start is delivered right
@@ -27,7 +30,14 @@ if (url) {
     ['SIGHUP', 129],
   ])
     process.on(signal, () => {
-      tests?.kill(signal)
+      // Negative pid: the whole group, so node --test workers stop too.
+      if (tests?.pid) {
+        try {
+          process.kill(-tests.pid, signal)
+        } catch {
+          // the group already exited
+        }
+      }
       process.exit(code)
     })
   const start = run([
@@ -49,6 +59,7 @@ if (url) {
     'docker.io/library/postgres:18',
   ])
   if (start.status !== 0) throw new Error(`podman run failed: ${start.stderr}`)
+  started = true
   const port = run(['port', name, '5432/tcp']).stdout.trim().split(':').pop()
   if (!/^\d+$/.test(port)) throw new Error(`podman port gave no host port for ${name}`)
   runTests(`postgres://blockfield:test-only@127.0.0.1:${port}/blockfield_test`, stop)
@@ -75,6 +86,7 @@ async function runTests(dbUrl, stop) {
   const child = (tests = spawn('node --experimental-strip-types --test test/*.test.mjs', {
     stdio: 'inherit',
     shell: true,
+    detached: true,
     env: process.env,
   }))
   child.on('exit', (code) => {
