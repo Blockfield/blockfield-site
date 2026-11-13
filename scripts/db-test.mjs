@@ -7,6 +7,7 @@ import { spawnSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { Pool } from 'pg'
 
+let tests
 const url = process.env.BLOCKFIELD_TEST_DATABASE_URL
 if (url) {
   runTests(url, null)
@@ -36,6 +37,17 @@ if (url) {
   if (start.status !== 0) throw new Error(`podman run failed: ${start.stderr}`)
   const stop = () => run(['rm', '-f', name])
   process.on('exit', stop)
+  // 'exit' does not fire on an unhandled signal: remove the container (and
+  // the test run) explicitly so an interrupted run never leaks it.
+  for (const [signal, code] of [
+    ['SIGINT', 130],
+    ['SIGTERM', 143],
+    ['SIGHUP', 129],
+  ])
+    process.on(signal, () => {
+      tests?.kill(signal)
+      process.exit(code)
+    })
   const port = run(['port', name, '5432/tcp']).stdout.trim().split(':').pop()
   if (!/^\d+$/.test(port)) throw new Error(`podman port gave no host port for ${name}`)
   runTests(`postgres://blockfield:test-only@127.0.0.1:${port}/blockfield_test`, stop)
@@ -59,11 +71,11 @@ async function runTests(dbUrl, stop) {
     }
   }
   await pool.end()
-  const child = spawn('node --experimental-strip-types --test test/*.test.mjs', {
+  const child = (tests = spawn('node --experimental-strip-types --test test/*.test.mjs', {
     stdio: 'inherit',
     shell: true,
     env: process.env,
-  })
+  }))
   child.on('exit', (code) => {
     stop?.()
     process.exit(code ?? 1)
