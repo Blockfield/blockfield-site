@@ -1,4 +1,4 @@
-// Admin console tab (RCON console, live tick check, log tail).
+// Admin console tab (game console via CP, live tick check, log tail).
 // Extracted verbatim from src/pages/admin.astro (SITE95-U3).
 import { customSelect } from '../lib/custom-select'
 import { dangerousCommand } from '../lib/console'

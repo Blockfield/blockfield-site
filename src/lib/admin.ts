@@ -17,7 +17,6 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
 import { account, drasl, fail, nickname, readJson, session, sessionToken } from './account.ts'
-import { rconReuse } from './rcon.ts'
 import { eventStream, heartbeat, redactKeyResult } from './admin-events.ts'
 import {
   consoleLogPage,
@@ -1610,7 +1609,7 @@ function readRequestResult(id: string) {
   return result
 }
 
-/** Only these command shapes ever reach RCON; every argument is checked, nothing is passed through. */
+/** Every argument is checked before it reaches the control plane; nothing is passed through. */
 function text(value: unknown, required: boolean): string {
   if (value === undefined || value === null || value === '') {
     if (required) throw bad('Укажите текст.')
@@ -1631,98 +1630,41 @@ const player = (value: unknown) => {
     throw bad('Никнейм: 3–16 символов, латинские буквы, цифры и _.')
   return value
 }
-const withReason = (command: string, reason: string) => (reason ? `${command} ${reason}` : command)
-export function rconCommand(body: any): {
+/** Moderation commands that wait for the game's receipt (list output, offline player, status). */
+export function moderationRequest(body: any): {
   permission: string
-  commands: string[]
-  target: string | null
+  kind: 'list' | 'kick' | 'ban' | 'maintenance'
+  fields: Record<string, unknown>
+  player?: string
 } {
   switch (body?.action) {
     case 'list':
-      return { permission: 'moderate', commands: ['list'], target: null }
-    case 'say':
-      return { permission: 'moderate', commands: [`say ${text(body.text, true)}`], target: null }
+      return { permission: 'moderate', kind: 'list', fields: {} }
     case 'kick':
-      return {
-        permission: 'moderate',
-        commands: [withReason(`kick ${player(body.player)}`, text(body.reason, false))],
-        target: body.player,
-      }
     case 'ban':
       return {
-        permission: 'ban',
-        commands: [withReason(`ban ${player(body.player)}`, text(body.reason, false))],
-        target: body.player,
+        permission: body.action === 'ban' ? 'ban' : 'moderate',
+        kind: body.action,
+        fields: { reason: text(body.reason, false) },
+        player: player(body.player),
       }
-    case 'pardon':
-      return { permission: 'ban', commands: [`pardon ${player(body.player)}`], target: body.player }
-    case 'team-kick':
-      return {
-        permission: 'moderate',
-        commands: [`bf team kick ${player(body.player)}`],
-        target: body.player,
-      }
-    case 'class-lock':
-    case 'class-unlock': {
-      if (typeof body.classId !== 'string' || !/^[a-z0-9_]{1,32}$/.test(body.classId))
-        throw bad('Некорректный класс.')
-      return {
-        permission: 'moderate',
-        commands: [`bf class ${body.action.slice(6)} ${body.classId}`],
-        target: body.classId,
-      }
-    }
-    case 'range':
-      if (!['open', 'close', 'reset'].includes(body.op))
-        throw bad('Полигон: open, close или reset.')
-      return { permission: 'moderate', commands: [`bf range ${body.op}`], target: body.op }
-    case 'stop-room': {
-      if (typeof body.roomId !== 'string' || !roomId.test(body.roomId))
-        throw bad('Некорректная комната.')
-      const reason = text(body.reason, false),
-        room = `bf stop room ${body.roomId}`
-      if (body.outcome === 'draw')
-        return {
-          permission: 'moderate',
-          commands: [withReason(`${room} draw`, reason)],
-          target: body.roomId,
-        }
-      if (body.outcome === 'RED' || body.outcome === 'BLUE')
-        return {
-          permission: 'moderate',
-          commands: [
-            withReason(`${room} win ${body.outcome === 'RED' ? 'RedTeam' : 'BlueTeam'}`, reason),
-          ],
-          target: body.roomId,
-        }
-      if (body.outcome !== 'none') throw bad('Итог: none, draw, RED или BLUE.')
-      // A bare reason starting with a sub-command word would be parsed as that sub-command.
-      if (/^(win|draw)\b/.test(reason)) throw bad('Причина не может начинаться с win или draw.')
-      return { permission: 'moderate', commands: [withReason(room, reason)], target: body.roomId }
-    }
     case 'maintenance-status':
-      return { permission: 'maintenance', commands: ['bf maintenance status'], target: null }
+      return { permission: 'maintenance', kind: 'maintenance', fields: { op: 'status' } }
     case 'drain':
-      return { permission: 'maintenance', commands: ['bf maintenance drain'], target: null }
     case 'resume':
-      return { permission: 'maintenance', commands: ['bf maintenance resume'], target: null }
-    // The server confirms an interrupt only from the same sender within 60 s, so both commands share one connection.
+      return { permission: 'maintenance', kind: 'maintenance', fields: { op: body.action } }
+    // The game arms and confirms an interrupt as one sender within 60 s.
     case 'interrupt':
       return {
         permission: 'maintenance',
-        commands: [
-          'bf maintenance interrupt',
-          `bf maintenance interrupt confirm ${text(body.reason, true)}`,
-        ],
-        target: null,
+        kind: 'maintenance',
+        fields: { op: 'interrupt', reason: text(body.reason, true) },
       }
     default:
       throw bad('Неизвестное действие.')
   }
 }
-/** Typed-CP moderation actions: fire-and-forget only, RCON never carries them.
-`list` stays on RCON (a read; CP ACKs carry no output), kick/ban keep the
-RCON nickname flow until the UUID cutover, maintenance/raw have no typed kind. */
+/** Fire-and-forget typed-CP moderation actions; moderationRequest covers the rest. */
 function moderationCpKind(body: any): string | null {
   switch (body?.action) {
     case 'say':
@@ -1737,8 +1679,8 @@ function moderationCpKind(body: any): string | null {
       return null
   }
 }
-/** Per-kind CP fields; validation matches the retired RCON shapes so the same bodies stay refused. */
-function moderationCpFields(body: any): Record<string, unknown> {
+/** Per-kind CP fields; validation keeps the former RCON shapes so the same bodies stay refused. */
+export function moderationCpFields(body: any): Record<string, unknown> {
   switch (body?.action) {
     case 'say':
       return { text: text(body.text, true) }
@@ -1829,59 +1771,55 @@ export const rejectedByServer = (output: string) =>
 function hidden(status: number, message: string, internal: string) {
   return Object.assign(fail(status, message), { internal })
 }
-function rconConfigured(target: RconTarget = 'game') {
-  const env = process.env
-  if (target === 'workshop') {
-    if (!env.BLOCKFIELD_WORKSHOP_RCON_HOST || !env.BLOCKFIELD_WORKSHOP_RCON_PASSWORD)
-      throw fail(503, 'RCON для Workshop не настроен на сайте.')
-    return
+/** Why a settled CP outcome is not a success, in the admin's words; null when it succeeded. */
+function cpOutcomeError(status: string): [number, string] | null {
+  switch (status) {
+    case 'effective':
+      return null
+    case 'pending':
+    case 'expired':
+      return [504, 'Сервер не подтвердил команду. Проверьте результат позже.']
+    case 'rejected':
+      return [502, 'Сервер не выполнил команду.']
+    default:
+      return [502, 'Результат команды неизвестен. Проверьте состояние сервера.']
   }
-  if (!env.BLOCKFIELD_RCON_HOST || !env.BLOCKFIELD_RCON_PASSWORD)
-    throw fail(503, 'RCON не настроен на сайте.')
 }
-function sendRcon(commands: string[], target: RconTarget = 'game') {
-  const env = process.env
-  const isWorkshop = target === 'workshop'
-  const host = isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_HOST : env.BLOCKFIELD_RCON_HOST
-  const port = Number(
-    (isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_PORT : env.BLOCKFIELD_RCON_PORT) || 25575,
-  )
-  const password = isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_PASSWORD : env.BLOCKFIELD_RCON_PASSWORD
-  return rconReuse(commands, {
-    host: host!,
-    port,
-    password: password!,
-  }).catch((error: Error) => {
-    console.error(`RCON [${target}] failed`, error.message)
-    const serverDesc = isWorkshop ? 'Сервер Workshop' : 'Игровой сервер'
-    throw hidden(502, `${serverDesc} не отвечает.`, error.message)
-  })
+/** CP console call with the site's error mapping; output keeps the game's text. */
+async function runConsole(target: RconTarget, command: string, actor: Actor) {
+  const cp = await import('./cp.ts')
+  if (!cp.cpConsoleConfigured(target))
+    throw fail(
+      503,
+      target === 'workshop' ? 'Консоль Мастерской не настроена.' : 'Консоль не настроена.',
+    )
+  try {
+    return await cp.runConsoleCp(target, command, actor.uuid)
+  } catch (error) {
+    if (isCpProblem(error)) throw fail(error.status, error.message)
+    console.error(`Console [${target}] failed`, (error as Error).message)
+    throw hidden(502, 'Control-plane не отвечает.', (error as Error).message)
+  }
 }
 /**
- * The mod's console link (log stream + Brigadier completion) lives next to RCON: same host, the
- * RCON port plus one unless overridden, the RCON password as the bearer token. No new secrets.
+ * The mod's console link (log stream + Brigadier completion): a read-only HTTP
+ * endpoint next to the game, bearer = its console-read token. Commands never go
+ * through it, only through CP.
  */
 function consoleLink(target: RconTarget = 'game') {
   const env = process.env
   const isWorkshop = target === 'workshop'
-  rconConfigured(target)
-  const rconPort = Number(
-    (isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_PORT : env.BLOCKFIELD_RCON_PORT) || 25575,
-  )
-  const port = Number(
-    (isWorkshop ? env.BLOCKFIELD_WORKSHOP_CONSOLE_PORT : env.BLOCKFIELD_CONSOLE_PORT) ||
-      rconPort + 1,
-  )
-  if (!Number.isSafeInteger(port) || port < 1 || port > 65535)
-    throw fail(503, 'Порт консоли настроен неверно.')
-  const host = isWorkshop ? env.BLOCKFIELD_WORKSHOP_RCON_HOST : env.BLOCKFIELD_RCON_HOST
-  // The mod's console link accepts only its console-read bearer (BLOCKFIELD_CP_CONSOLE_READ_TOKEN
-  // on the server), never the RCON password.
+  const host = isWorkshop ? env.BLOCKFIELD_WORKSHOP_CONSOLE_HOST : env.BLOCKFIELD_CONSOLE_HOST
   const token = isWorkshop
     ? env.BLOCKFIELD_WORKSHOP_CONSOLE_READ_TOKEN
     : env.BLOCKFIELD_CONSOLE_READ_TOKEN
-  if (!token) throw fail(503, 'Токен консоли не настроен.')
-  return { host: host!, port, token }
+  if (!host || !token) throw fail(503, 'Журнал консоли не настроен.')
+  const port = Number(
+    (isWorkshop ? env.BLOCKFIELD_WORKSHOP_CONSOLE_PORT : env.BLOCKFIELD_CONSOLE_PORT) || 25576,
+  )
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535)
+    throw fail(503, 'Порт консоли настроен неверно.')
+  return { host, port, token }
 }
 /** One proxied call to the mod's console link: structured data only, never raw JSON to the browser. */
 async function fetchConsole(target: RconTarget, path: 'logs' | 'suggest', search: string) {
@@ -2266,8 +2204,7 @@ const routes: Record<string, Route> = {
   'POST rcon': {
     permission: 'moderate',
     handler: async ({ actor, body }) => {
-      // Typed control-plane path: the 7 CP kinds (see moderationCpKind) never
-      // reach RCON. `list`/kick/ban/maintenance/raw stay on RCON (no typed kind).
+      // Every command reaches the game only as a typed control-plane action.
       const cpKind = moderationCpKind(body)
       if (cpKind) {
         const cp = await import('./cp.ts')
@@ -2296,23 +2233,32 @@ const routes: Record<string, Route> = {
           return { operationId: null, unknownOutcome: true, room }
         }
       }
-      const { permission, commands } = rconCommand(body)
+      const { permission, kind, fields, player: name } = moderationRequest(body)
       if (!can(actor.role, permission)) throw fail(403, 'Недостаточно прав.')
-      rconConfigured()
-      // Room ids are not meaningful to people: keep the room's name and map for the audit log.
-      const found =
-        body.action === 'stop-room'
-          ? (await cachedRooms()).rooms.find((r) => r.id === body.roomId)
-          : undefined
-      const room = found ? { name: found.name, map: found.map } : undefined
-      const outputs = await sendRcon(commands)
-      const output = stripColors(outputs.at(-1) ?? '')
-      const rejected = outputs.map(stripColors).find(rejectedByServer)
-      if (rejected !== undefined)
-        throw fail(502, `Сервер не принял команду: ${rejected.slice(0, 200)}`)
+      const cp = await import('./cp.ts')
+      if (!cp.cpModerationConfigured())
+        throw fail(503, 'Модерация через control-plane не настроена.')
+      const idempotencyKey = moderationIdempotencyKey(body)
+      // kick/ban address the player by account UUID: the nickname is resolved first.
+      if (name) fields.playerId = (await lookupName(name)).uuid
+      let outcome
+      try {
+        outcome = await cp.runModerationCp(kind, actor.uuid, fields, { idempotencyKey })
+      } catch (error) {
+        if (isCpProblem(error)) throw fail(error.status, error.message)
+        console.error(`CP moderation ${kind} failed`, (error as Error).message)
+        throw hidden(502, 'Control-plane не отвечает.', (error as Error).message)
+      }
+      const output = stripColors(outcome.output)
+      const failed = cpOutcomeError(outcome.status)
+      if (failed && outcome.status === 'rejected' && (kind === 'kick' || kind === 'ban'))
+        throw fail(409, kind === 'kick' ? 'Игрок не в сети.' : 'Сервер не знает этого игрока.')
+      if (failed) throw fail(failed[0], output ? `${failed[1]} ${output.slice(0, 200)}` : failed[1])
+      if (rejectedByServer(output))
+        throw fail(502, `Сервер не принял команду: ${output.slice(0, 200)}`)
       return {
         output,
-        room,
+        operationId: outcome.operationId,
         // The server accepts the confirm only within 60 s of the arm: the panel
         // counts this window down from the confirmed apply (read-back only).
         ...(body.action === 'interrupt' ? { interruptAt: Date.now() } : {}),
@@ -2373,7 +2319,7 @@ const routes: Record<string, Route> = {
   // Owner only: any single command line. Refusals are audited too (without the command: the body is not read).
   'POST rcon/raw': {
     permission: 'rcon-raw',
-    handler: async ({ body }) => {
+    handler: async ({ actor, body }) => {
       let command: string
       let target: RconTarget
       try {
@@ -2382,9 +2328,18 @@ const routes: Record<string, Route> = {
       } catch (error) {
         throw bad((error as Error).message)
       }
-      rconConfigured(target)
-      const output = stripColors((await sendRcon([command], target))[0] ?? '')
-      return { command, output, rejected: rejectedByServer(output), target }
+      const outcome = await runConsole(target, command, actor)
+      const output = stripColors(outcome.output)
+      const failed = cpOutcomeError(outcome.status)
+      // A refused line (game allowlist, Brigadier) is a reply, not an error;
+      // an unconfirmed one is an error the owner must check.
+      if (failed && outcome.status !== 'rejected') throw fail(...failed)
+      return {
+        command,
+        output: output || (failed ? failed[1] : ''),
+        rejected: !!failed || rejectedByServer(output),
+        target,
+      }
     },
     audit: (body, result) => {
       let target: string | null = null
@@ -2474,10 +2429,11 @@ const routes: Record<string, Route> = {
   // The server's own tick window right now (vanilla `tick query`, read-only), independent of pushed samples.
   'GET diagnostics/live': {
     permission: 'diagnostics',
-    handler: async () => {
-      rconConfigured()
-      const output = stripColors((await sendRcon(['tick query']))[0] ?? '')
-      const tick = parseTickQuery(output)
+    handler: async ({ actor }) => {
+      const outcome = await runConsole('game', 'tick query', actor)
+      const failed = cpOutcomeError(outcome.status)
+      if (failed) throw fail(...failed)
+      const tick = parseTickQuery(stripColors(outcome.output))
       if (!tick) throw fail(502, 'Сервер не вернул данные о тиках.')
       return { at: Date.now(), ...tick }
     },
@@ -4030,7 +3986,7 @@ export async function handleAdmin(
         error,
       })
     try {
-      // Pure DB effects share one transaction with the finalize; RCON and file
+      // Pure DB effects share one transaction with the finalize; CP and file
       // effects cannot, so they finalize right after the handler instead.
       // applied flips only after the commit: a rolled-back effect never ran.
       // The live event goes out after the commit too: rolled-back rows never show as ok.

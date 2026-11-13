@@ -209,8 +209,8 @@ export async function readDiagnostics(db: Database, hours = 24, now = Date.now()
 }
 
 /**
- * Vanilla `tick query` (1.20.3+) over RCON: the server's own tick-time window (last 100 ticks), no mod needed.
- * RCON concatenates the command's messages without separators, so every field is matched on its own.
+ * Vanilla `tick query` (1.20.3+): the server's own tick-time window (last 100 ticks), no mod needed.
+ * Senders may join the command's messages without separators, so every field is matched on its own.
  */
 export function parseTickQuery(output: string) {
   // The server formats with `%.1f` in its default locale: `80,0` under a Russian JVM locale.

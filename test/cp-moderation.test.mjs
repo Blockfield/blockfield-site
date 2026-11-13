@@ -1,7 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { cpModerationConfigured, moderationCpKinds, postModerationCp } from '../src/lib/cp.ts'
+import {
+  awaitOperationCp,
+  cpModerationConfigured,
+  moderationCpKinds,
+  postModerationCp,
+} from '../src/lib/cp.ts'
 
 async function fakeCp(handler) {
   const server = http.createServer(handler)
@@ -28,16 +33,18 @@ function env(t, server) {
 
 test('moderation flag needs URL, token and consumer generation', () => {
   assert.deepEqual([...moderationCpKinds].sort(), [
+    'ban',
     'class-lock',
     'class-unlock',
+    'kick',
+    'list',
+    'maintenance',
     'pardon',
     'range',
     'say',
     'stop-room',
     'team-kick',
   ])
-  // list stays on RCON: it is a read and CP ACKs carry no output.
-  assert.equal(moderationCpKinds.includes('list'), false)
   assert.equal(
     cpModerationConfigured({
       BLOCKFIELD_CP_URL: 'http://127.0.0.1:9',
@@ -106,7 +113,7 @@ test('moderation maps CP refusals to site errors', async (t) => {
     // No moderation scopes on the site credential yet: coordinator step, not a silent failure.
     await assert.rejects(postModerationCp('say', ACTOR, { text: 'hi' }), /координатору/)
     await assert.rejects(postModerationCp('range', ACTOR, { op: 'open' }), /позже/)
-    await assert.rejects(postModerationCp('list', ACTOR, {}), /Неизвестное действие/)
+    await assert.rejects(postModerationCp('op', ACTOR, {}), /Неизвестное действие/)
   } finally {
     await new Promise((resolve) => server.close(resolve))
   }
@@ -240,6 +247,44 @@ test('moderation forwards a caller-supplied idempotency key verbatim', async (t)
     await postModerationCp('say', ACTOR, { text: 'hi' }, { idempotencyKey: key })
     await postModerationCp('say', ACTOR, { text: 'hi' }, { idempotencyKey: key })
     assert.deepEqual(seen, [key, key])
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('awaitOperationCp polls until the game settles and returns the last receipt output', async (t) => {
+  let reads = 0
+  const server = await fakeCp((req, res) => {
+    reads++
+    res.setHeader('Content-Type', 'application/json')
+    assert.equal(req.headers.authorization, 'Bearer mod-token')
+    res.end(
+      JSON.stringify(
+        reads < 3
+          ? { status: 'received', receipts: [] }
+          : {
+              status: 'effective',
+              receipts: [
+                { state: 'received', result: { code: 'ok' } },
+                { state: 'effective', result: { code: 'ok', output: 'There are 0 players' } },
+              ],
+            },
+      ),
+    )
+  })
+  try {
+    env(t, server)
+    assert.deepEqual(await awaitOperationCp('op-1', 'mod-token', { intervalMs: 1 }), {
+      status: 'effective',
+      output: 'There are 0 players',
+    })
+    assert.equal(reads, 3)
+    reads = 0
+    // Never settled within the window: pending, never reported as success.
+    assert.deepEqual(await awaitOperationCp('op-2', 'mod-token', { intervalMs: 1, timeoutMs: 0 }), {
+      status: 'pending',
+      output: '',
+    })
   } finally {
     await new Promise((resolve) => server.close(resolve))
   }

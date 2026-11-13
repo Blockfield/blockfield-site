@@ -11,7 +11,8 @@ import {
   handleAdmin,
   owners,
   playerId,
-  rconCommand,
+  moderationRequest,
+  moderationCpFields,
   roleOf,
   saveSettings,
   siteIdentity,
@@ -772,35 +773,36 @@ test('parcool settings round-trip through saveSettings like the other sections',
   assert.equal(cleared.parcool, undefined)
 })
 
-test('RCON allowlist builds exact commands and rejects injection', () => {
+test('moderation bodies become typed CP fields and injection is refused', () => {
   const room = '0f8e0c3a-1b2c-4d5e-8f90-123456789abc'
-  assert.deepEqual(
-    rconCommand({ action: 'kick', player: 'Bob_1', reason: 'spam\nstop' }).commands,
-    ['kick Bob_1 spam stop'],
-  )
-  assert.deepEqual(rconCommand({ action: 'say', text: 'Рестарт через §c5 минут' }).commands, [
-    'say Рестарт через c5 минут',
-  ])
-  assert.deepEqual(
-    rconCommand({ action: 'stop-room', roomId: room, outcome: 'RED', reason: 'тест' }).commands,
-    [`bf stop room ${room} win RedTeam тест`],
-  )
-  assert.deepEqual(rconCommand({ action: 'stop-room', roomId: room, outcome: 'draw' }).commands, [
-    `bf stop room ${room} draw`,
-  ])
-  assert.deepEqual(
-    rconCommand({ action: 'stop-room', roomId: room, outcome: 'none', reason: 'window' }).commands,
-    [`bf stop room ${room} window`],
-  )
-  assert.deepEqual(rconCommand({ action: 'interrupt', reason: 'авария' }).commands, [
-    'bf maintenance interrupt',
-    'bf maintenance interrupt confirm авария',
-  ])
-  assert.deepEqual(rconCommand({ action: 'resume' }).commands, ['bf maintenance resume'])
-  assert.deepEqual(rconCommand({ action: 'class-unlock', classId: 'sniper' }).commands, [
-    'bf class unlock sniper',
-  ])
-  assert.equal(rconCommand({ action: 'ban', player: 'Bob' }).permission, 'ban')
+  const build = (body) =>
+    ['say', 'pardon', 'team-kick', 'class-lock', 'class-unlock', 'range', 'stop-room'].includes(
+      body.action,
+    )
+      ? moderationCpFields(body)
+      : moderationRequest(body)
+  assert.deepEqual(build({ action: 'kick', player: 'Bob_1', reason: 'spam\nstop' }), {
+    permission: 'moderate',
+    kind: 'kick',
+    fields: { reason: 'spam stop' },
+    player: 'Bob_1',
+  })
+  assert.deepEqual(build({ action: 'say', text: 'Рестарт через §c5 минут' }), {
+    text: 'Рестарт через c5 минут',
+  })
+  assert.deepEqual(build({ action: 'stop-room', roomId: room, outcome: 'RED', reason: 'тест' }), {
+    roomId: room,
+    outcome: 'RED',
+    reason: 'тест',
+  })
+  assert.deepEqual(build({ action: 'interrupt', reason: 'авария' }).fields, {
+    op: 'interrupt',
+    reason: 'авария',
+  })
+  assert.deepEqual(build({ action: 'resume' }).fields, { op: 'resume' })
+  assert.deepEqual(build({ action: 'maintenance-status' }).fields, { op: 'status' })
+  assert.deepEqual(build({ action: 'class-unlock', classId: 'sniper' }), { classId: 'sniper' })
+  assert.equal(build({ action: 'ban', player: 'Bob' }).permission, 'ban')
   for (const body of [
     { action: 'kick', player: 'Bob\nstop' },
     { action: 'kick', player: 'Bob Smith' },
@@ -819,11 +821,59 @@ test('RCON allowlist builds exact commands and rejects injection', () => {
     { action: 'team-kick', player: 'ab' },
   ])
     assert.throws(
-      () => rconCommand(body),
+      () => build(body),
       (e) => status(e) === 400,
       JSON.stringify(body),
     )
 })
+
+/**
+ * Fake control plane for handler tests: POST /v2/actions/<kind> records the body
+ * and settles the operation through `settle(kind, body)` ({status, output}); GET
+ * /v2/operations/<id> returns it. Drasl name lookups answer from `names`.
+ */
+async function fakeCp(t, settle, names = {}) {
+  const http = await import('node:http')
+  const seen = [],
+    operations = new Map()
+  const server = http.createServer((req, res) => {
+    let raw = ''
+    req.on('data', (c) => (raw += c))
+    req.on('end', () => {
+      res.setHeader('Content-Type', 'application/json')
+      const action = req.url.match(/^\/v2\/actions\/(.+)$/)
+      if (req.method === 'POST' && action) {
+        const body = JSON.parse(raw)
+        seen.push([action[1], body, req.headers.authorization])
+        const id = `op-${seen.length}`
+        operations.set(id, settle(action[1], body))
+        res.statusCode = 202
+        return res.end(JSON.stringify({ operationId: id, revision: null, status: 'accepted' }))
+      }
+      const op = req.url.match(/^\/v2\/operations\/(.+)$/)
+      if (op && operations.has(op[1])) {
+        const { status, output } = operations.get(op[1])
+        return res.end(
+          JSON.stringify({
+            operationId: op[1],
+            status,
+            receipts: [{ state: status, result: { code: 'ok', output } }],
+          }),
+        )
+      }
+      const name = req.url.match(/\/profiles\/minecraft\/(\w+)$/)
+      if (name && names[name[1]])
+        return res.end(JSON.stringify({ id: names[name[1]], name: name[1] }))
+      res.statusCode = 404
+      res.end('{}')
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  return { url: `http://127.0.0.1:${server.address().port}`, seen }
+}
+const GENERATION = '12345678-1234-4234-8234-123456789012'
+const dashed = (uuid) => uuid.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5')
 
 test('dev escape hatch is off in production and needs a valid uuid:name', () => {
   assert.deepEqual(devUser({ BLOCKFIELD_ADMIN_DEV_USER: `${OWNER}:Nether` }), {
@@ -854,7 +904,6 @@ test('API: role gate, audit of success and refusal, members request on role chan
     BLOCKFIELD_CP_WORKSHOP_TOKEN: 'wsh-t',
     BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
   })
-  delete process.env.BLOCKFIELD_RCON_HOST
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
   const call = async (as, method, path, body) => {
@@ -999,8 +1048,8 @@ test('POST rcon/raw audit: a body that never named a target is logged as unknown
   assert.deepEqual(targets, ['game', 'unknown', 'unknown'])
 })
 
-test('review: range goes through /bf, Brigadier rejections are detected', () => {
-  assert.deepEqual(rconCommand({ action: 'range', op: 'close' }).commands, ['bf range close'])
+test('review: range keeps its op, Brigadier rejections are detected', () => {
+  assert.deepEqual(moderationCpFields({ action: 'range', op: 'close' }), { op: 'close' })
   for (const reply of [
     'Unknown or incomplete command, see below for error',
     'Unknown command',
@@ -1042,7 +1091,7 @@ test('review: balance types, per-key ranges and merged cross-checks match the mo
     )
 })
 
-test('review: non-staff are refused before the body is read and never audited; RCON errors hide addresses', async (t) => {
+test('review: non-staff are refused before the body is read and never audited; CP errors hide addresses', async (t) => {
   const saved = { ...process.env }
   t.after(() => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
@@ -1051,9 +1100,9 @@ test('review: non-staff are refused before the body is read and never audited; R
   Object.assign(process.env, {
     BLOCKFIELD_OWNER_UUIDS: OWNER,
     NODE_ENV: 'test',
-    BLOCKFIELD_RCON_HOST: '127.0.0.1',
-    BLOCKFIELD_RCON_PORT: '1',
-    BLOCKFIELD_RCON_PASSWORD: 'x',
+    BLOCKFIELD_CP_URL: 'http://127.0.0.1:1',
+    BLOCKFIELD_CP_MODERATION_TOKEN: 'x',
+    BLOCKFIELD_CP_CONSUMER_GENERATION: GENERATION,
   })
   const s = await store(t)
   let read = false
@@ -1109,9 +1158,9 @@ test('review: non-staff are refused before the body is read and never audited; R
   )
   assert.equal(failed.status, 502)
   const text = (await failed.json()).error
-  assert.equal(text, 'Игровой сервер не отвечает.')
+  assert.equal(text, 'Control-plane не отвечает.')
   assert.ok(!text.includes('127.0.0.1'))
-  assert.match((await s.auditLog())[0].error, /ECONNREFUSED/)
+  assert.match((await s.auditLog())[0].error, /fetch failed|ECONNREFUSED/)
 })
 
 test('owner row falls back to the last known profile name, the signed-in owner name, then «Неизвестный игрок», when Drasl is down', async (t) => {
@@ -1820,7 +1869,7 @@ test('writeRequest: candidate/rollback take a real map, publish/reject a candida
   assert.throws(() => writeRequest(dir, actor, { kind: 'reject', candidateId: '../x' }))
 })
 
-test('review: stop-room without RCON configured fails fast, before querying rooms', async (t) => {
+test('review: stop-room without CP configured fails fast, before querying rooms', async (t) => {
   const saved = { ...process.env }
   t.after(() => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
@@ -1833,7 +1882,7 @@ test('review: stop-room without RCON configured fails fast, before querying room
     BLOCKFIELD_SERVER_HOST: '10.255.255.1',
     BLOCKFIELD_LOBBY_HOST: '10.255.255.1',
   })
-  delete process.env.BLOCKFIELD_RCON_HOST
+  delete process.env.BLOCKFIELD_CP_MODERATION_TOKEN
   delete process.env.BLOCKFIELD_GATE_FILE
   const s = await store(t),
     url = new URL('http://site/api/admin/rcon'),
@@ -1883,54 +1932,27 @@ test('class prices round-trip through settings with strict numeric limits', (t) 
   }
 })
 
-test('raw console: owner only, one validated line, every call audited including refusals', async (t) => {
-  const net = await import('node:net')
+test('raw console: owner only, one validated line through CP, every call audited including refusals', async (t) => {
   const saved = { ...process.env }
   t.after(() => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
     Object.assign(process.env, saved)
   })
-  // Minimal vanilla-like RCON: auth reply, command echo, "Unknown request" for the end-of-output sentinel.
-  const seen = []
-  const frame = (id, type, body) => {
-    const text = Buffer.from(body),
-      out = Buffer.alloc(14 + text.length)
-    out.writeInt32LE(10 + text.length, 0)
-    out.writeInt32LE(id, 4)
-    out.writeInt32LE(type, 8)
-    text.copy(out, 12)
-    return out
-  }
-  const server = net.createServer((socket) =>
-    socket.on('data', (chunk) => {
-      const id = chunk.readInt32LE(4),
-        type = chunk.readInt32LE(8),
-        body = chunk.subarray(12, chunk.readInt32LE(0) + 2).toString()
-      if (type === 3) socket.write(frame(id, 2, ''))
-      else if (type === 2) {
-        seen.push(body)
-        socket.write(
-          frame(
-            id,
-            0,
-            body === 'bogus'
-              ? 'Unknown or incomplete command'
-              : body.includes('example-short-password')
-                ? '{"client_secret":"response-short-secret","password":"reply-short-password"}'
-                : '§aDone',
-          ),
-        )
-      } else socket.write(frame(id, 0, 'Unknown request'))
-    }),
-  )
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
-  t.after(() => server.close())
+  const cp = await fakeCp(t, (kind, body) => ({
+    status: 'effective',
+    output:
+      body.command === 'bogus'
+        ? 'Unknown or incomplete command'
+        : body.command.includes('example-short-password')
+          ? '{"client_secret":"response-short-secret","password":"reply-short-password"}'
+          : '§aDone',
+  }))
   Object.assign(process.env, {
     BLOCKFIELD_OWNER_UUIDS: OWNER,
     NODE_ENV: 'test',
-    BLOCKFIELD_RCON_HOST: '127.0.0.1',
-    BLOCKFIELD_RCON_PORT: String(server.address().port),
-    BLOCKFIELD_RCON_PASSWORD: 'x',
+    BLOCKFIELD_CP_URL: cp.url,
+    BLOCKFIELD_CP_CONSOLE_TOKEN: 'console-t',
+    BLOCKFIELD_CP_CONSUMER_GENERATION: GENERATION,
   })
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
@@ -1961,7 +1983,14 @@ test('raw console: owner only, one validated line, every call audited including 
     target: 'game',
   })
   assert.equal((await (await call(`${OWNER}:Nether`, 'bogus')).json()).rejected, true)
-  assert.deepEqual(seen, ['time set day', 'bogus'], 'refused and invalid commands never reach RCON')
+  assert.deepEqual(
+    cp.seen.map(([kind, body, auth]) => [kind, body.command, body.actorAccountId, auth]),
+    [
+      ['console.run', 'time set day', dashed(OWNER), 'Bearer console-t'],
+      ['console.run', 'bogus', dashed(OWNER), 'Bearer console-t'],
+    ],
+    'refused and invalid commands never reach CP',
+  )
 
   const log = await s.auditLog()
   assert.deepEqual(
@@ -2001,47 +2030,19 @@ test('raw console: owner only, one validated line, every call audited including 
   assert.ok(sanitized.includes('[secret]'))
 })
 
-test('POST rcon interrupt reuses one connection and reports the confirmation window', async (t) => {
-  const net = await import('node:net')
-  const { closeRconPools } = await import('../src/lib/rcon.ts')
+test('POST rcon interrupt is one CP maintenance action and reports the confirmation window', async (t) => {
   const saved = { ...process.env }
   t.after(() => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
     Object.assign(process.env, saved)
   })
-  t.after(() => closeRconPools())
-  let connections = 0
-  const seen = []
-  const frame = (id, type, body) => {
-    const text = Buffer.from(body),
-      out = Buffer.alloc(14 + text.length)
-    out.writeInt32LE(10 + text.length, 0)
-    out.writeInt32LE(id, 4)
-    out.writeInt32LE(type, 8)
-    text.copy(out, 12)
-    return out
-  }
-  const server = net.createServer((socket) => {
-    connections++
-    socket.on('data', (chunk) => {
-      const id = chunk.readInt32LE(4),
-        type = chunk.readInt32LE(8),
-        body = chunk.subarray(12, chunk.readInt32LE(0) + 2).toString()
-      if (type === 3) socket.write(frame(id, 2, ''))
-      else if (type === 2) {
-        seen.push(body)
-        socket.write(frame(id, 0, 'Done'))
-      } else socket.write(frame(id, 0, 'Unknown request'))
-    })
-  })
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
-  t.after(() => server.close())
+  const cp = await fakeCp(t, () => ({ status: 'effective', output: 'Done' }))
   Object.assign(process.env, {
     BLOCKFIELD_OWNER_UUIDS: OWNER,
     NODE_ENV: 'test',
-    BLOCKFIELD_RCON_HOST: '127.0.0.1',
-    BLOCKFIELD_RCON_PORT: String(server.address().port),
-    BLOCKFIELD_RCON_PASSWORD: 'x',
+    BLOCKFIELD_CP_URL: cp.url,
+    BLOCKFIELD_CP_MODERATION_TOKEN: 'mod-t',
+    BLOCKFIELD_CP_CONSUMER_GENERATION: GENERATION,
   })
   delete process.env.BLOCKFIELD_GATE_FILE
   const s = await store(t)
@@ -2066,71 +2067,123 @@ test('POST rcon interrupt reuses one connection and reports the confirmation win
     Number.isInteger(firstBody.interruptAt) && firstBody.interruptAt >= before,
     'interrupt reports when the confirm applied',
   )
-  const second = await call({ action: 'interrupt', reason: 'авария' })
-  assert.equal(second.status, 200)
-  assert.deepEqual(seen, [
-    'bf maintenance interrupt',
-    'bf maintenance interrupt confirm авария',
-    'bf maintenance interrupt',
-    'bf maintenance interrupt confirm авария',
-  ])
-  assert.equal(connections, 1, 'both interrupts share one authenticated connection')
+  // The game arms and confirms as one sender: the site sends one action.
+  assert.deepEqual(
+    cp.seen.map(([kind, body]) => [kind, body.op, body.reason]),
+    [['moderation.maintenance', 'interrupt', 'авария']],
+  )
 })
 
-test('raw console target selector: routes to game or workshop, enforces config and rejects unknown enums', async (t) => {
-  const net = await import('node:net')
+test('POST rcon list/kick/ban/maintenance wait for the game through CP', async (t) => {
   const saved = { ...process.env }
   t.after(() => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
     Object.assign(process.env, saved)
   })
-
-  const frame = (id, type, body) => {
-    const text = Buffer.from(body),
-      out = Buffer.alloc(14 + text.length)
-    out.writeInt32LE(10 + text.length, 0)
-    out.writeInt32LE(id, 4)
-    out.writeInt32LE(type, 8)
-    text.copy(out, 12)
-    return out
-  }
-
-  const makeServer = (expectedPassword, replyPrefix) => {
-    const seen = []
-    const server = net.createServer((socket) => {
-      socket.on('error', () => {})
-      socket.on('data', (chunk) => {
-        const id = chunk.readInt32LE(4),
-          type = chunk.readInt32LE(8),
-          body = chunk.subarray(12, chunk.readInt32LE(0) + 2).toString()
-        if (type === 3) socket.write(frame(body === expectedPassword ? id : -1, 2, ''))
-        else if (type === 2) {
-          seen.push(body)
-          socket.write(frame(id, 0, `${replyPrefix}:${body}`))
-        } else socket.write(frame(id, 0, 'Unknown request'))
-      })
-    })
-    return { server, seen }
-  }
-
-  const game = makeServer('game-pass', 'game')
-  const workshop = makeServer('workshop-pass', 'workshop')
-  await new Promise((resolve) => game.server.listen(0, '127.0.0.1', resolve))
-  await new Promise((resolve) => workshop.server.listen(0, '127.0.0.1', resolve))
-  t.after(() => {
-    game.server.close()
-    workshop.server.close()
-  })
-
+  const BOB = '0f8e0c3a1b2c4d5e8f90123456789abc'
+  const cp = await fakeCp(
+    t,
+    (kind, body) =>
+      kind === 'moderation.list'
+        ? { status: 'effective', output: 'There are 2 of a max of 40 players online: Bob, Alice' }
+        : kind === 'moderation.kick'
+          ? { status: 'rejected', output: undefined }
+          : kind === 'moderation.maintenance' && body.op === 'drain'
+            ? { status: 'expired', output: undefined }
+            : kind === 'moderation.maintenance'
+              ? { status: 'effective', output: 'draining=false rooms=0 drained=false' }
+              : { status: 'effective', output: undefined },
+    { Bob: BOB },
+  )
   Object.assign(process.env, {
     BLOCKFIELD_OWNER_UUIDS: OWNER,
     NODE_ENV: 'test',
-    BLOCKFIELD_RCON_HOST: '127.0.0.1',
-    BLOCKFIELD_RCON_PORT: String(game.server.address().port),
-    BLOCKFIELD_RCON_PASSWORD: 'game-pass',
-    BLOCKFIELD_WORKSHOP_RCON_HOST: '127.0.0.1',
-    BLOCKFIELD_WORKSHOP_RCON_PORT: String(workshop.server.address().port),
-    BLOCKFIELD_WORKSHOP_RCON_PASSWORD: 'workshop-pass',
+    BLOCKFIELD_CP_URL: cp.url,
+    DRASL_URL: cp.url,
+    BLOCKFIELD_CP_MODERATION_TOKEN: 'mod-t',
+    BLOCKFIELD_CP_CONSUMER_GENERATION: GENERATION,
+  })
+  delete process.env.BLOCKFIELD_GATE_FILE
+  const s = await store(t)
+  await s.setStaff(MOD, 'Moddy', 'moderator', 'seed')
+  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  const call = async (as, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = as
+    const url = new URL('http://site/api/admin/rcon')
+    const request = new Request(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return handleAdmin({ request, url, cookies: { get: () => undefined } }, 'rcon', s).then(
+      (r) => r,
+      (e) => e,
+    )
+  }
+  const listed = await call(`${MOD}:Moddy`, { action: 'list' })
+  assert.equal(listed.status, 200)
+  assert.deepEqual((await listed.json()).players, ['Bob', 'Alice'])
+  const kicked = await call(`${MOD}:Moddy`, { action: 'kick', player: 'Bob', reason: 'spam' })
+  assert.equal(kicked.status, 409)
+  assert.equal((await kicked.json()).error, 'Игрок не в сети.')
+  assert.equal((await call(`${MOD}:Moddy`, { action: 'ban', player: 'Bob' })).status, 403)
+  assert.equal((await call(`${ADMIN}:Adm`, { action: 'ban', player: 'Bob' })).status, 200)
+  assert.equal((await call(`${ADMIN}:Adm`, { action: 'ban', player: 'Nobody' })).status, 404)
+  assert.equal((await call(`${MOD}:Moddy`, { action: 'maintenance-status' })).status, 403)
+  const status = await call(`${ADMIN}:Adm`, { action: 'maintenance-status' })
+  assert.equal((await status.json()).output, 'draining=false rooms=0 drained=false')
+  // The game never settled it: unconfirmed, never reported as done.
+  assert.equal((await call(`${ADMIN}:Adm`, { action: 'drain' })).status, 504)
+  assert.deepEqual(
+    cp.seen.map(([kind, body]) => [kind, body.playerId ?? body.op ?? null, body.actorAccountId]),
+    [
+      ['moderation.list', null, dashed(MOD)],
+      // CP parses either UUID spelling; the game receives it dashed.
+      ['moderation.kick', BOB, dashed(MOD)],
+      ['moderation.ban', BOB, dashed(ADMIN)],
+      ['moderation.maintenance', 'status', dashed(ADMIN)],
+      ['moderation.maintenance', 'drain', dashed(ADMIN)],
+    ],
+  )
+  // Audit names stay as before the cutover (the bans list reads rcon:ban rows).
+  assert.deepEqual((await s.auditLog()).map((e) => [e.action, e.ok, e.target]).slice(0, 4), [
+    ['rcon:drain', 0, null],
+    ['rcon:maintenance-status', 1, null],
+    ['rcon:maintenance-status', 0, null],
+    ['rcon:ban', 0, 'Nobody'],
+  ])
+})
+
+test('raw console target selector: routes to game or workshop, enforces config and rejects unknown enums', async (t) => {
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  const cp = await fakeCp(t, (kind, body) => ({
+    status: 'effective',
+    output: `${body.consumerId}:${body.command}`,
+  }))
+  const seen = (consumer) =>
+    cp.seen.filter(([, body]) => body.consumerId === consumer).map(([, body]) => body.command)
+  const game = {
+    get seen() {
+      return seen('game')
+    },
+  }
+  const workshop = {
+    get seen() {
+      return seen('workshop-game')
+    },
+  }
+  Object.assign(process.env, {
+    BLOCKFIELD_OWNER_UUIDS: OWNER,
+    NODE_ENV: 'test',
+    BLOCKFIELD_CP_URL: cp.url,
+    BLOCKFIELD_CP_CONSOLE_TOKEN: 'console-t',
+    BLOCKFIELD_CP_CONSUMER_GENERATION: GENERATION,
+    BLOCKFIELD_CP_WORKSHOP_GAME_CONSUMER_ID: 'workshop-game',
+    BLOCKFIELD_CP_WORKSHOP_GAME_CONSUMER_GENERATION: GENERATION,
   })
 
   const s = await store(t)
@@ -2169,7 +2222,7 @@ test('raw console target selector: routes to game or workshop, enforces config a
   assert.equal(wsRes.status, 200)
   assert.deepEqual(await wsRes.json(), {
     command: 'say hello workshop',
-    output: 'workshop:say hello workshop',
+    output: 'workshop-game:say hello workshop',
     rejected: false,
     target: 'workshop',
   })
@@ -2191,22 +2244,22 @@ test('raw console target selector: routes to game or workshop, enforces config a
   assert.deepEqual(game.seen, ['say hello game', 'default command'])
   assert.deepEqual(workshop.seen, ['say hello workshop'])
 
-  // 5. Unconfigured Workshop RCON returns 503 and NEVER falls back to Game
-  delete process.env.BLOCKFIELD_WORKSHOP_RCON_HOST
+  // 5. Unconfigured Workshop console returns 503 and NEVER falls back to Game
+  delete process.env.BLOCKFIELD_CP_WORKSHOP_GAME_CONSUMER_ID
   const unconfiguredWs = await call(`${OWNER}:Nether`, { command: 'test', target: 'workshop' })
   assert.equal(unconfiguredWs.status, 503)
-  assert.equal((await unconfiguredWs.json()).error, 'RCON для Workshop не настроен на сайте.')
+  assert.equal((await unconfiguredWs.json()).error, 'Консоль Мастерской не настроена.')
   assert.deepEqual(
     game.seen,
     ['say hello game', 'default command'],
     'no fallback from Workshop to Game',
   )
 
-  // 6. Unconfigured Game RCON returns 503
-  delete process.env.BLOCKFIELD_RCON_HOST
+  // 6. Unconfigured Game console returns 503
+  delete process.env.BLOCKFIELD_CP_CONSOLE_TOKEN
   const unconfiguredGame = await call(`${OWNER}:Nether`, { command: 'test', target: 'game' })
   assert.equal(unconfiguredGame.status, 503)
-  assert.equal((await unconfiguredGame.json()).error, 'RCON не настроен на сайте.')
+  assert.equal((await unconfiguredGame.json()).error, 'Консоль не настроена.')
 
   // 7. Non-owner roles are denied for both targets unchanged (403)
   for (const who of [`${ADMIN}:Adm`, `${MOD}:Moddy`, `${OTHER}:Bob`]) {
@@ -2220,7 +2273,7 @@ test('raw console target selector: routes to game or workshop, enforces config a
   const wsAudit = rawEntries.find((e) => e.target === 'say hello workshop')
   assert.ok(wsAudit, 'workshop command was audited')
   assert.equal(JSON.parse(wsAudit.detail).target, 'workshop')
-  assert.equal(JSON.parse(wsAudit.detail).output, 'workshop:say hello workshop')
+  assert.equal(JSON.parse(wsAudit.detail).output, 'workshop-game:say hello workshop')
 })
 
 test('diagnostics are admin-only and never report health without data', async (t) => {
@@ -2230,7 +2283,7 @@ test('diagnostics are admin-only and never report health without data', async (t
     Object.assign(process.env, saved)
   })
   Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
-  delete process.env.BLOCKFIELD_RCON_HOST
+  delete process.env.BLOCKFIELD_CP_CONSOLE_TOKEN
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
   await s.setStaff(MOD, 'Moddy', 'moderator', 'seed')
@@ -2251,6 +2304,25 @@ test('diagnostics are admin-only and never report health without data', async (t
   assert.equal(empty.lastSampleAt, null)
   assert.deepEqual([empty.samples, empty.events], [[], []])
   assert.equal((await call(`${ADMIN}:Adm`, 'diagnostics/live')).status, 503)
+  // Live tick check: the read-only `tick query` through CP, asserted as the admin.
+  const cp = await fakeCp(t, () => ({
+    status: 'effective',
+    output:
+      'The game is running normally\nTarget tick rate: 20.0 per second.\n' +
+      'Average time per tick: 25.0ms (Target: 50.0ms)',
+  }))
+  Object.assign(process.env, {
+    BLOCKFIELD_CP_URL: cp.url,
+    BLOCKFIELD_CP_CONSOLE_TOKEN: 'console-t',
+    BLOCKFIELD_CP_CONSUMER_GENERATION: GENERATION,
+  })
+  const live = await (await call(`${ADMIN}:Adm`, 'diagnostics/live')).json()
+  assert.equal(live.state, 'running')
+  assert.equal(live.msptAvg, 25)
+  assert.deepEqual(
+    cp.seen.map(([kind, body]) => [kind, body.command, body.actorAccountId]),
+    [['console.run', 'tick query', dashed(ADMIN)]],
+  )
 })
 
 test('console link: logs and suggestions proxy the mod endpoint with the console-read token, reads stay unaudited', async (t) => {
@@ -2293,9 +2365,7 @@ test('console link: logs and suggestions proxy the mod endpoint with the console
   Object.assign(process.env, {
     BLOCKFIELD_OWNER_UUIDS: OWNER,
     NODE_ENV: 'test',
-    BLOCKFIELD_RCON_HOST: '127.0.0.1',
-    BLOCKFIELD_RCON_PORT: '1',
-    BLOCKFIELD_RCON_PASSWORD: 'x',
+    BLOCKFIELD_CONSOLE_HOST: '127.0.0.1',
     BLOCKFIELD_CONSOLE_PORT: String(server.address().port),
     BLOCKFIELD_CONSOLE_READ_TOKEN: 'read-token',
   })
@@ -2334,7 +2404,7 @@ test('console link: logs and suggestions proxy the mod endpoint with the console
   assert.equal((await call(`${OWNER}:Nether`, 'console/logs?since=nope')).status, 400)
   assert.ok(
     seen.length > 0 && seen.every((line) => line.includes('auth=Bearer read-token')),
-    'the console-read token is the only link secret, never the RCON password',
+    'the console-read token is the only link secret',
   )
   delete process.env.BLOCKFIELD_CONSOLE_READ_TOKEN
   const before = seen.length
@@ -2343,7 +2413,7 @@ test('console link: logs and suggestions proxy the mod endpoint with the console
   assert.equal((await s.auditLog()).length, 0, 'link reads are not audited')
 })
 
-test('POST rcon moderation goes through typed CP actions when configured, 503 without CP (no RCON fallback)', async (t) => {
+test('POST rcon moderation goes through typed CP actions when configured, 503 without CP', async (t) => {
   const http = await import('node:http')
   const dirs = {
     BLOCKFIELD_ADMIN_DIR: temp(t),
@@ -2375,7 +2445,6 @@ test('POST rcon moderation goes through typed CP actions when configured, 503 wi
     BLOCKFIELD_CP_MODERATION_TOKEN: 'mod-t',
     BLOCKFIELD_CP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
   })
-  delete process.env.BLOCKFIELD_RCON_HOST
   const s = await store(t)
   await s.setStaff(MOD, 'Moddy', 'moderator', 'seed')
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
@@ -2399,10 +2468,10 @@ test('POST rcon moderation goes through typed CP actions when configured, 503 wi
     seen.map(([m, u, b]) => [m, u, b.text]),
     [['POST', '/v2/actions/moderation.say', 'Рестарт через 5 минут']],
   )
-  // Same bodies RCON refused stay refused before any CP call.
+  // Malformed bodies stay refused before any CP call.
   assert.equal((await call(`${MOD}:Moddy`, { action: 'say', text: '/op x' })).status, 400)
   assert.equal(seen.length, 1)
-  // Pardon needs the ban permission, like its RCON path.
+  // Pardon needs the ban permission.
   assert.equal((await call(`${MOD}:Moddy`, { action: 'pardon', player: 'Bob' })).status, 403)
   const pardoned = await call(`${ADMIN}:Adm`, { action: 'pardon', player: 'Bob' })
   assert.equal(pardoned.status, 200)
@@ -2418,13 +2487,7 @@ test('POST rcon moderation goes through typed CP actions when configured, 503 wi
     ],
   )
   assert.equal(JSON.parse(log[0].detail).operationId, 'op-1')
-  // Without CP there is no RCON fallback: even with RCON configured the CP
-  // kinds fail closed (before the cutover this fell through to RCON).
-  Object.assign(process.env, {
-    BLOCKFIELD_RCON_HOST: '127.0.0.1',
-    BLOCKFIELD_RCON_PORT: '1',
-    BLOCKFIELD_RCON_PASSWORD: 'x',
-  })
+  // Without CP the game is unreachable: the route fails closed.
   delete process.env.BLOCKFIELD_CP_MODERATION_TOKEN
   assert.equal((await call(`${MOD}:Moddy`, { action: 'say', text: 'hi' })).status, 503)
 })
@@ -2474,7 +2537,6 @@ test('POST rcon moderation reuses the client key and reports unknown outcomes as
     BLOCKFIELD_CP_MODERATION_TOKEN: 'mod-t',
     BLOCKFIELD_CP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
   })
-  delete process.env.BLOCKFIELD_RCON_HOST
   const s = await store(t)
   await s.setStaff(MOD, 'Moddy', 'moderator', 'seed')
   const call = async (body) => {
