@@ -76,7 +76,59 @@ function request(body, headers = {}, method = 'POST', path = '/results') {
   })
 }
 async function dependencies(t) {
-  return { store: await database(t), keys: { [server]: [token] } }
+  const store = await database(t)
+  const { createServer } = await import('node:http')
+  const { clearCpStatsCache } = await import('../src/lib/stats.ts')
+  clearCpStatsCache()
+  const cpServer = createServer(async (req, res) => {
+    const reqUrl = new URL(req.url, 'http://cp')
+    res.setHeader('Content-Type', 'application/json')
+    try {
+      if (reqUrl.pathname === '/v2/stats/seasons') {
+        const list = seasons()
+        return res.end(
+          JSON.stringify({ schemaVersion: 1, current: list.at(-1)?.id ?? null, seasons: list }),
+        )
+      }
+      if (reqUrl.pathname === '/v2/stats/leaderboard') {
+        const view = await store.leaderboard(filters(reqUrl.searchParams))
+        return res.end(
+          JSON.stringify({ schemaVersion: 1, checkedAt: new Date().toISOString(), ...view }),
+        )
+      }
+      const m = /^\/v2\/stats\/players\/([^/]+)$/.exec(reqUrl.pathname)
+      if (m) {
+        const view = await store.player(m[1], filters(reqUrl.searchParams))
+        return res.end(
+          JSON.stringify({ schemaVersion: 1, checkedAt: new Date().toISOString(), ...view }),
+        )
+      }
+      res.statusCode = 404
+      res.end(JSON.stringify({ error: 'not_found' }))
+    } catch (e) {
+      res.statusCode = e?.status || 500
+      res.end(
+        JSON.stringify({
+          error: e?.status === 404 ? 'player_not_found' : 'invalid_stats_filter',
+          message: e?.message || 'err',
+        }),
+      )
+    }
+  })
+  await new Promise((r) => cpServer.listen(0, '127.0.0.1', r))
+  const savedUrl = process.env.BLOCKFIELD_CP_URL
+  const savedToken = process.env.BLOCKFIELD_CP_STATS_TOKEN
+  process.env.BLOCKFIELD_CP_URL = `http://127.0.0.1:${cpServer.address().port}`
+  process.env.BLOCKFIELD_CP_STATS_TOKEN = 'test-stats-token'
+  t.after(() => {
+    clearCpStatsCache()
+    if (savedUrl === undefined) delete process.env.BLOCKFIELD_CP_URL
+    else process.env.BLOCKFIELD_CP_URL = savedUrl
+    if (savedToken === undefined) delete process.env.BLOCKFIELD_CP_STATS_TOKEN
+    else process.env.BLOCKFIELD_CP_STATS_TOKEN = savedToken
+    cpServer.close()
+  })
+  return { store }
 }
 
 test('result insert, reordered replay, and conflicting replay are atomic/idempotent', async (t) => {
@@ -194,14 +246,13 @@ test('interrupted campaign is stored but is not a victory or completed campaign'
   assert.equal((await db.leaderboard(query())).players[0].wins, 1) // the completed battle remains a battle win, not MMR
   assert.throws(() => validateResult({ ...result, winner: 'RED' }), StatsError)
 })
-test('all non-gameplay purposes are rejected at ingestion, even with valid credentials', async (t) => {
+test('all non-gameplay purposes are rejected by validateResult and HTTP ingest returns 404', async (t) => {
   const deps = await dependencies(t)
   for (const purpose of ['training', 'workshop', 'playtest', 'lobby', 'unknown']) {
-    const response = await handleStatsRequest(
-      request({ ...fixture(), sessionPurpose: purpose }),
-      deps,
-    )
-    assert.equal(response.status, 422)
+    const result = { ...fixture(), sessionPurpose: purpose }
+    assert.equal((await handleStatsRequest(request(result), deps)).status, 404)
+    assert.throws(() => validateResult(result), StatsError)
+    await assert.rejects(() => deps.store.ingest(result), StatsError)
   }
   assert.equal((await deps.store.leaderboard(query())).total, 0)
 })
@@ -281,44 +332,33 @@ test('old replay does not overwrite a newer display name; identity stays UUID', 
   assert.equal((await db.leaderboard(query('period=week'))).players[0].matches, 1)
   assert.equal((await db.leaderboard(query('period=month'))).players[0].matches, 1)
 })
-test('body size, content type, identity forgery and unauthorized writes are rejected', async (t) => {
+test('POST /api/stats/results is retired and rejects any payload or stream with 404 before reading', async (t) => {
   const deps = await dependencies(t),
     result = fixture()
-  for (const [headers, status] of [
-    [{ Authorization: 'Bearer wrong' }, 401],
-    [{ 'X-Blockfield-Server-Id': campaign }, 401],
-    [{ 'Content-Type': 'text/plain' }, 415],
-    [{ 'Content-Length': String(1_048_577) }, 413],
+  for (const headers of [
+    {},
+    { Authorization: 'Bearer wrong' },
+    { 'X-Blockfield-Server-Id': campaign },
+    { 'Content-Type': 'text/plain' },
+    { 'Content-Length': String(1_048_577) },
   ])
-    assert.equal((await handleStatsRequest(request(result, headers), deps)).status, status)
-  assert.equal(
-    (await handleStatsRequest(request({ ...result, serverId: campaign }), deps)).status,
-    403,
-  )
-  assert.equal((await deps.store.leaderboard(query())).total, 0)
-})
-test('oversized streamed bodies are rejected without trusting Content-Length', async (t) => {
-  const deps = await dependencies(t)
-  const response = await handleStatsRequest(
-    new Request('https://example.test/api/stats/results', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'X-Blockfield-Server-Id': server,
-        'Content-Type': 'application/json',
+    assert.equal((await handleStatsRequest(request(result, headers), deps)).status, 404)
+  const streamed = new Request('https://example.test/api/stats/results', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'X-Blockfield-Server-Id': server,
+      'Content-Type': 'application/json',
+    },
+    body: new ReadableStream({
+      async start(controller) {
+        controller.enqueue(new Uint8Array(700000))
+        await controller.close()
       },
-      body: new ReadableStream({
-        async start(controller) {
-          controller.enqueue(new Uint8Array(700000))
-          controller.enqueue(new Uint8Array(700000))
-          await controller.close()
-        },
-      }),
-      duplex: 'half',
     }),
-    deps,
-  )
-  assert.equal(response.status, 413)
+    duplex: 'half',
+  })
+  assert.equal((await handleStatsRequest(streamed, deps)).status, 404)
   assert.equal((await deps.store.leaderboard(query())).total, 0)
 })
 test('read APIs require no game process or producer credentials and distinguish unknown/empty', async (t) => {
@@ -328,10 +368,8 @@ test('read APIs require no game process or producer credentials and distinguish 
     404,
   )
   const original = fixture()
-  const inserted = await handleStatsRequest(request(original), deps)
-  assert.equal(inserted.status, 201)
-  const replay = await handleStatsRequest(request(original), deps)
-  assert.equal(replay.status, 200)
+  assert.equal((await deps.store.ingest(original)).inserted, true)
+  assert.equal((await deps.store.ingest(original)).inserted, false)
   const board = await handleStatsRequest(
     new Request('https://example.test/api/stats/leaderboard'),
     deps,

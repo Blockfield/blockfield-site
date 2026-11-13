@@ -1,35 +1,29 @@
 ---
 import Community from '../layouts/Community.astro'
 import {
-  statsStore,
-  filters,
-  seasons,
+  readLeaderboardCp,
+  readSeasonsCp,
   StatsError,
-  resolveNames,
-  displayName,
-  uuidLike,
-} from '../lib/stats'
+  type CpLeaderboardView,
+  type CpSeason,
+} from '../lib/cp-stats'
 import { resolveSkins } from '../lib/skins'
-let board: Awaited<ReturnType<Awaited<ReturnType<typeof statsStore>>['leaderboard']>> | null = null
+let board: CpLeaderboardView | null = null
 let error = ''
 let skins = new Map<string, { url: string; slim: boolean }>()
-const started = seasons(),
-  current = started.at(-1)
-const seasonName = (id?: string) => started.find((s) => s.id === id)?.name ?? 'Сезон 1'
-// The period select also lists seasons; the API takes those as `season`, never together with `period`.
+let started: CpSeason[] = []
+let current: CpSeason | undefined
 const params = new URLSearchParams(Astro.url.searchParams)
-if (started.some((s) => s.id === params.get('period'))) {
-  params.set('season', params.get('period')!)
-  params.delete('period')
-}
 try {
-  board = await (await statsStore()).leaderboard(filters(params))
-  const names = await resolveNames(
-    await statsStore(),
-    board.players.filter((p: any) => uuidLike(p.name)).map((p: any) => p.uuid),
-  )
-  for (const p of board.players as any[]) p.name = displayName(names.get(p.uuid) ?? p.name)
-  skins = await resolveSkins(board.players.map((p: any) => p.uuid))
+  started = (await readSeasonsCp()).seasons
+  current = started.at(-1)
+  // The period select also lists seasons; the API takes those as `season`, never together with `period`.
+  if (started.some((s) => s.id === params.get('period'))) {
+    params.set('season', params.get('period')!)
+    params.delete('period')
+  }
+  board = await readLeaderboardCp(params)
+  skins = await resolveSkins(board.players.map((p) => p.uuid))
 } catch (e) {
   Astro.response.status = e instanceof StatsError ? e.status : 503
   error =
@@ -37,6 +31,7 @@ try {
       ? 'Такие фильтры не подходят. Нажмите «Сбросить» и попробуйте снова.'
       : 'Таблица сейчас недоступна. Ваши результаты никуда не делись — зайдите чуть позже.'
 }
+const seasonName = (id?: string) => started.find((s) => s.id === id)?.name ?? 'Сезон 1'
 const modes = [
   ['', 'Все режимы'],
   ['room', 'Casual'],

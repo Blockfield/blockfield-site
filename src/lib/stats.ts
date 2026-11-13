@@ -3,14 +3,27 @@ import { Database } from './database.ts'
 import { publish } from './admin-events.ts'
 import { draslBase } from './skins.ts'
 import { openTokenRaw, sessionKeyBytes } from './session-crypto.ts'
-import { saveReport, validateReport } from './diagnostics.ts'
 import { playerId, refreshRole } from './admin.ts'
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { cpStaffConfigured } from './cp.ts'
+import {
+  clearCpStatsCache,
+  displayName,
+  readLeaderboardCp,
+  readPlayerCp,
+  readSeasonsCp,
+  StatsError,
+  UNKNOWN_PLAYER,
+  uuidLike,
+  type CpStatsFetch,
+} from './cp-stats.ts'
+import { createHash, randomBytes } from 'node:crypto'
 import { composite, inflate, initial, softReset, update, RULES_VERSION } from './glicko2.ts'
 
+export { clearCpStatsCache, displayName, StatsError, UNKNOWN_PLAYER, uuidLike }
+
+const sha256 = (s: string) => createHash('sha256').update(s).digest()
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/
 const ID = /^[a-z0-9_.:-]{1,128}$/
-const MAX_BODY = 1_048_576
 const MODES = ['room', 'campaign', 'deathmatch']
 const REASONS = ['completed', 'draw', 'abandoned', 'stopped', 'shutdown', 'error']
 const COUNTERS = [
@@ -99,13 +112,7 @@ export type Result = {
   winnerUuid?: string // Additive FFA result; absent legacy fields stay absent for replay digests.
   telemetry?: Telemetry // Additive hit-reg report; absent legacy payloads stay byte-identical.
 }
-export class StatsError extends Error {
-  status: number
-  constructor(status: number, message: string) {
-    super(message)
-    this.status = status
-  }
-}
+
 function requireValue(condition: unknown, message: string): asserts condition {
   if (!condition) throw new StatsError(422, message)
 }
@@ -1501,12 +1508,6 @@ export class StatsStore {
     }
   }
 }
-export const UNKNOWN_PLAYER = 'Неизвестный игрок'
-export const uuidLike = (name: string) =>
-  /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(name.trim())
-export const displayName = (name: string | null | undefined) =>
-  !name || uuidLike(name) ? UNKNOWN_PLAYER : name
-
 const lookups = new Map<string, Promise<string | null>>()
 const missed = new Map<string, number>()
 /**
@@ -1576,165 +1577,53 @@ export function statsStore(): Promise<StatsStore> {
     throw error
   }))
 }
-export function ingestKeys(): Record<string, string[]> {
-  try {
-    const value = JSON.parse(process.env.BLOCKFIELD_STATS_INGEST_KEYS || '{}')
-    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error()
-    const result: Record<string, string[]> = {}
-    for (const [server, tokens] of Object.entries(value)) {
-      const list = typeof tokens === 'string' ? [tokens] : tokens
-      if (
-        !UUID.test(server) ||
-        !Array.isArray(list) ||
-        !list.length ||
-        list.length > 2 ||
-        !list.every((t) => typeof t === 'string' && /^[\x21-\x7e]{32,256}$/.test(t))
-      )
-        throw new Error()
-      result[server] = list
-    }
-    return result
-  } catch {
-    throw new StatsError(503, 'Statistics ingestion keys are not configured correctly')
-  }
-}
-const sha256 = (text: string) => createHash('sha256').update(text).digest()
 const rated = (result: Result) =>
   result.kind === 'campaign' &&
   result.modeId === 'campaign' &&
   ['completed', 'draw'].includes(result.endReason)
-/** Env keys or non-revoked DB keys (created in /admin); both compared as SHA-256 digests in constant time. */
-async function authorized(
-  request: Request,
-  keys: Record<string, string[]>,
-  store: () => StatsStore | Promise<StatsStore>,
-): Promise<string> {
-  const server = request.headers.get('X-Blockfield-Server-Id') || '',
-    header = request.headers.get('Authorization') || ''
-  if (!UUID.test(server)) throw new StatsError(401, 'Invalid producer credentials')
-  const provided = sha256(header),
-    bare = sha256(header.startsWith('Bearer ') ? header.slice(7) : '')
-  let match = false
-  for (const token of Object.hasOwn(keys, server) ? keys[server] : [])
-    match = timingSafeEqual(provided, sha256(`Bearer ${token}`)) || match
-  if (header.startsWith('Bearer '))
-    for (const hash of await (await store()).ingestKeyHashes(server))
-      match = timingSafeEqual(bare, hash) || match
-  if (!match) throw new StatsError(401, 'Invalid producer credentials')
-  return server
+
+export type StatsRequestDeps = {
+  store?: StatsStore
+  fetchImpl?: CpStatsFetch
+  env?: NodeJS.ProcessEnv
 }
-async function boundedJson(request: Request): Promise<unknown> {
-  if (request.headers.get('content-type')?.split(';')[0].trim() !== 'application/json')
-    throw new StatsError(415, 'application/json required')
-  const declared = request.headers.get('content-length')
-  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > MAX_BODY))
-    throw new StatsError(413, 'Result too large')
-  const reader = request.body?.getReader()
-  if (!reader) throw new StatsError(400, 'Result body required')
-  let size = 0,
-    timeout: ReturnType<typeof setTimeout> | undefined
-  const chunks: Uint8Array[] = []
-  const expired = new Promise<never>((_, reject) => {
-    timeout = setTimeout(() => reject(new StatsError(408, 'Body timeout')), 8000)
-  })
-  try {
-    for (;;) {
-      const { done, value } = await Promise.race([reader.read(), expired])
-      if (done) break
-      size += value.byteLength
-      if (size > MAX_BODY) throw new StatsError(413, 'Result too large')
-      chunks.push(value)
-    }
-    try {
-      return JSON.parse(Buffer.concat(chunks).toString('utf8'))
-    } catch {
-      throw new StatsError(400, 'Invalid JSON')
-    }
-  } finally {
-    clearTimeout(timeout)
-    void reader.cancel().catch(() => {})
-  }
-}
+
 export async function handleStatsRequest(
   request: Request,
-  dependencies?: { store: StatsStore; keys: Record<string, string[]> },
+  dependencies?: StatsRequestDeps,
 ): Promise<Response> {
   const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }
   try {
     const url = new URL(request.url),
-      path = url.pathname.replace(/\/$/, '')
-    if (path === '/api/stats/results') {
-      if (request.method !== 'POST')
-        return Response.json(
-          { error: 'Method not allowed' },
-          { status: 405, headers: { ...headers, Allow: 'POST' } },
-        )
-      // Authenticate before reading any request body.
-      const server = await authorized(
-          request,
-          dependencies?.keys ?? ingestKeys(),
-          async () => dependencies?.store ?? (await statsStore()),
-        ),
-        input = validateResult(await boundedJson(request))
-      if (input.serverId !== server)
-        throw new StatsError(403, 'Producer cannot submit another server identity')
-      const result = await (dependencies?.store ?? (await statsStore())).ingest(input)
-      return Response.json(result, { status: result.inserted ? 201 : 200, headers })
-    }
-    // Health samples and freeze/error journal: the same producer keys and server identity rule as results.
-    if (path === '/api/stats/diagnostics') {
-      if (request.method !== 'POST')
-        return Response.json(
-          { error: 'Method not allowed' },
-          { status: 405, headers: { ...headers, Allow: 'POST' } },
-        )
-      const store = async () => dependencies?.store ?? (await statsStore())
-      const server = await authorized(request, dependencies?.keys ?? ingestKeys(), store),
-        report = validateReport(await boundedJson(request))
-      if (report.serverId !== server)
-        throw new StatsError(403, 'Producer cannot submit another server identity')
-      return Response.json(await saveReport((await store()).db, report), { headers })
-    }
+      path = url.pathname.replace(/\/+$/, '')
+    // Producer ingestion endpoints are retired (coordination#29 U4/U6, #64 row 7): game writes to CP only.
+    if (path === '/api/stats/results' || path === '/api/stats/diagnostics')
+      throw new StatsError(404, 'Unknown statistics endpoint')
     if (request.method !== 'GET')
       return Response.json(
         { error: 'Method not allowed' },
         { status: 405, headers: { ...headers, Allow: 'GET' } },
       )
-    if (path === '/api/stats/seasons') {
-      const list = seasons()
-      return Response.json(
-        { schemaVersion: 1, current: list.at(-1)?.id ?? null, seasons: list },
-        { headers },
-      )
-    }
-    const query = filters(url.searchParams)
-    const store = dependencies?.store ?? (await statsStore())
-    // Clients (site, launcher) show `name` as is, so a UUID-like name is resolved or replaced here.
-    const named = async <T extends { uuid: string; name: string }>(rows: T[]) => {
-      const names = await resolveNames(
-        store,
-        rows.filter((r) => uuidLike(r.name)).map((r) => r.uuid),
-      )
-      for (const row of rows) row.name = displayName(names.get(row.uuid) ?? row.name)
-    }
-    if (path === '/api/stats/leaderboard') {
-      const board = await store.leaderboard(query)
-      await named(board.players)
-      return Response.json(board, { headers })
-    }
+    const cpOpts = { fetchImpl: dependencies?.fetchImpl, env: dependencies?.env }
+    if (path === '/api/stats/seasons')
+      return Response.json(await readSeasonsCp(cpOpts), { headers })
+    if (path === '/api/stats/leaderboard')
+      return Response.json(await readLeaderboardCp(url.searchParams, cpOpts), { headers })
     const player = /^\/api\/stats\/players\/([^/]+)$/.exec(path)
     if (player) {
-      const data = (await store.player(player[1], query)) as any
-      await named([data.profile, ...(data.totals ? [data.totals] : [])])
-      // ponytail: staff without recorded gameplay 404 above, so the launcher shows them as a player; add a role endpoint if that matters.
-      // CP is authority when configured: a replica row lingering after a revoke shows no role.
+      const data = await readPlayerCp(player[1], url.searchParams, cpOpts)
       const id = playerId(player[1])
-      // A CP outage must not cost the player's statistics (CP staff reads time out
-      // in cp.ts): degrade to no role link instead of failing the request.
+      // A CP staff outage must not cost the player's statistics: degrade to no role link.
+      // Never query or require the site DB when CP staff reads are configured (or DB is absent).
+      let roleStore = dependencies?.store
+      if (!roleStore && !cpStaffConfigured() && process.env.BLOCKFIELD_DATABASE_URL)
+        roleStore = await Promise.resolve()
+          .then(() => statsStore())
+          .catch(() => undefined)
       data.profile.role =
         id === null
           ? null
-          : await refreshRole({ uuid: id, name: data.profile.name, role: null }, store).catch(
+          : await refreshRole({ uuid: id, name: data.profile.name, role: null }, roleStore).catch(
               () => null,
             )
       return Response.json(data, { headers })
@@ -1742,12 +1631,9 @@ export async function handleStatsRequest(
     throw new StatsError(404, 'Unknown statistics endpoint')
   } catch (error) {
     if (!(error instanceof StatsError))
-      console.error(
-        'Statistics storage operation failed',
-        error instanceof Error ? error.message : 'unknown',
-      )
+      console.error('Statistics request failed', error instanceof Error ? error.message : 'unknown')
     return Response.json(
-      { error: error instanceof StatsError ? error.message : 'Statistics storage unavailable' },
+      { error: error instanceof StatsError ? error.message : 'Statistics unavailable' },
       { status: error instanceof StatsError ? error.status : 503, headers },
     )
   }

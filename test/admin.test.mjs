@@ -245,7 +245,7 @@ test('a failed commit never shows as ok in the live feed', async (t) => {
   })
   Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
   const s = await store(t)
-  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(ADMIN, 'Adm', 'builder', 'seed')
   const seen = []
   const off = subscribe(
     (event) => event.type === 'audit',
@@ -268,16 +268,16 @@ test('a failed commit never shows as ok in the live feed', async (t) => {
       return Reflect.get(target, prop)
     },
   })
-  process.env.BLOCKFIELD_ADMIN_DEV_USER = `${ADMIN}:Adm`
-  const url = new URL('http://site/api/admin/keys')
+  process.env.BLOCKFIELD_ADMIN_DEV_USER = `${OWNER}:Owner`
+  const url = new URL('http://site/api/admin/staff')
   const request = new Request(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ serverId: 'e10438e4-797b-4971-8cfe-cec6a8fa171b', label: 'x' }),
+    body: JSON.stringify({ uuid: ADMIN, role: 'moderator' }),
   })
   const response = await handleAdmin(
     { request, url, cookies: { get: () => undefined } },
-    'keys',
+    'staff',
     noCommit,
   ).then(
     (r) => r,
@@ -285,13 +285,13 @@ test('a failed commit never shows as ok in the live feed', async (t) => {
   )
   assert.ok(response.status >= 500)
   assert.equal(
-    seen.filter((e) => e.entry.action === 'ingest-key-create' && e.entry.ok).length,
+    seen.filter((e) => e.entry.action === 'role-grant' && e.entry.ok).length,
     0,
     'rolled-back writes never show as ok',
   )
 })
 
-test('tx failure is not applied: a rolled-back keys/create errors and shows no key', async (t) => {
+test('tx failure is not applied: a rolled-back role change errors and leaves the role unchanged', async (t) => {
   const saved = { ...process.env }
   t.after(() => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
@@ -299,7 +299,7 @@ test('tx failure is not applied: a rolled-back keys/create errors and shows no k
   })
   Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
   const s = await store(t)
-  await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
+  await s.setStaff(ADMIN, 'Adm', 'builder', 'seed')
   const flaky = new Proxy(s, {
     get: (target, prop) =>
       prop === 'auditFinalize'
@@ -308,23 +308,27 @@ test('tx failure is not applied: a rolled-back keys/create errors and shows no k
           }
         : Reflect.get(target, prop),
   })
-  process.env.BLOCKFIELD_ADMIN_DEV_USER = `${ADMIN}:Adm`
-  const url = new URL('http://site/api/admin/keys')
+  process.env.BLOCKFIELD_ADMIN_DEV_USER = `${OWNER}:Owner`
+  const url = new URL('http://site/api/admin/staff')
   const request = new Request(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ serverId: 'e10438e4-797b-4971-8cfe-cec6a8fa171b', label: 'producer' }),
+    body: JSON.stringify({ uuid: ADMIN, role: 'moderator' }),
   })
   const response = await handleAdmin(
     { request, url, cookies: { get: () => undefined } },
-    'keys',
+    'staff',
     flaky,
   ).then(
     (r) => r,
     (e) => e,
   )
   assert.ok(response.status >= 500, `a rolled-back write must error, got ${response.status}`)
-  assert.equal((await s.ingestKeys()).length, 0, 'the key insert rolled back with the finalize')
+  assert.equal(
+    (await s.staff()).find((r) => r.uuid === ADMIN)?.role,
+    'builder',
+    'the role update rolled back with the finalize',
+  )
 })
 
 test('audit leads the effect: a dead log fails everything closed before anything runs', async (t) => {
@@ -2349,9 +2353,7 @@ test('diagnostics are admin-only and never report health without data', async (t
     )
   }
   assert.equal((await call(`${MOD}:Moddy`, 'diagnostics')).status, 403)
-  const empty = await (await call(`${ADMIN}:Adm`, 'diagnostics')).json()
-  assert.equal(empty.lastSampleAt, null)
-  assert.deepEqual([empty.samples, empty.events], [[], []])
+  assert.equal((await call(`${ADMIN}:Adm`, 'diagnostics')).status, 503)
   assert.equal((await call(`${ADMIN}:Adm`, 'diagnostics/live')).status, 503)
   // Live tick check: the read-only `tick query` through CP, asserted as the admin.
   const cp = await fakeCp(t, () => ({

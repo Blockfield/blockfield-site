@@ -1222,52 +1222,47 @@ test('staff export: rows become operator import references, never accountIds', a
 
 test('site#116 item 5: public player role reads CP, not the replica (revoked admin is null)', async (t) => {
   const { handleStatsRequest } = await import('../src/lib/stats.ts')
-  const roles = new Map([[OTHER, { roles: [], epoch: 3 }]])
-  const { server } = await staffFake(t, roles)
-  cpEnv(t, server)
-  const s = await store(t)
-  const serverId = '00000000-0000-4000-8000-000000000001'
-  const eventId = '00000000-0000-4000-8000-000000000002'
-  await s.ingest({
-    schemaVersion: 1,
-    serverId,
-    eventId,
-    kind: 'match',
-    sessionPurpose: 'gameplay',
-    modeId: 'room',
-    ranked: false,
-    rulesetVersion: '1',
-    matchId: eventId,
-    campaignSessionId: null,
-    mapId: 'fields',
-    startedAt: '2026-09-14T00:00:00Z',
-    endedAt: '2026-09-14T00:01:00Z',
-    endReason: 'completed',
-    winner: 'RED',
-    rounds: [],
-    participants: [
-      {
-        uuid: dashed(OTHER),
-        name: 'Oth',
-        team: 'RED',
-        score: 1,
-        kills: 1,
-        deaths: 0,
-        captures: 0,
-        neutralizations: 0,
-        pointSeconds: 0,
-        playSeconds: 60,
-        suicides: 0,
-        teamKills: 0,
-        maxKillstreak: 1,
-        classes: [],
-      },
-    ],
+  const server = await fakeCp(t, (req, res) => {
+    const url = new URL(req.url, 'http://cp')
+    res.setHeader('Content-Type', 'application/json')
+    if (req.method === 'GET' && url.pathname === '/v2/staff/grants') {
+      return res.end(JSON.stringify({ accountId: OTHER, roles: [], grants: [], epoch: 3 }))
+    }
+    if (req.method === 'GET' && url.pathname === `/v2/stats/players/${dashed(OTHER)}`) {
+      return res.end(
+        JSON.stringify({
+          schemaVersion: 1,
+          checkedAt: '2026-09-14T00:02:00.000Z',
+          ratingStatus: 'glicko2-v1',
+          season: null,
+          mmrSeason: 's2',
+          page: 1,
+          limit: 20,
+          profile: {
+            uuid: dashed(OTHER),
+            name: 'Oth',
+            lastSeen: Date.parse('2026-09-14T00:01:00Z'),
+            role: null,
+          },
+          totals: null,
+          campaigns: { completed: 0, wins: 0 },
+          classes: [],
+          history: [],
+          mmr: null,
+          ratingHistory: [],
+        }),
+      )
+    }
+    res.statusCode = 404
+    res.end(JSON.stringify({ error: 'not_found' }))
   })
+  cpEnv(t, server)
+  process.env.BLOCKFIELD_CP_STATS_TOKEN = 'stats-t'
+  const s = await store(t)
   await s.setStaff(OTHER, 'Oth', 'admin', 'seed')
   const res = await handleStatsRequest(
     new Request(`https://example.test/api/stats/players/${dashed(OTHER)}`),
-    { store: s, keys: {} },
+    { store: s },
   )
   assert.equal(res.status, 200)
   const data = await res.json()

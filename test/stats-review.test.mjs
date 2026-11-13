@@ -59,15 +59,69 @@ function post(body, producer = server) {
   })
 }
 
+async function mountCpStats(t, store) {
+  const { createServer } = await import('node:http')
+  const { clearCpStatsCache, seasons } = await import('../src/lib/stats.ts')
+  clearCpStatsCache()
+  const server = createServer(async (req, res) => {
+    const reqUrl = new URL(req.url, 'http://cp')
+    res.setHeader('Content-Type', 'application/json')
+    try {
+      if (reqUrl.pathname === '/v2/stats/seasons') {
+        const list = seasons()
+        return res.end(
+          JSON.stringify({ schemaVersion: 1, current: list.at(-1)?.id ?? null, seasons: list }),
+        )
+      }
+      if (reqUrl.pathname === '/v2/stats/leaderboard') {
+        const view = await store.leaderboard(filters(reqUrl.searchParams))
+        return res.end(
+          JSON.stringify({ schemaVersion: 1, checkedAt: new Date().toISOString(), ...view }),
+        )
+      }
+      const m = /^\/v2\/stats\/players\/([^/]+)$/.exec(reqUrl.pathname)
+      if (m) {
+        const view = await store.player(m[1], filters(reqUrl.searchParams))
+        return res.end(
+          JSON.stringify({ schemaVersion: 1, checkedAt: new Date().toISOString(), ...view }),
+        )
+      }
+      res.statusCode = 404
+      res.end(JSON.stringify({ error: 'not_found' }))
+    } catch (e) {
+      res.statusCode = e?.status || 500
+      res.end(
+        JSON.stringify({
+          error: e?.status === 404 ? 'player_not_found' : 'invalid_stats_filter',
+          message: e?.message || 'err',
+        }),
+      )
+    }
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const savedUrl = process.env.BLOCKFIELD_CP_URL
+  const savedToken = process.env.BLOCKFIELD_CP_STATS_TOKEN
+  process.env.BLOCKFIELD_CP_URL = `http://127.0.0.1:${server.address().port}`
+  process.env.BLOCKFIELD_CP_STATS_TOKEN = 'test-stats-token'
+  t.after(() => {
+    clearCpStatsCache()
+    if (savedUrl === undefined) delete process.env.BLOCKFIELD_CP_URL
+    else process.env.BLOCKFIELD_CP_URL = savedUrl
+    if (savedToken === undefined) delete process.env.BLOCKFIELD_CP_STATS_TOKEN
+    else process.env.BLOCKFIELD_CP_STATS_TOKEN = savedToken
+    server.close()
+  })
+}
+
 test('FFA winner UUID is persisted and counted once through the public API', async (t) => {
-  const store = await database(t),
-    deps = { store, keys: { [server]: [token] } }
+  const store = await database(t)
+  await mountCpStats(t, store)
   const result = { ...fixture(), winnerUuid: alpha }
-  assert.equal((await handleStatsRequest(post(result), deps)).status, 201)
-  assert.equal((await handleStatsRequest(post(result), deps)).status, 200)
+  assert.equal((await store.ingest(result)).inserted, true)
+  assert.equal((await store.ingest(result)).inserted, false)
   const response = await handleStatsRequest(
     new Request('https://example.test/api/stats/leaderboard?mode=deathmatch&sort=wins'),
-    deps,
+    { store },
   )
   const board = await response.json()
   assert.equal(response.status, 200)
@@ -134,23 +188,21 @@ test('result identity fields reject regex string coercion of arrays', () => {
     )
 })
 
-test('invalid and inherited producer keys fail with 401 before parsing the body', async (t) => {
+test('retired POST /api/stats/results fails with 404 before parsing the body', async (t) => {
   const store = await database(t),
-    deps = { store, keys: { [server]: [token] } }
+    deps = { store }
   for (const producer of ['__proto__', 'constructor', 'toString', 'not-a-uuid', foreign]) {
     const request = post(fixture(), producer)
     let bodyRead = false
     Object.defineProperty(request, 'body', {
       get() {
         bodyRead = true
-        throw new Error('must not read unauthorized body')
+        throw new Error('must not read retired body')
       },
     })
-    assert.equal((await handleStatsRequest(request, deps)).status, 401, producer)
+    assert.equal((await handleStatsRequest(request, deps)).status, 404, producer)
     assert.equal(bodyRead, false)
   }
-  const inherited = { store, keys: Object.create({ [server]: [token] }) }
-  assert.equal((await handleStatsRequest(post(fixture()), inherited)).status, 401)
 })
 
 test('conflicting personal winner replay cannot rewrite an accepted victory', async (t) => {
@@ -204,9 +256,10 @@ test('site#116 item 6: winner_uuid column is filled at ingest and drives the lea
   const { database } = await import('./storage.mjs')
   const store = await database(t)
   const { handleStatsRequest } = await import('../src/lib/stats.ts')
-  const deps = { store, keys: { [server]: [token] } }
+  await mountCpStats(t, store)
+  const deps = { store }
   const result = { ...fixture(), winnerUuid: alpha }
-  assert.equal((await handleStatsRequest(post(result), deps)).status, 201)
+  assert.equal((await store.ingest(result)).inserted, true)
   const row = await store.db.prepare('SELECT winner_uuid "winnerUuid",payload FROM results').get()
   assert.equal(row.winnerUuid, alpha, 'ingest fills the column')
   const board1 = await (
@@ -466,22 +519,17 @@ test('site#116e-1: startup backfill repairs lone-surrogate winners, ignores nest
   )
 })
 
-test('site#116c-3: player statistics degrade to role null when CP fails', async (t) => {
-  const { database } = await import('./storage.mjs')
+test('site#116c-3: player statistics degrade to role null when CP staff fails', async (t) => {
   const { handleStatsRequest } = await import('../src/lib/stats.ts')
-  const store = await database(t),
-    deps = { store, keys: { [server]: [token] } }
-  assert.equal(
-    (await handleStatsRequest(post({ ...fixture(), winnerUuid: alpha }), deps)).status,
-    201,
-  )
   const saved = {
     url: process.env.BLOCKFIELD_CP_URL,
     staff: process.env.BLOCKFIELD_CP_STAFF_TOKEN,
+    stats: process.env.BLOCKFIELD_CP_STATS_TOKEN,
     owners: process.env.BLOCKFIELD_OWNER_UUIDS,
   }
   process.env.BLOCKFIELD_CP_URL = 'http://127.0.0.1:9'
   process.env.BLOCKFIELD_CP_STAFF_TOKEN = 'test-only-cp-staff-token'
+  process.env.BLOCKFIELD_CP_STATS_TOKEN = 'test-only-cp-stats-token'
   delete process.env.BLOCKFIELD_OWNER_UUIDS
   const realFetch = globalThis.fetch
   t.after(() => {
@@ -490,21 +538,41 @@ test('site#116c-3: player statistics degrade to role null when CP fails', async 
     else process.env.BLOCKFIELD_CP_URL = saved.url
     if (saved.staff === undefined) delete process.env.BLOCKFIELD_CP_STAFF_TOKEN
     else process.env.BLOCKFIELD_CP_STAFF_TOKEN = saved.staff
+    if (saved.stats === undefined) delete process.env.BLOCKFIELD_CP_STATS_TOKEN
+    else process.env.BLOCKFIELD_CP_STATS_TOKEN = saved.stats
     if (saved.owners === undefined) delete process.env.BLOCKFIELD_OWNER_UUIDS
     else process.env.BLOCKFIELD_OWNER_UUIDS = saved.owners
   })
-  for (const stub of [
+  const cpPlayerPayload = {
+    schemaVersion: 1,
+    checkedAt: '2026-09-14T00:02:00.000Z',
+    ratingStatus: 'glicko2-v1',
+    season: null,
+    mmrSeason: 's2',
+    page: 1,
+    limit: 20,
+    profile: { uuid: alpha, name: 'Alpha', lastSeen: 1757808000000 },
+    totals: null,
+    campaigns: { completed: 0, wins: 0 },
+    classes: [],
+    history: [],
+    mmr: null,
+    ratingHistory: [],
+  }
+  for (const staffStub of [
     async () => {
       throw new TypeError('fetch failed')
     },
     async () => new Response(JSON.stringify({ error: 'boom' }), { status: 500 }),
   ]) {
-    globalThis.fetch = stub
+    globalThis.fetch = async (url, init) => {
+      if (String(url).includes('/v2/stats/players/')) return Response.json(cpPlayerPayload)
+      return staffStub(url, init)
+    }
     const response = await handleStatsRequest(
       new Request(`https://example.test/api/stats/players/${alpha}`),
-      deps,
     )
-    assert.equal(response.status, 200, 'statistics are served without CP')
+    assert.equal(response.status, 200, 'player stats are served even when CP staff lookup fails')
     assert.equal((await response.json()).profile.role, null, 'role degrades to no link')
   }
 })

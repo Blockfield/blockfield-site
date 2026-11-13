@@ -98,13 +98,14 @@ Late results: a campaign that ended in an earlier season but arrives later updat
 - Position is `rank` from the API, never recomputed from list order.
 - Show `checkedAt`/stale state separately from "game server unavailable".
 
-## For developers and AI agents
+## Control-plane cutover (runtime read client)
 
-- Code: contract/validation, storage, aggregation, seasons and HTTP in `src/lib/stats.ts`; rating math in `src/lib/glicko2.ts`; route `src/pages/api/stats/[...path].ts`; tests `test/stats*.test.mjs`, `test/glicko2.test.mjs`.
-- Site: `/leaderboard` and `/players/<UUID>` call `StatsStore` directly on the server; `/account` fetches `/api/stats/players/<UUID>` in the browser with the Drasl profile UUID.
-- Launcher and in-game UI must read the same public HTTP endpoints and apply the display rules above; do not re-aggregate or recompute rank/MMR locally.
-- The read API never calls Minecraft, RCON or Server List Ping; only the game server's producer writes, via `POST /api/stats/results`.
-- The app requires `BLOCKFIELD_DATABASE_URL` (a PostgreSQL URL). For local work use an isolated test database seeded by `StatsStore.ingest()` with the test fixtures; never production data.
+- Code: CP read client (`readSeasonsCp`, `readLeaderboardCp`, `readPlayerCp`, `readHitregCp`, `clearCpStatsCache`) in `src/lib/cp-stats.ts`; admin diagnostics client (`readDiagnosticsCp`) in `src/lib/cp.ts`; public HTTP route `src/lib/stats.ts` -> `src/pages/api/stats/[...path].ts`; tests `test/cp-stats-read.test.mjs`, `test/cp-diagnostics.test.mjs`, `test/stats*.test.mjs`, `test/glicko2.test.mjs`.
+- Runtime credentials: set `BLOCKFIELD_CP_URL` and `BLOCKFIELD_CP_STATS_TOKEN` (CP token with scope `stats.read` on `environment="prod"`, `backend="game"`, `resource="*"`). `BLOCKFIELD_CP_STATS_TOKEN` is registered in `src/lib/cp-renew.ts` (`RENEWED_KEYS`) for rotation.
+- No fallback to site PostgreSQL: every runtime stats, hit-reg, seasons and diagnostics read (`/leaderboard`, `/players/<UUID>`, `/account`, `/api/stats/*`, `/api/admin/{hitreg,seasons,diagnostics}`, `/api/admin/players`) queries CP directly (`GET /v2/stats/{seasons,leaderboard,players/{uuid},hitreg,diagnostics}`). Missing configuration, upstream 401/403 or unreachable CP maps to `503` (never visitor 401/403 and never local site DB rows); malformed or 5xx CP responses map to `502`; empty CP states render as empty.
+- Fast path & caching: `readSeasonsCp()` holds an explicit **30 s** in-process TTL cache keyed by `(BLOCKFIELD_CP_URL, sha256(BLOCKFIELD_CP_STATS_TOKEN))` (bypassed via `opts.noCache` or `clearCpStatsCache()`). All other reads are direct uncached HTTP calls (`no-store`); no file caches or polling exist.
+- Retired site ingest & writes: `POST /api/stats/results`, `POST /api/stats/diagnostics`, and admin routes `GET/POST /api/admin/results`, `POST /api/admin/results/void`, `GET/POST /api/admin/keys`, `POST /api/admin/keys/revoke` return `404`. Game servers write solely to CP (see `Blockfield/blockfield-server#464`); match void/restore (`stats.void`) runs in CP.
+- `BLOCKFIELD_DATABASE_URL` remains required only for site sessions (`site_sessions`), staff roles replica (`staff_roles`), and audit (`admin_audit`); public `/api/stats/*` routes operate even without a site DB connection (player `profile.role` degrades to `null` only if CP staff lookup is unavailable).
 
 ## Verification and remaining integration
 
@@ -190,3 +191,30 @@ A trusted operator must establish each file's origin before marking it gameplay.
 Unknown modes, teams, statuses, invalid/missing UUIDs, dates without numeric timezone, checksum mismatches, unknown classes and repeated UUID segments are reported as rejected rather than guessed. Overlapping/team-change legacy records must be reconciled from authoritative records before import; the importer does not sum potentially cumulative snapshots. Correct a copy, preserve the original and review a new checksum. An existing EventId is retained; older files derive an ID from server, mode, campaign, round number, map and start time. Replay uses the normal transactional ingestion deduplication. A changed result under the same identity is rejected as a conflict. Never import a JSON log already delivered through the outbox under a different interpretation.
 
 Each file commits independently. Review the report after partial failures; rerun safely after correcting rejected entries. This command does not disable the normal protected ingestion endpoint or change season/rating rules.
+
+## Historical stats archival & season-boundary cutover (coordination#29 U6)
+
+Owner decision (#29 U6): historical matches and ratings accumulated in the site PostgreSQL before cutover are **not** migrated into Control Plane («Начать с нового сезона»). Instead, CP statistics begin clean on a season boundary and the site PostgreSQL history is preserved strictly as a verified archival snapshot before dropping the legacy tables in the follow-up cleanup unit (U7).
+
+### Season-boundary cutover options (owner / coordinator decision)
+
+- **Default calendar boundary (`s3`)**: `"Сезон 1"` (`s2`) runs through `2026-12-31T23:59:59.999Z`; `"Сезон 2"` (`s3`) opens `2027-01-01T00:00:00.000Z`.
+- **Early cutover option**: if releasing mid-`s2`, the owner closes `s2` on a chosen UTC timestamp `T` in CP (`stat_seasons` boundary table) and opens `s3` (or dedicated cutover season) from `T` before game delivery resumes under `blockfield-server#464`.
+
+### Operator archive script & coordinator runbook
+
+Use `scripts/archive-site-stats.mjs` (read-only `REPEATABLE READ READ ONLY` transaction; exports the 9 legacy stats/diagnostics/ingest tables `profiles`, `results`, `participants`, `classes`, `ratings`, `rating_changes`, `server_samples`, `server_events`, `ingest_keys` as sorted NDJSON + SHA-256 `manifest.json`; never exports `site_sessions`, `staff_roles`, or `admin_audit`):
+
+```sh
+# 1. Freeze / stop game ingest to site (after deploying server#464 / quiescing legacy outbox).
+# 2. Export verified NDJSON archive of legacy stats & diagnostics tables:
+node --experimental-strip-types scripts/archive-site-stats.mjs "$BLOCKFIELD_DATABASE_URL" /var/backups/blockfield/site-stats-u6 --verify
+
+# 3. Also take a full pg_dump recovery backup before any U7 schema drop:
+pg_dump --format=custom --no-owner "$BLOCKFIELD_DATABASE_URL" > /var/backups/blockfield/site-pre-u7.dump
+
+# 4. Re-verify archive integrity offline anytime:
+node --experimental-strip-types scripts/archive-site-stats.mjs --verify-only /var/backups/blockfield/site-stats-u6
+```
+
+Do **not** drop the 9 legacy tables (`U7`) until the coordinator verifies the NDJSON checksums (`--verify-only`), confirms CP season boundary `s3` / cutover season is live, and confirms zero game servers still point at `/api/stats/*`. Note: `scripts/import-legacy-stats.mjs` targets the retired local `StatsStore` schema and is kept only for offline inspection of legacy JSON logs until U7 cleanup.

@@ -164,7 +164,7 @@ test('readDiagnosticsCp rejects a sample with non-numeric players/heap/gcPause',
   }
 })
 
-test('GET diagnostics falls back to local on a malformed CP payload', async (t) => {
+test('GET diagnostics refuses malformed CP payload (502) and never falls back to local DB', async (t) => {
   const view = cpView()
   delete view.events[0].repeats
   const server = await fakeCp(t, (req, res) => {
@@ -183,14 +183,14 @@ test('GET diagnostics falls back to local on a malformed CP payload', async (t) 
     { request, url: new URL(request.url), cookies: { get: () => undefined } },
     'diagnostics',
     s,
+  ).then(
+    (r) => r,
+    (e) => e,
   )
-  assert.equal(res.status, 200)
-  const body = await res.json()
-  assert.equal(body.lastSampleAt, at)
-  assert.equal(body.samples.length, 1)
+  assert.equal(res.status, 502)
 })
 
-test('GET diagnostics falls back to local while CP holds no fresh sample', async (t) => {
+test('GET diagnostics returns empty CP state as-is and never falls back to local DB', async (t) => {
   const empty = {
     schemaVersion: 1,
     now: Date.now(),
@@ -218,11 +218,11 @@ test('GET diagnostics falls back to local while CP holds no fresh sample', async
   )
   assert.equal(res.status, 200)
   const body = await res.json()
-  assert.equal(body.lastSampleAt, at)
-  assert.equal(body.samples.length, 1)
+  assert.equal(body.lastSampleAt, null)
+  assert.deepEqual(body.samples, [])
 })
 
-test('GET diagnostics falls back to local when the CP sample is stale', async (t) => {
+test('GET diagnostics returns stale CP sample as-is and never falls back to local fresh sample', async (t) => {
   const at = Date.now() - 10 * 60_000
   const stale = { ...cpView(), lastSampleAt: at, samples: [{ ...cpView().samples[0], at }] }
   const server = await fakeCp(t, (req, res) => {
@@ -244,7 +244,7 @@ test('GET diagnostics falls back to local when the CP sample is stale', async (t
   )
   assert.equal(res.status, 200)
   const body = await res.json()
-  assert.equal(body.lastSampleAt, fresh)
+  assert.equal(body.lastSampleAt, at)
   assert.equal(body.samples.length, 1)
 })
 

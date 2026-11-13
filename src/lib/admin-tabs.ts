@@ -46,7 +46,7 @@ import {
   setSavedMessage,
 } from '../lib/admin-overview'
 import { loadBans, loadOnline, playerAction } from '../lib/admin-players'
-import { loadKeys, loadResults, loadSeasons } from '../lib/admin-stats'
+import { loadSeasons } from '../lib/admin-stats'
 import { loadAudit, prependAudit } from '../lib/admin-journal'
 import { loadHealth, tps } from '../lib/admin-health'
 import '../lib/admin-console'
@@ -108,7 +108,7 @@ function refreshCurrentTab() {
     weapons: [loadGunBalance],
     kits: [async () => loadKits(true)],
     workshop: [loadCandidates, loadMapHistory],
-    stats: [loadResults, loadSeasons, loadKeys],
+    stats: [loadSeasons],
     team: [loadTeam],
     journal: [loadAudit],
     health: [loadHealth],
@@ -545,9 +545,7 @@ api('me').then(
       ['roles', loadTeam, 'Команда'],
       ['view', loadCandidates, 'Кандидаты'],
       ['view', loadMapHistory, 'Архив карт'],
-      ['stats', loadResults, 'Статистика'],
       ['stats', loadSeasons, 'Сезоны'],
-      ['stats', loadKeys, 'Ключи'],
       ['audit', loadAudit, 'Журнал'],
       ['diagnostics', loadHealth, 'Производительность'],
       ['maintenance', loadMaintState, 'Состояние техработ'],

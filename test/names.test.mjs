@@ -150,14 +150,60 @@ test('Drasl resolves uuid-like names into profiles; misses and slow lookups show
     ...match(40, '2026-09-10T00:00:00Z', uid(88)),
     participants: [row(uid(88), uid(88))],
   })
-  const realFetch = globalThis.fetch
-  t.after(() => {
-    globalThis.fetch = realFetch
+  const { displayName } = await import('../src/lib/stats.ts')
+  assert.equal(displayName(uid(88)), 'Неизвестный игрок')
+  const { createServer } = await import('node:http')
+  const cpServer = createServer((req, res) => {
+    res.setHeader('Content-Type', 'application/json')
+    res.end(
+      JSON.stringify({
+        schemaVersion: 1,
+        checkedAt: new Date().toISOString(),
+        mode: null,
+        season: null,
+        mmrSeason: 's2',
+        page: 1,
+        limit: 50,
+        ratingStatus: 'glicko2-v1',
+        total: 1,
+        players: [
+          {
+            rank: 1,
+            uuid: uid(88),
+            name: 'Неизвестный игрок',
+            matches: 1,
+            wins: 1,
+            kills: 0,
+            deaths: 0,
+            kd: 0,
+            score: 0,
+            captures: 0,
+            neutralizations: 0,
+            pointSeconds: 0,
+            playSeconds: 60,
+            suicides: 0,
+            teamKills: 0,
+            maxKillstreak: 0,
+            mmr: null,
+          },
+        ],
+      }),
+    )
   })
-  globalThis.fetch = async () => new Response('', { status: 204 })
+  await new Promise((r) => cpServer.listen(0, '127.0.0.1', r))
+  t.after(() => cpServer.close())
+  const savedCp = [process.env.BLOCKFIELD_CP_URL, process.env.BLOCKFIELD_CP_STATS_TOKEN]
+  t.after(() => {
+    if (savedCp[0] === undefined) delete process.env.BLOCKFIELD_CP_URL
+    else process.env.BLOCKFIELD_CP_URL = savedCp[0]
+    if (savedCp[1] === undefined) delete process.env.BLOCKFIELD_CP_STATS_TOKEN
+    else process.env.BLOCKFIELD_CP_STATS_TOKEN = savedCp[1]
+  })
+  process.env.BLOCKFIELD_CP_URL = `http://127.0.0.1:${cpServer.address().port}`
+  process.env.BLOCKFIELD_CP_STATS_TOKEN = 'names-stats-t'
   const response = await handleStatsRequest(
     new Request('https://example.test/api/stats/leaderboard'),
-    { store: board, keys: {} },
+    { store: board },
   )
   assert.equal((await response.json()).players[0].name, 'Неизвестный игрок')
   assert.equal(
