@@ -1,4 +1,4 @@
-/** Owner's raw RCON console: shared by the API (validation) and the page (confirmation). No server-only imports. */
+/** Owner's raw game console (CP console.run): shared by the API (validation) and the page (confirmation). No server-only imports. */
 
 export type RconTarget = 'game' | 'workshop'
 

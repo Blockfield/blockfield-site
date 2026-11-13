@@ -167,7 +167,7 @@ test('stored error text has no addresses, URLs, e-mails or credentials', () => {
 })
 
 test('vanilla tick query output parses into authoritative tick timings', () => {
-  // RCON joins the command's three messages without separators.
+  // Older senders join the command's three messages without separators.
   const tick = parseTickQuery(
     "The game is running, but can't keep up with the target tick rate" +
       'Target tick rate: 20.0 per second.\nAverage time per tick: 80.0ms (Target: 50.0ms)' +

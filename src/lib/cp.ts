@@ -58,7 +58,7 @@ function validGate(data: any): data is CpGate {
   )
 }
 
-/** CP maintenance closes entry; draining/open keep it (drain flag stays an RCON status). */
+/** CP maintenance closes entry; draining/open keep it (drain flag is the game's `bf maintenance status`). */
 export function maintenanceFromCp(gate: CpGate): Maintenance | null {
   if (gate.mode !== 'maintenance') return null
   return maintenanceFrom({ mode: 'maintenance', message: gate.message, since: gate.since })
@@ -528,12 +528,10 @@ export async function postStaffGrantCp(
 }
 
 /**
- * Typed moderation via control-plane v2:
- * POST /v2/actions/moderation.<kind>. Only fire-and-forget commands move:
- * `list` stays on RCON (a read; CP ACKs carry no output), kick/ban keep the
- * RCON nickname flow until the UUID cutover, maintenance/raw/console have no
- * typed kind. The moved kinds never fall back: without full CP config the
- * route fails closed instead of reaching RCON.
+ * Typed moderation via control-plane v2: POST /v2/actions/moderation.<kind>.
+ * The game is reachable only through CP: without full CP config every route
+ * fails closed. list/kick/ban/maintenance wait for the game's receipt
+ * (awaitOperationCp); the rest are fire-and-forget.
  */
 export const moderationCpKinds = [
   'say',
@@ -543,6 +541,10 @@ export const moderationCpKinds = [
   'class-unlock',
   'range',
   'stop-room',
+  'list',
+  'kick',
+  'ban',
+  'maintenance',
 ] as const
 export type ModerationCpKind = (typeof moderationCpKinds)[number]
 
@@ -583,6 +585,7 @@ const moderationMessages: Record<string, [number, string]> = {
   ineligible_account: [403, 'Этот аккаунт не может выполнять модерацию.'],
   account_not_found: [404, 'Участник не найден.'],
   forbidden: [503, 'У сайта нет доступа к модерации в control-plane. Обратитесь к координатору.'],
+  operation_unreadable: [502, 'Control-plane не отдал результат команды.'],
 }
 
 function moderationProblem(status: number, code: string): CpProblem {
@@ -635,6 +638,192 @@ export async function postModerationCp(
   if (typeof data?.operationId !== 'string')
     throw new Error('Control-plane отдал неверное состояние.')
   return { operationId: data.operationId, status: data.status ?? 'accepted' }
+}
+
+/** The deploy restart notice: no actor, the text is fixed in the game. */
+export async function postAnnounceCp(
+  opts: { idempotencyKey?: string; fetchImpl?: FetchImpl } = {},
+): Promise<{ operationId: string }> {
+  const { url, token, generation, consumerId, environment, backend } = moderationConfig()
+  const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
+  const response = await fetchImpl(`${url}/v2/actions/moderation.announce`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      idempotencyKey: opts.idempotencyKey ?? randomUUID(),
+      environment,
+      backend,
+      consumerId,
+      generation,
+      target: '*',
+    }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok)
+    throw moderationProblem(
+      response.status,
+      typeof data?.error === 'string' ? data.error : 'control_plane_error',
+    )
+  if (typeof data?.operationId !== 'string')
+    throw new Error('Control-plane отдал неверное состояние.')
+  return { operationId: data.operationId }
+}
+
+/** Operation states no later receipt changes (cpv2/STATE_MACHINE.md). */
+const SETTLED = new Set(['effective', 'rejected', 'unknown', 'expired', 'partial'])
+
+export type CpOutcome = {
+  /** A settled CP state, or `pending` when the game did not settle it in time. */
+  status: string
+  /** Text the game printed (list, maintenance, console), from the last receipt that has it. */
+  output: string
+}
+
+/**
+ * Polls GET /v2/operations/<id> with the credential that issued it (CP lets the
+ * issuer read its own operation) until the game settles it or `timeoutMs` passes.
+ */
+export async function awaitOperationCp(
+  operationId: string,
+  token: string,
+  opts: { timeoutMs?: number; intervalMs?: number; fetchImpl?: FetchImpl } = {},
+): Promise<CpOutcome> {
+  const url = config()
+  const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
+  const deadline = Date.now() + (opts.timeoutMs ?? 10_000)
+  for (;;) {
+    const response = await fetchImpl(`${url}/v2/operations/${encodeURIComponent(operationId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
+    const data = await response.json().catch(() => null)
+    if (!response.ok) throw moderationProblem(502, 'operation_unreadable')
+    if (SETTLED.has(data?.status)) {
+      const receipts: any[] = Array.isArray(data.receipts) ? data.receipts : []
+      const output = receipts
+        .map((r) => r?.result?.output)
+        .findLast((o): o is string => typeof o === 'string')
+      return { status: data.status, output: output ?? '' }
+    }
+    if (Date.now() >= deadline) return { status: 'pending', output: '' }
+    await new Promise((resolve) => setTimeout(resolve, opts.intervalMs ?? 250))
+  }
+}
+
+/** Once CP accepted the operation a failed read is `pending` (unconfirmed), never a failure. */
+async function settle(
+  operationId: string,
+  token: string,
+  opts: Parameters<typeof awaitOperationCp>[2],
+): Promise<CpOutcome & { operationId: string }> {
+  try {
+    return { operationId, ...(await awaitOperationCp(operationId, token, opts)) }
+  } catch (error) {
+    console.error(`CP operation ${operationId} unreadable`, (error as Error).message)
+    return { operationId, status: 'pending', output: '' }
+  }
+}
+
+/** Moderation command whose result the caller needs: post, then wait for the game. */
+export async function runModerationCp(
+  kind: ModerationCpKind,
+  actorAccountId: string,
+  fields: Record<string, unknown>,
+  opts: { idempotencyKey?: string; fetchImpl?: FetchImpl; timeoutMs?: number } = {},
+): Promise<CpOutcome & { operationId: string }> {
+  const { operationId } = await postModerationCp(kind, actorAccountId, fields, opts)
+  return settle(operationId, moderationConfig().token, opts)
+}
+
+/** Deploy restart notice, settled: the deploy rolls the server only after players saw it. */
+export async function runAnnounceCp(
+  opts: { idempotencyKey?: string; fetchImpl?: FetchImpl; timeoutMs?: number } = {},
+): Promise<CpOutcome & { operationId: string }> {
+  const { operationId } = await postAnnounceCp(opts)
+  return settle(operationId, moderationConfig().token, opts)
+}
+
+/**
+ * Owner console via CP `console.run`: game uses the moderation consumer, Workshop
+ * its game server's own consumer. The site asserts the logged-in user; CP lets
+ * admins run only its read-only allowlist and owners anything.
+ */
+export type ConsoleTarget = 'game' | 'workshop'
+
+function consoleConfig(target: ConsoleTarget, env: NodeJS.ProcessEnv = process.env) {
+  const workshop = target === 'workshop'
+  return {
+    token: ((env.BLOCKFIELD_CP_CONSOLE_TOKEN ?? '') as string).trim(),
+    consumerId: (
+      (workshop
+        ? (env.BLOCKFIELD_CP_WORKSHOP_GAME_CONSUMER_ID ?? '')
+        : (env.BLOCKFIELD_CP_CONSUMER_ID ?? 'game')) as string
+    ).trim(),
+    generation: (
+      (workshop
+        ? env.BLOCKFIELD_CP_WORKSHOP_GAME_CONSUMER_GENERATION
+        : env.BLOCKFIELD_CP_CONSUMER_GENERATION) ?? ''
+    ).trim(),
+  }
+}
+
+export function cpConsoleConfigured(
+  target: ConsoleTarget,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const { token, consumerId, generation } = consoleConfig(target, env)
+  return cpConfigured(env) && !!token && !!consumerId && uuidLoose.test(generation)
+}
+
+const consoleMessages: Record<string, [number, string]> = {
+  invalid_console_command: [400, 'Команда — одна строка без управляющих символов.'],
+  forbidden: [403, 'Недостаточно прав для этой команды.'],
+  consumer_generation_or_capability: [
+    503,
+    'Версия получателя в control-plane устарела. Обратитесь к координатору.',
+  ],
+  consumer_lag: [503, 'Сервер занят подтверждением команд. Попробуйте позже.'],
+}
+
+export async function runConsoleCp(
+  target: ConsoleTarget,
+  command: string,
+  actorAccountId: string,
+  opts: { idempotencyKey?: string; fetchImpl?: FetchImpl; timeoutMs?: number } = {},
+): Promise<CpOutcome & { operationId: string }> {
+  const url = config()
+  const { token, consumerId, generation } = consoleConfig(target)
+  // console.run takes no resource or target: a line always acts on the whole server.
+  const { environment, backend } = cpScope()
+  if (!token || !consumerId || !uuidLoose.test(generation))
+    throw new Error('Control-plane не настроен на сайте (консоль).')
+  const actor = actorAccountId.replaceAll('-', '').toLowerCase()
+  if (!/^[0-9a-f]{32}$/.test(actor)) throw new Error('Некорректный запрос.')
+  const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
+  const response = await fetchImpl(`${url}/v2/actions/console.run`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      idempotencyKey: opts.idempotencyKey ?? randomUUID(),
+      environment,
+      backend,
+      consumerId,
+      generation,
+      command,
+      actorAccountId: actor.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
+    }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok) {
+    const code = typeof data?.error === 'string' ? data.error : 'control_plane_error'
+    const [status, message] = consoleMessages[code] ?? [502, 'Control-plane отклонил команду.']
+    throw Object.assign(new Error(message), { status, code }) as CpProblem
+  }
+  if (typeof data?.operationId !== 'string')
+    throw new Error('Control-plane отдал неверное состояние.')
+  return settle(data.operationId, token, opts)
 }
 
 /**

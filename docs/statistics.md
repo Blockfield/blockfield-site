@@ -140,7 +140,7 @@ no longer exist. Owner step: retire the old SQLite volume once the PostgreSQL da
    node --experimental-strip-types scripts/migrate-stats.mjs /absolute/path/backup.sqlite
    ```
    Use a backup copy. The command requires an empty PostgreSQL target, copies all nine data tables, verifies row counts/content digests before committing, and preserves audit/key IDs. It copies existing ratings exactly rather than replaying them.
-5. Set `BLOCKFIELD_DATABASE_URL`, preserving all other environment settings, especially `BLOCKFIELD_OWNER_UUIDS`, RCON and admin mount paths. Deploy the new site, check statistics and owner access, and let the producer replay its queue.
+5. Set `BLOCKFIELD_DATABASE_URL`, preserving all other environment settings, especially `BLOCKFIELD_OWNER_UUIDS`, control-plane and admin mount paths. Deploy the new site, check statistics and owner access, and let the producer replay its queue.
 
 Keep the pre-cutover SQLite backup for recovery. SQLite is an alternative backend, **not a live replica**: switching back after PostgreSQL has accepted writes requires transferring those changes first. Before any new PostgreSQL writes, the previous image/environment and original SQLite volume remain a rollback option.
 Back up PostgreSQL with `pg_dump` and retain the SQLite snapshot independently.
