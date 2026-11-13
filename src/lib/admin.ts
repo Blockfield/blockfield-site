@@ -1771,19 +1771,13 @@ export const rejectedByServer = (output: string) =>
 function hidden(status: number, message: string, internal: string) {
   return Object.assign(fail(status, message), { internal })
 }
-/** Why a settled CP outcome is not a success, in the admin's words; null when it succeeded. */
+/** CP states where the command may have run: never reported as success or as failure. */
+const UNCONFIRMED = new Set(['pending', 'unknown', 'partial'])
+/** Why a settled, confirmed CP outcome is not a success; null when it succeeded. */
 function cpOutcomeError(status: string): [number, string] | null {
-  switch (status) {
-    case 'effective':
-      return null
-    case 'pending':
-    case 'expired':
-      return [504, 'Сервер не подтвердил команду. Проверьте результат позже.']
-    case 'rejected':
-      return [502, 'Сервер не выполнил команду.']
-    default:
-      return [502, 'Результат команды неизвестен. Проверьте состояние сервера.']
-  }
+  if (status === 'effective') return null
+  if (status === 'expired') return [504, 'Сервер не принял команду вовремя.']
+  return [502, 'Сервер не выполнил команду.']
 }
 /** CP console call with the site's error mapping; output keeps the game's text. */
 async function runConsole(target: RconTarget, command: string, actor: Actor) {
@@ -1793,13 +1787,22 @@ async function runConsole(target: RconTarget, command: string, actor: Actor) {
       503,
       target === 'workshop' ? 'Консоль Мастерской не настроена.' : 'Консоль не настроена.',
     )
+  let outcome
   try {
-    return await cp.runConsoleCp(target, command, actor.uuid)
+    outcome = await cp.runConsoleCp(target, command, actor.uuid)
   } catch (error) {
     if (isCpProblem(error)) throw fail(error.status, error.message)
     console.error(`Console [${target}] failed`, (error as Error).message)
-    throw hidden(502, 'Control-plane не отвечает.', (error as Error).message)
+    outcome = { operationId: null, status: 'pending', output: '' }
   }
+  // The line may have run: say so, and keep the operation id for the audit.
+  if (UNCONFIRMED.has(outcome.status))
+    throw hidden(
+      504,
+      'Результат команды не подтверждён. Проверьте журнал сервера.',
+      `unconfirmed operation ${outcome.operationId ?? 'unknown'}`,
+    )
+  return outcome
 }
 /**
  * The mod's console link (log stream + Brigadier completion): a read-only HTTP
@@ -2247,7 +2250,19 @@ const routes: Record<string, Route> = {
       } catch (error) {
         if (isCpProblem(error)) throw fail(error.status, error.message)
         console.error(`CP moderation ${kind} failed`, (error as Error).message)
-        throw hidden(502, 'Control-plane не отвечает.', (error as Error).message)
+        // A dropped call may still have been accepted.
+        outcome = { operationId: null, status: 'pending', output: '' }
+      }
+      if (UNCONFIRMED.has(outcome.status)) {
+        if (kind === 'list') throw fail(504, 'Сервер не ответил. Попробуйте ещё раз.')
+        // The panel retries kick/ban with the same key; CP dedupes it.
+        if (kind !== 'maintenance')
+          return { operationId: outcome.operationId, unknownOutcome: true }
+        throw hidden(
+          504,
+          'Сервер не подтвердил команду. Проверьте состояние перед повтором.',
+          `unconfirmed operation ${outcome.operationId ?? 'unknown'}`,
+        )
       }
       const output = stripColors(outcome.output)
       const failed = cpOutcomeError(outcome.status)
@@ -2331,8 +2346,7 @@ const routes: Record<string, Route> = {
       const outcome = await runConsole(target, command, actor)
       const output = stripColors(outcome.output)
       const failed = cpOutcomeError(outcome.status)
-      // A refused line (game allowlist, Brigadier) is a reply, not an error;
-      // an unconfirmed one is an error the owner must check.
+      // A refused line (game allowlist, Brigadier) is a reply, not an error.
       if (failed && outcome.status !== 'rejected') throw fail(...failed)
       return {
         command,

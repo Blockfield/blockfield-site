@@ -711,6 +711,20 @@ export async function awaitOperationCp(
   }
 }
 
+/** Once CP accepted the operation a failed read is `pending` (unconfirmed), never a failure. */
+async function settle(
+  operationId: string,
+  token: string,
+  opts: Parameters<typeof awaitOperationCp>[2],
+): Promise<CpOutcome & { operationId: string }> {
+  try {
+    return { operationId, ...(await awaitOperationCp(operationId, token, opts)) }
+  } catch (error) {
+    console.error(`CP operation ${operationId} unreadable`, (error as Error).message)
+    return { operationId, status: 'pending', output: '' }
+  }
+}
+
 /** Moderation command whose result the caller needs: post, then wait for the game. */
 export async function runModerationCp(
   kind: ModerationCpKind,
@@ -719,8 +733,15 @@ export async function runModerationCp(
   opts: { idempotencyKey?: string; fetchImpl?: FetchImpl; timeoutMs?: number } = {},
 ): Promise<CpOutcome & { operationId: string }> {
   const { operationId } = await postModerationCp(kind, actorAccountId, fields, opts)
-  const { token } = moderationConfig()
-  return { operationId, ...(await awaitOperationCp(operationId, token, opts)) }
+  return settle(operationId, moderationConfig().token, opts)
+}
+
+/** Deploy restart notice, settled: the deploy rolls the server only after players saw it. */
+export async function runAnnounceCp(
+  opts: { idempotencyKey?: string; fetchImpl?: FetchImpl; timeoutMs?: number } = {},
+): Promise<CpOutcome & { operationId: string }> {
+  const { operationId } = await postAnnounceCp(opts)
+  return settle(operationId, moderationConfig().token, opts)
 }
 
 /**
@@ -802,10 +823,7 @@ export async function runConsoleCp(
   }
   if (typeof data?.operationId !== 'string')
     throw new Error('Control-plane отдал неверное состояние.')
-  return {
-    operationId: data.operationId,
-    ...(await awaitOperationCp(data.operationId, token, opts)),
-  }
+  return settle(data.operationId, token, opts)
 }
 
 /**

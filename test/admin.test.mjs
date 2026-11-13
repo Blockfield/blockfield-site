@@ -853,6 +853,10 @@ async function fakeCp(t, settle, names = {}) {
       const op = req.url.match(/^\/v2\/operations\/(.+)$/)
       if (op && operations.has(op[1])) {
         const { status, output } = operations.get(op[1])
+        if (status === 'unreadable') {
+          res.statusCode = 500
+          return res.end('{}')
+        }
         return res.end(
           JSON.stringify({
             operationId: op[1],
@@ -1156,11 +1160,12 @@ test('review: non-staff are refused before the body is read and never audited; C
     (r) => r,
     (e) => e,
   )
-  assert.equal(failed.status, 502)
+  // CP unreachable: a read is unconfirmed, never an address in the reply.
+  assert.equal(failed.status, 504)
   const text = (await failed.json()).error
-  assert.equal(text, 'Control-plane не отвечает.')
+  assert.equal(text, 'Сервер не ответил. Попробуйте ещё раз.')
   assert.ok(!text.includes('127.0.0.1'))
-  assert.match((await s.auditLog())[0].error, /fetch failed|ECONNREFUSED/)
+  assert.equal((await s.auditLog())[0].ok, 0)
 })
 
 test('owner row falls back to the last known profile name, the signed-in owner name, then «Неизвестный игрок», when Drasl is down', async (t) => {
@@ -2096,13 +2101,17 @@ test('POST rcon list/kick/ban/maintenance wait for the game through CP', async (
     (kind, body) =>
       kind === 'moderation.list'
         ? { status: 'effective', output: 'There are 2 of a max of 40 players online: Bob, Alice' }
-        : kind === 'moderation.kick'
-          ? { status: 'rejected', output: undefined }
-          : kind === 'moderation.maintenance' && body.op === 'drain'
-            ? { status: 'expired', output: undefined }
-            : kind === 'moderation.maintenance'
-              ? { status: 'effective', output: 'draining=false rooms=0 drained=false' }
-              : { status: 'effective', output: undefined },
+        : kind === 'moderation.kick' && body.reason === 'lost'
+          ? { status: 'unreadable', output: undefined }
+          : kind === 'moderation.kick'
+            ? { status: 'rejected', output: undefined }
+            : kind === 'moderation.maintenance' && body.op === 'drain'
+              ? { status: 'expired', output: undefined }
+              : kind === 'moderation.maintenance' && body.op === 'resume'
+                ? { status: 'unknown', output: undefined }
+                : kind === 'moderation.maintenance'
+                  ? { status: 'effective', output: 'draining=false rooms=0 drained=false' }
+                  : { status: 'effective', output: undefined },
     { Bob: BOB },
   )
   Object.assign(process.env, {
@@ -2142,8 +2151,16 @@ test('POST rcon list/kick/ban/maintenance wait for the game through CP', async (
   assert.equal((await call(`${MOD}:Moddy`, { action: 'maintenance-status' })).status, 403)
   const status = await call(`${ADMIN}:Adm`, { action: 'maintenance-status' })
   assert.equal((await status.json()).output, 'draining=false rooms=0 drained=false')
-  // The game never settled it: unconfirmed, never reported as done.
+  // Expired: the game never took it.
   assert.equal((await call(`${ADMIN}:Adm`, { action: 'drain' })).status, 504)
+  // Accepted but unconfirmed: kick returns the panel's retry marker, maintenance
+  // an error whose audit keeps the operation id for reconciliation.
+  const lost = await call(`${MOD}:Moddy`, { action: 'kick', player: 'Bob', reason: 'lost' })
+  assert.equal(lost.status, 200)
+  assert.deepEqual(await lost.json(), { operationId: 'op-6', unknownOutcome: true })
+  const resumed = await call(`${ADMIN}:Adm`, { action: 'resume' })
+  assert.equal(resumed.status, 504)
+  assert.match((await s.auditLog())[0].error, /unconfirmed operation op-7/)
   assert.deepEqual(
     cp.seen.map(([kind, body]) => [kind, body.playerId ?? body.op ?? null, body.actorAccountId]),
     [
@@ -2153,10 +2170,12 @@ test('POST rcon list/kick/ban/maintenance wait for the game through CP', async (
       ['moderation.ban', BOB, dashed(ADMIN)],
       ['moderation.maintenance', 'status', dashed(ADMIN)],
       ['moderation.maintenance', 'drain', dashed(ADMIN)],
+      ['moderation.kick', BOB, dashed(MOD)],
+      ['moderation.maintenance', 'resume', dashed(ADMIN)],
     ],
   )
   // Audit names stay as before the cutover (the bans list reads rcon:ban rows).
-  assert.deepEqual((await s.auditLog()).map((e) => [e.action, e.ok, e.target]).slice(0, 4), [
+  assert.deepEqual((await s.auditLog()).map((e) => [e.action, e.ok, e.target]).slice(2, 6), [
     ['rcon:drain', 0, null],
     ['rcon:maintenance-status', 1, null],
     ['rcon:maintenance-status', 0, null],

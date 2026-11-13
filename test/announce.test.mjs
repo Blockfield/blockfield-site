@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { handleDeployAnnounce } from '../src/lib/announce.ts'
-import { postAnnounceCp } from '../src/lib/cp.ts'
+import { postAnnounceCp, runAnnounceCp } from '../src/lib/cp.ts'
 
 const env = {
   BLOCKFIELD_DEPLOY_ANNOUNCE_TOKEN: 'secret',
@@ -19,6 +19,7 @@ test('deploy announce triggers only the fixed CP notice and only with the token'
   let sent = 0
   const send = async () => {
     sent++
+    return { status: 'effective' }
   }
   assert.equal((await handleDeployAnnounce(post('wrong'), env, send)).status, 401)
   assert.equal((await handleDeployAnnounce(post(), env, send)).status, 401)
@@ -34,6 +35,11 @@ test('deploy announce triggers only the fixed CP notice and only with the token'
   assert.equal(sent, 0)
   assert.equal((await handleDeployAnnounce(post('secret'), env, send)).status, 200)
   assert.equal(sent, 1)
+  // Accepted but not shown in game before the deadline: not a success.
+  assert.equal(
+    (await handleDeployAnnounce(post('secret'), env, async () => ({ status: 'pending' }))).status,
+    504,
+  )
   assert.equal(
     (
       await handleDeployAnnounce(post('secret'), env, async () => {
@@ -69,5 +75,30 @@ test('postAnnounceCp sends no actor and no text: the game holds the notice', asy
     'generation',
     'idempotencyKey',
     'target',
+  ])
+})
+
+test('runAnnounceCp waits for the game to settle the notice', async (t) => {
+  const saved = { ...process.env }
+  t.after(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    Object.assign(process.env, saved)
+  })
+  Object.assign(process.env, env)
+  const urls = []
+  const fetchImpl = async (url) => {
+    urls.push(url)
+    return url.endsWith('/v2/actions/moderation.announce')
+      ? Response.json({ operationId: 'op-a', status: 'accepted' }, { status: 202 })
+      : Response.json({ status: 'effective', receipts: [] })
+  }
+  assert.deepEqual(await runAnnounceCp({ fetchImpl, intervalMs: 1 }), {
+    operationId: 'op-a',
+    status: 'effective',
+    output: '',
+  })
+  assert.deepEqual(urls, [
+    'http://cp/v2/actions/moderation.announce',
+    'http://cp/v2/operations/op-a',
   ])
 })

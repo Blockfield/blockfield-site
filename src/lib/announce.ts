@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { fail } from './account.ts'
-import { cpModerationConfigured, postAnnounceCp } from './cp.ts'
+import { cpModerationConfigured, runAnnounceCp } from './cp.ts'
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest()
 
@@ -12,7 +12,7 @@ const sha256 = (value: string) => createHash('sha256').update(value).digest()
 export async function handleDeployAnnounce(
   request: Request,
   env: Record<string, string | undefined> = process.env,
-  send: () => Promise<unknown> = () => postAnnounceCp(),
+  send: () => Promise<{ status: string }> = () => runAnnounceCp(),
 ): Promise<Response> {
   if (request.method !== 'POST') return fail(405, 'POST only.')
   const token = env.BLOCKFIELD_DEPLOY_ANNOUNCE_TOKEN
@@ -21,11 +21,13 @@ export async function handleDeployAnnounce(
     !timingSafeEqual(sha256(request.headers.get('authorization') ?? ''), sha256(`Bearer ${token}`))
   )
     return fail(401, 'Неверный токен.')
+  let status
   try {
-    await send()
+    ;({ status } = await send())
   } catch (error) {
     console.error('Deploy announce failed', (error as Error).message)
     return fail(502, 'Control-plane не принял анонс.')
   }
+  if (status !== 'effective') return fail(504, 'Игра не подтвердила анонс.')
   return Response.json({ ok: true }, { headers: { 'Cache-Control': 'no-store' } })
 }
