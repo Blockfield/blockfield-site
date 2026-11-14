@@ -11,6 +11,7 @@ import {
   presenceList,
   publish,
   subscribe,
+  trackWorkshopRequest,
 } from '../src/lib/admin-events.ts'
 import { handleAdmin } from '../src/lib/admin.ts'
 import { database } from './storage.mjs'
@@ -270,6 +271,132 @@ test('workshop SSE emits status and request results from CP', async (t) => {
     received.some((event) => event.type === 'status' && event.status?.phase === 'ready'),
   )
   assert.deepEqual(received.find((event) => event.type === 'request').result, { ok: true })
+})
+
+test('workshop SSE resync publishes fresh snapshot, reconciles results, and closes old streams', async (t) => {
+  setup(t)
+  const pendingOpId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const untrackedOpId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  let stateSeq = 5
+  let currentStatus = { phase: 'sleeping' }
+  let currentSession = null
+  let includeResults = false
+  const stateQueries = []
+  const openStreams = new Set()
+  let totalStreams = 0
+  let closedStreams = 0
+  let firstStreamRes = null
+
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1')
+    if (url.pathname === '/v2/workshop/state') {
+      stateQueries.push(url.searchParams.get('names') ?? '')
+      const documents = {
+        status: {
+          seq: stateSeq,
+          updatedAt: 1,
+          revision: 1,
+          name: 'status',
+          value: currentStatus,
+        },
+        session: {
+          seq: stateSeq,
+          updatedAt: 1,
+          revision: 1,
+          name: 'session',
+          value: currentSession,
+        },
+      }
+      if (includeResults) {
+        documents[`result:${pendingOpId}`] = {
+          seq: stateSeq,
+          updatedAt: 2,
+          revision: 1,
+          name: `result:${pendingOpId}`,
+          value: { ok: true, mapId: 'fields' },
+        }
+        documents[`result:${untrackedOpId}`] = {
+          seq: stateSeq,
+          updatedAt: 2,
+          revision: 1,
+          name: `result:${untrackedOpId}`,
+          value: { ok: false, error: 'missed' },
+        }
+      }
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ seq: stateSeq, documents }))
+      return
+    }
+    if (url.pathname === '/v2/workshop/state/events') {
+      totalStreams++
+      openStreams.add(res)
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      res.write(': keepalive\n\n')
+      if (totalStreams === 1) firstStreamRes = res
+      req.on('close', () => {
+        if (openStreams.delete(res)) closedStreams++
+      })
+      return
+    }
+    res.statusCode = 404
+    res.end()
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => {
+    for (const res of openStreams) res.end()
+    server.closeAllConnections?.()
+    server.close()
+  })
+  process.env.BLOCKFIELD_CP_URL = `http://127.0.0.1:${server.address().port}`
+  process.env.BLOCKFIELD_CP_WORKSHOP_TOKEN = 'wsh-t'
+
+  trackWorkshopRequest(pendingOpId)
+  const received = []
+  const stop = subscribe(
+    () => true,
+    (event) => received.push(event),
+  )
+  t.after(stop)
+
+  await until(() => firstStreamRes !== null)
+  assert.equal(openStreams.size, 1)
+
+  const initialCount = received.length
+  stateSeq = 9
+  currentStatus = { phase: 'workshop', gate: 'builders' }
+  currentSession = { id: 'sess-2' }
+  includeResults = true
+  // Trigger resync without closing the server-side stream; client must cancel/abort it.
+  firstStreamRes.write('event: resync\ndata: {"reason":"gap"}\n\n')
+
+  await until(() => totalStreams === 2)
+  await until(() => closedStreams >= 1)
+  assert.equal(openStreams.size, 1, 'old SSE stream must be closed after resync')
+  await until(() =>
+    received
+      .slice(initialCount)
+      .some(
+        (event) =>
+          event.type === 'status' &&
+          event.status?.phase === 'workshop' &&
+          event.session?.id === 'sess-2',
+      ),
+  )
+  await until(() => received.some((event) => event.type === 'request' && event.id === pendingOpId))
+  await until(() =>
+    received.some((event) => event.type === 'request' && event.id === untrackedOpId),
+  )
+  assert.ok(
+    stateQueries.some((q) => q.split(',').includes(`result:${pendingOpId}`)),
+    'resync read must request tracked pending result documents',
+  )
+  assert.deepEqual(
+    received.find((event) => event.type === 'request' && event.id === pendingOpId).result,
+    { ok: true, mapId: 'fields' },
+  )
+
+  stop()
+  await until(() => openStreams.size === 0)
 })
 
 test('audit events contain the exact stored row including truncation and generated id', async (t) => {

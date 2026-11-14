@@ -33,6 +33,26 @@ let roomsJson = ''
 const warned = new Set<string>()
 let cpAbort: AbortController | undefined
 const settingsDir = () => process.env.BLOCKFIELD_SETTINGS_DIR || '/blockfield-admin'
+const WORKSHOP_STATE_NAMES = [
+  'status',
+  'session',
+  'members',
+  'candidates',
+  'maps',
+  'ai-keys',
+] as const
+const PENDING_REQUEST_TTL_MS = 5 * 60_000
+const pendingRequests = new Map<string, number>()
+const publishedResults = new Map<string, number>()
+
+export function trackWorkshopRequest(id: string, now = Date.now()) {
+  if (!id) return
+  pendingRequests.delete(id)
+  pendingRequests.set(id, now + PENDING_REQUEST_TTL_MS)
+  if (pendingRequests.size > 200) {
+    pendingRequests.delete(pendingRequests.keys().next().value!)
+  }
+}
 
 export function eventAllowed(role: Role | null, event: AdminEvent) {
   return can(
@@ -149,36 +169,87 @@ function delayAbortable(ms: number, signal: AbortSignal): Promise<void> {
 
 async function consumeWorkshopEvents(signal: AbortSignal) {
   let lastSeq: number | null = null
+  let prevSeq: number | null = null
+  let needsSnapshot = false
   let liveStatus: unknown
   let liveSession: unknown
+  let consecutiveResyncs = 0
+
+  const publishResult = (id: string, value: unknown, seq?: number) => {
+    if (value === null || value === undefined) return
+    pendingRequests.delete(id)
+    const knownSeq = publishedResults.get(id)
+    if (knownSeq !== undefined && (seq === undefined || seq <= knownSeq)) return
+    publishedResults.delete(id)
+    publishedResults.set(id, seq ?? 0)
+    if (publishedResults.size > 500) {
+      publishedResults.delete(publishedResults.keys().next().value!)
+    }
+    if (!signal.aborted && subscribers.size) {
+      publish({
+        type: 'request',
+        id,
+        result: redactKeyResult(value),
+      })
+    }
+  }
+
   while (!signal.aborted && cpWorkshopReadConfigured()) {
+    const attempt = new AbortController()
+    const onAbort = () => attempt.abort(signal.reason)
+    if (signal.aborted) break
+    signal.addEventListener('abort', onAbort, { once: true })
+    let response: Response | undefined
+    let resync = false
     try {
       if (lastSeq === null) {
-        const docs = await readWorkshopStateCp([
-          'status',
-          'session',
-          'members',
-          'candidates',
-          'maps',
-          'ai-keys',
-        ])
+        const now = Date.now()
+        for (const [id, expiresAt] of pendingRequests) {
+          if (expiresAt <= now) pendingRequests.delete(id)
+        }
+        const names = [
+          ...WORKSHOP_STATE_NAMES,
+          ...[...pendingRequests.keys()].map((id) => `result:${id}`),
+        ]
+        const docs = await readWorkshopStateCp(names, { signal: attempt.signal })
         let maxSeq = 0
         for (const doc of Object.values(docs)) {
           if (typeof doc?.seq === 'number' && doc.seq > maxSeq) maxSeq = doc.seq
         }
         lastSeq = maxSeq
-        if ('status' in docs) liveStatus = docs.status?.value ?? null
-        if ('session' in docs) liveSession = docs.session?.value ?? null
+        liveStatus = docs.status?.value ?? null
+        liveSession = docs.session?.value ?? null
+        if (needsSnapshot && !signal.aborted && subscribers.size) {
+          const snapshot = await overviewSnapshot({ status: liveStatus, session: liveSession })
+          if (!signal.aborted && subscribers.size) publish({ type: 'status', ...snapshot })
+        }
+        for (const [name, doc] of Object.entries(docs)) {
+          if (!name.startsWith('result:')) continue
+          const id = name.slice('result:'.length)
+          const isPending = pendingRequests.has(id)
+          const isNewer =
+            needsSnapshot && (prevSeq === null || typeof doc?.seq !== 'number' || doc.seq > prevSeq)
+          if (isPending || isNewer) {
+            publishResult(id, doc?.value, typeof doc?.seq === 'number' ? doc.seq : undefined)
+          }
+        }
+        needsSnapshot = false
+        prevSeq = null
       }
-      const response = await openWorkshopStateEventsCp(lastSeq, signal)
+      response = await openWorkshopStateEventsCp(lastSeq, attempt.signal)
       if (!response.body) throw new Error('empty workshop events body')
       await parseSseStream(response.body, async (ev) => {
-        if (signal.aborted) return
+        if (attempt.signal.aborted) return
         if (ev.event === 'resync') {
+          resync = true
+          consecutiveResyncs++
+          prevSeq = lastSeq
           lastSeq = null
+          needsSnapshot = true
           throw new Error('workshop state resync required')
         }
         if (ev.event !== 'state') return
+        consecutiveResyncs = 0
         let record: any
         try {
           record = JSON.parse(ev.data)
@@ -191,23 +262,32 @@ async function consumeWorkshopEvents(signal: AbortSignal) {
         if (name === 'status') liveStatus = record.value ?? null
         else if (name === 'session') liveSession = record.value ?? null
         if (['status', 'session', 'members', 'candidates', 'maps'].includes(name)) {
-          if (subscribers.size) {
+          if (!signal.aborted && subscribers.size) {
             const snapshot = await overviewSnapshot({ status: liveStatus, session: liveSession })
-            if (subscribers.size) publish({ type: 'status', ...snapshot })
+            if (!signal.aborted && subscribers.size) publish({ type: 'status', ...snapshot })
           }
           return
         }
-        if (name.startsWith('result:') && record.value !== null && record.value !== undefined) {
-          publish({
-            type: 'request',
-            id: name.slice('result:'.length),
-            result: redactKeyResult(record.value),
-          })
+        if (name.startsWith('result:')) {
+          publishResult(
+            name.slice('result:'.length),
+            record.value,
+            typeof record.seq === 'number' ? record.seq : undefined,
+          )
         }
       })
+      if (!signal.aborted) {
+        needsSnapshot = true
+        await delayAbortable(1000, signal)
+      }
     } catch {
       if (signal.aborted) return
-      await delayAbortable(1000, signal)
+      if (!resync) needsSnapshot = true
+      if (!resync || consecutiveResyncs > 1) await delayAbortable(1000, signal)
+    } finally {
+      attempt.abort()
+      await response?.body?.cancel().catch(() => {})
+      signal.removeEventListener('abort', onAbort)
     }
   }
 }

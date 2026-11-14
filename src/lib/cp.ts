@@ -1059,21 +1059,25 @@ export type WorkshopStateRecord<T = any> = {
 
 export async function readWorkshopStateCp(
   names: string[] = [],
-  opts: { fetchImpl?: FetchImpl } = {},
+  opts: { fetchImpl?: FetchImpl; signal?: AbortSignal } = {},
 ): Promise<Record<string, WorkshopStateRecord>> {
   const { url, token } = workshopAuthConfig()
   const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
   const query = names.length ? `?names=${names.map(encodeURIComponent).join(',')}` : ''
+  const timeoutSignal = AbortSignal.timeout(TIMEOUT_MS)
+  const signal = opts.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal
   const response = await fetchImpl(`${url}/v2/workshop/state${query}`, {
     headers: { Authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(TIMEOUT_MS),
+    signal,
   })
   const data = await response.json().catch(() => null)
-  if (!response.ok)
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {})
     throw workshopProblem(
       response.status,
       typeof data?.error === 'string' ? data.error : 'control_plane_error',
     )
+  }
   if (!data || typeof data !== 'object' || !data.documents || typeof data.documents !== 'object')
     throw new Error('Control-plane отдал неверное состояние мастерской.')
   return data.documents as Record<string, WorkshopStateRecord>
@@ -1110,6 +1114,7 @@ export async function openWorkshopStateEventsCp(
     if (!response.ok) {
       signal.removeEventListener('abort', onAbort)
       const data = await response.json().catch(() => null)
+      await response.body?.cancel().catch(() => {})
       throw workshopProblem(
         response.status,
         typeof data?.error === 'string' ? data.error : 'control_plane_error',
@@ -1148,10 +1153,14 @@ export async function parseSseStream(
     dataLines = []
     if (ev.data.length) await onEvent(ev)
   }
+  let finished = false
   try {
     while (true) {
       const { done, value } = await reader.read()
-      if (done) break
+      if (done) {
+        finished = true
+        break
+      }
       buffer += decoder.decode(value, { stream: true })
       let newline: number
       while ((newline = buffer.indexOf('\n')) >= 0) {
@@ -1171,6 +1180,7 @@ export async function parseSseStream(
       }
     }
   } finally {
+    if (!finished) await reader.cancel().catch(() => {})
     reader.releaseLock()
   }
 }

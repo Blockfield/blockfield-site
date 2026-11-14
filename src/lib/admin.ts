@@ -5,6 +5,7 @@ import {
   constants,
   fstatSync,
   readSync,
+  readFileSync,
   closeSync,
   renameSync,
   writeFileSync,
@@ -16,7 +17,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { AstroCookies } from 'astro'
 import { account, drasl, fail, nickname, readJson, session, sessionToken } from './account.ts'
-import { eventStream, heartbeat, redactKeyResult } from './admin-events.ts'
+import { eventStream, heartbeat, redactKeyResult, trackWorkshopRequest } from './admin-events.ts'
 import {
   consoleLogPage,
   consoleSince,
@@ -86,8 +87,9 @@ export const can = (role: Role | null, permission: string) => permissions(role).
 export type Actor = { uuid: string; name: string; role: Role | null }
 const noStore = { 'Cache-Control': 'no-store' }
 const dir = (name: string, fallback: string) => process.env[name] || fallback
+const adminDir = () => dir('BLOCKFIELD_ADMIN_DIR', '/workshop-admin')
 const settingsDir = () => dir('BLOCKFIELD_SETTINGS_DIR', '/blockfield-admin')
-const packagesDir = () => dir('BLOCKFIELD_MAP_PACKAGES_DIR', '/map-packages')
+const packagesDir = () => dir('BLOCKFIELD_MAP_PACKAGES_DIR', join(adminDir(), 'packages'))
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const COPY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const VERSION_DIGEST = /^[0-9a-f]{64}$/
@@ -222,6 +224,15 @@ export async function siteIdentity(
       error instanceof Error ? error.message : 'unknown',
     )
     return { name, hasAdminAccess: false }
+  }
+}
+
+function readText(path: string, max = 1024): string | null {
+  try {
+    const text = readFileSync(path, 'utf8')
+    return text.length > max ? null : text
+  } catch {
+    return null
   }
 }
 
@@ -811,12 +822,22 @@ export type PreparedWorkshopRequest = {
   fields: Record<string, unknown>
 }
 
+function derivedUuid(purpose: string, seed: string): string {
+  const bytes = createHash('sha256').update(`${purpose}|${seed}`).digest().subarray(0, 16)
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = bytes.toString('hex')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 /** Validates a UI request and maps it to a control-plane `/v2/workshop/<kind>` payload. */
 export function prepareWorkshopRequest(
   actor: Actor,
   body: any,
   knownMaps = new Set(Object.keys(MAP_NAMES)),
 ): PreparedWorkshopRequest {
+  const idempotencyKey =
+    body?.idempotencyKey !== undefined ? workshopIdempotencyKey(body).toLowerCase() : undefined
   if (body?.kind === 'mode') {
     if (!['game', 'workshop', 'test'].includes(body.profile))
       throw bad('Режим: game, workshop или test.')
@@ -902,7 +923,9 @@ export function prepareWorkshopRequest(
             name,
             supportedModes: body.supportedModes,
             expectedRevision: body.expectedRevision,
-            sessionId: randomUUID(),
+            sessionId: idempotencyKey
+              ? derivedUuid('workshop-map-create-session', idempotencyKey)
+              : randomUUID(),
           },
         },
       }
@@ -1056,7 +1079,15 @@ export function prepareWorkshopRequest(
     if (!can(actor.role, 'map-edit')) throw fail(403, 'Нет права строить на этой карте.')
     return {
       cpKind: 'map',
-      fields: { mapOp: 'checkout-fresh', args: { mapId: body.mapId, workingCopyId: randomUUID() } },
+      fields: {
+        mapOp: 'checkout-fresh',
+        args: {
+          mapId: body.mapId,
+          workingCopyId: idempotencyKey
+            ? derivedUuid('workshop-checkout-fresh-copy', idempotencyKey)
+            : randomUUID(),
+        },
+      },
     }
   }
   if (body?.kind === 'candidate' || body?.kind === 'rollback') {
@@ -1190,6 +1221,7 @@ async function sendWorkshopRequest(
         idempotencyKey,
       },
     )
+    trackWorkshopRequest(receipt.operationId)
     return receipt.operationId
   } catch (error) {
     if (isCpProblem(error)) throw fail(error.status, error.message)
@@ -1847,6 +1879,7 @@ async function postWorkshopRoute(
     const receipt = await cp.postWorkshopCp(kind, workshopActor(actor), fields, {
       idempotencyKey,
     })
+    trackWorkshopRequest(receipt.operationId)
     return { operationId: receipt.operationId }
   } catch (error) {
     if (isCpProblem(error)) throw fail(error.status, error.message)
@@ -3703,7 +3736,9 @@ function workshopKeyError(
   methods = ['POST'],
 ): Response | null {
   if (!methods.includes(request.method)) return fail(405, `${methods.join('/')} only.`)
-  const key = env.BLOCKFIELD_WORKSHOP_KEY?.trim()
+  const key =
+    env.BLOCKFIELD_WORKSHOP_KEY?.trim() ||
+    readText(join(env.BLOCKFIELD_ADMIN_DIR || adminDir(), 'workshop.key'))?.trim()
   if (!key || key.length < 32) return fail(503, 'Запись из мастерской не настроена.')
   const digest = (value: string) => createHash('sha256').update(value).digest()
   if (!timingSafeEqual(digest(request.headers.get('authorization') ?? ''), digest(`Bearer ${key}`)))

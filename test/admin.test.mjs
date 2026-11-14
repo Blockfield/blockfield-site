@@ -1,6 +1,6 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -1351,7 +1351,9 @@ test('POST staff/maps: only a builder row accepts a map list, ids must be known 
 })
 
 test("GET candidates/download: only an accepted candidate's exported package, with its checksum", async (t) => {
-  const packagesDir = temp(t)
+  const adminDir = temp(t)
+  const defaultPackagesDir = join(adminDir, 'packages')
+  const overridePackagesDir = temp(t)
   const saved = { ...process.env }
   t.after(() => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
@@ -1379,8 +1381,9 @@ test("GET candidates/download: only an accepted candidate's exported package, wi
   })
   await new Promise((resolve) => cp.listen(0, '127.0.0.1', resolve))
   t.after(() => cp.close())
+  delete process.env.BLOCKFIELD_MAP_PACKAGES_DIR
   Object.assign(process.env, {
-    BLOCKFIELD_MAP_PACKAGES_DIR: packagesDir,
+    BLOCKFIELD_ADMIN_DIR: adminDir,
     BLOCKFIELD_OWNER_UUIDS: OWNER,
     NODE_ENV: 'test',
     BLOCKFIELD_ADMIN_DEV_USER: `${OWNER}:Nether`,
@@ -1400,14 +1403,21 @@ test("GET candidates/download: only an accepted candidate's exported package, wi
     )
   }
   assert.equal((await call(accepted.id)).status, 503, 'accepted but not exported yet')
-  writeFileSync(join(packagesDir, `${accepted.sha256}.zip`), 'zip-bytes')
-  writeFileSync(join(packagesDir, `${pending.sha256}.zip`), 'zip-bytes')
+  mkdirSync(defaultPackagesDir)
+  writeFileSync(join(defaultPackagesDir, `${accepted.sha256}.zip`), 'zip-bytes')
+  writeFileSync(join(defaultPackagesDir, `${pending.sha256}.zip`), 'zip-bytes')
   const ok = await call(accepted.id)
   assert.equal(ok.status, 200)
   assert.equal(ok.headers.get('x-checksum-sha256'), accepted.sha256)
   assert.equal(await ok.text(), 'zip-bytes')
   assert.equal((await call(pending.id)).status, 404, 'a pending candidate is not downloadable')
   assert.equal((await call('../etc')).status, 400)
+  process.env.BLOCKFIELD_MAP_PACKAGES_DIR = overridePackagesDir
+  assert.equal((await call(accepted.id)).status, 503, 'override dir has precedence over default')
+  writeFileSync(join(overridePackagesDir, `${accepted.sha256}.zip`), 'override-bytes')
+  const overridden = await call(accepted.id)
+  assert.equal(overridden.status, 200)
+  assert.equal(await overridden.text(), 'override-bytes')
 })
 
 test('withMapAccess: grant keeps "every map", revoke from "every map" lists the rest, a grant never implies future maps', () => {
@@ -1492,12 +1502,13 @@ test('POST staff/map-access: sets one map for every builder in one request, only
 })
 
 test("POST /api/workshop/access: key, then the in-game actor's own site role; hub is a scope; audited", async (t) => {
+  const dirs = { BLOCKFIELD_ADMIN_DIR: temp(t) }
   const saved = { ...process.env }
   t.after(() => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
     Object.assign(process.env, saved)
   })
-  Object.assign(process.env, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
+  Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: OWNER, NODE_ENV: 'test' })
   const s = await store(t)
   await s.setStaff(OTHER, 'Bob', 'builder', 'seed')
   await s.setStaff(MOD, 'Moddy', 'moderator', 'seed')
@@ -1508,6 +1519,7 @@ test("POST /api/workshop/access: key, then the in-game actor's own site role; hu
   })
   globalThis.fetch = async () => new Response('', { status: 404 })
   const KEY = 'k'.repeat(40),
+    ENV_KEY = 'e'.repeat(40),
     env = { BLOCKFIELD_WORKSHOP_KEY: KEY }
   const call = (body, key = KEY, e = env) =>
     handleWorkshopAccess(
@@ -1524,6 +1536,22 @@ test("POST /api/workshop/access: key, then the in-game actor's own site role; hu
     )
   const grant = { actor: OWNER, target: OTHER, mapId: 'hub', allowed: true }
   assert.equal((await call(grant, KEY, {})).status, 503, 'no key configured')
+  writeFileSync(join(dirs.BLOCKFIELD_ADMIN_DIR, 'workshop.key'), `${KEY}\n`)
+  assert.equal(
+    (await call({ ...grant, actor: MOD }, KEY, {})).status,
+    403,
+    'the key file in the admin export works like the env',
+  )
+  assert.equal(
+    (await call({ ...grant, actor: MOD }, ENV_KEY, { BLOCKFIELD_WORKSHOP_KEY: ENV_KEY })).status,
+    403,
+    'env wins over the key file when set',
+  )
+  assert.equal(
+    (await call(grant, KEY, { BLOCKFIELD_WORKSHOP_KEY: ENV_KEY })).status,
+    401,
+    'key file is not accepted when env overrides it',
+  )
   assert.equal((await call(grant, 'wrong'.repeat(8))).status, 401)
   assert.equal(
     (await call({ ...grant, actor: MOD })).status,

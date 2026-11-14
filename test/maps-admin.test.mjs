@@ -1334,3 +1334,84 @@ test('stale-copy way out: snapshot preserves the draft, fresh copy restarts from
     ),
   )
 })
+
+test('idempotencyKey derives deterministic sessionId and workingCopyId across retries', async (t) => {
+  const cp = await fakeWorkshopCp(t),
+    environment = { ...process.env },
+    store = await database(t),
+    RETRY_OWNER = '6'.repeat(32)
+  t.after(() => {
+    for (const key of Object.keys(process.env)) if (!(key in environment)) delete process.env[key]
+    Object.assign(process.env, environment)
+  })
+  Object.assign(process.env, {
+    NODE_ENV: 'test',
+    BLOCKFIELD_OWNER_UUIDS: RETRY_OWNER,
+    ...cp.env(),
+  })
+  cp.docs.status = {
+    schema: 1,
+    phase: 'workshop',
+    gate: 'builders',
+    revision: 4,
+    desired: { profile: 'workshop', session: COPY },
+  }
+  const readRequest = async (path, body) => {
+    process.env.BLOCKFIELD_ADMIN_DEV_USER = `${RETRY_OWNER}:RetryOwner`
+    const url = new URL('http://site/api/admin/' + path)
+    const response = await handleAdmin(
+      {
+        request: new Request(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+        url,
+        cookies: { get: () => undefined },
+      },
+      path,
+      store,
+    ).catch((error) => error)
+    assert.equal(response.status, 200)
+    return cp.unpack((await response.json()).id)
+  }
+  const retryKey = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const createBody = {
+    mapId: 'retry_map',
+    name: 'Retry Map',
+    supportedModes: ['tdm'],
+    expectedRevision: 4,
+    idempotencyKey: retryKey,
+  }
+  const retryCreateA = await readRequest('maps/create', createBody)
+  const retryCreateB = await readRequest('maps/create', createBody)
+  assert.equal(retryCreateA.sessionId, retryCreateB.sessionId)
+  assert.match(
+    retryCreateA.sessionId,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  )
+  const retryFreshA = await readRequest('maps/checkout-fresh', {
+    mapId: 'custom_arena',
+    workingCopyId: COPY,
+    idempotencyKey: retryKey,
+  })
+  const retryFreshB = await readRequest('maps/checkout-fresh', {
+    mapId: 'custom_arena',
+    workingCopyId: COPY,
+    idempotencyKey: retryKey,
+  })
+  assert.equal(retryFreshA.workingCopyId, retryFreshB.workingCopyId)
+  assert.notEqual(retryCreateA.sessionId, retryFreshA.workingCopyId)
+  const otherKey = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+  const retryCreateOther = await readRequest('maps/create', {
+    ...createBody,
+    idempotencyKey: otherKey,
+  })
+  const retryFreshOther = await readRequest('maps/checkout-fresh', {
+    mapId: 'custom_arena',
+    workingCopyId: COPY,
+    idempotencyKey: otherKey,
+  })
+  assert.notEqual(retryCreateOther.sessionId, retryCreateA.sessionId)
+  assert.notEqual(retryFreshOther.workingCopyId, retryFreshA.workingCopyId)
+})

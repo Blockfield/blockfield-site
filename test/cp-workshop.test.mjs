@@ -234,3 +234,22 @@ test('workshop forwards a caller-supplied idempotency key verbatim', async (t) =
   await postWorkshopCp('cancel', ACTOR, {}, { idempotencyKey: key })
   assert.deepEqual(seen, [key, key])
 })
+
+test('parseSseStream cancels the underlying reader on early exit', async () => {
+  let cancelled = false
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('event: resync\ndata: {}\n\n'))
+    },
+    cancel() {
+      cancelled = true
+    },
+  })
+  await assert.rejects(
+    parseSseStream(body, () => {
+      throw new Error('resync')
+    }),
+    /resync/,
+  )
+  assert.equal(cancelled, true)
+})
