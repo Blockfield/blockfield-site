@@ -1,7 +1,13 @@
 import { watch, type FSWatcher } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { can, overviewSnapshot, readFile, readSettings, type Actor, type Role } from './admin.ts'
+import { can, overviewSnapshot, readSettings, type Actor, type Role } from './admin.ts'
+import {
+  cpWorkshopReadConfigured,
+  openWorkshopStateEventsCp,
+  parseSseStream,
+  readWorkshopStateCp,
+} from './cp.ts'
 import { cachedRooms } from './rooms.ts'
 
 export type AdminEvent = {
@@ -25,7 +31,7 @@ const pendingWatches = new Map<string, () => void>()
 let presenceTimer: ReturnType<typeof setInterval> | undefined
 let roomsJson = ''
 const warned = new Set<string>()
-const adminDir = () => process.env.BLOCKFIELD_ADMIN_DIR || '/workshop-admin'
+let cpAbort: AbortController | undefined
 const settingsDir = () => process.env.BLOCKFIELD_SETTINGS_DIR || '/blockfield-admin'
 
 export function eventAllowed(role: Role | null, event: AdminEvent) {
@@ -126,18 +132,93 @@ function watchDirectory(directory: string, changed: (name: string) => void) {
 function settingsSnapshot(gunBalance = false) {
   return { ...readSettings(settingsDir()), ...(gunBalance ? { gunBalance: true } : {}) }
 }
-function start() {
-  // Tests and local development may have no controller exports; idle pages need no watchers or network polls.
-  watchDirectory(adminDir(), (name) => {
-    if (name === 'results') watchResults()
-    if (
-      ['status.json', 'session.json', 'candidates.json', 'maps.json', 'members.json'].includes(name)
-    )
-      void overviewSnapshot().then((snapshot) => {
-        if (subscribers.size) publish({ type: 'status', ...snapshot })
-      })
+function delayAbortable(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      resolve()
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
   })
-  watchResults()
+}
+
+async function consumeWorkshopEvents(signal: AbortSignal) {
+  let lastSeq: number | null = null
+  let liveStatus: unknown
+  let liveSession: unknown
+  while (!signal.aborted && cpWorkshopReadConfigured()) {
+    try {
+      if (lastSeq === null) {
+        const docs = await readWorkshopStateCp([
+          'status',
+          'session',
+          'members',
+          'candidates',
+          'maps',
+          'ai-keys',
+        ])
+        let maxSeq = 0
+        for (const doc of Object.values(docs)) {
+          if (typeof doc?.seq === 'number' && doc.seq > maxSeq) maxSeq = doc.seq
+        }
+        lastSeq = maxSeq
+        if ('status' in docs) liveStatus = docs.status?.value ?? null
+        if ('session' in docs) liveSession = docs.session?.value ?? null
+      }
+      const response = await openWorkshopStateEventsCp(lastSeq, signal)
+      if (!response.body) throw new Error('empty workshop events body')
+      await parseSseStream(response.body, async (ev) => {
+        if (signal.aborted) return
+        if (ev.event === 'resync') {
+          lastSeq = null
+          throw new Error('workshop state resync required')
+        }
+        if (ev.event !== 'state') return
+        let record: any
+        try {
+          record = JSON.parse(ev.data)
+        } catch {
+          return
+        }
+        if (typeof record?.seq === 'number' && record.seq > (lastSeq ?? 0)) lastSeq = record.seq
+        const name = record?.name
+        if (typeof name !== 'string') return
+        if (name === 'status') liveStatus = record.value ?? null
+        else if (name === 'session') liveSession = record.value ?? null
+        if (['status', 'session', 'members', 'candidates', 'maps'].includes(name)) {
+          if (subscribers.size) {
+            const snapshot = await overviewSnapshot({ status: liveStatus, session: liveSession })
+            if (subscribers.size) publish({ type: 'status', ...snapshot })
+          }
+          return
+        }
+        if (name.startsWith('result:') && record.value !== null && record.value !== undefined) {
+          publish({
+            type: 'request',
+            id: name.slice('result:'.length),
+            result: redactKeyResult(record.value),
+          })
+        }
+      })
+    } catch {
+      if (signal.aborted) return
+      await delayAbortable(1000, signal)
+    }
+  }
+}
+
+function start() {
+  // Tests and local development may have no controller or settings exports; idle pages need no watchers or network polls.
+  if (cpWorkshopReadConfigured()) {
+    cpAbort?.abort()
+    cpAbort = new AbortController()
+    void consumeWorkshopEvents(cpAbort.signal)
+  }
   watchDirectory(settingsDir(), (name) => {
     if (['settings.json', 'applied.json', 'gun-balance.json', 'kits.json'].includes(name))
       publish({
@@ -161,24 +242,11 @@ function start() {
     for (const attempt of [...pendingWatches.values()]) attempt()
   }, 30_000)
 }
-let resultsDirectory: string | undefined
-function watchResults() {
-  const directory = join(adminDir(), 'results')
-  if (resultsDirectory === directory) return
-  const before = watchers.length
-  watchDirectory(directory, (name) => {
-    if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.test(name)) return
-    const result = readFile(join(directory, name))
-    if (result !== null)
-      publish({ type: 'request', id: name.slice(0, -5), result: redactKeyResult(result) })
-  })
-  if (watchers.length > before) resultsDirectory = directory
-  else pendingWatches.set(directory, () => watchResults())
-}
 function stop() {
+  cpAbort?.abort()
+  cpAbort = undefined
   for (const watcher of watchers) watcher.close()
   watchers = []
-  resultsDirectory = undefined
   for (const timer of debounces.values()) clearTimeout(timer)
   debounces.clear()
   clearInterval(roomsTimer)
@@ -202,7 +270,9 @@ export function subscribe(
     deliver(subscriber, { type, at: Date.now(), ...payload })
   initial('settings', settingsSnapshot())
   initial('presence', { presence: presenceList() })
-  void overviewSnapshot().then((snapshot) => initial('status', snapshot))
+  void overviewSnapshot()
+    .then((snapshot) => initial('status', snapshot))
+    .catch(() => initial('status', { status: null, session: null, rooms: null }))
   return () => {
     subscribers.delete(subscriber)
     if (!subscribers.size) stop()

@@ -1,8 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import http from 'node:http'
 import { setTimeout as delay } from 'node:timers/promises'
 import {
   eventAllowed,
@@ -18,9 +19,7 @@ const UUID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 const actor = { uuid: UUID, name: 'Staff', role: 'admin' }
 function setup(t) {
   const directory = mkdtempSync(join(tmpdir(), 'bf-events-'))
-  mkdirSync(join(directory, 'results'))
   const env = {
-    BLOCKFIELD_ADMIN_DIR: directory,
     BLOCKFIELD_SETTINGS_DIR: directory,
     BLOCKFIELD_ADMIN_DEV_USER: `${UUID}:Staff`,
     BLOCKFIELD_OWNER_UUIDS: UUID,
@@ -28,10 +27,15 @@ function setup(t) {
     BLOCKFIELD_SERVER_PORT: '1',
     BLOCKFIELD_LOBBY_HOST: '127.0.0.1',
     BLOCKFIELD_LOBBY_PORT: '1',
+    BLOCKFIELD_CP_URL: undefined,
+    BLOCKFIELD_CP_WORKSHOP_TOKEN: undefined,
     NODE_ENV: 'test',
   }
   const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]))
-  Object.assign(process.env, env)
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
   t.after(() => {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key]
@@ -183,7 +187,7 @@ test('SSE headers, initial snapshots, event delivery, abort and multiple-stream 
   assert.equal(second.status, 200)
 })
 
-test('file watchers emit settings, catalog invalidation and request results', async (t) => {
+test('file watchers emit settings and catalog invalidation', async (t) => {
   const directory = setup(t)
   const received = []
   const stop = subscribe(
@@ -201,9 +205,70 @@ test('file watchers emit settings, catalog invalidation and request results', as
   )
   writeFileSync(join(directory, 'kits.json'), '{}')
   await until(() => received.some((event) => event.type === 'settings' && event.kits === true))
+})
+
+test('workshop SSE emits status and request results from CP', async (t) => {
+  setup(t)
   const id = '12345678-1234-4234-8234-123456789abc'
-  writeFileSync(join(directory, 'results', `${id}.json`), '{"ok":true}')
+  let sseRes = null
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1')
+    if (url.pathname === '/v2/workshop/state') {
+      res.setHeader('Content-Type', 'application/json')
+      res.end(
+        JSON.stringify({
+          seq: 5,
+          documents: {
+            status: {
+              seq: 5,
+              updatedAt: 1,
+              revision: 1,
+              name: 'status',
+              value: { phase: 'sleeping' },
+            },
+          },
+        }),
+      )
+      return
+    }
+    if (url.pathname === '/v2/workshop/state/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      sseRes = res
+      res.write(': keepalive\n\n')
+      req.on('close', () => {
+        sseRes = null
+      })
+      return
+    }
+    res.statusCode = 404
+    res.end()
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => {
+    sseRes?.end()
+    server.closeAllConnections?.()
+    server.close()
+  })
+  process.env.BLOCKFIELD_CP_URL = `http://127.0.0.1:${server.address().port}`
+  process.env.BLOCKFIELD_CP_WORKSHOP_TOKEN = 'wsh-t'
+
+  const received = []
+  const stop = subscribe(
+    () => true,
+    (event) => received.push(event),
+  )
+  t.after(stop)
+  await until(() => sseRes !== null)
+  sseRes.write(
+    `id: 6\nevent: state\ndata: ${JSON.stringify({ name: 'status', seq: 6, value: { phase: 'ready' } })}\n\n`,
+  )
+  sseRes.write(
+    `id: 7\nevent: state\ndata: ${JSON.stringify({ name: `result:${id}`, seq: 7, value: { ok: true } })}\n\n`,
+  )
   await until(() => received.some((event) => event.type === 'request' && event.id === id))
+  await until(() =>
+    received.some((event) => event.type === 'status' && event.status?.phase === 'ready'),
+  )
   assert.deepEqual(received.find((event) => event.type === 'request').result, { ok: true })
 })
 

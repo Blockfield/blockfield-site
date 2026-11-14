@@ -5,7 +5,6 @@ import {
   constants,
   fstatSync,
   readSync,
-  readFileSync,
   closeSync,
   renameSync,
   writeFileSync,
@@ -30,11 +29,11 @@ import {
 } from './console.ts'
 import { parseTickQuery, redact } from './diagnostics.ts'
 import { cachedRooms, roomId } from './rooms.ts'
-import { gateToggle } from './cp.ts'
+import { gateToggle, type WorkshopCpKind } from './cp.ts'
 import { readGunBalance, validateGunOverrides, type GunBalanceCatalog } from './gun-balance.ts'
 import { readAiLimits, validateAiAccounts } from './ai-limits.ts'
 import {
-  readWorkshopAiKeyStatus,
+  parseWorkshopAiKeyStatus,
   readWorkshopAiSettings,
   validateWorkshopAiKey,
   validateWorkshopAiSettings,
@@ -87,10 +86,8 @@ export const can = (role: Role | null, permission: string) => permissions(role).
 export type Actor = { uuid: string; name: string; role: Role | null }
 const noStore = { 'Cache-Control': 'no-store' }
 const dir = (name: string, fallback: string) => process.env[name] || fallback
-const adminDir = () => dir('BLOCKFIELD_ADMIN_DIR', '/workshop-admin')
-const inboxDir = () => dir('BLOCKFIELD_INBOX_DIR', '/workshop-inbox')
 const settingsDir = () => dir('BLOCKFIELD_SETTINGS_DIR', '/blockfield-admin')
-const packagesDir = () => dir('BLOCKFIELD_MAP_PACKAGES_DIR', join(adminDir(), 'packages'))
+const packagesDir = () => dir('BLOCKFIELD_MAP_PACKAGES_DIR', '/map-packages')
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const COPY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const VERSION_DIGEST = /^[0-9a-f]{64}$/
@@ -228,14 +225,6 @@ export async function siteIdentity(
   }
 }
 
-function readText(path: string, max = 1024): string | null {
-  try {
-    const text = readFileSync(path, 'utf8')
-    return text.length > max ? null : text
-  } catch {
-    return null
-  }
-}
 export function readFile(path: string, max = 65_536): any {
   let fd: number
   try {
@@ -425,8 +414,11 @@ function catalogSession(value: unknown, maps: MapCatalogEntry[]): MapSession | n
 }
 
 /** The controller catalog supplies available IDs and immutable history; static labels never invent map versions. */
-export function readMapCatalog(directory: string): MapCatalogAvailability {
-  const value = readFile(join(directory, 'maps.json'), 16 * 1024 * 1024)
+export function parseMapCatalog(
+  value: unknown,
+  sessionValue: unknown = null,
+  statusValue: unknown = null,
+): MapCatalogAvailability {
   const unavailable: MapCatalogAvailability = {
     available: false,
     error: 'Каталог карт недоступен: контроллер не передал корректные данные.',
@@ -604,8 +596,8 @@ export function readMapCatalog(directory: string): MapCatalogAvailability {
           (typeof value.sessionsTotal === 'number' && value.sessionsNext > value.sessionsTotal))))
   )
     return unavailable
-  const session = catalogSession(readFile(join(directory, 'session.json')), maps),
-    status = readFile(join(directory, 'status.json'))
+  const session = catalogSession(sessionValue, maps),
+    status = statusValue as Record<string, any> | null
   const verified =
     session !== null &&
     plain(status) &&
@@ -626,20 +618,50 @@ export function readMapCatalog(directory: string): MapCatalogAvailability {
       : { sessionsNext: value.sessionsNext as number | null }),
   }
 }
-function requiredMapCatalog() {
-  const catalog = readMapCatalog(adminDir())
+
+async function cpWorkshopDocs(names: string[], required = true): Promise<Record<string, any>> {
+  const cp = await import('./cp.ts')
+  if (!cp.cpWorkshopReadConfigured()) {
+    if (required) throw fail(503, 'Мастерская недоступна.')
+    return {}
+  }
+  try {
+    const docs = await cp.readWorkshopStateCp(names)
+    return Object.fromEntries(
+      Object.entries(docs).map(([name, record]) => [name, record?.value ?? null]),
+    )
+  } catch (error) {
+    if (isCpProblem(error)) throw fail(error.status, error.message)
+    throw fail(503, 'Состояние мастерской в control-plane недоступно.')
+  }
+}
+
+async function readCpMapCatalog(pre?: Record<string, any>, required = false) {
+  const docs = pre ?? (await cpWorkshopDocs(['maps', 'session', 'status'], required))
+  return parseMapCatalog(docs.maps ?? null, docs.session ?? null, docs.status ?? null)
+}
+
+async function requiredMapCatalog(pre?: Record<string, any>) {
+  const catalog = await readCpMapCatalog(pre, true)
   if (catalog.available === false) throw fail(503, catalog.error)
   return catalog
 }
-function existingCandidate(id: unknown) {
+
+function candidateFromDoc(candidates: unknown, id: unknown) {
   if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) throw bad('Неверный ID кандидата.')
-  const candidates = readFile(join(adminDir(), 'candidates.json'), 16 * 1024 * 1024)
   if (!plain(candidates) || candidates.schema !== 1 || !Array.isArray(candidates.candidates))
     throw fail(503, 'Каталог кандидатов недоступен.')
   const candidate = candidates.candidates.find((value: any) => plain(value) && value.id === id)
   if (!candidate || !mapId(candidate.mapId)) throw fail(404, 'Кандидат не найден.')
   return candidate
 }
+
+async function existingCandidate(id: unknown, pre?: Record<string, any>) {
+  if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) throw bad('Неверный ID кандидата.')
+  const docs = pre ?? (await cpWorkshopDocs(['candidates'], true))
+  return candidateFromDoc(docs.candidates, id)
+}
+
 function expectedMapHead(body: any, entry: MapCatalogEntry) {
   if (
     !plain(body) ||
@@ -651,8 +673,9 @@ function expectedMapHead(body: any, entry: MapCatalogEntry) {
     throw fail(409, 'Версия карты уже изменилась. Обновите историю.')
   return body.expectedHead as string | null
 }
-function editorRevision(body: any) {
-  const status = readFile(join(adminDir(), 'status.json'))
+
+async function editorRevision(body: any, pre?: Record<string, any>) {
+  const status = (pre ?? (await cpWorkshopDocs(['status'], true))).status
   if (status?.schema !== 1 || !Number.isSafeInteger(status.revision) || status.revision < 0)
     throw fail(503, 'Состояние мастерской недоступно. Обновите страницу.')
   if (status.phase !== 'workshop' || status.gate !== 'builders')
@@ -662,6 +685,7 @@ function editorRevision(body: any) {
   if (body.expectedRevision !== status.revision)
     throw fail(409, 'Состояние мастерской изменилось. Обновите страницу.')
 }
+
 async function editableMapIds(
   actor: Actor,
   store: StatsStore,
@@ -675,14 +699,21 @@ async function editableMapIds(
   const grant = (await store.staff()).find((row) => row.uuid === actor.uuid)
   return grant ? ids.filter((id) => grant.maps == null || grant.maps.includes(id)) : []
 }
-async function editableMap(actor: Actor, store: StatsStore, id: unknown) {
-  const catalog = requiredMapCatalog(),
+
+async function editableMap(
+  actor: Actor,
+  store: StatsStore,
+  id: unknown,
+  pre?: Record<string, any>,
+) {
+  const catalog = await requiredMapCatalog(pre),
     entry = catalog.maps.find((map) => map.mapId === id)
   if (!entry) throw bad('Неизвестная карта.')
   if (!(await editableMapIds(actor, store, catalog)).includes(entry.mapId))
     throw fail(403, 'Нет права строить на этой карте.')
   return { catalog, entry }
 }
+
 function selectedMapSession(
   catalog: Extract<MapCatalogAvailability, { available: true }>,
   entry: MapCatalogEntry,
@@ -695,8 +726,9 @@ function selectedMapSession(
   if (workingCopyId !== copy.id) throw fail(409, 'Рабочая копия изменилась. Обновите историю.')
   return { copy }
 }
-function workshopMapIds() {
-  const catalog = readMapCatalog(adminDir())
+
+async function workshopMapIds(pre?: Record<string, any>) {
+  const catalog = await readCpMapCatalog(pre, false)
   return catalog.available ? new Set(['hub', ...catalog.maps.map((entry) => entry.mapId)]) : MAP_IDS
 }
 /** Readers (controller, game server) must never see a half-written file: write a dot-file in the same directory, then rename. */
@@ -774,21 +806,17 @@ export function workshopMembers(
   return [...members.values()].sort((a, b) => a.draslId.localeCompare(b.draslId))
 }
 
-/** Validates a UI request and writes it to the controller inbox. Returns the request id. */
-export function writeRequest(
-  directory: string,
+export type PreparedWorkshopRequest = {
+  cpKind: WorkshopCpKind
+  fields: Record<string, unknown>
+}
+
+/** Validates a UI request and maps it to a control-plane `/v2/workshop/<kind>` payload. */
+export function prepareWorkshopRequest(
   actor: Actor,
   body: any,
   knownMaps = new Set(Object.keys(MAP_NAMES)),
-): string {
-  const base = {
-    schema: 1,
-    id: randomUUID(),
-    kind: body?.kind,
-    actor: { draslId: actor.uuid, name: actor.name },
-    createdAt: Date.now(),
-  }
-  let request: Record<string, unknown>
+): PreparedWorkshopRequest {
   if (body?.kind === 'mode') {
     if (!['game', 'workshop', 'test'].includes(body.profile))
       throw bad('Режим: game, workshop или test.')
@@ -817,9 +845,6 @@ export function writeRequest(
         )
           throw bad('Некорректный список карт.')
         extra = { session: 'new', maps }
-        // Linear history (workshop#65): sessions track maps only. A stale
-        // client may still send `branches`; it is validated nowhere and never
-        // forwarded — the controller ignores it the same way during rollout.
       } else {
         if (
           body.sessionId !== undefined &&
@@ -830,7 +855,7 @@ export function writeRequest(
           session: 'resume',
           ...(body.sessionId === undefined ? {} : { sessionId: body.sessionId }),
         }
-      } // resume keeps its stored maps/branches; a client-sent selection is never forwarded.
+      }
     } else if (body.profile === 'test') {
       if (typeof body.candidateId !== 'string' || !/^[0-9a-f]{32}$/.test(body.candidateId))
         throw bad('Неизвестная версия карты.')
@@ -840,14 +865,17 @@ export function writeRequest(
         extra.modeId = body.modeId
       }
     }
-    request = {
-      ...base,
-      profile: body.profile,
-      expectedRevision: body.expectedRevision,
-      ...(body.recover ? { recover: true } : {}),
-      ...extra,
+    return {
+      cpKind: 'mode',
+      fields: {
+        profile: body.profile,
+        expectedRevision: body.expectedRevision,
+        ...(body.recover ? { recover: true } : {}),
+        ...extra,
+      },
     }
-  } else if (body?.kind === 'map-create' || body?.kind === 'map-properties') {
+  }
+  if (body?.kind === 'map-create' || body?.kind === 'map-properties') {
     if (!can(actor.role, 'maps')) throw fail(403, 'Создание и название карты доступны модератору.')
     if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 0)
       throw bad('Нет ревизии состояния: обновите страницу.')
@@ -865,32 +893,41 @@ export function writeRequest(
         !body.supportedModes.every(arenaMode)
       )
         throw bad('Выберите хотя бы один поддерживаемый режим карты.')
-      request = {
-        ...base,
-        mapId: body.mapId,
-        name,
-        supportedModes: body.supportedModes,
-        expectedRevision: body.expectedRevision,
-        sessionId: randomUUID(),
-      }
-    } else {
-      if (
-        !mapId(body.mapId) ||
-        !knownMaps.has(body.mapId) ||
-        typeof body.workingCopyId !== 'string' ||
-        !COPY_UUID.test(body.workingCopyId)
-      )
-        throw bad('Выберите рабочую копию карты для изменения названия.')
-      request = {
-        ...base,
-        mapId: body.mapId,
-        name,
-        workingCopyId: body.workingCopyId,
-        expectedRevision: body.expectedRevision,
+      return {
+        cpKind: 'map',
+        fields: {
+          mapOp: 'map-create',
+          args: {
+            mapId: body.mapId,
+            name,
+            supportedModes: body.supportedModes,
+            expectedRevision: body.expectedRevision,
+            sessionId: randomUUID(),
+          },
+        },
       }
     }
-  } else if (body?.kind === 'members') {
-    // `maps` absent/null: every map, including ones added later. `maps: []`: no map (the builder still gets a workshop account, just nothing to edit).
+    if (
+      !mapId(body.mapId) ||
+      !knownMaps.has(body.mapId) ||
+      typeof body.workingCopyId !== 'string' ||
+      !COPY_UUID.test(body.workingCopyId)
+    )
+      throw bad('Выберите рабочую копию карты для изменения названия.')
+    return {
+      cpKind: 'map',
+      fields: {
+        mapOp: 'map-properties',
+        args: {
+          mapId: body.mapId,
+          name,
+          workingCopyId: body.workingCopyId,
+          expectedRevision: body.expectedRevision,
+        },
+      },
+    }
+  }
+  if (body?.kind === 'members') {
     const validMaps = (m: any) =>
       m.maps === undefined ||
       (Array.isArray(m.maps) &&
@@ -908,19 +945,26 @@ export function writeRequest(
           validMaps(m),
       )
     if (!valid) throw bad('Некорректный список участников.')
-    request = {
-      ...base,
-      members: body.members.map(({ draslId, name, role, maps }: WorkshopMember) => ({
-        draslId,
-        name,
-        role,
-        ...(maps ? { maps } : {}),
-      })),
+    return {
+      cpKind: 'members',
+      fields: {
+        members: body.members.map(({ draslId, name, role, maps }: WorkshopMember) => ({
+          draslId,
+          name,
+          role,
+          ...(maps ? { maps } : {}),
+        })),
+      },
     }
-  } else if (body?.kind === 'limbo-export') {
+  }
+  if (body?.kind === 'limbo-export') {
     if (!digest(body.versionDigest)) throw bad('Неизвестная версия лобби прокси.')
-    request = { ...base, versionDigest: body.versionDigest }
-  } else if (body?.kind === 'sessions') {
+    return {
+      cpKind: 'map',
+      fields: { mapOp: 'limbo-export', args: { versionDigest: body.versionDigest } },
+    }
+  }
+  if (body?.kind === 'sessions') {
     if (
       !Number.isSafeInteger(body.offset) ||
       body.offset < 0 ||
@@ -929,12 +973,12 @@ export function writeRequest(
         (!Number.isSafeInteger(body.limit) || body.limit < 1 || body.limit > 100))
     )
       throw bad('Некорректная страница сохранённых черновиков.')
-    request = { ...base, offset: body.offset, limit: body.limit ?? 100 }
-  } else if (
+    return { cpKind: 'sessions', fields: { offset: body.offset, limit: body.limit ?? 100 } }
+  }
+  if (
     ['commit', 'compare', 'snapshot-create', 'snapshot-delete', 'snapshots'].includes(body?.kind)
   ) {
     if (!mapId(body.mapId) || !knownMaps.has(body.mapId)) throw bad('Неизвестная карта.')
-    const common = { ...base, mapId: body.mapId }
     if (body.kind === 'commit') {
       if (
         typeof body.workingCopyId !== 'string' ||
@@ -948,54 +992,74 @@ export function writeRequest(
         throw bad(
           'Коммит требует рабочую копию, текущую версию карты и описание изменений до 200 символов.',
         )
-      request = {
-        ...common,
-        workingCopyId: body.workingCopyId,
-        expectedHead: body.expectedHead,
-        note: body.note.trim(),
-      }
-    } else if (body.kind === 'compare') {
-      if (!digest(body.before) || !digest(body.after))
-        throw bad('Выберите две сохранённые версии карты.')
-      request = { ...common, before: body.before, after: body.after }
-    } else if (body.kind === 'snapshots') {
-      request = { ...common }
-    } else {
-      if (!mutableBranch(body.name))
-        throw bad('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
-      if (body.kind === 'snapshot-create') {
-        if (!digest(body.versionDigest)) throw bad('Выберите сохранённую версию карты для снимка.')
-        request = { ...common, name: body.name, versionDigest: body.versionDigest }
-      } else {
-        request = { ...common, name: body.name }
+      return {
+        cpKind: 'map',
+        fields: {
+          mapOp: 'commit',
+          args: {
+            mapId: body.mapId,
+            workingCopyId: body.workingCopyId,
+            expectedHead: body.expectedHead,
+            note: body.note.trim(),
+          },
+        },
       }
     }
-  } else if (body?.kind === 'snapshot-copy' || body?.kind === 'checkout-fresh') {
-    // The stale-copy way out (workshop#65 linear history): snapshot-copy preserves
-    // the refused draft under a name, checkout-fresh restarts from the current head.
+    if (body.kind === 'compare') {
+      if (!digest(body.before) || !digest(body.after))
+        throw bad('Выберите две сохранённые версии карты.')
+      return {
+        cpKind: 'map',
+        fields: {
+          mapOp: 'compare',
+          args: { mapId: body.mapId, before: body.before, after: body.after },
+        },
+      }
+    }
+    if (body.kind === 'snapshots') {
+      return { cpKind: 'map', fields: { mapOp: 'snapshots', args: { mapId: body.mapId } } }
+    }
+    if (!mutableBranch(body.name))
+      throw bad('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
+    if (body.kind === 'snapshot-create') {
+      if (!digest(body.versionDigest)) throw bad('Выберите сохранённую версию карты для снимка.')
+      return {
+        cpKind: 'map',
+        fields: {
+          mapOp: 'snapshot-create',
+          args: { mapId: body.mapId, name: body.name, versionDigest: body.versionDigest },
+        },
+      }
+    }
+    return {
+      cpKind: 'map',
+      fields: { mapOp: 'snapshot-delete', args: { mapId: body.mapId, name: body.name } },
+    }
+  }
+  if (body?.kind === 'snapshot-copy' || body?.kind === 'checkout-fresh') {
     if (!mapId(body.mapId) || !knownMaps.has(body.mapId)) throw bad('Неизвестная карта.')
     if (body.kind === 'snapshot-copy') {
-      // The workshop admits only admins to snapshot-copy; the rest restart fresh.
       if (!can(actor.role, 'workshop'))
         throw fail(403, 'Сохранение черновика снимком доступно администратору.')
       if (!mutableBranch(body.name))
         throw bad('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
       if (typeof body.workingCopyId !== 'string' || !COPY_UUID.test(body.workingCopyId))
         throw bad('Выберите рабочую копию карты для снимка.')
-      request = {
-        ...base,
-        mapId: body.mapId,
-        name: body.name,
-        workingCopyId: body.workingCopyId,
+      return {
+        cpKind: 'map',
+        fields: {
+          mapOp: 'snapshot-copy',
+          args: { mapId: body.mapId, name: body.name, workingCopyId: body.workingCopyId },
+        },
       }
-    } else {
-      if (!can(actor.role, 'map-edit')) throw fail(403, 'Нет права строить на этой карте.')
-      // The inbox workingCopyId is the NEW copy: the workshop refuses existing ids,
-      // so the server mints it (like map-create mints sessionId). The route pins the
-      // panel copy from the request body before it reaches this serializer.
-      request = { ...base, mapId: body.mapId, workingCopyId: randomUUID() }
     }
-  } else if (body?.kind === 'candidate' || body?.kind === 'rollback') {
+    if (!can(actor.role, 'map-edit')) throw fail(403, 'Нет права строить на этой карте.')
+    return {
+      cpKind: 'map',
+      fields: { mapOp: 'checkout-fresh', args: { mapId: body.mapId, workingCopyId: randomUUID() } },
+    }
+  }
+  if (body?.kind === 'candidate' || body?.kind === 'rollback') {
     if (typeof body.mapId !== 'string' || !knownMaps.has(body.mapId))
       throw bad('Неизвестная карта.')
     if (body.kind === 'candidate') {
@@ -1004,23 +1068,21 @@ export function writeRequest(
         (typeof body.workingCopyId !== 'string' || !COPY_UUID.test(body.workingCopyId))
       )
         throw bad('Неверная рабочая копия карты.')
-      request = {
-        ...base,
+      const args: Record<string, unknown> = {
         mapId: body.mapId,
         ...(body.workingCopyId === undefined ? {} : { workingCopyId: body.workingCopyId }),
       }
-      if (body.expectedHead !== undefined)
-        Object.assign(request, { expectedHead: body.expectedHead })
+      if (body.expectedHead !== undefined) args.expectedHead = body.expectedHead
       if (
-        request.workingCopyId !== undefined ||
-        request.expectedHead !== undefined ||
+        args.workingCopyId !== undefined ||
+        args.expectedHead !== undefined ||
         body.commit !== undefined ||
         body.note !== undefined
       ) {
         if (
-          typeof request.workingCopyId !== 'string' ||
-          !Object.hasOwn(request, 'expectedHead') ||
-          (request.expectedHead !== null && !digest(request.expectedHead))
+          typeof args.workingCopyId !== 'string' ||
+          !Object.hasOwn(args, 'expectedHead') ||
+          (args.expectedHead !== null && !digest(args.expectedHead))
         )
           throw bad('Проверка требует рабочую копию и текущую версию карты.')
         if (body.commit !== undefined && typeof body.commit !== 'boolean')
@@ -1033,26 +1095,33 @@ export function writeRequest(
             /\p{Cc}/u.test(body.note)
           )
             throw bad('Сохранение перед проверкой требует описание изменений до 200 символов.')
-          Object.assign(request, { commit: body.commit === true, note: body.note.trim() })
+          args.commit = body.commit === true
+          args.note = body.note.trim()
         } else if (body.commit !== undefined) {
-          Object.assign(request, { commit: false })
+          args.commit = false
         }
       }
-    } else {
-      if (
-        !digest(body.versionDigest) ||
-        !Object.hasOwn(body, 'expectedHead') ||
-        (body.expectedHead !== null && !digest(body.expectedHead))
-      )
-        throw bad('Откат требует выбранную версию и текущую вершину истории.')
-      request = {
-        ...base,
-        mapId: body.mapId,
-        versionDigest: body.versionDigest,
-        expectedHead: body.expectedHead,
-      }
+      return { cpKind: 'map', fields: { mapOp: 'candidate', args } }
     }
-  } else if (body?.kind === 'publish' || body?.kind === 'reject' || body?.kind === 'export') {
+    if (
+      !digest(body.versionDigest) ||
+      !Object.hasOwn(body, 'expectedHead') ||
+      (body.expectedHead !== null && !digest(body.expectedHead))
+    )
+      throw bad('Откат требует выбранную версию и текущую вершину истории.')
+    return {
+      cpKind: 'map',
+      fields: {
+        mapOp: 'rollback',
+        args: {
+          mapId: body.mapId,
+          versionDigest: body.versionDigest,
+          expectedHead: body.expectedHead,
+        },
+      },
+    }
+  }
+  if (body?.kind === 'publish' || body?.kind === 'reject' || body?.kind === 'export') {
     if (typeof body.candidateId !== 'string' || !/^[0-9a-f]{32}$/.test(body.candidateId))
       throw bad('Неизвестная версия карты.')
     if (body.kind === 'publish' && body.force !== undefined && typeof body.force !== 'boolean')
@@ -1064,44 +1133,68 @@ export function writeRequest(
       !digest(body.expectedHead)
     )
       throw bad('Неверная текущая версия карты.')
-    request = {
-      ...base,
-      candidateId: body.candidateId,
-      ...(body.kind === 'publish' && body.force ? { force: true } : {}),
-      ...(body.kind === 'publish' && Object.hasOwn(body, 'expectedHead')
-        ? { expectedHead: body.expectedHead }
-        : {}),
-      ...(body.kind === 'publish' && body.resolutions !== undefined
-        ? { resolutions: resolutions(body.resolutions) }
-        : {}),
+    return {
+      cpKind: 'map',
+      fields: {
+        mapOp: body.kind,
+        args: {
+          candidateId: body.candidateId,
+          ...(body.kind === 'publish' && body.force ? { force: true } : {}),
+          ...(body.kind === 'publish' && Object.hasOwn(body, 'expectedHead')
+            ? { expectedHead: body.expectedHead }
+            : {}),
+          ...(body.kind === 'publish' && body.resolutions !== undefined
+            ? { resolutions: resolutions(body.resolutions) }
+            : {}),
+        },
+      },
     }
-  } else if (body?.kind === 'ai-key' || body?.kind === 'ai-gateway-key') {
-    // Keys are write-only: they travel to the controller inbox and never
-    // land in settings, the DB, logs or responses. Validation errors never echo them.
+  }
+  if (body?.kind === 'ai-key' || body?.kind === 'ai-gateway-key') {
     if (!plain(body) || !Object.hasOwn(body, 'key')) throw bad('Укажите ключ или его удаление.')
-    request = { ...base, kind: body.kind, key: validateWorkshopAiKey(body.key) }
-  } else if (body?.kind === 'ai-provider-key') {
-    // Custom registry provider key: the provider id travels alongside (nonsecret),
-    // the value itself never lands in settings, the DB, logs or responses.
-    // Only genuine custom ids pass: preset and colliding ids keep their own endpoints.
+    return {
+      cpKind: 'ai-key',
+      fields: {
+        provider: body.kind === 'ai-key' ? 'openrouter' : 'vercel-gateway',
+        key: validateWorkshopAiKey(body.key),
+      },
+    }
+  }
+  if (body?.kind === 'ai-provider-key') {
     if (!plain(body) || !Object.hasOwn(body, 'key')) throw bad('Укажите ключ или его удаление.')
     if (!isCustomProviderId(body.provider)) throw bad('Некорректный провайдер.')
-    request = {
-      ...base,
-      kind: body.kind,
-      provider: body.provider,
-      key: validateWorkshopAiKey(body.key),
+    return {
+      cpKind: 'ai-key',
+      fields: { provider: body.provider, key: validateWorkshopAiKey(body.key) },
     }
-  } else throw bad('Неизвестный тип запроса.')
-  // The site and the controller's reader share UID 1000; a key request is readable by them only.
-  const keyKinds = ['ai-key', 'ai-gateway-key', 'ai-provider-key']
-  writeAtomic(
-    directory,
-    `${base.id}.json`,
-    request,
-    keyKinds.includes(request.kind as string) ? 0o600 : undefined,
-  )
-  return base.id
+  }
+  throw bad('Неизвестный тип запроса.')
+}
+
+async function sendWorkshopRequest(
+  actor: Actor,
+  body: any,
+  knownMaps?: Set<string>,
+): Promise<string> {
+  const prepared = prepareWorkshopRequest(actor, body, knownMaps)
+  const cp = await import('./cp.ts')
+  if (!cp.cpWorkshopConfigured()) throw fail(503, 'Мастерская недоступна.')
+  const idempotencyKey =
+    body?.idempotencyKey !== undefined ? workshopIdempotencyKey(body) : undefined
+  try {
+    const receipt = await cp.postWorkshopCp(
+      prepared.cpKind,
+      workshopActor(actor),
+      prepared.fields,
+      {
+        idempotencyKey,
+      },
+    )
+    return receipt.operationId
+  } catch (error) {
+    if (isCpProblem(error)) throw fail(error.status, error.message)
+    throw fail(502, 'Не удалось отправить команду мастерской в control-plane.')
+  }
 }
 
 const range = (min: number, max: number) => (v: unknown) =>
@@ -1586,10 +1679,8 @@ export function saveWorkshopAiSettings(
   return settings
 }
 
-/** One controller answer, validated the same way for status polling and the request view. */
-function readRequestResult(id: string) {
+function validateRequestResult(id: string, result: unknown) {
   if (!UUID.test(id)) throw bad('Некорректный запрос.')
-  const result = readFile(join(adminDir(), 'results', `${id}.json`), 8 * 1024 * 1024)
   if (
     result !== null &&
     (!plain(result) ||
@@ -1600,6 +1691,13 @@ function readRequestResult(id: string) {
   )
     throw fail(503, 'Ответ контроллера повреждён. Обновите состояние позже.')
   return result
+}
+
+/** One controller answer, validated the same way for status polling and the request view. */
+async function readRequestResult(id: string) {
+  if (!UUID.test(id)) throw bad('Некорректный запрос.')
+  const docs = await cpWorkshopDocs([`result:${id}`], true)
+  return validateRequestResult(id, docs[`result:${id}`] ?? null)
 }
 
 /** Every argument is checked before it reaches the control plane; nothing is passed through. */
@@ -1893,7 +1991,7 @@ async function syncWorkshop(
       ),
     )
   const members = workshopMembers(staffOverride ?? (await store.staff()), names)
-  const id = writeRequest(inboxDir(), actor, { kind: 'members', members }, workshopMapIds())
+  const id = await sendWorkshopRequest(actor, { kind: 'members', members }, await workshopMapIds())
   return { id, members }
 }
 
@@ -1948,11 +2046,16 @@ type Route = {
   tx?: boolean
 }
 
-export async function overviewSnapshot() {
-  const rooms = await cachedRooms()
+export async function overviewSnapshot(override?: { status?: unknown; session?: unknown }) {
+  const [rooms, docs] = await Promise.all([
+    cachedRooms(),
+    override?.status !== undefined && override?.session !== undefined
+      ? Promise.resolve<Record<string, any>>({})
+      : cpWorkshopDocs(['status', 'session'], false).catch((): Record<string, any> => ({})),
+  ])
   return {
-    status: readFile(join(adminDir(), 'status.json')),
-    session: readFile(join(adminDir(), 'session.json')),
+    status: override?.status !== undefined ? override.status : (docs.status ?? null),
+    session: override?.session !== undefined ? override.session : (docs.session ?? null),
     rooms,
   }
 }
@@ -2109,25 +2212,48 @@ async function syncCpTeam(store: StatsStore, actor: Actor, cp: CpLib) {
   }
 }
 
+async function readAiKeyView(statusFile: string, id: string | null) {
+  if (id !== null && id !== '' && !UUID.test(id)) throw bad('Некорректный запрос.')
+  const docs = await cpWorkshopDocs(['ai-keys', ...(id ? [`result:${id}`] : [])], Boolean(id))
+  return {
+    status: parseWorkshopAiKeyStatus(docs['ai-keys']?.[statusFile]),
+    result: id ? validateRequestResult(id, docs[`result:${id}`] ?? null) : null,
+  }
+}
+
 const routes: Record<string, Route> = {
   'GET overview': {
     permission: 'view',
-    handler: overviewSnapshot,
+    handler: () => overviewSnapshot(),
   },
   'GET request': {
     permission: 'view',
     // Key tails are owner-only: the generic view-gated route serves a redacted
     // copy, owners read the full result through their key-status routes.
-    handler: ({ context }) => ({
-      result: redactKeyResult(readRequestResult(context.url.searchParams.get('id') ?? '')),
+    handler: async ({ context }) => ({
+      result: redactKeyResult(await readRequestResult(context.url.searchParams.get('id') ?? '')),
     }),
   },
   'POST mode': {
     permission: 'mode',
-    handler: ({ actor, body }) => {
-      const catalog = readMapCatalog(adminDir())
-      if (body?.profile === 'test' && body.modeId !== undefined) {
-        const candidate = existingCandidate(body.candidateId),
+    handler: async ({ actor, body }) => {
+      const wantTestModes = body?.profile === 'test' && body.modeId !== undefined
+      const wantCatalog = body?.profile === 'workshop'
+      const pre =
+        wantCatalog || wantTestModes
+          ? await cpWorkshopDocs(
+              [
+                ...(wantCatalog ? ['maps', 'session', 'status'] : []),
+                ...(wantTestModes ? ['candidates'] : []),
+              ],
+              wantTestModes,
+            )
+          : {}
+      const catalog = wantCatalog
+        ? await readCpMapCatalog(pre, false)
+        : { available: false as const }
+      if (wantTestModes) {
+        const candidate = await existingCandidate(body.candidateId, pre),
           modes = candidate.supportedModes
         if (
           !Array.isArray(modes) ||
@@ -2141,8 +2267,7 @@ const routes: Record<string, Route> = {
           throw bad('Сохранённая версия карты не поддерживает этот режим.')
       }
       return {
-        id: writeRequest(
-          inboxDir(),
+        id: await sendWorkshopRequest(
           actor,
           { ...body, kind: 'mode' },
           catalog.available ? new Set(catalog.maps.map((entry) => entry.mapId)) : MAP_IDS,
@@ -2548,8 +2673,9 @@ const routes: Record<string, Route> = {
     permission: 'ai',
     maxBody: 8192,
     handler: async ({ actor, body }) => {
-      const hasKey = (provider) =>
-        readWorkshopAiKeyStatus(adminDir(), workshopAiKeyStatusFile(provider)).set
+      const aiKeys = (await cpWorkshopDocs(['ai-keys'], false))['ai-keys']
+      const hasKey = (provider: string) =>
+        parseWorkshopAiKeyStatus(aiKeys?.[workshopAiKeyStatusFile(provider)]).set
       const { cpConfigured } = await import('./cp.ts')
       if (cpConfigured()) {
         const { settings, cpRevisions } = await saveWorkshopAiSettingsCp(
@@ -2572,38 +2698,28 @@ const routes: Record<string, Route> = {
   },
   'GET workshop-ai-key': {
     permission: 'ai',
-    handler: ({ context }) => {
-      const id = context.url.searchParams.get('id')
-      return {
-        status: readWorkshopAiKeyStatus(adminDir()),
-        result: id === null || id === '' ? null : readRequestResult(id),
-      }
-    },
+    handler: async ({ context }) =>
+      readAiKeyView('ai-key.json', context.url.searchParams.get('id')),
   },
   'POST workshop-ai-key': {
     permission: 'ai',
     maxBody: 4096,
-    handler: ({ actor, body }) => ({
-      id: writeRequest(inboxDir(), actor, { kind: 'ai-key', key: body?.key }),
+    handler: async ({ actor, body }) => ({
+      id: await sendWorkshopRequest(actor, { ...body, kind: 'ai-key' }),
     }),
     // The key itself never reaches the audit log: only whether it is set or removed.
     audit: (body) => ({ action: 'workshop-ai-key', detail: { remove: body?.key == null } }),
   },
   'GET workshop-ai-gateway-key': {
     permission: 'ai',
-    handler: ({ context }) => {
-      const id = context.url.searchParams.get('id')
-      return {
-        status: readWorkshopAiKeyStatus(adminDir(), 'ai-gateway-key.json'),
-        result: id === null || id === '' ? null : readRequestResult(id),
-      }
-    },
+    handler: async ({ context }) =>
+      readAiKeyView('ai-gateway-key.json', context.url.searchParams.get('id')),
   },
   'POST workshop-ai-gateway-key': {
     permission: 'ai',
     maxBody: 4096,
-    handler: ({ actor, body }) => ({
-      id: writeRequest(inboxDir(), actor, { kind: 'ai-gateway-key', key: body?.key }),
+    handler: async ({ actor, body }) => ({
+      id: await sendWorkshopRequest(actor, { ...body, kind: 'ai-gateway-key' }),
     }),
     // The key itself never reaches the audit log: only whether it is set or removed.
     audit: (body) => ({
@@ -2611,30 +2727,20 @@ const routes: Record<string, Route> = {
       detail: { remove: body?.key == null },
     }),
   },
-  // Custom registry provider keys. The controller side (per-provider `<id>.key`
-  // files and `<id>-key.json` statuses) lands with the workshop gate; until then
-  // these routes queue inbox `ai-provider-key` requests the same 0600 way.
+  // Custom registry provider keys: forwarded through CP `ai-key` with `provider`.
   'GET workshop-ai-provider-key': {
     permission: 'ai',
-    handler: ({ context }) => {
+    handler: async ({ context }) => {
       const provider = context.url.searchParams.get('provider')
       if (!isWorkshopAiProviderId(provider)) throw bad('Некорректный провайдер.')
-      const id = context.url.searchParams.get('id')
-      return {
-        status: readWorkshopAiKeyStatus(adminDir(), workshopAiKeyStatusFile(provider)),
-        result: id === null || id === '' ? null : readRequestResult(id),
-      }
+      return readAiKeyView(workshopAiKeyStatusFile(provider), context.url.searchParams.get('id'))
     },
   },
   'POST workshop-ai-provider-key': {
     permission: 'ai',
     maxBody: 4096,
-    handler: ({ actor, body }) => ({
-      id: writeRequest(inboxDir(), actor, {
-        kind: 'ai-provider-key',
-        provider: body?.provider,
-        key: body?.key,
-      }),
+    handler: async ({ actor, body }) => ({
+      id: await sendWorkshopRequest(actor, { ...body, kind: 'ai-provider-key' }),
     }),
     // The key itself never reaches the audit log: only its removal and the provider
     // id when it is already registered. A pasted key can match the id shape.
@@ -2706,8 +2812,8 @@ const routes: Record<string, Route> = {
   // Map candidates (controller candidates.py): the list is for everyone in the panel, decisions for admins.
   'GET candidates': {
     permission: 'view',
-    handler: () =>
-      readFile(join(adminDir(), 'candidates.json'), 16 * 1024 * 1024) ?? {
+    handler: async () =>
+      (await cpWorkshopDocs(['candidates'], false)).candidates ?? {
         schema: 1,
         candidates: [],
         backups: {},
@@ -2716,7 +2822,7 @@ const routes: Record<string, Route> = {
   'GET maps': {
     permission: 'view',
     handler: async ({ actor, store }) => {
-      const catalog = readMapCatalog(adminDir())
+      const catalog = await readCpMapCatalog(undefined, false)
       let cpRevisions: Record<string, number> | undefined
       try {
         const { cpConfigured, readSettingsCp } = await import('./cp.ts')
@@ -2741,15 +2847,20 @@ const routes: Record<string, Route> = {
       const { catalog, entry } = await editableMap(actor, store, body?.mapId)
       if (typeof body?.name !== 'string' || !mutableBranch(body.name))
         throw bad('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
+      const known = new Set(catalog.maps.map((map) => map.mapId))
       if (body?.action === 'delete') {
         if (!entry.snapshots?.some((snapshot) => snapshot.name === body.name))
           throw fail(404, 'Снимок не найден.')
         return {
-          id: writeRequest(
-            inboxDir(),
+          id: await sendWorkshopRequest(
             actor,
-            { kind: 'snapshot-delete', mapId: entry.mapId, name: body.name },
-            new Set(catalog.maps.map((map) => map.mapId)),
+            {
+              kind: 'snapshot-delete',
+              mapId: entry.mapId,
+              name: body.name,
+              idempotencyKey: body?.idempotencyKey,
+            },
+            known,
           ),
         }
       }
@@ -2763,16 +2874,16 @@ const routes: Record<string, Route> = {
       )
         throw fail(409, 'Снимок с таким именем уже указывает на другую версию.')
       return {
-        id: writeRequest(
-          inboxDir(),
+        id: await sendWorkshopRequest(
           actor,
           {
             kind: 'snapshot-create',
             mapId: entry.mapId,
             name: body.name,
             versionDigest: body.versionDigest,
+            idempotencyKey: body?.idempotencyKey,
           },
-          new Set(catalog.maps.map((map) => map.mapId)),
+          known,
         ),
       }
     },
@@ -2784,12 +2895,13 @@ const routes: Record<string, Route> = {
   },
   'POST maps/create': {
     permission: 'maps',
-    handler: ({ actor, body }) => {
-      const catalog = requiredMapCatalog()
-      editorRevision(body)
+    handler: async ({ actor, body }) => {
+      const pre = await cpWorkshopDocs(['maps', 'session', 'status'], true)
+      const catalog = await requiredMapCatalog(pre)
+      await editorRevision(body, pre)
       if (catalog.maps.some((map) => map.mapId === body?.mapId))
         throw fail(409, 'Карта с таким ID уже существует. Выберите другой ID.')
-      return { id: writeRequest(inboxDir(), actor, { ...body, kind: 'map-create' }) }
+      return { id: await sendWorkshopRequest(actor, { ...body, kind: 'map-create' }) }
     },
     audit: (body) => ({
       action: 'map-create',
@@ -2804,7 +2916,7 @@ const routes: Record<string, Route> = {
   'PUT maps/availability': {
     permission: 'workshop',
     handler: async ({ actor, body }) => {
-      const catalog = requiredMapCatalog(),
+      const catalog = await requiredMapCatalog(),
         entry = catalog.maps.find((map) => map.mapId === body?.mapId)
       if (!entry || entry.kind !== 'arena' || !entry.head)
         throw bad('Доступность меняется только для опубликованной арены.')
@@ -2829,12 +2941,12 @@ const routes: Record<string, Route> = {
   'POST maps/properties': {
     permission: 'maps',
     handler: async ({ actor, store, body }) => {
-      const { catalog, entry } = await editableMap(actor, store, body?.mapId)
+      const pre = await cpWorkshopDocs(['maps', 'session', 'status'], true)
+      const { catalog, entry } = await editableMap(actor, store, body?.mapId, pre)
       selectedMapSession(catalog, entry, body?.workingCopyId)
-      editorRevision(body)
+      await editorRevision(body, pre)
       return {
-        id: writeRequest(
-          inboxDir(),
+        id: await sendWorkshopRequest(
           actor,
           { ...body, kind: 'map-properties' },
           new Set(catalog.maps.map((map) => map.mapId)),
@@ -2849,8 +2961,8 @@ const routes: Record<string, Route> = {
   },
   'POST maps/sessions': {
     permission: 'view',
-    handler: ({ actor, body }) => ({
-      id: writeRequest(inboxDir(), actor, { ...body, kind: 'sessions' }),
+    handler: async ({ actor, body }) => ({
+      id: await sendWorkshopRequest(actor, { ...body, kind: 'sessions' }),
     }),
     audit: (body) => ({ action: 'map-sessions', target: null, detail: { offset: body?.offset } }),
   },
@@ -2862,8 +2974,7 @@ const routes: Record<string, Route> = {
       if (body?.expectedHead !== (entry.head?.versionDigest ?? null))
         throw fail(409, 'Версия карты уже изменилась. Обновите историю перед коммитом.')
       return {
-        id: writeRequest(
-          inboxDir(),
+        id: await sendWorkshopRequest(
           actor,
           { ...body, kind: 'commit' },
           new Set(catalog.maps.map((map) => map.mapId)),
@@ -2887,14 +2998,14 @@ const routes: Record<string, Route> = {
       if (typeof body?.name !== 'string' || !mutableBranch(body.name))
         throw bad('Укажите имя снимка: латиница, цифры, точка, дефис или подчёркивание.')
       return {
-        id: writeRequest(
-          inboxDir(),
+        id: await sendWorkshopRequest(
           actor,
           {
             kind: 'snapshot-copy',
             mapId: entry.mapId,
             name: body.name,
             workingCopyId: copy.id,
+            idempotencyKey: body?.idempotencyKey,
           },
           new Set(catalog.maps.map((map) => map.mapId)),
         ),
@@ -2912,10 +3023,9 @@ const routes: Record<string, Route> = {
       const { catalog, entry } = await editableMap(actor, store, body?.mapId)
       selectedMapSession(catalog, entry, body?.workingCopyId)
       return {
-        id: writeRequest(
-          inboxDir(),
+        id: await sendWorkshopRequest(
           actor,
-          { kind: 'checkout-fresh', mapId: entry.mapId },
+          { kind: 'checkout-fresh', mapId: entry.mapId, idempotencyKey: body?.idempotencyKey },
           new Set(catalog.maps.map((map) => map.mapId)),
         ),
       }
@@ -2933,8 +3043,7 @@ const routes: Record<string, Route> = {
       )
         throw bad('Обе версии должны принадлежать выбранной карте.')
       return {
-        id: writeRequest(
-          inboxDir(),
+        id: await sendWorkshopRequest(
           actor,
           { ...body, kind: 'compare' },
           new Set(catalog.maps.map((map) => map.mapId)),
@@ -2949,13 +3058,13 @@ const routes: Record<string, Route> = {
   },
   'GET candidates/download': {
     permission: 'workshop',
-    handler: ({ context }) => {
+    handler: async ({ context }) => {
       const id = new URL(context.request.url).searchParams.get('id')
       if (!id || !/^[0-9a-f]{32}$/.test(id)) throw bad('Неверный ID кандидата.')
-      const candidate = readFile(
-        join(adminDir(), 'candidates.json'),
-        16 * 1024 * 1024,
-      )?.candidates?.find((c: any) => c.id === id && c.status === 'accepted')
+      const candidates = (await cpWorkshopDocs(['candidates'], true)).candidates
+      const candidate = Array.isArray(candidates?.candidates)
+        ? candidates.candidates.find((c: any) => c?.id === id && c?.status === 'accepted')
+        : undefined
       if (!candidate || !/^[0-9a-f]{64}$/.test(candidate.sha256))
         throw fail(404, 'Принятый пакет не найден.')
       const path = join(packagesDir(), candidate.sha256 + '.zip')
@@ -2986,8 +3095,7 @@ const routes: Record<string, Route> = {
       if (body?.expectedHead !== (entry.head?.versionDigest ?? null))
         throw fail(409, 'Версия карты уже изменилась. Обновите историю перед отправкой.')
       return {
-        id: writeRequest(
-          inboxDir(),
+        id: await sendWorkshopRequest(
           actor,
           {
             kind: 'candidate',
@@ -2996,6 +3104,7 @@ const routes: Record<string, Route> = {
             expectedHead: entry.head?.versionDigest ?? null,
             commit: body?.commit,
             note: body?.note,
+            idempotencyKey: body?.idempotencyKey,
           },
           new Set(catalog.maps.map((map) => map.mapId)),
         ),
@@ -3006,9 +3115,10 @@ const routes: Record<string, Route> = {
   'POST candidates/publish': {
     maxBody: 8 * 1024 * 1024,
     permission: 'workshop',
-    handler: ({ actor, body }) => {
-      const candidate = existingCandidate(body?.candidateId),
-        catalog = requiredMapCatalog()
+    handler: async ({ actor, body }) => {
+      const pre = await cpWorkshopDocs(['candidates', 'maps', 'session', 'status'], true)
+      const candidate = await existingCandidate(body?.candidateId, pre),
+        catalog = await requiredMapCatalog(pre)
       const entry = catalog.maps.find((map) => map.mapId === candidate?.mapId)
       if (!candidate || !entry) throw fail(404, 'Кандидат или карта не найдены.')
       const expectedHead = expectedMapHead(body, entry)
@@ -3018,12 +3128,13 @@ const routes: Record<string, Route> = {
           'Версия в игре сменилась после отправки. Попросите автора отправить версию заново.',
         )
       return {
-        id: writeRequest(inboxDir(), actor, {
+        id: await sendWorkshopRequest(actor, {
           kind: 'publish',
           candidateId: body.candidateId,
           force: body.force,
           expectedHead,
           resolutions: body.resolutions,
+          idempotencyKey: body?.idempotencyKey,
         }),
       }
     },
@@ -3039,15 +3150,22 @@ const routes: Record<string, Route> = {
   },
   'POST candidates/export': {
     permission: 'workshop',
-    handler: ({ actor, body }) => {
-      const candidate = existingCandidate(body?.candidateId),
-        catalog = requiredMapCatalog()
+    handler: async ({ actor, body }) => {
+      const pre = await cpWorkshopDocs(['candidates', 'maps', 'session', 'status'], true)
+      const candidate = await existingCandidate(body?.candidateId, pre),
+        catalog = await requiredMapCatalog(pre)
       if (
         body?.mapId !== candidate.mapId ||
         !catalog.maps.some((entry) => entry.mapId === candidate.mapId)
       )
         throw bad('Кандидат не принадлежит выбранной карте.')
-      return { id: writeRequest(inboxDir(), actor, { kind: 'export', candidateId: candidate.id }) }
+      return {
+        id: await sendWorkshopRequest(actor, {
+          kind: 'export',
+          candidateId: candidate.id,
+          idempotencyKey: body?.idempotencyKey,
+        }),
+      }
     },
     audit: (body) => ({
       action: 'workshop-export',
@@ -3057,8 +3175,12 @@ const routes: Record<string, Route> = {
   },
   'POST candidates/reject': {
     permission: 'workshop',
-    handler: ({ actor, body }) => ({
-      id: writeRequest(inboxDir(), actor, { kind: 'reject', candidateId: body?.candidateId }),
+    handler: async ({ actor, body }) => ({
+      id: await sendWorkshopRequest(actor, {
+        kind: 'reject',
+        candidateId: body?.candidateId,
+        idempotencyKey: body?.idempotencyKey,
+      }),
     }),
     audit: (body) => ({
       action: 'workshop-reject',
@@ -3068,8 +3190,8 @@ const routes: Record<string, Route> = {
   },
   'POST maps/export-limbo': {
     permission: 'workshop',
-    handler: ({ actor, body }) => {
-      const entry = requiredMapCatalog().maps.find((map) => map.mapId === 'limbo')
+    handler: async ({ actor, body }) => {
+      const entry = (await requiredMapCatalog()).maps.find((map) => map.mapId === 'limbo')
       if (
         entry?.kind !== 'limbo' ||
         !digest(body?.versionDigest) ||
@@ -3077,9 +3199,10 @@ const routes: Record<string, Route> = {
       )
         throw bad('Выбранная версия отсутствует в истории лобби прокси.')
       return {
-        id: writeRequest(inboxDir(), actor, {
+        id: await sendWorkshopRequest(actor, {
           kind: 'limbo-export',
           versionDigest: body.versionDigest,
+          idempotencyKey: body?.idempotencyKey,
         }),
       }
     },
@@ -3091,8 +3214,8 @@ const routes: Record<string, Route> = {
   },
   'POST maps/rollback': {
     permission: 'workshop',
-    handler: ({ actor, body }) => {
-      const catalog = requiredMapCatalog(),
+    handler: async ({ actor, body }) => {
+      const catalog = await requiredMapCatalog(),
         entry = catalog.maps.find((map) => map.mapId === body?.mapId)
       if (!entry) throw bad('Неизвестная карта.')
       if (
@@ -3101,14 +3224,14 @@ const routes: Record<string, Route> = {
       )
         throw bad('Выбранная версия отсутствует в истории этой карты.')
       return {
-        id: writeRequest(
-          inboxDir(),
+        id: await sendWorkshopRequest(
           actor,
           {
             kind: 'rollback',
             mapId: entry.mapId,
             versionDigest: body.versionDigest,
             expectedHead: expectedMapHead(body, entry),
+            idempotencyKey: body?.idempotencyKey,
           },
           new Set(catalog.maps.map((map) => map.mapId)),
         ),
@@ -3123,58 +3246,30 @@ const routes: Record<string, Route> = {
   'GET staff': {
     permission: 'roles',
     handler: async ({ actor, store }) => {
-      if ((await import('./cp.ts')).cpStaffConfigured()) {
-        const cp = await import('./cp.ts')
+      const cp = await import('./cp.ts')
+      let team: Awaited<ReturnType<typeof cpTeamList>>['team']
+      if (cp.cpStaffConfigured()) {
         const actorRole = await cpActorRole(cp, actor)
         if (!can(actorRole, 'roles')) throw fail(403, 'Недостаточно прав.')
-        const { team } = await cpCall(() => cpTeamList(cp, store))
-        const ids = owners()
-        await Promise.all([...ids].map(async (uuid) => ownerName(uuid).catch(() => null)))
-        const last = ((await store.auditLog(200)) as any[]).find(
-          (e) => e.action === 'workshop-sync' && e.ok && e.target,
-        )
-        const lastSync = last
-          ? {
-              id: last.target,
-              at: last.at,
-              result: readFile(join(adminDir(), 'results', `${last.target}.json`)),
-            }
-          : null
-        const names = new Map(
-          await Promise.all(
-            [...ids].map(
-              async (uuid) =>
-                [
-                  uuid,
-                  ownerNames.get(uuid) ??
-                    (await knownName(store, uuid)) ??
-                    (uuid === actor.uuid ? actor.name : null),
-                ] as const,
-            ),
-          ),
-        )
-        const name = (uuid: string) => names.get(uuid)
-        return {
-          owners: [...ids].map((uuid) => ({ uuid, name: name(uuid) ?? UNKNOWN_PLAYER })),
-          staff: team,
-          workshop: readFile(join(adminDir(), 'members.json')),
-          expected: workshopMembers(
-            team,
-            new Map([...ids].map((uuid) => [uuid, name(uuid) ?? ''])),
-          ),
-          lastSync,
-        }
+        ;({ team } = await cpCall(() => cpTeamList(cp, store)))
+      } else {
+        team = (await store.staff()).map((row) => ({ ...row }))
       }
       const ids = owners()
       await Promise.all([...ids].map(async (uuid) => ownerName(uuid).catch(() => null)))
       const last = ((await store.auditLog(200)) as any[]).find(
         (e) => e.action === 'workshop-sync' && e.ok && e.target,
       )
+      const lastId = typeof last?.target === 'string' && UUID.test(last.target) ? last.target : null
+      const docs = await cpWorkshopDocs(
+        ['members', ...(lastId ? [`result:${lastId}`] : [])],
+        false,
+      ).catch((): Record<string, any> => ({}))
       const lastSync = last
         ? {
             id: last.target,
             at: last.at,
-            result: readFile(join(adminDir(), 'results', `${last.target}.json`)),
+            result: lastId ? validateRequestResult(lastId, docs[`result:${lastId}`] ?? null) : null,
           }
         : null
       const names = new Map(
@@ -3193,12 +3288,9 @@ const routes: Record<string, Route> = {
       const name = (uuid: string) => names.get(uuid)
       return {
         owners: [...ids].map((uuid) => ({ uuid, name: name(uuid) ?? UNKNOWN_PLAYER })),
-        staff: await store.staff(),
-        workshop: readFile(join(adminDir(), 'members.json')),
-        expected: workshopMembers(
-          await store.staff(),
-          new Map([...ids].map((uuid) => [uuid, name(uuid) ?? ''])),
-        ),
+        staff: team,
+        workshop: docs.members ?? null,
+        expected: workshopMembers(team, new Map([...ids].map((uuid) => [uuid, name(uuid) ?? '']))),
         lastSync,
       }
     },
@@ -3428,11 +3520,12 @@ const routes: Record<string, Route> = {
         )
           throw bad('Список карт задаётся только строителям.')
         const maps = body?.maps
+        const knownMaps = await workshopMapIds()
         if (
           maps !== null &&
           (!Array.isArray(maps) ||
             new Set(maps).size !== maps.length ||
-            !maps.every((id: unknown) => typeof id === 'string' && workshopMapIds().has(id)))
+            !maps.every((id: unknown) => typeof id === 'string' && knownMaps.has(id)))
         )
           throw bad('Некорректный список карт.')
         // Same chain as the tablet grants: concurrent map edits queue per process.
@@ -3448,6 +3541,7 @@ const routes: Record<string, Route> = {
         return { uuid, name: row.name, maps: body?.maps, sync }
       }
       const uuid = playerId(body?.uuid)
+      const knownMaps = await workshopMapIds()
       // A full-list write racing a grant must not slip between them: same chain as the grants.
       const row = await withStaffMapsLock(async () => {
         const row = uuid ? (await store.staff()).find((s) => s.uuid === uuid) : undefined
@@ -3459,7 +3553,7 @@ const routes: Record<string, Route> = {
           maps !== null &&
           (!Array.isArray(maps) ||
             new Set(maps).size !== maps.length ||
-            !maps.every((id: unknown) => typeof id === 'string' && workshopMapIds().has(id)))
+            !maps.every((id: unknown) => typeof id === 'string' && knownMaps.has(id)))
         )
           throw bad('Некорректный список карт.')
         await store.setStaffMaps(uuid!, maps)
@@ -3492,8 +3586,8 @@ const routes: Record<string, Route> = {
         if (!can(actorRole, 'roles')) throw fail(403, 'Недостаточно прав.')
         const mapId = body?.mapId,
           uuids = body?.uuids
-        if (typeof mapId !== 'string' || !workshopMapIds().has(mapId))
-          throw bad('Неизвестная карта.')
+        const knownMaps = await workshopMapIds()
+        if (typeof mapId !== 'string' || !knownMaps.has(mapId)) throw bad('Неизвестная карта.')
         // Builder set is CP authority; the per-builder map lists stay site-local.
         // Snapshot, filter and writes are one locked step, like the non-CP
         // branch: CP reads inside the lock keep a concurrent maps edit from
@@ -3510,12 +3604,7 @@ const routes: Record<string, Route> = {
             throw bad('Некорректный список строителей.')
           const changed = []
           for (const b of builders) {
-            const maps = withMapAccess(
-              b.maps ?? null,
-              mapId,
-              ids.includes(b.uuid),
-              workshopMapIds(),
-            )
+            const maps = withMapAccess(b.maps ?? null, mapId, ids.includes(b.uuid), knownMaps)
             if (JSON.stringify(maps) === JSON.stringify(b.maps ?? null)) continue
             await store.setStaffMaps(b.uuid, maps)
             changed.push(b.name)
@@ -3527,7 +3616,8 @@ const routes: Record<string, Route> = {
       }
       const mapId = body?.mapId,
         uuids = body?.uuids
-      if (typeof mapId !== 'string' || !workshopMapIds().has(mapId)) throw bad('Неизвестная карта.')
+      const knownMaps = await workshopMapIds()
+      if (typeof mapId !== 'string' || !knownMaps.has(mapId)) throw bad('Неизвестная карта.')
       // Same chain as the tablet grants: the snapshot, the per-builder writes and the
       // change list are one atomic step, the workshop sync after it stays outside the lock.
       const changed = await withStaffMapsLock(async () => {
@@ -3541,7 +3631,7 @@ const routes: Record<string, Route> = {
           throw bad('Некорректный список строителей.')
         const changed = []
         for (const b of builders) {
-          const maps = withMapAccess(b.maps ?? null, mapId, ids.includes(b.uuid), workshopMapIds())
+          const maps = withMapAccess(b.maps ?? null, mapId, ids.includes(b.uuid), knownMaps)
           if (JSON.stringify(maps) === JSON.stringify(b.maps ?? null)) continue
           await store.setStaffMaps(b.uuid, maps)
           changed.push(b.name)
@@ -3613,7 +3703,7 @@ function workshopKeyError(
   methods = ['POST'],
 ): Response | null {
   if (!methods.includes(request.method)) return fail(405, `${methods.join('/')} only.`)
-  const key = env.BLOCKFIELD_WORKSHOP_KEY || readText(join(adminDir(), 'workshop.key'))?.trim()
+  const key = env.BLOCKFIELD_WORKSHOP_KEY?.trim()
   if (!key || key.length < 32) return fail(503, 'Запись из мастерской не настроена.')
   const digest = (value: string) => createHash('sha256').update(value).digest()
   if (!timingSafeEqual(digest(request.headers.get('authorization') ?? ''), digest(`Bearer ${key}`)))
@@ -3635,7 +3725,7 @@ export async function handleWorkshopSubmit(
   if (refused) return refused
   if (request.method === 'GET')
     return Response.json(
-      { result: readRequestResult(new URL(request.url).searchParams.get('id') ?? '') },
+      { result: await readRequestResult(new URL(request.url).searchParams.get('id') ?? '') },
       { headers: noStore },
     )
   const body = await readJson(request, 4096)
@@ -3692,8 +3782,7 @@ export async function handleWorkshopSubmit(
   try {
     const { catalog, entry } = await editableMap(actor, store, mapId),
       { copy } = selectedMapSession(catalog, entry, body.workingCopyId)
-    id = writeRequest(
-      inboxDir(),
+    id = await sendWorkshopRequest(
       actor,
       {
         kind: 'candidate',
