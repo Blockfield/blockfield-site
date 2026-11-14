@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import http from 'node:http'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -10,7 +11,7 @@ import {
   validateGunOverrides,
 } from '../src/lib/gun-balance.ts'
 import { weaponFields, BODY_PARTS } from '../src/lib/gun-fields.ts'
-import { handleAdmin, readSettings, saveSettings } from '../src/lib/admin.ts'
+import { handleAdmin, validateSettings } from '../src/lib/admin.ts'
 import { database } from './storage.mjs'
 
 const object = (fields, nullable = false) => ({ type: 'object', nullable, fields })
@@ -325,37 +326,18 @@ test('throwable and melee index identities remain body-only and reject native fi
     )
 })
 
-test('body saves use the existing revision and preserve settings while general saves retain the body overrides', (t) => {
-  const directory = temp(t)
-  writeCatalog(directory, bodyFixture())
-  writeFileSync(
-    join(directory, 'settings.json'),
-    JSON.stringify({ schema: 1, revision: 4, rooms: { maxRooms: 3 } }),
-  )
+test('body overrides validate and reset like CP gunBalance saves (see cp-settings-handlers)', () => {
+  const catalog = validateGunCatalog(bodyFixture())
   const gunBalance = {
     'test:pistol': { body_part_multipliers: { head: 2 } },
     'item:superbwarfare/ak_47': { body_part_multipliers: { torso: 0.75 } },
   }
-  const saved = saveSettings(directory, { expectedRevision: 4, gunBalance }, 'Admin', true)
-  assert.deepEqual(saved.gunBalance, gunBalance)
-  assert.deepEqual(saved.rooms, { maxRooms: 3 })
-  const before = readFileSync(join(directory, 'settings.json'), 'utf8')
-  rejected(
-    () => saveSettings(directory, { expectedRevision: 4, gunBalance: {} }, 'Admin', true),
-    409,
-  )
-  assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), before)
-  const general = saveSettings(
-    directory,
-    { expectedRevision: 5, lobby: { pvpEnabled: false } },
-    'Admin',
-  )
-  assert.deepEqual(general.gunBalance, gunBalance)
-  const reset = saveSettings(directory, { expectedRevision: 6, gunBalance: {} }, 'Admin', true)
-  assert.equal(Object.hasOwn(reset, 'gunBalance'), false)
+  assert.deepEqual(validateGunOverrides(gunBalance, catalog), gunBalance)
+  assert.deepEqual(validateSettings({ gunBalance }, catalog).gunBalance, gunBalance)
+  assert.deepEqual(validateGunOverrides({}, catalog), {})
 })
 
-test('mounted tuples are body-only, case-sensitive and independent of the shared vehicle-gun item', (t) => {
+test('mounted tuples are body-only, case-sensitive and independent of the shared vehicle-gun item', () => {
   const catalog = validateGunCatalog(mountedFixture())
   const first = catalog.guns[5],
     second = catalog.guns[6]
@@ -381,21 +363,7 @@ test('mounted tuples are body-only, case-sensitive and independent of the shared
     mutate(invalid.guns[5])
     rejected(() => validateGunCatalog(invalid))
   }
-  const directory = temp(t)
-  writeCatalog(directory, catalog)
-  writeFileSync(join(directory, 'settings.json'), JSON.stringify({ schema: 1, revision: 4 }))
-  const saved = saveSettings(
-    directory,
-    { expectedRevision: 4, gunBalance: overrides },
-    'Admin',
-    true,
-  )
-  assert.deepEqual(saved.gunBalance, overrides)
-  rejected(
-    () => saveSettings(directory, { expectedRevision: 4, gunBalance: {} }, 'Admin', true),
-    409,
-  )
-  assert.deepEqual(readSettings(directory).settings.gunBalance, overrides)
+  // CP persistence for these overrides rides saveSettingsCp (see cp-settings-handlers).
 })
 
 test('mounted native names use canonical fatal UTF8 decoding and the full 256-character ID ceiling', () => {
@@ -425,22 +393,16 @@ test('mounted native names use canonical fatal UTF8 decoding and the full 256-ch
   rejected(() => validateGunCatalog(mixed))
 })
 
-test('typed multipliers save through gunBalance and keep every item and index override independent', (t) => {
-  const directory = temp(t)
-  writeCatalog(directory, meleeFixture())
-  writeFileSync(
-    join(directory, 'settings.json'),
-    JSON.stringify({ schema: 1, revision: 4, rooms: { maxRooms: 3 } }),
-  )
+test('typed multipliers validate through gunBalance and keep every item and index override independent', () => {
+  const catalog = validateGunCatalog(meleeFixture())
   const gunBalance = {
     'test:pistol': { body_part_multipliers: { head: 2 } },
     'item:superbwarfare/ak_47': { body_part_multipliers: { head: 3 } },
     'throwable:lrtactical/smoke_grenade': { body_part_multipliers: { head: 4 } },
     'melee:lrtactical/dagger': { body_part_multipliers: { head: 5 } },
   }
-  const saved = saveSettings(directory, { expectedRevision: 4, gunBalance }, 'Admin', true)
-  assert.deepEqual(saved.gunBalance, gunBalance)
-  assert.deepEqual(saved.rooms, { maxRooms: 3 })
+  // CP persistence rides saveSettingsCp (see cp-settings-handlers).
+  assert.deepEqual(validateGunOverrides(gunBalance, catalog), gunBalance)
 })
 
 test('recursive fields come from metadata; legacy defaults reset without being rewritten', () => {
@@ -603,62 +565,70 @@ test('catalog reader fails closed for absent/malformed schema and retains native
   assert.equal(readGunBalance(directory).available, false)
 })
 
-test('balance saves preserve unrelated sections, refuse stale/invalid writes and reset by omission', (t) => {
-  const directory = temp(t)
-  writeCatalog(directory)
-  const current = {
-    schema: 1,
-    revision: 9,
-    lobby: { pvpEnabled: false, pvpCooldownSeconds: 40 },
-    parcool: { allowedActions: ['FastRun'] },
-    custom: { untouched: true },
-    gunBalance: { 'test:pistol': { draw_time: 0.8 } },
-  }
-  const settingsFile = join(directory, 'settings.json')
-  writeFileSync(settingsFile, JSON.stringify(current))
-  const saved = saveSettings(
-    directory,
-    { expectedRevision: 9, gunBalance: { 'test:pistol': { bullet: { damage: 9 } } } },
-    'Adm',
-    true,
-  )
-  assert.deepEqual(saved.lobby, current.lobby)
-  assert.deepEqual(saved.parcool, current.parcool)
-  assert.deepEqual(saved.custom, current.custom)
-  assert.equal(saved.revision, 10)
-  assert.equal(saved.updatedBy, 'Adm')
-  const before = readFileSync(settingsFile, 'utf8')
-  rejected(() => saveSettings(directory, { expectedRevision: 9, gunBalance: {} }, 'Adm', true), 409)
-  rejected(() =>
-    saveSettings(
-      directory,
-      { expectedRevision: 10, gunBalance: { 'test:pistol': { draw_time: -1 } } },
-      'Adm',
-      true,
-    ),
-  )
-  rejected(() => saveSettings(directory, { expectedRevision: 10, gunBalance: null }, 'Adm', true))
-  rejected(() => saveSettings(directory, null, 'Adm', true))
-  assert.equal(readFileSync(settingsFile, 'utf8'), before)
-  const general = saveSettings(
-    directory,
-    { expectedRevision: 10, lobby: { pvpEnabled: true } },
-    'Adm',
-  )
-  assert.deepEqual(general.gunBalance, saved.gunBalance)
-  const reset = saveSettings(directory, { expectedRevision: 11 }, 'Adm', true)
-  assert.equal(Object.hasOwn(reset, 'gunBalance'), false)
-  assert.deepEqual(reset.lobby, general.lobby)
-  assert.equal(readSettings(directory).settings.revision, 12)
-  assert.deepEqual(readdirSync(directory).sort(), ['gun-balance.json', 'settings.json'])
-  rmSync(join(directory, 'gun-balance.json'))
-  rejected(
-    () => saveSettings(directory, { expectedRevision: 12, gunBalance: {} }, 'Adm', true),
-    503,
-  )
+test('balance saves validate, refuse invalid writes and reset by omission', () => {
+  const catalog = validateGunCatalog(fixture())
+  // CP persistence (stale 409, reset null-delete, missing catalog 503) rides
+  // saveSettingsCp (see cp-settings-handlers): here only the validation contract.
+  const valid = { 'test:pistol': { bullet: { damage: 9 } } }
+  assert.deepEqual(validateGunOverrides(valid, catalog), valid)
+  rejected(() => validateSettings({ gunBalance: { 'test:pistol': { draw_time: -1 } } }, catalog))
+  rejected(() => validateSettings({ gunBalance: null }, catalog))
+  rejected(() => validateSettings(null, catalog))
+  assert.deepEqual(validateSettings({ lobby: { pvpEnabled: true } }, catalog).gunBalance, undefined)
 })
 
-test('balance API requires admin/owner, GET never writes, and applied status remains server authoritative', async (t) => {
+test('balance API requires admin/owner and reads the catalog from CP presence', async (t) => {
+  const catalog = bodyFixture()
+  const state = new Map()
+  const server = http.createServer((req, res) => {
+    const answer = (code, data) => {
+      res.statusCode = code
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify(data))
+    }
+    if (req.headers.authorization !== 'Bearer settings-t') return answer(401, { error: 'x' })
+    if (req.url.startsWith('/v2/rooms')) {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      return req.on('end', () =>
+        answer(200, {
+          initialized: true,
+          reportedAt: new Date().toISOString(),
+          presence: {
+            rooms: [],
+            gunCatalog: catalog,
+            applied: { revision: 1, attemptedRevision: 1, errors: ['server validation'] },
+          },
+        }),
+      )
+    }
+    const match = req.url.match(/^\/v2\/settings\/([^/]+)\/([^/?]+)/)
+    if (!match) return answer(404, { error: 'not_found' })
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      const key = `${match[1]}/${match[2]}`
+      const payload = body ? JSON.parse(body) : {}
+      if (req.method === 'GET') {
+        const current = state.get(key)
+        if (!current) return answer(200, { initialized: false, revision: 0, value: {}, hash: 'n' })
+        return answer(200, {
+          initialized: true,
+          revision: current.revision,
+          value: current.value,
+          hash: 'h',
+        })
+      }
+      const current = state.get(key) ?? { revision: 0, value: {} }
+      if (payload.expectedRevision !== current.revision)
+        return answer(409, { error: 'revision_conflict' })
+      const receipt = { operationId: 'op-1', revision: current.revision + 1 }
+      state.set(key, { revision: receipt.revision, value: { ...current.value, ...payload.patch } })
+      return answer(202, receipt)
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
   const directory = temp(t),
     env = { ...process.env },
     store = await database(t)
@@ -675,20 +645,13 @@ test('balance API requires admin/owner, GET never writes, and applied status rem
     BLOCKFIELD_OWNER_UUIDS: owner,
     BLOCKFIELD_SETTINGS_DIR: directory,
     BLOCKFIELD_ADMIN_DIR: directory,
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
+    BLOCKFIELD_CP_SETTINGS_TOKEN: 'settings-t',
+    BLOCKFIELD_CP_CONSUMER_ID: 'game',
   })
   await store.setStaff(admin, 'Adm', 'admin', 'seed')
   await store.setStaff(moderator, 'Mod', 'moderator', 'seed')
   await store.setStaff(builder, 'Builder', 'builder', 'seed')
-  // A permissive Workshop ACL cannot grant site settings authority.
-  writeFileSync(
-    join(directory, 'members.json'),
-    JSON.stringify({ schema: 1, members: [{ draslId: builder, name: 'Builder', role: 'admin' }] }),
-  )
-  writeCatalog(directory, bodyFixture())
-  writeFileSync(
-    join(directory, 'applied.json'),
-    JSON.stringify({ revision: 1, gunBalance: { accepted: false, error: 'server validation' } }),
-  )
   const call = async (id, method, path, body) => {
     process.env.BLOCKFIELD_ADMIN_DEV_USER = `${id}:Tester`
     const url = new URL(`http://site/api/admin/${path}`)
@@ -701,7 +664,6 @@ test('balance API requires admin/owner, GET never writes, and applied status rem
       (error) => error,
     )
   }
-  const files = readdirSync(directory)
   for (const id of [owner, admin]) {
     const response = await call(id, 'GET', 'gun-balance')
     assert.equal(response.status, 200)
@@ -711,7 +673,6 @@ test('balance API requires admin/owner, GET never writes, and applied status rem
   }
   for (const id of [moderator, builder])
     assert.equal((await call(id, 'GET', 'gun-balance')).status, 403)
-  assert.deepEqual(readdirSync(directory), files)
   assert.equal((await store.db.prepare('SELECT count(*) AS n FROM admin_audit').get()).n, 0)
   for (const id of [moderator, builder])
     assert.equal(
@@ -734,30 +695,12 @@ test('balance API requires admin/owner, GET never writes, and applied status rem
   assert.equal((await response.json()).settings.revision, 1)
   const view = await (await call(admin, 'GET', 'settings')).json()
   assert.equal(view.gunBalance.available, true)
-  assert.equal(view.applied.gunBalance.accepted, false)
+  assert.deepEqual(view.applied.errors, ['server validation'])
   assert.deepEqual(view.settings.gunBalance['item:superbwarfare/ak_47'], {
     body_part_multipliers: { torso: 0.75 },
   })
   assert.equal(
     (await call(admin, 'PUT', 'gun-balance', { expectedRevision: 0, gunBalance: {} })).status,
     409,
-  )
-  const invalid = bodyFixture()
-  invalid.fields.fields.body_part_multipliers.serverOnly = 'true'
-  writeCatalog(directory, invalid)
-  assert.equal((await (await call(admin, 'GET', 'gun-balance')).json()).available, false)
-  const beforeInvalidWrite = readFileSync(join(directory, 'settings.json'), 'utf8')
-  assert.equal(
-    (await call(admin, 'PUT', 'gun-balance', { expectedRevision: 1, gunBalance: {} })).status,
-    503,
-  )
-  assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), beforeInvalidWrite)
-  rmSync(join(directory, 'gun-balance.json'))
-  const unavailable = await (await call(admin, 'GET', 'gun-balance')).json()
-  assert.equal(unavailable.available, false)
-  assert.equal(Object.hasOwn(unavailable, 'catalog'), false)
-  assert.equal(
-    (await call(owner, 'PUT', 'gun-balance', { expectedRevision: 1, gunBalance: {} })).status,
-    503,
   )
 })

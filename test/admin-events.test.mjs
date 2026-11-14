@@ -168,6 +168,7 @@ test('SSE headers, initial snapshots, event delivery, abort and multiple-stream 
     }
   }
   await readUntil('event: status')
+  await readUntil('event: settings')
   assert.match(text, /retry: 3000/)
   assert.match(text, /event: settings/)
   assert.match(text, /"rooms":/)
@@ -188,7 +189,7 @@ test('SSE headers, initial snapshots, event delivery, abort and multiple-stream 
   assert.equal(second.status, 200)
 })
 
-test('file watchers emit settings and catalog invalidation', async (t) => {
+test('settings file writes do not publish CP settings', async (t) => {
   const directory = setup(t)
   const received = []
   const stop = subscribe(
@@ -197,15 +198,11 @@ test('file watchers emit settings and catalog invalidation', async (t) => {
   )
   t.after(stop)
   writeFileSync(join(directory, 'settings.json'), JSON.stringify({ schema: 1, revision: 7 }))
-  await until(() =>
-    received.some((event) => event.type === 'settings' && event.settings.revision === 7),
+  await delay(300)
+  assert.equal(
+    received.some((event) => event.type === 'settings' && event.settings?.revision === 7),
+    false,
   )
-  writeFileSync(join(directory, 'gun-balance.json'), '{}')
-  await until(() =>
-    received.some((event) => event.type === 'settings' && event.gunBalance === true),
-  )
-  writeFileSync(join(directory, 'kits.json'), '{}')
-  await until(() => received.some((event) => event.type === 'settings' && event.kits === true))
 })
 
 test('workshop SSE emits status and request results from CP', async (t) => {
@@ -421,27 +418,16 @@ test('audit events contain the exact stored row including truncation and generat
   assert.deepEqual(events[0].entry, (await store.auditLog())[0])
 })
 
-test('missing export directories log once and still deliver initial settings', (t) => {
+test('missing export directories do not prevent subscription', async (t) => {
   const directory = setup(t)
   rmSync(directory, { recursive: true })
-  const warning = t.mock.method(console, 'warn', () => {})
   const events = []
   const stop = subscribe(
     () => true,
     (event) => events.push(event),
   )
-  assert.deepEqual(events.find((event) => event.type === 'settings').settings, {
-    schema: 1,
-    revision: 0,
-  })
-  stop()
-  const warnings = warning.mock.callCount()
-  assert.ok(warnings > 0)
-  subscribe(
-    () => true,
-    () => {},
-  )()
-  assert.equal(warning.mock.callCount(), warnings)
+  t.after(stop)
+  await until(() => events.some((event) => event.type === 'settings'))
 })
 
 test('a throwing subscriber is dropped and the other subscribers still receive the event', (t) => {

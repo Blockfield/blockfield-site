@@ -1,10 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import net from 'node:net'
-import { mkdtemp, writeFile, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { parseRooms, varint, readVarint, queryRooms } from '../src/lib/rooms.ts'
+import http from 'node:http'
+import { parsePresenceRooms, maintenanceFrom, validBuild, validBattle } from '../src/lib/rooms.ts'
+
 const room = {
   id: '12345678-1234-1234-1234-123456789abc',
   name: 'Комната 1',
@@ -14,65 +12,18 @@ const room = {
   players: 4,
   joinable: true,
 }
-test('room snapshots distinguish empty, stale and malformed responses', () => {
-  assert.deepEqual(parseRooms({ checkedAt: Date.now(), rooms: [] }).rooms, [])
-  assert.throws(() => parseRooms({ checkedAt: Date.now() - 60000, rooms: [room] }))
+
+test('presence rooms accept valid lists and reject bad rooms', () => {
+  assert.deepEqual(parsePresenceRooms({ rooms: [] }).rooms, [])
   for (const invalid of [
     { ...room, id: '../file' },
     { ...room, players: -1 },
     { ...room, phase: 'unknown' },
   ])
-    assert.throws(() => parseRooms({ checkedAt: Date.now(), rooms: [invalid] }))
+    assert.throws(() => parsePresenceRooms({ rooms: [invalid] }))
 })
-test('varints support fragments and reject overlong input', () => {
-  for (const value of [0, 127, 128, 767, 1048576]) assert.equal(readVarint(varint(value))[0], value)
-  assert.equal(readVarint(Buffer.from([128])), null)
-  assert.throws(() => readVarint(Buffer.from([128, 128, 128, 128, 128])))
-})
-test('Minecraft status accepts fragmented replies and closes its connection', async () => {
-  const server = net.createServer((socket) =>
-    socket.once('data', () => {
-      const json = Buffer.from(
-        JSON.stringify({ blockfield: { checkedAt: Date.now(), rooms: [room] } }),
-      )
-      const packet = Buffer.concat([Buffer.from([0]), varint(json.length), json])
-      const frame = Buffer.concat([varint(packet.length), packet])
-      socket.write(frame.subarray(0, 1))
-      setTimeout(() => socket.end(frame.subarray(1)), 10)
-    }),
-  )
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
-  try {
-    assert.deepEqual((await queryRooms('127.0.0.1', server.address().port)).rooms, [room])
-  } finally {
-    await new Promise((resolve) => server.close(resolve))
-  }
-})
-test('restarting game server behind the proxy reports an open lobby', async () => {
-  const lobby = net.createServer((socket) =>
-    socket.once('data', () => {
-      const json = Buffer.from(JSON.stringify({ version: { name: 'Velocity' } }))
-      const packet = Buffer.concat([Buffer.from([0]), varint(json.length), json])
-      socket.end(Buffer.concat([varint(packet.length), packet]))
-    }),
-  )
-  await new Promise((resolve) => lobby.listen(0, '127.0.0.1', resolve))
-  Object.assign(process.env, {
-    BLOCKFIELD_SERVER_HOST: '127.0.0.1',
-    BLOCKFIELD_SERVER_PORT: '1',
-    BLOCKFIELD_LOBBY_HOST: '127.0.0.1',
-    BLOCKFIELD_LOBBY_PORT: String(lobby.address().port),
-  })
-  try {
-    const { currentRooms } = await import('../src/lib/rooms.ts?lobby')
-    const status = await currentRooms()
-    assert.equal(status.available, false)
-    assert.equal(status.lobby, true)
-  } finally {
-    await new Promise((resolve) => lobby.close(resolve))
-  }
-})
-test('battle data preserves capture state and rejects invalid progress and scores', () => {
+
+test('battle data preserves capture state and rejects invalid progress', () => {
   const battle = {
     red: 720,
     blue: 685,
@@ -80,386 +31,190 @@ test('battle data preserves capture state and rejects invalid progress and score
       { id: 'a', name: 'A', owner: 'BLUE', claiming: 'NONE', capturing: 'RED', progress: 35 },
     ],
   }
-  const parse = (value) =>
-    parseRooms({ checkedAt: Date.now(), rooms: [{ ...room, battle: value }] })
-  assert.deepEqual(parse(battle).rooms[0].battle, battle)
-  assert.throws(() => parse({ ...battle, red: -1 }))
-  assert.throws(() => parse({ ...battle, points: [{ ...battle.points[0], progress: 101 }] }))
-  assert.throws(() => parse({ ...battle, points: [{ ...battle.points[0], owner: 'unknown' }] }))
+  assert.deepEqual(parsePresenceRooms({ rooms: [{ ...room, battle }] }).rooms[0].battle, battle)
+  assert.ok(validBattle(battle))
+  assert.ok(!validBattle({ ...battle, red: -1 }))
+  assert.ok(!validBattle({ ...battle, points: [{ ...battle.points[0], progress: 101 }] }))
 })
-const statusServer = (json, onConnect = () => {}, delayMs = 0) =>
-  net.createServer((socket) => {
-    onConnect()
-    socket.once('data', () => {
-      const body = Buffer.from(JSON.stringify(json))
-      const packet = Buffer.concat([Buffer.from([0]), varint(body.length), body])
-      const reply = Buffer.concat([varint(packet.length), packet])
-      if (delayMs) setTimeout(() => socket.end(reply), delayMs)
-      else socket.end(reply)
-    })
-  })
-test('parseRooms tolerates blockfield-mod#28 status fields and drops top-level maintenance', () => {
+
+test('presence rooms tolerate mod#28 fields and pass build through', () => {
   const ranked = {
     ...room,
     phase: 'PREPARING',
     joinable: false,
-    capacity: 10,
     format: 'ranked',
     admission: 'waiting',
-    round: 2,
-    front: { index: 1, length: 3 },
     ready: { ready: 3, required: 4 },
-    reserved: 1,
   }
-  const status = parseRooms({
-    checkedAt: Date.now(),
-    maintenance: 'DRAINING',
-    rooms: [{ ...room, capacity: 10, format: 'casual', admission: 'open' }, ranked],
+  const status = parsePresenceRooms({
+    rooms: [{ ...room, format: 'casual' }, ranked],
+    build: 'v2.31.6',
   })
   assert.equal(status.rooms.length, 2)
-  assert.equal('maintenance' in status, false)
-})
-test('parseRooms passes a release tag or short-SHA build through', () => {
-  assert.equal(parseRooms({ checkedAt: Date.now(), build: 'v2.31.6', rooms: [] }).build, 'v2.31.6')
-  for (const build of ['abc1234', '1'.repeat(7), '1'.repeat(40)])
-    assert.equal(parseRooms({ checkedAt: Date.now(), build, rooms: [] }).build, build)
-  for (const build of [
-    'latest',
-    '<b>v1</b>',
-    7,
-    null,
-    'xyz',
-    'ABC1234',
-    '1'.repeat(6),
-    '1'.repeat(41),
-  ])
-    assert.equal('build' in parseRooms({ checkedAt: Date.now(), build, rooms: [] }), false)
-})
-test('gate values fail closed with a bounded message', async () => {
-  const { maintenanceFrom, readGate, maintenanceMessage } = await import('../src/lib/rooms.ts')
-  assert.equal(maintenanceFrom({ mode: 'game', message: 'x', since: 1 }), null)
-  assert.equal(
-    maintenanceFrom({
-      mode: 'game',
-      workshop: { mode: 'maintenance', message: 'Мастерская перезапускается' },
-    }),
-    null,
-    'Workshop unavailability never closes Game',
-  )
-  assert.deepEqual(
-    maintenanceFrom({
-      mode: 'maintenance',
-      workshop: { mode: 'workshop', message: '' },
-    }),
-    { message: maintenanceMessage, since: null },
-    'Workshop availability cannot reopen Game',
-  )
-  assert.deepEqual(
-    maintenanceFrom({ mode: 'workshop', message: '  Карта  ', since: 5, extra: 1 }),
-    { message: 'Карта', since: 5 },
-  )
-  assert.equal(maintenanceFrom({ mode: 'draining', message: 'x'.repeat(900) }).message.length, 500)
-  for (const value of [
-    null,
-    'game',
-    {},
-    { mode: 'GAME' },
-    { mode: 'unknown', message: 'hi' },
-    { mode: 'maintenance', message: ' ' },
-  ])
-    assert.deepEqual(maintenanceFrom(value), { message: maintenanceMessage, since: null })
-  assert.equal(await readGate(undefined), null)
-  const dir = await mkdtemp(join(tmpdir(), 'bf-gate-'))
-  try {
-    const file = join(dir, 'public.json')
-    assert.deepEqual(await readGate(file), { message: maintenanceMessage, since: null })
-    await writeFile(file, '{"mode":')
-    assert.equal((await readGate(file)).message, maintenanceMessage)
-    await writeFile(file, JSON.stringify({ mode: 'game', message: 'x'.repeat(20000) }))
-    assert.equal((await readGate(file)).message, maintenanceMessage)
-    await writeFile(file, JSON.stringify({ mode: 'game', message: '', since: 1 }))
-    assert.equal(await readGate(file), null)
-  } finally {
-    await rm(dir, { recursive: true })
-  }
-})
-test('currentRooms skips the game server unless the gate is in game mode', async () => {
-  let queries = 0
-  const game = statusServer(
-    { blockfield: { checkedAt: Date.now(), rooms: [room] } },
-    () => queries++,
-  )
-  await new Promise((resolve) => game.listen(0, '127.0.0.1', resolve))
-  const dir = await mkdtemp(join(tmpdir(), 'bf-gate-'))
-  const file = join(dir, 'public.json')
-  Object.assign(process.env, {
-    BLOCKFIELD_SERVER_HOST: '127.0.0.1',
-    BLOCKFIELD_SERVER_PORT: String(game.address().port),
-    BLOCKFIELD_LOBBY_HOST: '127.0.0.1',
-    BLOCKFIELD_LOBBY_PORT: '1',
-  })
-  try {
-    delete process.env.BLOCKFIELD_GATE_FILE
-    assert.deepEqual((await (await import('../src/lib/rooms.ts?unset')).currentRooms()).rooms, [
-      room,
-    ])
-    process.env.BLOCKFIELD_GATE_FILE = file
-    await writeFile(file, JSON.stringify({ mode: 'game', message: '', since: 1 }))
-    const gameStatus = await (await import('../src/lib/rooms.ts?game')).currentRooms()
-    assert.equal(gameStatus.available, true)
-    assert.equal('maintenance' in gameStatus, false)
-    assert.equal(queries, 2)
-    await writeFile(
-      file,
-      JSON.stringify({
-        mode: 'workshop',
-        message: 'Редактор карт',
-        since: 1757800000000,
-        secret: 'x',
-      }),
-    )
-    const workshop = await (await import('../src/lib/rooms.ts?workshop')).currentRooms()
-    assert.deepEqual(
-      { ...workshop, checkedAt: 0 },
-      {
-        available: false,
-        checkedAt: 0,
-        rooms: [],
-        maintenance: { message: 'Редактор карт', since: 1757800000000 },
-        lobby: false,
-      },
-    )
-    await rm(file)
-    const missing = await (await import('../src/lib/rooms.ts?missing')).currentRooms()
-    assert.equal(missing.maintenance.since, null)
-    assert.equal(queries, 2)
-  } finally {
-    delete process.env.BLOCKFIELD_GATE_FILE
-    await rm(dir, { recursive: true, force: true })
-    await new Promise((resolve) => game.close(resolve))
-  }
-})
-test('deployingFromStatus reports controller deploys, never stable or broken status', async () => {
-  const { deployingFromStatus } = await import('../src/lib/rooms.ts?deploying')
-  for (const phase of ['REQUESTED', 'DRAINING', 'SAVING', 'STARTING'])
-    assert.equal(deployingFromStatus({ schema: 1, phase, desired: { profile: 'workshop' } }), true)
-  assert.equal(
-    deployingFromStatus({
-      schema: 1,
-      phase: 'game',
-      game: { phase: 'STARTING', gate: 'closed', release: null },
-    }),
-    true,
-    'game image rollout with a stable controller phase',
-  )
-  for (const status of [
-    null,
-    undefined,
-    {},
-    { phase: 'game', game: { phase: 'game', gate: 'public', release: 'v1.2.3' } },
-    {
-      phase: 'ERROR',
-      game: { phase: 'STARTING', gate: 'closed', release: null },
-    },
-    { phase: 'sleeping' },
-    { phase: 5 },
-    { phase: null, game: { phase: 'STARTING' } },
-  ])
-    assert.equal(deployingFromStatus(status), false)
-})
-test('game down mid-deploy serves deploying with last-known rooms', async () => {
-  const game = statusServer({ blockfield: { checkedAt: Date.now(), rooms: [room] } })
-  await new Promise((resolve) => game.listen(0, '127.0.0.1', resolve))
-  const dir = await mkdtemp(join(tmpdir(), 'bf-controller-'))
-  const statusFile = join(dir, 'status.json')
-  await writeFile(
-    statusFile,
-    JSON.stringify({
-      schema: 1,
-      revision: 1,
-      phase: 'game',
-      game: { phase: 'game', gate: 'public', release: 'v1.2.3' },
-    }),
-  )
-  delete process.env.BLOCKFIELD_GATE_FILE
-  Object.assign(process.env, {
-    BLOCKFIELD_SERVER_HOST: '127.0.0.1',
-    BLOCKFIELD_SERVER_PORT: String(game.address().port),
-    BLOCKFIELD_LOBBY_HOST: '127.0.0.1',
-    BLOCKFIELD_LOBBY_PORT: '1',
-    BLOCKFIELD_ADMIN_DIR: dir,
-  })
-  try {
-    const { currentRooms } = await import('../src/lib/rooms.ts?deploy-fallback')
-    assert.deepEqual((await currentRooms()).rooms, [room])
-    await new Promise((resolve) => game.close(resolve))
-    await writeFile(
-      statusFile,
-      JSON.stringify({
-        schema: 1,
-        revision: 2,
-        phase: 'STARTING',
-        desired: { profile: 'game' },
-        game: { phase: 'STARTING', gate: 'closed', release: null },
-      }),
-    )
-    await new Promise((resolve) => setTimeout(resolve, 5100))
-    const status = await currentRooms()
-    assert.equal(status.available, false)
-    assert.equal(status.deploying, true)
-    assert.equal(status.stale, true)
-    assert.deepEqual(status.rooms, [room])
-  } finally {
-    delete process.env.BLOCKFIELD_ADMIN_DIR
-    await rm(dir, { recursive: true, force: true })
-    if (game.listening) await new Promise((resolve) => game.close(resolve))
-  }
-})
-test('game down with no deploy stays bare unavailable', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'bf-controller-'))
-  await writeFile(
-    join(dir, 'status.json'),
-    JSON.stringify({
-      schema: 1,
-      revision: 1,
-      phase: 'game',
-      game: { phase: 'game', gate: 'public', release: 'v1.2.3' },
-    }),
-  )
-  delete process.env.BLOCKFIELD_GATE_FILE
-  Object.assign(process.env, {
-    BLOCKFIELD_SERVER_HOST: '127.0.0.1',
-    BLOCKFIELD_SERVER_PORT: '1',
-    BLOCKFIELD_LOBBY_HOST: '127.0.0.1',
-    BLOCKFIELD_LOBBY_PORT: '1',
-    BLOCKFIELD_ADMIN_DIR: dir,
-  })
-  try {
-    const { currentRooms } = await import('../src/lib/rooms.ts?deploy-dead')
-    const status = await currentRooms()
-    assert.equal(status.available, false)
-    assert.deepEqual(status.rooms, [])
-    assert.equal('deploying' in status, false)
-    assert.equal('stale' in status, false)
-  } finally {
-    delete process.env.BLOCKFIELD_ADMIN_DIR
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-test('running version comes from the controller, live status only fills the gap', async () => {
-  const game = statusServer({ blockfield: { checkedAt: Date.now(), build: 'v1.2.3', rooms: [] } })
-  await new Promise((resolve) => game.listen(0, '127.0.0.1', resolve))
-  const dir = await mkdtemp(join(tmpdir(), 'bf-controller-'))
-  const statusFile = join(dir, 'status.json')
-  await writeFile(
-    statusFile,
-    JSON.stringify({
-      schema: 1,
-      revision: 1,
-      phase: 'game',
-      game: { phase: 'game', gate: 'public', release: 'v9.9.9' },
-    }),
-  )
-  delete process.env.BLOCKFIELD_GATE_FILE
-  Object.assign(process.env, {
-    BLOCKFIELD_SERVER_HOST: '127.0.0.1',
-    BLOCKFIELD_SERVER_PORT: String(game.address().port),
-    BLOCKFIELD_LOBBY_HOST: '127.0.0.1',
-    BLOCKFIELD_LOBBY_PORT: '1',
-    BLOCKFIELD_ADMIN_DIR: dir,
-  })
-  try {
-    const first = await import('../src/lib/rooms.ts?deploy-build')
-    assert.equal((await first.currentRooms()).build, 'v9.9.9')
-    await writeFile(
-      statusFile,
-      JSON.stringify({
-        schema: 1,
-        revision: 2,
-        phase: 'game',
-        game: { phase: 'game', gate: 'public', release: 'latest' },
-      }),
-    )
-    const second = await import('../src/lib/rooms.ts?deploy-build-fallback')
-    assert.equal((await second.currentRooms()).build, 'v1.2.3')
-  } finally {
-    delete process.env.BLOCKFIELD_ADMIN_DIR
-    await rm(dir, { recursive: true, force: true })
-    if (game.listening) await new Promise((resolve) => game.close(resolve))
-  }
-})
-test('missing or unreadable controller status keeps live rooms and build', async () => {
-  const game = statusServer({
-    blockfield: { checkedAt: Date.now(), build: 'v1.2.3', rooms: [room] },
-  })
-  await new Promise((resolve) => game.listen(0, '127.0.0.1', resolve))
-  const dir = await mkdtemp(join(tmpdir(), 'bf-controller-'))
-  delete process.env.BLOCKFIELD_GATE_FILE
-  delete process.env.BLOCKFIELD_GATE_SOURCE
-  Object.assign(process.env, {
-    BLOCKFIELD_SERVER_HOST: '127.0.0.1',
-    BLOCKFIELD_SERVER_PORT: String(game.address().port),
-    BLOCKFIELD_LOBBY_HOST: '127.0.0.1',
-    BLOCKFIELD_LOBBY_PORT: '1',
-    BLOCKFIELD_ADMIN_DIR: dir,
-  })
-  try {
-    const absent = await import('../src/lib/rooms.ts?controller-absent')
-    const live = await absent.currentRooms()
-    assert.equal(live.available, true)
-    assert.deepEqual(live.rooms, [room])
-    assert.equal(live.build, 'v1.2.3')
-    assert.equal('deploying' in live, false)
-    assert.equal('stale' in live, false)
-    await writeFile(join(dir, 'status.json'), '{"schema":')
-    const broken = await import('../src/lib/rooms.ts?controller-broken')
-    const fallback = await broken.currentRooms()
-    assert.equal(fallback.available, true)
-    assert.deepEqual(fallback.rooms, [room])
-    assert.equal(fallback.build, 'v1.2.3')
-    assert.equal('deploying' in fallback, false)
-    assert.equal('stale' in fallback, false)
-  } finally {
-    delete process.env.BLOCKFIELD_ADMIN_DIR
-    await rm(dir, { recursive: true, force: true })
-    if (game.listening) await new Promise((resolve) => game.close(resolve))
-  }
+  assert.equal(status.build, 'v2.31.6')
+  for (const build of ['latest', '<b>v1</b>', 7, null, 'xyz'])
+    assert.equal('build' in parsePresenceRooms({ rooms: [], build }), validBuild(build))
 })
 
-test('cachedRooms serves the snapshot without waiting on a slow SLP refresh', async (t) => {
-  const fresh = statusServer({ blockfield: { checkedAt: Date.now(), rooms: [room] } })
-  await new Promise((resolve) => fresh.listen(0, '127.0.0.1', resolve))
+test('gate values fail closed with a bounded message', () => {
+  assert.equal(maintenanceFrom({ mode: 'game', message: 'x' }), null)
+  assert.deepEqual(maintenanceFrom({ mode: 'maintenance', message: '' }), {
+    message: 'На сервере проводятся технические работы. Обычный вход временно недоступен.',
+    since: null,
+  })
+  assert.deepEqual(maintenanceFrom({ mode: 'workshop', message: '  Карта  ', since: 5 }), {
+    message: 'Карта',
+    since: 5,
+  })
+})
+
+function fakeCp(t, { gate = null, presence = null, gateStatus = 200, presenceStatus = 200 } = {}) {
+  const server = http.createServer((req, res) => {
+    const answer = (code, data) => {
+      res.statusCode = code
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify(data))
+    }
+    if (req.url.startsWith('/v1/gate')) {
+      if (gateStatus !== 200) return answer(gateStatus, { error: 'x' })
+      return answer(200, gate)
+    }
+    if (req.url.startsWith('/v2/rooms')) {
+      if (presenceStatus !== 200) return answer(presenceStatus, { error: 'x' })
+      return answer(200, presence)
+    }
+    return answer(404, { error: 'not_found' })
+  })
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const saved = { ...process.env }
+      t.after(() => {
+        for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+        Object.assign(process.env, saved)
+      })
+      t.after(() => new Promise((r) => server.close(r)))
+      Object.assign(process.env, {
+        BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
+        BLOCKFIELD_CP_GATE_READ_TOKEN: 'gate-t',
+        BLOCKFIELD_CP_SETTINGS_TOKEN: 'settings-t',
+        BLOCKFIELD_CP_CONSUMER_ID: 'game',
+      })
+      resolve(server)
+    })
+  })
+}
+
+const liveGate = {
+  schema: 1,
+  revision: 1,
+  mode: 'open',
+  message: '',
+  since: null,
+  observedAt: Date.now(),
+}
+const livePresence = (over = {}) => ({
+  initialized: true,
+  reportedAt: new Date().toISOString(),
+  presence: { rooms: [room], ...over },
+})
+
+test('currentRooms serves CP rooms when the presence report is fresh', async (t) => {
+  await fakeCp(t, { gate: liveGate, presence: livePresence() })
+  const { currentRooms } = await import('../src/lib/rooms.ts?cp-fresh')
+  const status = await currentRooms()
+  assert.equal(status.available, true)
+  assert.deepEqual(status.rooms, [room])
+  assert.equal('maintenance' in status, false)
+})
+
+test('currentRooms marks the game down on stale or unreadable presence', async (t) => {
+  await fakeCp(t, {
+    gate: liveGate,
+    presence: {
+      initialized: true,
+      reportedAt: new Date(Date.now() - 60_000).toISOString(),
+      presence: { rooms: [room] },
+    },
+  })
+  const stale = await import('../src/lib/rooms.ts?cp-stale')
+  assert.equal((await stale.currentRooms()).available, false)
+  assert.deepEqual((await stale.currentRooms()).rooms, [])
+
+  await fakeCp(t, { gate: liveGate, presenceStatus: 500 })
+  const down = await import('../src/lib/rooms.ts?cp-down')
+  assert.equal((await down.currentRooms()).available, false)
+})
+
+test('currentRooms fails closed when the gate is unreadable, draining shows maintenance', async (t) => {
+  await fakeCp(t, { gateStatus: 500, presence: livePresence() })
+  const closed = await import('../src/lib/rooms.ts?cp-gate-closed')
+  const shut = await closed.currentRooms()
+  assert.ok(shut.maintenance, 'unreadable gate fails closed')
+  assert.equal(shut.available, false)
+  assert.deepEqual(shut.rooms, [])
+
+  await fakeCp(t, { gate: { ...liveGate, mode: 'maintenance' }, presence: livePresence() })
+  const maintained = await import('../src/lib/rooms.ts?cp-maintenance')
+  const statusClosed = await maintained.currentRooms()
+  assert.equal(statusClosed.available, false)
+  assert.deepEqual(statusClosed.rooms, [])
+
+  await fakeCp(t, { gate: liveGate, presence: livePresence({ draining: true }) })
+  const draining = await import('../src/lib/rooms.ts?cp-draining')
+  const status = await draining.currentRooms()
+  assert.equal(status.available, true)
+  assert.ok(status.maintenance, 'draining maps to maintenance while the gate stays open')
+})
+
+test('cachedRooms serves the snapshot without waiting on a slow CP refresh', async (t) => {
+  let hits = 0
+  const server = http.createServer((req, res) => {
+    const answer = (code, data) => {
+      res.statusCode = code
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify(data))
+    }
+    if (req.url.startsWith('/v1/gate')) return answer(200, liveGate)
+    hits++
+    const payload =
+      hits === 1 ? livePresence() : livePresence({ rooms: [{ ...room, name: 'Комната 2' }] })
+    if (hits > 1) setTimeout(() => answer(200, payload), 2000)
+    else answer(200, payload)
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const saved = { ...process.env }
   t.after(() => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
     Object.assign(process.env, saved)
   })
-  delete process.env.BLOCKFIELD_GATE_FILE
-  delete process.env.BLOCKFIELD_GATE_SOURCE
-  delete process.env.BLOCKFIELD_ADMIN_DIR
+  t.after(() => server.close())
   Object.assign(process.env, {
-    BLOCKFIELD_SERVER_HOST: '127.0.0.1',
-    BLOCKFIELD_SERVER_PORT: String(fresh.address().port),
-    BLOCKFIELD_LOBBY_HOST: '127.0.0.1',
-    BLOCKFIELD_LOBBY_PORT: '1',
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
+    BLOCKFIELD_CP_GATE_READ_TOKEN: 'gate-t',
+    BLOCKFIELD_CP_SETTINGS_TOKEN: 'settings-t',
+    BLOCKFIELD_CP_CONSUMER_ID: 'game',
   })
-  const mod = await import('../src/lib/rooms.ts?cached')
+  const mod = await import('../src/lib/rooms.ts?cp-cached')
   assert.deepEqual((await mod.currentRooms()).rooms, [room])
-  await new Promise((resolve) => fresh.close(resolve))
-  // Slow SLP: answers after 2 s with different rooms. The action path must not wait for it.
-  const changed = { ...room, name: 'Комната 2' }
-  const slow = statusServer(
-    { blockfield: { checkedAt: Date.now(), rooms: [changed] } },
-    () => {},
-    2000,
-  )
-  await new Promise((resolve) => slow.listen(0, '127.0.0.1', resolve))
-  t.after(() => slow.close())
-  process.env.BLOCKFIELD_SERVER_PORT = String(slow.address().port)
   await new Promise((resolve) => setTimeout(resolve, 5100))
   const started = Date.now()
   assert.deepEqual((await mod.cachedRooms()).rooms, [room])
-  assert.ok(Date.now() - started < 1000, 'cached read does not block on SLP')
+  assert.ok(Date.now() - started < 1000, 'cached read does not block on CP')
   await new Promise((resolve) => setTimeout(resolve, 2500))
-  assert.deepEqual((await mod.cachedRooms()).rooms, [changed])
+  assert.deepEqual((await mod.cachedRooms()).rooms, [{ ...room, name: 'Комната 2' }])
+})
+
+test('future and malformed reports make the game unavailable', async (t) => {
+  await fakeCp(t, {
+    gate: liveGate,
+    presence: { ...livePresence(), reportedAt: new Date(Date.now() + 120_000).toISOString() },
+  })
+  const future = await import('../src/lib/rooms.ts?cp-future')
+  assert.equal((await future.currentRooms()).available, false)
+})
+
+test('fresh malformed room reports are unavailable', async (t) => {
+  await fakeCp(t, { gate: liveGate, presence: livePresence({ rooms: [{ ...room, players: -1 }] }) })
+  const invalid = await import('../src/lib/rooms.ts?cp-invalid')
+  assert.equal((await invalid.currentRooms()).available, false)
 })

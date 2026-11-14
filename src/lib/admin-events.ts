@@ -1,7 +1,5 @@
-import { watch, type FSWatcher } from 'node:fs'
-import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { can, overviewSnapshot, readSettings, type Actor, type Role } from './admin.ts'
+import { can, overviewSnapshot, readSettingsCpView, type Actor, type Role } from './admin.ts'
 import {
   cpWorkshopReadConfigured,
   openWorkshopStateEventsCp,
@@ -24,16 +22,46 @@ const epoch = randomUUID()
 let sequence = 0
 const presence = new Map<string, Actor & { tab: string; at: number }>()
 const streams = new Map<string, number>()
-let watchers: FSWatcher[] = []
-const debounces = new Map<string, ReturnType<typeof setTimeout>>()
 let roomsTimer: ReturnType<typeof setInterval> | undefined
 let retryTimer: ReturnType<typeof setInterval> | undefined
-const pendingWatches = new Map<string, () => void>()
 let presenceTimer: ReturnType<typeof setInterval> | undefined
 let roomsJson = ''
-const warned = new Set<string>()
 let cpAbort: AbortController | undefined
-const settingsDir = () => process.env.BLOCKFIELD_SETTINGS_DIR || '/blockfield-admin'
+let settingsTimer: ReturnType<typeof setInterval> | undefined
+let settingsJson = ''
+let catalogJson = ''
+let settingsCpRevisions: Record<string, number> = {}
+async function pollSettingsCp() {
+  if (!subscribers.size) return
+  try {
+    const view = await readSettingsCpView()
+    const cp = await import('./cp.ts')
+    const presence = await cp.readPresenceCp().catch(() => null)
+    const catalogs = JSON.stringify([
+      (presence?.presence as any)?.gunCatalog,
+      (presence?.presence as any)?.kitCatalog,
+    ])
+    const catalogsChanged = catalogs !== catalogJson
+    const json = JSON.stringify({ settings: view.settings, applied: view.applied })
+    if (json === settingsJson && !catalogsChanged) return
+    catalogJson = catalogs
+    const previous = settingsCpRevisions
+    settingsCpRevisions = view.cpRevisions ?? {}
+    settingsJson = json
+    publish({
+      type: 'settings',
+      settings: view.settings,
+      applied: view.applied,
+      cpRevisions: view.cpRevisions,
+      ...(catalogsChanged || previous.gunBalance !== settingsCpRevisions.gunBalance
+        ? { gunBalance: true }
+        : {}),
+      ...(catalogsChanged || previous.kits !== settingsCpRevisions.kits ? { kits: true } : {}),
+    })
+  } catch {
+    // Keep the last published snapshot until the next poll.
+  }
+}
 const WORKSHOP_STATE_NAMES = [
   'status',
   'session',
@@ -134,38 +162,6 @@ export function heartbeat(actor: Actor, tab: string) {
   )
     publish({ type: 'presence', presence: list })
   return list
-}
-function warn(directory: string) {
-  if (warned.has(directory)) return
-  warned.add(directory)
-  console.warn(`Admin events: cannot watch ${directory}`)
-}
-function watchDirectory(directory: string, changed: (name: string) => void) {
-  const watchId = watchers.length
-  try {
-    const watcher = watch(directory, (_, filename) => {
-      if (!filename) return
-      const name = filename.toString(),
-        key = `${watchId}:${join(directory, name)}`
-      clearTimeout(debounces.get(key))
-      debounces.set(
-        key,
-        setTimeout(() => {
-          debounces.delete(key)
-          changed(name)
-        }, 150),
-      )
-    })
-    watcher.on('error', () => warn(directory))
-    watchers.push(watcher)
-    pendingWatches.delete(directory)
-  } catch {
-    warn(directory)
-    pendingWatches.set(directory, () => watchDirectory(directory, changed))
-  }
-}
-function settingsSnapshot(gunBalance = false) {
-  return { ...readSettings(settingsDir()), ...(gunBalance ? { gunBalance: true } : {}) }
 }
 function delayAbortable(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve()
@@ -323,14 +319,11 @@ function start() {
     cpAbort = new AbortController()
     void consumeWorkshopEvents(cpAbort.signal)
   }
-  watchDirectory(settingsDir(), (name) => {
-    if (['settings.json', 'applied.json', 'gun-balance.json', 'kits.json'].includes(name))
-      publish({
-        type: 'settings',
-        ...settingsSnapshot(name === 'gun-balance.json'),
-        ...(name === 'kits.json' ? { kits: true } : {}),
-      })
-  })
+  settingsJson = ''
+  catalogJson = ''
+  settingsCpRevisions = {}
+  void pollSettingsCp()
+  settingsTimer = setInterval(() => void pollSettingsCp(), 5000)
   roomsTimer = setInterval(() => {
     void cachedRooms().then((rooms) => {
       if (!subscribers.size) return
@@ -343,21 +336,16 @@ function start() {
   }, 5000)
   presenceTimer = setInterval(() => presenceList(), 30_000)
   retryTimer = setInterval(() => {
-    for (const attempt of [...pendingWatches.values()]) attempt()
     reconcilePendingRequests()
   }, 30_000)
 }
 function stop() {
   cpAbort?.abort()
   cpAbort = undefined
-  for (const watcher of watchers) watcher.close()
-  watchers = []
-  for (const timer of debounces.values()) clearTimeout(timer)
-  debounces.clear()
   clearInterval(roomsTimer)
+  clearInterval(settingsTimer)
   clearInterval(presenceTimer)
   clearInterval(retryTimer)
-  pendingWatches.clear()
   roomsJson = ''
 }
 export function subscribe(
@@ -375,7 +363,9 @@ export function subscribe(
       deliver(subscriber, entry.event, entry.id, entry.cpSeq)
   const initial = (type: AdminEvent['type'], payload: object) =>
     deliver(subscriber, { type, at: Date.now(), ...payload })
-  initial('settings', settingsSnapshot())
+  void readSettingsCpView()
+    .then((view) => initial('settings', { ...view, gunBalance: true, kits: true }))
+    .catch(() => {})
   initial('presence', { presence: presenceList() })
   void (async () => {
     if (!cpWorkshopReadConfigured()) return { snapshot: await overviewSnapshot(), cpSeq: undefined }

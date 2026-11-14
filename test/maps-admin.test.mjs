@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import http from 'node:http'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handleAdmin, parseMapCatalog, prepareWorkshopRequest } from '../src/lib/admin.ts'
@@ -90,8 +90,6 @@ const temp = (t) => {
   t.after(() => rmSync(directory, { recursive: true, force: true }))
   return directory
 }
-const write = (directory, name, value) =>
-  writeFileSync(join(directory, name + '.json'), JSON.stringify(value))
 const rejected = (action) =>
   assert.throws(action, (error) => error instanceof Response && error.status === 400)
 const defaultSession = () => ({
@@ -121,6 +119,7 @@ async function fakeWorkshopCp(t) {
     candidates: defaultCandidates(),
   }
   const results = {}
+  const presence = { applied: null }
   const posts = []
   const settingsDocs = {
     disabledMapIds: { initialized: false, revision: 0, value: { disabledMapIds: [] } },
@@ -128,6 +127,11 @@ async function fakeWorkshopCp(t) {
   let seq = 1
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1')
+    if (url.pathname === '/v2/rooms') {
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ initialized: true, reportedAt: new Date().toISOString(), presence }))
+      return
+    }
     const settingsMatch = url.pathname.match(/^\/v2\/settings\/([^/]+)\/\*$/)
     if (settingsMatch) {
       const namespace = decodeURIComponent(settingsMatch[1])
@@ -204,6 +208,8 @@ async function fakeWorkshopCp(t) {
     docs,
     results,
     posts,
+    presence,
+    settingsDocs,
     env: () => ({
       BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
       BLOCKFIELD_CP_WORKSHOP_TOKEN: 'wsh-t',
@@ -1147,7 +1153,6 @@ test('map creation and rename require authoritative lead access, stable revision
 
 test('published availability is admin-only, preserves settings/history and refuses stale or malformed updates', async (t) => {
   const cp = await fakeWorkshopCp(t),
-    settingsDir = temp(t),
     environment = { ...process.env },
     store = await database(t)
   t.after(() => {
@@ -1159,23 +1164,12 @@ test('published availability is admin-only, preserves settings/history and refus
     BLOCKFIELD_OWNER_UUIDS: OWNER,
     ...cp.env(),
     BLOCKFIELD_CP_SETTINGS_TOKEN: 'settings-t',
-    BLOCKFIELD_SETTINGS_DIR: settingsDir,
   })
   await store.setStaff(BUILDER, 'Tester', 'builder', 'seed')
   const LEAD = '3'.repeat(32),
     ADMIN = '4'.repeat(32)
   await store.setStaff(LEAD, 'Tester', 'moderator', 'seed')
   await store.setStaff(ADMIN, 'Tester', 'admin', 'seed')
-  const initial = {
-    schema: 1,
-    revision: 4,
-    disabledMapIds: ['future-map-id'],
-    kits: { retained: { definition: true } },
-    fixedModeKits: { room: null },
-    gunBalance: { retained: true },
-    lobby: { pvpEnabled: false },
-  }
-  write(settingsDir, 'settings', initial)
   const call = async (method, path, body, actor = OWNER) => {
     process.env.BLOCKFIELD_ADMIN_DEV_USER = `${actor}:Tester`
     const url = new URL('http://site/api/admin/' + path),
@@ -1188,29 +1182,25 @@ test('published availability is admin-only, preserves settings/history and refus
       (error) => error,
     )
   }
-  const body = { mapId: 'custom_arena', enabled: false, expectedRevision: 4 }
+  const body = { mapId: 'custom_arena', enabled: false, expectedRevision: 0 }
   for (const actor of [BUILDER, LEAD])
     assert.equal((await call('PUT', 'maps/availability', body, actor)).status, 403)
   for (const mapId of ['other', 'lobby', 'missing'])
     assert.equal((await call('PUT', 'maps/availability', { ...body, mapId })).status, 400)
   const disabledRes = await (await call('PUT', 'maps/availability', body, ADMIN)).json()
   const disabled = disabledRes.settings
-  assert.equal(disabled.revision, 5)
-  assert.deepEqual(disabled.disabledMapIds, ['custom_arena', 'future-map-id'])
-  for (const key of ['kits', 'fixedModeKits', 'gunBalance', 'lobby'])
-    assert.deepEqual(disabled[key], initial[key])
-  const bytes = readFileSync(join(settingsDir, 'settings.json'), 'utf8')
+  assert.equal(disabled.revision, 1)
+  assert.deepEqual(disabled.disabledMapIds, ['custom_arena'])
   assert.equal((await call('PUT', 'maps/availability', body)).status, 409)
-  assert.equal(readFileSync(join(settingsDir, 'settings.json'), 'utf8'), bytes)
   assert.equal(cp.posts.length, 0)
   const pending = (await (await call('GET', 'maps', undefined, BUILDER)).json()).availability
   assert.equal(pending.applied, null)
-  write(settingsDir, 'applied', {
-    revision: 5,
-    attemptedRevision: 5,
+  cp.presence.applied = {
+    revision: 1,
+    attemptedRevision: 1,
     errors: [],
     disabledMapIds: disabled.disabledMapIds,
-  })
+  }
   const observed = (await (await call('GET', 'maps', undefined, BUILDER)).json()).availability
   assert.deepEqual(observed.applied.disabledMapIds, disabled.disabledMapIds)
   const enabled = (
@@ -1218,18 +1208,12 @@ test('published availability is admin-only, preserves settings/history and refus
       await call('PUT', 'maps/availability', {
         ...body,
         enabled: true,
-        expectedRevision: 5,
+        expectedRevision: 1,
         cpRevisions: disabledRes.cpRevisions,
       })
     ).json()
   ).settings
-  assert.deepEqual(enabled.disabledMapIds, ['future-map-id'])
-  writeFileSync(join(settingsDir, 'settings.json'), '{corrupt')
-  assert.equal(
-    (await call('PUT', 'maps/availability', { ...body, expectedRevision: 0 })).status,
-    503,
-  )
-  assert.equal(readFileSync(join(settingsDir, 'settings.json'), 'utf8'), '{corrupt')
+  assert.deepEqual(enabled.disabledMapIds, [])
 })
 
 test('stale-copy way out: snapshot preserves the draft, fresh copy restarts from the head', async (t) => {

@@ -1337,3 +1337,117 @@ export async function readDiagnosticsCp(
     events: data.events,
   }
 }
+
+export type CpPresence = {
+  initialized: boolean
+  reportedAt?: string
+  presence?: any
+}
+
+function validPresence(data: any): data is CpPresence {
+  if (typeof data?.initialized !== 'boolean') return false
+  if (!data.initialized) return true
+  return (
+    typeof data?.reportedAt === 'string' && !!data?.presence && typeof data.presence === 'object'
+  )
+}
+
+/**
+ * Latest game report for rooms/status (coordination#64 rows 10-11): rooms,
+ * build, draining and the applied summary plus gun/kit catalogs ride the
+ * game_presence row. Readers poll this; the game never polls. Scope
+ * settings.read rides the site settings token.
+ */
+export async function readPresenceCp(fetchImpl?: FetchImpl): Promise<CpPresence> {
+  const token = (process.env.BLOCKFIELD_CP_SETTINGS_TOKEN ?? '').trim()
+  if (!token) throw new Error('Control-plane не настроен на сайте (токен).')
+  const scope = cpScope()
+  const consumerId = ((process.env.BLOCKFIELD_CP_CONSUMER_ID ?? 'game') as string).trim() || 'game'
+  const query =
+    `consumerId=${encodeURIComponent(consumerId)}` +
+    `&environment=${encodeURIComponent(scope.environment)}` +
+    `&backend=${encodeURIComponent(scope.backend)}`
+  const run = fetchImpl ?? ((url, init) => fetch(url, init))
+  const response = await run(`${config()}/v2/rooms?${query}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error('Control-plane отклонил запрос.')
+  if (!validPresence(data)) throw new Error('Control-plane отдал неверное состояние.')
+  return data
+}
+
+/** Gun catalog from the presence row (replaces the shared-dir gun-balance.json). */
+export async function readGunBalanceCp(fetchImpl?: FetchImpl) {
+  const presence = await readPresenceCp(fetchImpl)
+  const raw = (presence.presence as any)?.gunCatalog
+  if (!raw) {
+    return {
+      available: false as const,
+      error: 'Каталог баланса недоступен: сервер не передал корректные данные.',
+    }
+  }
+  try {
+    const { validateGunCatalog } = await import('./gun-balance.ts')
+    return { available: true as const, catalog: validateGunCatalog(raw) }
+  } catch {
+    return {
+      available: false as const,
+      error: 'Каталог баланса недоступен: сервер не передал корректные данные.',
+    }
+  }
+}
+
+/** Kit catalog from the presence row (replaces the shared-dir kits.json). */
+export async function readKitsCp(fetchImpl?: FetchImpl) {
+  const presence = await readPresenceCp(fetchImpl)
+  const raw = (presence.presence as any)?.kitCatalog
+  if (!raw) {
+    return {
+      available: false as const,
+      error: 'Каталог наборов недоступен. Дождитесь данных игрового сервера.',
+    }
+  }
+  try {
+    const { parseKitCatalog } = await import('./kit-schema.ts')
+    return { available: true as const, catalog: parseKitCatalog(raw) }
+  } catch {
+    return {
+      available: false as const,
+      error: 'Каталог наборов недоступен. Дождитесь данных игрового сервера.',
+    }
+  }
+}
+
+/** Applied summary from the presence row (replaces applied.json). */
+export async function readAppliedCp(fetchImpl?: FetchImpl): Promise<{
+  revision: number
+  attemptedRevision: number
+  errors: string[]
+  disabledMapIds?: string[]
+} | null> {
+  const presence = await readPresenceCp(fetchImpl)
+  const applied = (presence.presence as any)?.applied
+  if (
+    !applied ||
+    !Number.isSafeInteger(applied.revision) ||
+    !Number.isSafeInteger(applied.attemptedRevision) ||
+    !Array.isArray(applied.errors) ||
+    applied.errors.length > 64 ||
+    !applied.errors.every((e: unknown) => typeof e === 'string') ||
+    (applied.disabledMapIds !== undefined &&
+      (!Array.isArray(applied.disabledMapIds) ||
+        applied.disabledMapIds.length > 4096 ||
+        !applied.disabledMapIds.every(
+          (id: unknown) => typeof id === 'string' && /^[a-z0-9][a-z0-9_-]{0,127}$/.test(id),
+        )))
+  )
+    return null
+  return {
+    revision: applied.revision,
+    attemptedRevision: applied.attemptedRevision,
+    errors: applied.errors.slice(0, 64),
+    ...(applied.disabledMapIds !== undefined ? { disabledMapIds: applied.disabledMapIds } : {}),
+  }
+}

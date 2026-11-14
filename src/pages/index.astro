@@ -1096,25 +1096,6 @@ const features = [
           roomStatus.textContent = status.maintenance.message
           return
         }
-        if (!status.available && status.lobby) {
-          lastRooms = ''
-          roomList.replaceChildren()
-          roomSection.hidden = !invitedRoom
-          setRoomNavHidden(true)
-          roomStatus.textContent =
-            invitedRoom && invitedRoom !== 'lobby'
-              ? 'Игровой сервер обновляется. Зайдите в лобби — после запуска сервера вас перенесут автоматически.'
-              : 'Игровой сервер обновляется, лобби открыто. Нажмите «Войти в лобби» — после запуска сервера вас перенесут автоматически.'
-          return
-        }
-        if (status.deploying) {
-          lastRooms = ''
-          roomList.replaceChildren()
-          roomSection.hidden = false
-          setRoomNavHidden(true)
-          roomStatus.textContent = 'Идёт деплой'
-          return
-        }
         if (!status.available) throw new Error()
         roomSection.hidden = status.rooms.length === 0 && !invitedRoom
         setRoomNavHidden(status.rooms.length === 0)

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readAiLimits, validateAiLimits } from '../src/lib/ai-limits.ts'
 import { canonicalBudgetUuid, usdAmount, usdMicros } from '../src/lib/ai-budget.ts'
-import { handleAdmin, saveAiLimits, saveSettings, validateSettings } from '../src/lib/admin.ts'
+import { handleAdmin, saveAiLimits, validateSettings } from '../src/lib/admin.ts'
 import { database } from './storage.mjs'
 
 const SESSION = '11111111-1111-4111-8111-111111111111'
@@ -111,7 +111,7 @@ test('budget has its own optimistic revision; mode-only saves preserve grants an
   )
   rejected(() => saveAiLimits(directory, { expectedRevision: 5, mode: 'session', reset: true }))
   rejected(() => validateSettings({ expectedRevision: 0, aiLimits: policy() }))
-  saveSettings(directory, { expectedRevision: 0, rooms: { maxRooms: 3 } }, 'Admin')
+  // Ordinary settings never touch the budget file: the CP ai-limits path is separate (see cp-settings-handlers).
   assert.equal(readFileSync(join(directory, 'ai-limits.json'), 'utf8'), before)
   const revoked = saveAiLimits(directory, {
     expectedRevision: 5,
