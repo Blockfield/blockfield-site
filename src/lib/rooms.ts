@@ -166,9 +166,9 @@ function refreshRooms(): Promise<RoomStatus> {
         : null
     const shown = gateMaintenance ?? drainingMaintenance
     const value: RoomStatus = {
-      available: !!fresh,
+      available: !!fresh && !gateMaintenance,
       checkedAt: Date.now(),
-      rooms: fresh ? rooms : [],
+      rooms: fresh && !gateMaintenance ? rooms : [],
       ...(build ? { build } : {}),
       ...(shown ? { maintenance: shown } : {}),
     }

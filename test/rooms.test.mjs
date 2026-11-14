@@ -150,6 +150,14 @@ test('currentRooms fails closed when the gate is unreadable, draining shows main
   const closed = await import('../src/lib/rooms.ts?cp-gate-closed')
   const shut = await closed.currentRooms()
   assert.ok(shut.maintenance, 'unreadable gate fails closed')
+  assert.equal(shut.available, false)
+  assert.deepEqual(shut.rooms, [])
+
+  await fakeCp(t, { gate: { ...liveGate, mode: 'maintenance' }, presence: livePresence() })
+  const maintained = await import('../src/lib/rooms.ts?cp-maintenance')
+  const statusClosed = await maintained.currentRooms()
+  assert.equal(statusClosed.available, false)
+  assert.deepEqual(statusClosed.rooms, [])
 
   await fakeCp(t, { gate: liveGate, presence: livePresence({ draining: true }) })
   const draining = await import('../src/lib/rooms.ts?cp-draining')

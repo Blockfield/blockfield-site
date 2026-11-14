@@ -4664,7 +4664,7 @@ export async function readMapAvailabilityCp() {
   const section = await cp.readSettingsCp('disabledMapIds').catch(() => null)
   if (!section)
     return { available: false as const, error: 'Состояние доступности карт недоступно.' }
-  const view = await readSettingsCpView()
+  const view = await settingsCpView(new Map([['disabledMapIds', section as CpSectionView]]))
   const settings = view.settings as Record<string, unknown>
   const ids = (settings.disabledMapIds ?? []) as unknown
   if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')) {
@@ -4954,7 +4954,12 @@ function mirrorFromCp(views: Map<string, CpSectionView | null>): Record<string, 
 
 /** GET settings in CP mode (CP-only, no file mirror): revision is the max initialized CP revision. */
 export async function readSettingsCpView() {
-  const { views } = await cpReadViews(CP_SETTINGS_NAMESPACES)
+  return settingsCpView()
+}
+
+async function settingsCpView(known = new Map<string, CpSectionView>()) {
+  const { views } = await cpReadViews(CP_SETTINGS_NAMESPACES.filter((name) => !known.has(name)))
+  for (const [name, view] of known) views.set(name, view)
   const cpRevisions: Record<string, number> = {}
   for (const namespace of CP_SETTINGS_NAMESPACES) {
     const seen = views.get(namespace) ?? null

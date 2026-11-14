@@ -154,6 +154,7 @@ export function fakeCp(opts = {}) {
       const key = `${namespace}/${target}`
       const payload = body ? JSON.parse(body) : {}
       if (req.method === 'GET') {
+        if (opts.onGet?.(namespace) === false) return answer(500, { error: 'internal' })
         const current = state.get(key)
         if (!current)
           return answer(200, { initialized: false, revision: 0, value: {}, hash: 'none' })

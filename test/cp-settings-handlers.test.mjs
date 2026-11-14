@@ -993,3 +993,25 @@ test('successive namespace edits use distinct keys when another revision is high
     assert.notEqual(keys[0], keys[1])
   })
 })
+
+test('map availability reuses its successful namespace read', async (t) => {
+  let reads = 0
+  let check = false
+  await withCp(
+    t,
+    async (dir) => {
+      await saveMapAvailabilityCp(
+        dir,
+        { mapId: 'arena1', enabled: false, expectedRevision: 0 },
+        'A',
+        ACTOR,
+      )
+      check = true
+      const result = await readMapAvailabilityCp()
+      assert.equal(result.available, true)
+      assert.deepEqual(result.disabledMapIds, ['arena1'])
+      assert.equal(reads, 1)
+    },
+    { onGet: (namespace) => !check || namespace !== 'disabledMapIds' || ++reads === 1 },
+  )
+})
