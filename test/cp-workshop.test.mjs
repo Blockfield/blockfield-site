@@ -1,7 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { cpWorkshopConfigured, postWorkshopCp, workshopCpKinds } from '../src/lib/cp.ts'
+import {
+  cpWorkshopConfigured,
+  cpWorkshopReadConfigured,
+  openWorkshopStateEventsCp,
+  parseSseStream,
+  postWorkshopCp,
+  readWorkshopResultCp,
+  readWorkshopStateCp,
+  workshopCpKinds,
+} from '../src/lib/cp.ts'
 
 const GEN = '12345678-1234-4234-8234-123456789012'
 
@@ -27,16 +36,29 @@ async function fakeCp(handler) {
 
 const ACTOR = { draslId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', name: 'Moddy' }
 
-test('workshop client covers message/wake/cancel; members stays on the inbox', () => {
-  assert.deepEqual([...workshopCpKinds].sort(), ['cancel', 'message', 'wake'])
-  // members needs a person session plus the owner step-up, which the site
-  // service credential can never hold: no client call for it.
-  assert.equal(workshopCpKinds.includes('members'), false)
+test('workshop client covers all eight CP workshop kinds and read config', () => {
+  assert.deepEqual([...workshopCpKinds].sort(), [
+    'ai-key',
+    'cancel',
+    'map',
+    'members',
+    'message',
+    'mode',
+    'sessions',
+    'wake',
+  ])
   assert.equal(
     cpWorkshopConfigured({
       BLOCKFIELD_CP_URL: 'http://127.0.0.1:9',
       BLOCKFIELD_CP_WORKSHOP_TOKEN: 't',
       BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION: GEN,
+    }),
+    true,
+  )
+  assert.equal(
+    cpWorkshopReadConfigured({
+      BLOCKFIELD_CP_URL: 'http://127.0.0.1:9',
+      BLOCKFIELD_CP_WORKSHOP_TOKEN: 't',
     }),
     true,
   )
@@ -114,7 +136,83 @@ test('workshop maps CP refusals to site errors', async (t) => {
   env(t, server)
   await assert.rejects(postWorkshopCp('message', ACTOR, { message: 'hi' }), /координатору/)
   await assert.rejects(postWorkshopCp('wake', ACTOR), /позже/)
-  await assert.rejects(postWorkshopCp('members', ACTOR), /Неизвестное действие/)
+  await assert.rejects(postWorkshopCp('unknown', ACTOR), /Неизвестное действие/)
+})
+
+test('workshop sends actorAccountId on asserted kinds and reads state/results/SSE', async (t) => {
+  const opId = '12345678-1234-4234-8234-123456789abc'
+  const posts = []
+  const server = await fakeCp((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1')
+    if (req.method === 'POST') {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      req.on('end', () => {
+        posts.push([url.pathname, JSON.parse(body)])
+        res.setHeader('Content-Type', 'application/json')
+        res.statusCode = 202
+        res.end(JSON.stringify({ operationId: opId, revision: null, status: 'accepted' }))
+      })
+      return
+    }
+    if (url.pathname === '/v2/workshop/state') {
+      res.setHeader('Content-Type', 'application/json')
+      res.end(
+        JSON.stringify({
+          seq: 12,
+          documents: {
+            status: {
+              seq: 10,
+              updatedAt: 1,
+              revision: 1,
+              name: 'status',
+              value: { phase: 'sleeping' },
+            },
+            [`result:${opId}`]: {
+              seq: 12,
+              updatedAt: 2,
+              revision: 1,
+              name: `result:${opId}`,
+              value: { ok: true },
+            },
+          },
+        }),
+      )
+      return
+    }
+    if (url.pathname === '/v2/workshop/state/events') {
+      res.setHeader('Content-Type', 'text/event-stream')
+      res.end(
+        'id: 13\nevent: state\ndata: {"name":"status","seq":13,"value":{"phase":"ready"}}\n\n',
+      )
+      return
+    }
+    res.statusCode = 404
+    res.end()
+  })
+  t.after(() => server.close())
+  env(t, server)
+
+  await postWorkshopCp('members', ACTOR, { id: 'op-m', entries: [] })
+  await postWorkshopCp('map', ACTOR, { op: 'candidate', args: { id: 'arena' } })
+  assert.equal(posts[0][0], '/v2/workshop/members')
+  assert.equal(posts[0][1].actorAccountId, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb')
+  assert.equal(posts[1][0], '/v2/workshop/map')
+  assert.equal('actorAccountId' in posts[1][1], false)
+
+  const docs = await readWorkshopStateCp(['status'])
+  assert.deepEqual(docs.status.value, { phase: 'sleeping' })
+  assert.deepEqual(await readWorkshopResultCp(opId), { ok: true })
+
+  const events = []
+  const ac = new AbortController()
+  const res = await openWorkshopStateEventsCp(12, ac.signal)
+  await parseSseStream(res.body, (ev) => {
+    events.push({ event: ev.event, id: ev.id, data: JSON.parse(ev.data) })
+  })
+  assert.deepEqual(events, [
+    { event: 'state', id: '13', data: { name: 'status', seq: 13, value: { phase: 'ready' } } },
+  ])
 })
 
 test('workshop forwards a caller-supplied idempotency key verbatim', async (t) => {
@@ -135,4 +233,23 @@ test('workshop forwards a caller-supplied idempotency key verbatim', async (t) =
   await postWorkshopCp('cancel', ACTOR, {}, { idempotencyKey: key })
   await postWorkshopCp('cancel', ACTOR, {}, { idempotencyKey: key })
   assert.deepEqual(seen, [key, key])
+})
+
+test('parseSseStream cancels the underlying reader on early exit', async () => {
+  let cancelled = false
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('event: resync\ndata: {}\n\n'))
+    },
+    cancel() {
+      cancelled = true
+    },
+  })
+  await assert.rejects(
+    parseSseStream(body, () => {
+      throw new Error('resync')
+    }),
+    /resync/,
+  )
+  assert.equal(cancelled, true)
 })

@@ -955,3 +955,41 @@ test('CP streak reset of a section holding only the table clears the view too', 
     assert.equal(view.settings.deathmatch, undefined)
   })
 })
+
+test('successive namespace edits use distinct keys when another revision is higher', async (t) => {
+  await withCp(t, async (dir, seen) => {
+    let view = await saveSettingsCp(
+      dir,
+      { expectedRevision: 0, rooms: { maxRooms: 2 } },
+      'A',
+      ACTOR,
+    )
+    view = await saveSettingsCp(
+      dir,
+      { expectedRevision: 1, cpRevisions: view.cpRevisions, rooms: { maxRooms: 3 } },
+      'A',
+      ACTOR,
+    )
+    view = await saveSettingsCp(
+      dir,
+      { expectedRevision: 2, cpRevisions: view.cpRevisions, rooms: { maxRooms: 4 } },
+      'A',
+      ACTOR,
+    )
+    view = await saveSettingsCp(
+      dir,
+      { expectedRevision: 3, cpRevisions: view.cpRevisions, deathmatch: { minPlayers: 3 } },
+      'A',
+      ACTOR,
+    )
+    await saveSettingsCp(
+      dir,
+      { expectedRevision: 3, cpRevisions: view.cpRevisions, deathmatch: { minPlayers: 4 } },
+      'A',
+      ACTOR,
+    )
+    const keys = seen.filter(([ns]) => ns === 'deathmatch').map(([, body]) => body.idempotencyKey)
+    assert.equal(keys.length, 2)
+    assert.notEqual(keys[0], keys[1])
+  })
+})

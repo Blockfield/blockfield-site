@@ -1,14 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs'
+import http from 'node:http'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -22,12 +15,12 @@ import {
   workshopAiKeyStatusFile,
 } from '../src/lib/workshop-ai.ts'
 import {
-  readWorkshopAiKeyStatus,
+  parseWorkshopAiKeyStatus,
   readWorkshopAiSettings,
   validateWorkshopAiKey,
   validateWorkshopAiSettings,
 } from '../src/lib/workshop-ai-policy.ts'
-import { handleAdmin, saveWorkshopAiSettings, writeRequest } from '../src/lib/admin.ts'
+import { handleAdmin, prepareWorkshopRequest, saveWorkshopAiSettings } from '../src/lib/admin.ts'
 import { database } from './storage.mjs'
 
 const SECRET = 'sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789-AB'
@@ -442,66 +435,53 @@ test('key accepts printable ASCII of 20–2048 chars or null; errors never echo 
   }
 })
 
-test('ai-key inbox request uses the shared envelope and is written atomically', (t) => {
-  const inbox = temp(t, 'bf-ai-key-inbox-')
+test('ai-key request uses the CP asserted payload and validates keys', () => {
   const actor = { uuid: '1'.repeat(32), name: 'Tester', role: 'admin' }
-  const id = writeRequest(inbox, actor, { kind: 'ai-key', key: SECRET })
-  assert.match(id, /^[0-9a-f-]{36}$/)
-  const files = readdirSync(inbox)
-  assert.deepEqual(files, [`${id}.json`])
-  const request = JSON.parse(readFileSync(join(inbox, `${id}.json`), 'utf8'))
-  assert.equal(request.schema, 1)
-  assert.equal(request.id, id)
-  assert.equal(request.kind, 'ai-key')
-  assert.deepEqual(request.actor, { draslId: actor.uuid, name: actor.name })
-  assert.ok(Number.isSafeInteger(request.createdAt) && request.createdAt > 0)
-  assert.equal(request.key, SECRET)
-  const removed = writeRequest(inbox, actor, { kind: 'ai-key', key: null })
-  assert.equal(JSON.parse(readFileSync(join(inbox, `${removed}.json`), 'utf8')).key, null)
-  rejected(() => writeRequest(inbox, actor, { kind: 'ai-key', key: 'short' }))
-  rejected(() => writeRequest(inbox, actor, { kind: 'ai-key' }))
-  assert.equal(readdirSync(inbox).length, 2)
+  const set = prepareWorkshopRequest(actor, { kind: 'ai-key', key: SECRET })
+  assert.equal(set.cpKind, 'ai-key')
+  assert.equal(set.fields.provider, 'openrouter')
+  assert.equal(set.fields.key, SECRET)
+  const removed = prepareWorkshopRequest(actor, { kind: 'ai-key', key: null })
+  assert.equal(removed.cpKind, 'ai-key')
+  assert.equal(removed.fields.provider, 'openrouter')
+  assert.equal(removed.fields.key, null)
+  rejected(() => prepareWorkshopRequest(actor, { kind: 'ai-key', key: 'short' }))
+  rejected(() => prepareWorkshopRequest(actor, { kind: 'ai-key' }))
 })
 
-test('key status tolerates the controller file; missing or malformed means unset', (t) => {
-  const directory = temp(t)
-  assert.deepEqual(readWorkshopAiKeyStatus(directory), { set: false })
-  writeFileSync(
-    join(directory, 'ai-key.json'),
-    JSON.stringify({
+test('key status tolerates the controller document; missing or malformed means unset', () => {
+  assert.deepEqual(parseWorkshopAiKeyStatus(null), { set: false })
+  assert.deepEqual(
+    parseWorkshopAiKeyStatus({
       set: true,
       last4: 'ab12',
       sha256Prefix: 'deadbeef',
       appliedAt: 1728400000000,
     }),
+    {
+      set: true,
+      last4: 'ab12',
+      sha256Prefix: 'deadbeef',
+      appliedAt: 1728400000000,
+    },
   )
-  assert.deepEqual(readWorkshopAiKeyStatus(directory), {
-    set: true,
-    last4: 'ab12',
-    sha256Prefix: 'deadbeef',
-    appliedAt: 1728400000000,
-  })
   // Newer controller fields never break the site; malformed values mean unset.
-  writeFileSync(
-    join(directory, 'ai-key.json'),
-    JSON.stringify({ set: true, last4: 'ab12', ok: true, kind: 'ai-key', next: 1 }),
+  assert.deepEqual(
+    parseWorkshopAiKeyStatus({ set: true, last4: 'ab12', ok: true, kind: 'ai-key', next: 1 }),
+    { set: true, last4: 'ab12' },
   )
-  assert.deepEqual(readWorkshopAiKeyStatus(directory), { set: true, last4: 'ab12' })
-  writeFileSync(
-    join(directory, 'ai-key.json'),
-    JSON.stringify({ schema: 1, set: true, last4: 'X-y_' }),
-  )
-  assert.deepEqual(readWorkshopAiKeyStatus(directory), { set: true, last4: 'X-y_' })
-  for (const bytes of [
+  assert.deepEqual(parseWorkshopAiKeyStatus({ schema: 1, set: true, last4: 'X-y_' }), {
+    set: true,
+    last4: 'X-y_',
+  })
+  for (const value of [
     '{broken',
-    JSON.stringify({ set: false }),
-    JSON.stringify({ set: true, last4: 'TOOLONG' }),
-    JSON.stringify({ set: true, sha256Prefix: 'xyz' }),
-    JSON.stringify({ set: true, appliedAt: -1 }),
-    'x'.repeat(4097),
+    { set: false },
+    { set: true, last4: 'TOOLONG' },
+    { set: true, sha256Prefix: 'xyz' },
+    { set: true, appliedAt: -1 },
   ]) {
-    writeFileSync(join(directory, 'ai-key.json'), bytes)
-    assert.deepEqual(readWorkshopAiKeyStatus(directory), { set: false })
+    assert.deepEqual(parseWorkshopAiKeyStatus(value), { set: false })
   }
 })
 
@@ -526,11 +506,118 @@ test('key status line covers unset, pending, error and set states', () => {
 
 test('owner-only routes: staff below owner are refused, key never leaks, gateway needs no site key', async (t) => {
   const settingsDir = temp(t, 'bf-ai-settings-'),
-    adminDir = temp(t, 'bf-ai-admin-'),
-    inbox = temp(t, 'bf-ai-inbox-'),
     environment = { ...process.env },
     store = await database(t)
+  const cpState = {
+    aiKeys: {},
+    results: {},
+    posts: [],
+    seq: 1,
+    settings: { initialized: false, revision: 0, value: {} },
+  }
+  const mergePatch = (base, patch) => {
+    const out = { ...base }
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null) delete out[k]
+      else if (
+        v &&
+        typeof v === 'object' &&
+        !Array.isArray(v) &&
+        out[k] &&
+        typeof out[k] === 'object' &&
+        !Array.isArray(out[k])
+      )
+        out[k] = mergePatch(out[k], v)
+      else out[k] = v
+    }
+    return out
+  }
+  let opCounter = 0
+  const cpServer = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1')
+    if (url.pathname === '/v2/settings/workshop-ai/*') {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      req.on('end', () => {
+        if (req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ...cpState.settings, hash: `h${cpState.settings.revision}` }))
+          return
+        }
+        if (req.method === 'PATCH') {
+          const parsed = JSON.parse(body)
+          if (parsed.expectedRevision !== cpState.settings.revision) {
+            res.writeHead(409, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: 'revision_conflict' }))
+            return
+          }
+          cpState.settings = {
+            initialized: true,
+            revision: cpState.settings.revision + 1,
+            value: mergePatch(cpState.settings.value, parsed.patch ?? {}),
+          }
+          res.writeHead(202, { 'Content-Type': 'application/json' })
+          res.end(
+            JSON.stringify({
+              operationId: `bbbbbbbb-bbbb-4bbb-8bbb-${String(++opCounter).padStart(12, '0')}`,
+              revision: cpState.settings.revision,
+            }),
+          )
+          return
+        }
+        res.writeHead(405)
+        res.end()
+      })
+      return
+    }
+    if (req.method === 'POST' && url.pathname === '/v2/workshop/ai-key') {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      req.on('end', () => {
+        const parsed = JSON.parse(body)
+        cpState.posts.push(parsed)
+        const operationId = `aaaaaaaa-aaaa-4aaa-8aaa-${String(++opCounter).padStart(12, '0')}`
+        res.writeHead(202, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ operationId, revision: null, status: 'accepted' }))
+      })
+      return
+    }
+    if (req.method === 'GET' && url.pathname === '/v2/workshop/state') {
+      const names = (url.searchParams.get('names') ?? '').split(',').filter(Boolean)
+      const documents = {}
+      if (!names.length || names.includes('ai-keys')) {
+        documents['ai-keys'] = {
+          name: 'ai-keys',
+          revision: cpState.seq,
+          seq: cpState.seq,
+          updatedAt: 1,
+          value: cpState.aiKeys,
+        }
+      }
+      for (const name of names) {
+        if (name.startsWith('result:')) {
+          const opId = name.slice('result:'.length)
+          if (opId in cpState.results) {
+            documents[name] = {
+              name,
+              revision: cpState.seq,
+              seq: cpState.seq,
+              updatedAt: 1,
+              value: cpState.results[opId],
+            }
+          }
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ seq: cpState.seq, documents }))
+      return
+    }
+    res.writeHead(404)
+    res.end()
+  })
+  await new Promise((resolve) => cpServer.listen(0, '127.0.0.1', resolve))
   t.after(() => {
+    cpServer.close()
     for (const key of Object.keys(process.env)) if (!(key in environment)) delete process.env[key]
     Object.assign(process.env, environment)
   })
@@ -541,11 +628,14 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     NODE_ENV: 'test',
     BLOCKFIELD_OWNER_UUIDS: owner,
     BLOCKFIELD_SETTINGS_DIR: settingsDir,
-    BLOCKFIELD_ADMIN_DIR: adminDir,
-    BLOCKFIELD_INBOX_DIR: inbox,
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${cpServer.address().port}`,
+    BLOCKFIELD_CP_WORKSHOP_TOKEN: 'wsh-t',
+    BLOCKFIELD_CP_SETTINGS_TOKEN: 'settings-t',
+    BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
   })
   await store.setStaff(admin, 'Tester', 'admin', 'seed')
   await store.setStaff(moderator, 'Tester', 'moderator', 'seed')
+  let latestCpRevisions = {}
   const adminBody = (overrides) => ({
     expectedRevision: 0,
     enabled: false,
@@ -561,6 +651,7 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     maxHourlyBuilders: 32,
     generationMaxPricePromptUsdPerM: 0.5,
     generationMaxPriceCompletionUsdPerM: 1.5,
+    ...(Object.keys(latestCpRevisions).length ? { cpRevisions: latestCpRevisions } : {}),
     ...overrides,
   })
   const call = async (actor, method, path, body) => {
@@ -571,11 +662,19 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
       headers: { 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     })
-    return handleAdmin(
+    const res = await handleAdmin(
       { request, url, cookies: { get: () => undefined } },
       path.split('?')[0],
       store,
     ).catch((error) => error)
+    if (res.status === 200 && method === 'PUT' && path === 'workshop-ai-settings') {
+      const data = await res
+        .clone()
+        .json()
+        .catch(() => null)
+      if (data?.cpRevisions) latestCpRevisions = data.cpRevisions
+    }
+    return res
   }
   for (const [method, path, body] of [
     ['GET', 'workshop-ai-settings', undefined],
@@ -680,14 +779,8 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     assert.ok(LEAK(await response.clone().json()))
   }
   // With both referenced keys set, the mixed doc saves; cleanup needs its key too.
-  writeFileSync(
-    join(adminDir, 'ai-key.json'),
-    JSON.stringify({ schema: 1, set: true, last4: 'ab12' }),
-  )
-  writeFileSync(
-    join(adminDir, 'my-proxy-key.json'),
-    JSON.stringify({ schema: 1, set: true, last4: 'cd34' }),
-  )
+  cpState.aiKeys['ai-key.json'] = { schema: 1, set: true, last4: 'ab12' }
+  cpState.aiKeys['my-proxy-key.json'] = { schema: 1, set: true, last4: 'cd34' }
   const mixed = await call(owner, 'PUT', 'workshop-ai-settings', registry({}))
   assert.equal(mixed.status, 200)
   const mixedSettings = (await mixed.json()).settings
@@ -712,7 +805,7 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   )
   assert.equal(cleanupKeyless.status, 400)
   assert.match((await cleanupKeyless.json()).error, /second-proxy/)
-  writeFileSync(join(adminDir, 'second-proxy-key.json'), JSON.stringify({ schema: 1, set: true }))
+  cpState.aiKeys['second-proxy-key.json'] = { schema: 1, set: true }
   const cleanup = await call(
     owner,
     'PUT',
@@ -745,7 +838,7 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   assert.equal(staleSettings.cleanupModel, 'other/cleanup-1')
   assert.equal(staleSettings.cleanupProvider, 'second-proxy')
   assert.equal(staleSettings.providers.length, 2)
-  // Custom provider keys: owner-only, 0600 inbox requests, per-id status files.
+  // Custom provider keys: owner-only, CP asserted requests, per-id status docs.
   for (const actor of [admin, moderator]) {
     assert.equal(
       (await call(actor, 'GET', 'workshop-ai-provider-key?provider=my-proxy')).status,
@@ -765,11 +858,11 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   })
   assert.equal(customPosted.status, 200)
   const { id: customId } = await customPosted.json()
-  const customRequest = JSON.parse(readFileSync(join(inbox, `${customId}.json`), 'utf8'))
-  assert.equal(customRequest.kind, 'ai-provider-key')
+  assert.ok(customId)
+  const customRequest = cpState.posts.at(-1)
   assert.equal(customRequest.provider, 'my-proxy')
   assert.equal(customRequest.key, SECRET)
-  assert.equal(statSync(join(inbox, `${customId}.json`)).mode & 0o777, 0o600)
+  assert.equal(customRequest.actorAccountId, '11111111-1111-1111-1111-111111111111')
   const customStatus = await call(owner, 'GET', 'workshop-ai-provider-key?provider=my-proxy')
   assert.equal(customStatus.status, 200)
   assert.deepEqual((await customStatus.json()).status, {
@@ -863,14 +956,13 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   assert.equal(posted.status, 200)
   const { id } = await posted.json()
   assert.deepEqual(Object.keys({ id }), ['id'])
-  const inboxFiles = readdirSync(inbox)
-  assert.ok(inboxFiles.includes(`${id}.json`))
-  assert.equal(JSON.parse(readFileSync(join(inbox, `${id}.json`), 'utf8')).key, SECRET)
+  assert.equal(cpState.posts.at(-1).provider, 'openrouter')
+  assert.equal(cpState.posts.at(-1).key, SECRET)
   const bad = await call(owner, 'POST', 'workshop-ai-key', { key: 'short' })
   assert.equal(bad.status, 400)
   assert.ok(LEAK(await bad.clone().json()))
   // Pending while the controller has no result yet; corrupt results fail closed.
-  // (ai-key.json was written earlier in this test, so the status reads set.)
+  // (ai-key.json was set earlier in this test, so the status reads set.)
   const pending = await call(owner, 'GET', 'workshop-ai-key', undefined)
   assert.equal(pending.status, 200)
   assert.deepEqual(await pending.json(), { status: { set: true, last4: 'ab12' }, result: null })
@@ -879,33 +971,23 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
     status: { set: true, last4: 'ab12' },
     result: null,
   })
-  mkdirSync(join(adminDir, 'results'), { recursive: true })
-  writeFileSync(
-    join(adminDir, 'results', `${id}.json`),
-    JSON.stringify({ schema: 1, id, ok: 'yes' }),
-  )
+  cpState.results[id] = { schema: 1, id, ok: 'yes' }
   assert.equal((await call(owner, 'GET', `workshop-ai-key?id=${id}`, undefined)).status, 503)
-  writeFileSync(
-    join(adminDir, 'results', `${id}.json`),
-    JSON.stringify({ schema: 1, id, kind: 'ai-key', ok: true, set: true, last4: 'ab12' }),
-  )
+  cpState.results[id] = { schema: 1, id, kind: 'ai-key', ok: true, set: true, last4: 'ab12' }
   const done = await call(owner, 'GET', `workshop-ai-key?id=${id}`, undefined)
   assert.equal((await done.json()).result.ok, true)
   assert.equal((await call(owner, 'GET', 'workshop-ai-key?id=nope', undefined)).status, 400)
   // Key tails are owner-only: the generic view-gated result route redacts them for
   // every role, while the owner key-status route keeps the full result.
-  writeFileSync(
-    join(adminDir, 'results', `${id}.json`),
-    JSON.stringify({
-      schema: 1,
-      id,
-      kind: 'ai-key',
-      ok: true,
-      set: true,
-      last4: 'ab12',
-      sha256Prefix: 'cd34ef56',
-    }),
-  )
+  cpState.results[id] = {
+    schema: 1,
+    id,
+    kind: 'ai-key',
+    ok: true,
+    set: true,
+    last4: 'ab12',
+    sha256Prefix: 'cd34ef56',
+  }
   for (const actor of [owner, admin, moderator]) {
     const seen = await call(actor, 'GET', `request?id=${id}`, undefined)
     assert.equal(seen.status, 200)
@@ -916,7 +998,7 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   }
   const full = await call(owner, 'GET', `workshop-ai-key?id=${id}`, undefined)
   assert.equal((await full.json()).result.last4, 'ab12')
-  // The key lives only in the inbox file: never in settings, responses, errors or audit.
+  // The key never lands in settings, responses, errors or audit.
   assert.ok(LEAK(readFileSync(join(settingsDir, 'workshop-ai-settings.json'), 'utf8')))
   for (const entry of await store.auditLog(50)) assert.ok(LEAK(entry))
   const keyAudit = (await store.auditLog(50)).filter((entry) => entry.action === 'workshop-ai-key')
@@ -925,12 +1007,7 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   assert.ok(accepted.length >= 1)
   // Audit keeps only whether the key was removed, never the key or its tail.
   for (const entry of accepted) assert.deepEqual(JSON.parse(entry.detail), { remove: false })
-  const inboxFile = readdirSync(inbox).find((name) => name.endsWith('.json'))
-  assert.equal(statSync(join(inbox, inboxFile)).mode & 0o777, 0o600)
-  writeFileSync(
-    join(adminDir, 'ai-key.json'),
-    JSON.stringify({ schema: 1, set: true, last4: 'ab12' }),
-  )
+  cpState.aiKeys['ai-key.json'] = { schema: 1, set: true, last4: 'ab12' }
   const enabled = await call(
     owner,
     'PUT',
@@ -951,10 +1028,9 @@ test('owner-only routes: staff below owner are refused, key never leaks, gateway
   assert.equal(gatewayPosted.status, 200)
   const { id: gatewayId } = await gatewayPosted.json()
   assert.match(gatewayId, /^[0-9a-f-]{36}$/)
-  const gatewayRequest = JSON.parse(readFileSync(join(inbox, `${gatewayId}.json`), 'utf8'))
-  assert.equal(gatewayRequest.kind, 'ai-gateway-key')
+  const gatewayRequest = cpState.posts.at(-1)
+  assert.equal(gatewayRequest.provider, 'vercel-gateway')
   assert.equal(gatewayRequest.key, SECRET)
-  assert.equal(statSync(join(inbox, `${gatewayId}.json`)).mode & 0o777, 0o600)
   const gatewayStatus = await call(owner, 'GET', 'workshop-ai-gateway-key', undefined)
   assert.equal(gatewayStatus.status, 200)
   assert.deepEqual(await gatewayStatus.json(), { status: { set: false }, result: null })

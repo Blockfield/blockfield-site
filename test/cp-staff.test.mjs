@@ -1,11 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { JSDOM } from 'jsdom'
 import ts from 'typescript'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { cpStaffConfigured, readMeCp, roleFromCpMe, postStaffGrantCp } from '../src/lib/cp.ts'
 import { handleAdmin, handleWorkshopAccess, refreshRole } from '../src/lib/admin.ts'
 import { staffIdempotencyKey } from '../src/lib/cp.ts'
@@ -30,7 +28,6 @@ async function fakeCp(t, handler) {
 }
 
 function cpEnv(t, server) {
-  const inbox = mkdtempSync(join(tmpdir(), 'bf-cpstaff-'))
   const saved = { ...process.env }
   t.after(() => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
@@ -39,9 +36,10 @@ function cpEnv(t, server) {
   Object.assign(process.env, {
     BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
     BLOCKFIELD_CP_STAFF_TOKEN: 'staff-t',
+    BLOCKFIELD_CP_WORKSHOP_TOKEN: 'wsh-t',
+    BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION: '12345678-1234-4234-8234-123456789012',
     BLOCKFIELD_OWNER_UUIDS: OWNER,
     BLOCKFIELD_ADMIN_DEV_USER: `${ADMIN}:Adm`,
-    BLOCKFIELD_INBOX_DIR: inbox,
     BLOCKFIELD_SESSION_SECRET: 'a'.repeat(64),
     NODE_ENV: 'test',
   })
@@ -55,7 +53,6 @@ function cpEnv(t, server) {
     String(url).includes(OWNER) || String(url).includes(dashed(OWNER))
       ? Response.json({ id: dashed(OWNER), name: 'Nether' })
       : realFetch(url, init)
-  t.after(() => rmSync(inbox, { recursive: true, force: true }))
 }
 
 test('staff switch: needs both the CP url and the staff token', () => {
@@ -195,10 +192,34 @@ test('staff grant denial matrix: every CP refusal maps to a site status', async 
 
 async function staffFake(t, roles) {
   if (roles.writes === undefined) roles.writes = 0
-  if (roles.writes === undefined) roles.writes = 0
   const seen = []
+  const workshopPosts = []
+  let workshopSeq = 0
   const server = await fakeCp(t, (req, res) => {
     const url = new URL(req.url, 'http://cp')
+    if (req.method === 'POST' && url.pathname === '/v2/workshop/members') {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      req.on('end', () => {
+        const payload = JSON.parse(body)
+        const operationId = `77777777-7777-4777-8777-${String(++workshopSeq).padStart(12, '0')}`
+        workshopPosts.push({ id: operationId, payload })
+        res.setHeader('Content-Type', 'application/json')
+        res.statusCode = 202
+        res.end(JSON.stringify({ operationId, revision: null, status: 'accepted' }))
+      })
+      return
+    }
+    if (req.method === 'GET' && url.pathname === '/v2/workshop/state') {
+      const names = (url.searchParams.get('names') ?? '').split(',').filter(Boolean)
+      const documents = {}
+      if (names.includes('maps') && roles.maps) {
+        documents.maps = { name: 'maps', revision: 1, seq: 1, updatedAt: 1, value: roles.maps }
+      }
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ seq: 1, documents }))
+      return
+    }
     if (req.method === 'GET' && url.pathname === '/v2/staff/grants') {
       seen.push(['GET', req.url])
       if (
@@ -295,7 +316,7 @@ async function staffFake(t, roles) {
     res.statusCode = 404
     res.end(JSON.stringify({ error: 'not_found' }))
   })
-  return { server, seen }
+  return { server, seen, workshopPosts }
 }
 
 async function callCp(s, as, method, path, body) {
@@ -568,7 +589,7 @@ test('CP mode write-path syncs push CP roles, not stale replica rows', async (t)
     [OTHER, { roles: ['builder'], epoch: 3 }],
     [BERT, { roles: ['builder'], epoch: 1 }],
   ])
-  const { server } = await staffFake(t, roles)
+  const { server, workshopPosts } = await staffFake(t, roles)
   cpEnv(t, server)
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
@@ -577,10 +598,10 @@ test('CP mode write-path syncs push CP roles, not stale replica rows', async (t)
   await s.setStaff(BERT, 'Ber', 'builder', 'seed')
   // Direct-CP revoke: the replica keeps a stale builder row.
   roles.get(OTHER).roles = []
-  const inbox = process.env.BLOCKFIELD_INBOX_DIR
   const membersOf = (result) => {
-    const file = join(inbox, `${result.sync.id}.json`)
-    return JSON.parse(readFileSync(file, 'utf8')).members
+    const entry = workshopPosts.find((post) => post.id === result.sync.id)
+    assert.ok(entry, `missing workshop members push ${result.sync.id}`)
+    return entry.payload.members
   }
   const granted = await callCp(s, `${ADMIN}:Adm`, 'POST', 'staff', {
     uuid: MOD,
@@ -770,40 +791,34 @@ test('CP mode editable maps follow the replica row maps, not its role', async (t
   ])
   const { server } = await staffFake(t, roles)
   cpEnv(t, server)
-  const adminDir = mkdtempSync(join(tmpdir(), 'bf-maps-'))
-  t.after(() => rmSync(adminDir, { recursive: true, force: true }))
-  writeFileSync(
-    join(adminDir, 'maps.json'),
-    JSON.stringify({
-      schema: 1,
-      maps: [
-        {
-          mapId: 'fields',
-          kind: 'arena',
-          mapJson: { id: 'fields' },
-          head: null,
-          versions: [
-            {
-              schema: 1,
-              mapId: 'fields',
-              kind: 'arena',
-              versionDigest: 'a'.repeat(64),
-              parent: null,
-              createdAt: 1,
-              author: { name: 'Bob' },
-              source: 'commit',
-              note: 'Layout update',
-              worldDigest: 'b'.repeat(64),
-              changed: ['world/region/r.0.0.mca'],
-              deleted: [],
-              fileCount: 2,
-            },
-          ],
-        },
-      ],
-    }),
-  )
-  Object.assign(process.env, { BLOCKFIELD_ADMIN_DIR: adminDir })
+  roles.maps = {
+    schema: 1,
+    maps: [
+      {
+        mapId: 'fields',
+        kind: 'arena',
+        mapJson: { id: 'fields' },
+        head: null,
+        versions: [
+          {
+            schema: 1,
+            mapId: 'fields',
+            kind: 'arena',
+            versionDigest: 'a'.repeat(64),
+            parent: null,
+            createdAt: 1,
+            author: { name: 'Bob' },
+            source: 'commit',
+            note: 'Layout update',
+            worldDigest: 'b'.repeat(64),
+            changed: ['world/region/r.0.0.mca'],
+            deleted: [],
+            fileCount: 2,
+          },
+        ],
+      },
+    ],
+  }
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
   await s.setStaff(MOD, 'Mod', 'moderator', 'seed')
@@ -941,7 +956,7 @@ test('CP mode skips unreadable roster rows instead of aborting', async (t) => {
     [OTHER, { roles: ['builder'], epoch: 2 }],
     [POISON, { roles: ['builder'], epoch: 1, poison: true }],
   ])
-  const { server } = await staffFake(t, roles)
+  const { server, workshopPosts } = await staffFake(t, roles)
   cpEnv(t, server)
   const s = await store(t)
   await s.setStaff(ADMIN, 'Adm', 'admin', 'seed')
@@ -961,9 +976,8 @@ test('CP mode skips unreadable roster rows instead of aborting', async (t) => {
   assert.equal(body.role, 'moderator')
   assert.ok(body.sync.id)
   assert.match(body.sync.error, /Poi/, 'the push names the skipped account')
-  const pushed = JSON.parse(
-    readFileSync(join(process.env.BLOCKFIELD_INBOX_DIR, `${body.sync.id}.json`), 'utf8'),
-  ).members
+  const pushed = workshopPosts.find((post) => post.id === body.sync.id)?.payload.members
+  assert.ok(pushed)
   assert.ok(!pushed.some((m) => m.draslId === POISON), 'the push leaves the bad row out')
   assert.ok(pushed.some((m) => m.draslId === OTHER && m.role === 'lead'))
 })

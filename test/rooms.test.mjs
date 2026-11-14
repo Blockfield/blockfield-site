@@ -195,3 +195,18 @@ test('cachedRooms serves the snapshot without waiting on a slow CP refresh', asy
   await new Promise((resolve) => setTimeout(resolve, 2500))
   assert.deepEqual((await mod.cachedRooms()).rooms, [{ ...room, name: 'Комната 2' }])
 })
+
+test('future and malformed reports make the game unavailable', async (t) => {
+  await fakeCp(t, {
+    gate: liveGate,
+    presence: { ...livePresence(), reportedAt: new Date(Date.now() + 120_000).toISOString() },
+  })
+  const future = await import('../src/lib/rooms.ts?cp-future')
+  assert.equal((await future.currentRooms()).available, false)
+})
+
+test('fresh malformed room reports are unavailable', async (t) => {
+  await fakeCp(t, { gate: liveGate, presence: livePresence({ rooms: [{ ...room, players: -1 }] }) })
+  const invalid = await import('../src/lib/rooms.ts?cp-invalid')
+  assert.equal((await invalid.currentRooms()).available, false)
+})

@@ -140,14 +140,19 @@ function refreshRooms(): Promise<RoomStatus> {
       presence?.initialized && typeof presence.reportedAt === 'string'
         ? Date.parse(presence.reportedAt)
         : NaN
-    const fresh =
-      !!presence && Number.isFinite(reportedAt) && Date.now() - reportedAt < PRESENCE_STALE_MS
+    const age = Date.now() - reportedAt
+    let fresh =
+      !!presence &&
+      Number.isFinite(reportedAt) &&
+      age >= -PRESENCE_STALE_MS &&
+      age < PRESENCE_STALE_MS
     let rooms: Room[] = []
     let build: string | undefined
     if (fresh) {
       try {
         ;({ rooms, build } = parsePresenceRooms(presence.presence))
       } catch {
+        fresh = false
         rooms = []
         build = undefined
       }

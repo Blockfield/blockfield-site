@@ -907,45 +907,94 @@ export async function requestSuggestCp(
 }
 
 /**
- * Typed Workshop operations via control-plane v2 (control-plane #33,
- * workshop #72): POST /v2/workshop/<kind>. Only the service-holdable write
- * kinds move: `members` needs a person session (plus the owner step-up for
- * admin entries), which the site service credential can never hold, so the
- * member list stays on the file inbox. Map/session/ai-key/mode ops have no
- * CP kind. Active only when fully configured; otherwise the routes fail
- * closed (no second transport, like the typed moderation kinds).
+ * Typed Workshop operations and state reads via control-plane v2:
+ * POST /v2/workshop/<kind>, GET /v2/workshop/state, GET /v2/workshop/state/events.
+ * Asserted kinds (`members`, `mode`, `ai-key`) pass `actorAccountId` + matching
+ * `actor`; act kinds omit `actorAccountId` and pass `actor` under `workshop.act`.
+ * Active only when configured; otherwise routes fail closed (no file fallback).
  */
-export const workshopCpKinds = ['message', 'wake', 'cancel'] as const
+export const workshopCpKinds = [
+  'members',
+  'mode',
+  'ai-key',
+  'message',
+  'wake',
+  'cancel',
+  'map',
+  'sessions',
+] as const
 export type WorkshopCpKind = (typeof workshopCpKinds)[number]
+export const workshopAssertedKinds = new Set<WorkshopCpKind>(['members', 'mode', 'ai-key'])
+
+const UUID32 = /^[0-9a-f]{32}$/i
+const WORKSHOP_RESULT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+function uuidToDashed(id: string): string {
+  const clean = id.replaceAll('-', '').toLowerCase()
+  if (!UUID32.test(clean)) throw new Error('Некорректный идентификатор игрока для control-plane.')
+  return `${clean.slice(0, 8)}-${clean.slice(8, 12)}-${clean.slice(12, 16)}-${clean.slice(16, 20)}-${clean.slice(20)}`
+}
+
+export function cpWorkshopReadConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return cpConfigured(env) && ((env.BLOCKFIELD_CP_WORKSHOP_TOKEN ?? '') as string).trim().length > 0
+}
 
 export function cpWorkshopConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
   return (
-    cpConfigured(env) &&
-    ((env.BLOCKFIELD_CP_WORKSHOP_TOKEN ?? '') as string).trim().length > 0 &&
+    cpWorkshopReadConfigured(env) &&
     uuidLoose.test(((env.BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION ?? '') as string).trim())
   )
 }
 
-function workshopConfig() {
+function workshopAuthConfig() {
   const url = config()
   const token = (process.env.BLOCKFIELD_CP_WORKSHOP_TOKEN ?? '').trim()
   if (!token) throw new Error('Control-plane не настроен на сайте (токен).')
+  return { url, token, ...cpScope() }
+}
+
+function workshopConfig() {
+  const { url, token, environment, backend, resource } = workshopAuthConfig()
   const generation = (process.env.BLOCKFIELD_CP_WORKSHOP_CONSUMER_GENERATION ?? '').trim()
   if (!uuidLoose.test(generation))
     throw new Error('Control-plane не настроен на сайте (поколение получателя).')
   const consumerId = (process.env.BLOCKFIELD_CP_WORKSHOP_CONSUMER_ID ?? 'workshop').trim()
-  return { url, token, generation, consumerId: consumerId || 'workshop', ...cpScope() }
+  return {
+    url,
+    token,
+    generation,
+    consumerId: consumerId || 'workshop',
+    environment,
+    backend,
+    resource,
+  }
 }
 
 const workshopMessages: Record<string, [number, string]> = {
   invalid_action: [502, 'Control-plane отклонил запрос.'],
   unknown_action: [500, 'Control-plane не знает это действие. Обратитесь к координатору.'],
+  invalid_workshop_actor: [400, 'Некорректный идентификатор игрока для control-plane.'],
+  invalid_workshop_members: [400, 'Некорректный список участников мастерской.'],
+  invalid_workshop_aikey: [400, 'Ключ: 20–2048 печатных символов ASCII без пробелов.'],
+  invalid_workshop_mode: [400, 'Некорректные параметры режима мастерской.'],
+  invalid_workshop_map: [400, 'Некорректная операция с картой.'],
+  invalid_workshop_sessions: [400, 'Некорректные параметры списка сеансов.'],
+  invalid_workshop_state: [502, 'Control-plane отклонил запрос состояния мастерской.'],
+  unknown_workshop_state: [404, 'Документ состояния мастерской не найден.'],
+  invalid_cursor: [400, 'Некорректный курсор событий мастерской.'],
   consumer_generation_or_capability: [
     503,
     'Версия получателя в control-plane устарела. Обратитесь к координатору.',
   ],
   consumer_lag: [503, 'Мастерская занята подтверждением команд. Попробуйте позже.'],
   forbidden: [503, 'У сайта нет доступа к мастерской в control-plane. Обратитесь к координатору.'],
+  ineligible_account: [403, 'Этот аккаунт не может выполнять это действие в мастерской.'],
+  workshop_admin_not_cp_admin: [
+    403,
+    'Владелец или администратор мастерской должен иметь права администратора в control-plane.',
+  ],
+  account_not_found: [403, 'Аккаунт не найден в control-plane.'],
+  idempotency_conflict: [409, 'Конфликт повторного запроса. Обновите страницу и повторите.'],
 }
 
 function workshopProblem(status: number, code: string): CpProblem {
@@ -964,12 +1013,15 @@ export async function postWorkshopCp(
   kind: string,
   actor: { draslId: string; name: string },
   fields: Record<string, unknown> = {},
-  opts: { idempotencyKey?: string; fetchImpl?: FetchImpl } = {},
+  opts: { idempotencyKey?: string; actorAccountId?: string; fetchImpl?: FetchImpl } = {},
 ): Promise<{ operationId: string; status: string }> {
   if (!(workshopCpKinds as readonly string[]).includes(kind))
     throw new Error('Неизвестное действие.')
   const { url, token, generation, consumerId, environment, backend } = workshopConfig()
   const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
+  const actorAccountId = workshopAssertedKinds.has(kind as WorkshopCpKind)
+    ? (opts.actorAccountId ?? uuidToDashed(actor.draslId))
+    : undefined
   const response = await fetchImpl(`${url}/v2/workshop/${kind}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -980,6 +1032,7 @@ export async function postWorkshopCp(
       consumerId,
       generation,
       target: '*',
+      ...(actorAccountId ? { actorAccountId } : {}),
       actor,
       ...fields,
     }),
@@ -994,6 +1047,156 @@ export async function postWorkshopCp(
   if (typeof data?.operationId !== 'string')
     throw new Error('Control-plane отдал неверное состояние.')
   return { operationId: data.operationId, status: data.status ?? 'accepted' }
+}
+
+export type WorkshopStateRecord<T = any> = {
+  name: string
+  value: T
+  revision: number
+  seq: number
+  updatedAt: number
+}
+
+export async function readWorkshopSnapshotCp(
+  names: string[] = [],
+  opts: { fetchImpl?: FetchImpl; signal?: AbortSignal } = {},
+): Promise<{ seq: number; documents: Record<string, WorkshopStateRecord> }> {
+  const { url, token } = workshopAuthConfig()
+  const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
+  const query = names.length ? `?names=${names.map(encodeURIComponent).join(',')}` : ''
+  const timeoutSignal = AbortSignal.timeout(TIMEOUT_MS)
+  const signal = opts.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal
+  const response = await fetchImpl(`${url}/v2/workshop/state${query}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal,
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {})
+    throw workshopProblem(
+      response.status,
+      typeof data?.error === 'string' ? data.error : 'control_plane_error',
+    )
+  }
+  if (
+    !data ||
+    typeof data !== 'object' ||
+    !Number.isSafeInteger(data.seq) ||
+    data.seq < 0 ||
+    !data.documents ||
+    typeof data.documents !== 'object'
+  )
+    throw new Error('Control-plane отдал неверное состояние мастерской.')
+  return { seq: data.seq, documents: data.documents as Record<string, WorkshopStateRecord> }
+}
+
+export async function readWorkshopStateCp(
+  names: string[] = [],
+  opts: { fetchImpl?: FetchImpl; signal?: AbortSignal } = {},
+): Promise<Record<string, WorkshopStateRecord>> {
+  return (await readWorkshopSnapshotCp(names, opts)).documents
+}
+
+export async function readWorkshopResultCp(
+  operationId: string,
+  opts: { fetchImpl?: FetchImpl } = {},
+): Promise<unknown> {
+  if (!WORKSHOP_RESULT_ID.test(operationId)) throw new Error('Некорректный запрос.')
+  const docs = await readWorkshopStateCp([`result:${operationId}`], opts)
+  return docs[`result:${operationId}`]?.value ?? null
+}
+
+export async function openWorkshopStateEventsCp(
+  afterSeq: number | null,
+  signal: AbortSignal,
+  opts: { fetchImpl?: FetchImpl } = {},
+): Promise<Response> {
+  const { url, token } = workshopAuthConfig()
+  const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
+  const query = afterSeq !== null && afterSeq >= 0 ? `?after=${afterSeq}` : ''
+  const connect = new AbortController()
+  const onAbort = () => connect.abort(signal.reason)
+  if (signal.aborted) connect.abort(signal.reason)
+  else signal.addEventListener('abort', onAbort, { once: true })
+  const timer = setTimeout(() => connect.abort(new Error('timeout')), TIMEOUT_MS)
+  try {
+    const response = await fetchImpl(`${url}/v2/workshop/state/events${query}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
+      signal: connect.signal,
+    })
+    clearTimeout(timer)
+    if (!response.ok) {
+      signal.removeEventListener('abort', onAbort)
+      const data = await response.json().catch(() => null)
+      await response.body?.cancel().catch(() => {})
+      throw workshopProblem(
+        response.status,
+        typeof data?.error === 'string' ? data.error : 'control_plane_error',
+      )
+    }
+    return response
+  } catch (error) {
+    clearTimeout(timer)
+    signal.removeEventListener('abort', onAbort)
+    throw error
+  }
+}
+
+export async function parseSseStream(
+  body: ReadableStream<Uint8Array>,
+  onEvent: (event: { id?: string; event: string; data: string }) => void | Promise<void>,
+): Promise<void> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let eventName = 'message'
+  let eventId: string | undefined
+  let dataLines: string[] = []
+  const dispatch = async () => {
+    if (!dataLines.length && eventId === undefined) {
+      eventName = 'message'
+      return
+    }
+    const ev = {
+      ...(eventId === undefined ? {} : { id: eventId }),
+      event: eventName || 'message',
+      data: dataLines.join('\n'),
+    }
+    eventName = 'message'
+    eventId = undefined
+    dataLines = []
+    if (ev.data.length) await onEvent(ev)
+  }
+  let finished = false
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        finished = true
+        break
+      }
+      buffer += decoder.decode(value, { stream: true })
+      let newline: number
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline).replace(/\r$/, '')
+        buffer = buffer.slice(newline + 1)
+        if (!line) {
+          await dispatch()
+          continue
+        }
+        if (line.startsWith(':')) continue
+        const colon = line.indexOf(':')
+        const field = colon === -1 ? line : line.slice(0, colon)
+        const val = colon === -1 ? '' : line.slice(colon + 1).replace(/^ /, '')
+        if (field === 'event') eventName = val
+        else if (field === 'id') eventId = val
+        else if (field === 'data') dataLines.push(val)
+      }
+    }
+  } finally {
+    if (!finished) await reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
 }
 
 export type CpDiagSample = {
@@ -1218,9 +1421,12 @@ export async function readKitsCp(fetchImpl?: FetchImpl) {
 }
 
 /** Applied summary from the presence row (replaces applied.json). */
-export async function readAppliedCp(
-  fetchImpl?: FetchImpl,
-): Promise<{ revision: number; attemptedRevision: number; errors: string[] } | null> {
+export async function readAppliedCp(fetchImpl?: FetchImpl): Promise<{
+  revision: number
+  attemptedRevision: number
+  errors: string[]
+  disabledMapIds?: string[]
+} | null> {
   const presence = await readPresenceCp(fetchImpl)
   const applied = (presence.presence as any)?.applied
   if (
@@ -1229,12 +1435,19 @@ export async function readAppliedCp(
     !Number.isSafeInteger(applied.attemptedRevision) ||
     !Array.isArray(applied.errors) ||
     applied.errors.length > 64 ||
-    !applied.errors.every((e: unknown) => typeof e === 'string')
+    !applied.errors.every((e: unknown) => typeof e === 'string') ||
+    (applied.disabledMapIds !== undefined &&
+      (!Array.isArray(applied.disabledMapIds) ||
+        applied.disabledMapIds.length > 4096 ||
+        !applied.disabledMapIds.every(
+          (id: unknown) => typeof id === 'string' && /^[a-z0-9][a-z0-9_-]{0,127}$/.test(id),
+        )))
   )
     return null
   return {
     revision: applied.revision,
     attemptedRevision: applied.attemptedRevision,
     errors: applied.errors.slice(0, 64),
+    ...(applied.disabledMapIds !== undefined ? { disabledMapIds: applied.disabledMapIds } : {}),
   }
 }

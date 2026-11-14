@@ -24,6 +24,8 @@ import {
   ask,
   field,
   follow,
+  pendingRequests,
+  requestResults,
   controller,
 } from '../lib/admin-shell'
 import {
@@ -325,22 +327,40 @@ async function loadWorkshopAi() {
 
 async function pollWorkshopAiKey(id: string, endpoint: string, line: HTMLElement) {
   const query = keyQuery(endpoint)
-  for (let attempt = 0; attempt < 10; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 3000))
-    try {
-      const key = await api(`${query}${query.includes('?') ? '&' : '?'}id=${id}`)
-      if (!key.result) {
-        say(line, workshopAiKeyLine(key.status, { waiting: true }, date), 'pending')
-        continue
-      }
-      if (key.result.ok) await loadWorkshopAi()
-      else sayWorkshopAiKey(key.status, key.result, false, line)
-      return
-    } catch {
-      // One failed poll must not hide the pending state; the next attempt retries.
+  const pushed = await new Promise<any>((resolve) => {
+    const finish = (result: any) => {
+      clearTimeout(timer)
+      pendingRequests.delete(id)
+      resolve(result)
     }
+    const timer = setTimeout(async () => {
+      const { result } = await api(`request?id=${id}`).catch(() => ({ result: null }))
+      finish(result)
+    }, 60_000)
+    pendingRequests.set(id, finish)
+    if (requestResults.has(id)) {
+      const result = requestResults.get(id)
+      requestResults.delete(id)
+      finish(result)
+    }
+  })
+  if (pushed?.ok) {
+    await loadWorkshopAi()
+    return
   }
-  say(line, 'Ключ применяется… Обновите состояние AI позже.', 'pending')
+  try {
+    const key = await api(`${query}${query.includes('?') ? '&' : '?'}id=${id}`)
+    const finalResult = key.result ?? pushed
+    if (!finalResult) {
+      say(line, 'Ключ применяется… Обновите состояние AI позже.', 'pending')
+      return
+    }
+    if (finalResult.ok) await loadWorkshopAi()
+    else sayWorkshopAiKey(key.status, finalResult, false, line)
+  } catch {
+    if (pushed) sayWorkshopAiKey({ set: false }, pushed, false, line)
+    else say(line, 'Ключ применяется… Обновите состояние AI позже.', 'pending')
+  }
 }
 
 const assignable = () =>

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import http from 'node:http'
@@ -39,6 +39,11 @@ async function fakeCp(t) {
   let dropNext = false,
     receiptlessNext = false
   const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url?.startsWith('/v2/workshop/state')) {
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ seq: 1, documents: {} }))
+      return
+    }
     let body = ''
     req.on('data', (c) => (body += c))
     req.on('end', () => {
@@ -69,8 +74,6 @@ async function fakeCp(t) {
 
 async function setup(t, cp) {
   const dirs = {
-    BLOCKFIELD_ADMIN_DIR: temp(t),
-    BLOCKFIELD_INBOX_DIR: temp(t),
     BLOCKFIELD_SETTINGS_DIR: temp(t),
   }
   Object.assign(process.env, dirs, { BLOCKFIELD_OWNER_UUIDS: '', NODE_ENV: 'test' })
@@ -240,21 +243,28 @@ test('POST cancel is admin-only and posts through CP', async (t) => {
   assert.equal(JSON.parse(log[0].detail).operationId, 'op-1')
 })
 
-test('members still go to the inbox: staff sync writes a members request', async (t) => {
+test('members go to CP /v2/workshop/members with asserted actorAccountId', async (t) => {
   const cp = await fakeCp(t)
-  const { dirs, call } = await setup(t, cp.server)
+  const { call } = await setup(t, cp.server)
   const synced = await call(`${ADMIN}:Adm`, 'staff/sync', {})
   assert.equal(synced.status, 200)
-  const { id } = await synced.json()
+  const syncBody = await synced.json()
+  assert.equal(syncBody.id, 'op-1')
   assert.deepEqual(
-    JSON.parse(readFileSync(join(dirs.BLOCKFIELD_INBOX_DIR, `${id}.json`))).kind,
-    'members',
+    syncBody.members.map((m) => [m.name, m.role]),
+    [
+      ['Adm', 'admin'],
+      ['Moddy', 'lead'],
+      ['Bob', 'builder'],
+    ],
   )
-  assert.deepEqual(
-    readdirSync(dirs.BLOCKFIELD_INBOX_DIR).filter((n) => !n.startsWith('.')),
-    [`${id}.json`],
-    'no CP-covered kind wrote an inbox file',
-  )
+  assert.equal(cp.seen.length, 1)
+  assert.equal(cp.seen[0][0], 'POST')
+  assert.equal(cp.seen[0][1], '/v2/workshop/members')
+  assert.equal(cp.seen[0][2].actorAccountId, 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
+  assert.deepEqual(cp.seen[0][2].actor, { draslId: ADMIN, name: 'Adm' })
+  assert.equal(typeof cp.seen[0][2].idempotencyKey, 'string')
+  assert.deepEqual(cp.seen[0][2].members, syncBody.members)
 })
 
 // Rendering: reuse the page's own describeWorkshop, like test/admin-shell.test.mjs does.
