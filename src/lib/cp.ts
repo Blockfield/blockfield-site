@@ -1057,10 +1057,10 @@ export type WorkshopStateRecord<T = any> = {
   updatedAt: number
 }
 
-export async function readWorkshopStateCp(
+export async function readWorkshopSnapshotCp(
   names: string[] = [],
   opts: { fetchImpl?: FetchImpl; signal?: AbortSignal } = {},
-): Promise<Record<string, WorkshopStateRecord>> {
+): Promise<{ seq: number; documents: Record<string, WorkshopStateRecord> }> {
   const { url, token } = workshopAuthConfig()
   const fetchImpl = opts.fetchImpl ?? ((u, init) => fetch(u, init))
   const query = names.length ? `?names=${names.map(encodeURIComponent).join(',')}` : ''
@@ -1078,9 +1078,23 @@ export async function readWorkshopStateCp(
       typeof data?.error === 'string' ? data.error : 'control_plane_error',
     )
   }
-  if (!data || typeof data !== 'object' || !data.documents || typeof data.documents !== 'object')
+  if (
+    !data ||
+    typeof data !== 'object' ||
+    !Number.isSafeInteger(data.seq) ||
+    data.seq < 0 ||
+    !data.documents ||
+    typeof data.documents !== 'object'
+  )
     throw new Error('Control-plane отдал неверное состояние мастерской.')
-  return data.documents as Record<string, WorkshopStateRecord>
+  return { seq: data.seq, documents: data.documents as Record<string, WorkshopStateRecord> }
+}
+
+export async function readWorkshopStateCp(
+  names: string[] = [],
+  opts: { fetchImpl?: FetchImpl; signal?: AbortSignal } = {},
+): Promise<Record<string, WorkshopStateRecord>> {
+  return (await readWorkshopSnapshotCp(names, opts)).documents
 }
 
 export async function readWorkshopResultCp(

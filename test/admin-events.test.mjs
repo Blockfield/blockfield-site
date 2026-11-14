@@ -470,3 +470,182 @@ test('a throwing subscriber is dropped and the other subscribers still receive t
   publish({ type: 'presence', presence: [] })
   assert.equal(received.filter((type) => type === 'presence').length >= 2, true)
 })
+
+test('snapshot cursor replays results registered while reconciliation is in flight', async (t) => {
+  setup(t)
+  const first = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const late = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+  let resultRead
+  let after
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1')
+    if (url.pathname.endsWith('/events')) {
+      after = url.searchParams.get('after')
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      res.write(
+        `event: state\ndata: ${JSON.stringify({ seq: 6, name: `result:${late}`, value: { ok: true } })}\n\n`,
+      )
+      return
+    }
+    const names = url.searchParams.get('names') ?? ''
+    if (names.includes(`result:${first}`)) {
+      resultRead = res
+      return
+    }
+    res.end(JSON.stringify({ seq: 5, documents: {} }))
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => {
+    server.closeAllConnections()
+    server.close()
+  })
+  process.env.BLOCKFIELD_CP_URL = `http://127.0.0.1:${server.address().port}`
+  process.env.BLOCKFIELD_CP_WORKSHOP_TOKEN = 'wsh-t'
+  trackWorkshopRequest(first)
+  const received = []
+  const stop = subscribe(
+    () => true,
+    (event) => received.push(event),
+  )
+  t.after(stop)
+  await until(() => resultRead)
+  trackWorkshopRequest(late)
+  resultRead.end(JSON.stringify({ seq: 7, documents: { status: { seq: 7, value: {} } } }))
+  await until(() => received.some((event) => event.type === 'request' && event.id === late))
+  assert.equal(after, '5')
+})
+
+test('delayed initial status cannot overwrite a newer resync status', async (t) => {
+  setup(t)
+  let initialResponse
+  let stream
+  let stateSeq = 5
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1')
+    if (url.pathname.endsWith('/events')) {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      res.write(': connected\n\n')
+      if (!stream) stream = res
+      return
+    }
+    if (url.searchParams.get('names') === 'status,session' && !initialResponse) {
+      initialResponse = res
+      return
+    }
+    res.end(
+      JSON.stringify({
+        seq: stateSeq,
+        documents: { status: { seq: stateSeq, value: { phase: stateSeq === 5 ? 'old' : 'new' } } },
+      }),
+    )
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => {
+    server.closeAllConnections()
+    server.close()
+  })
+  process.env.BLOCKFIELD_CP_URL = `http://127.0.0.1:${server.address().port}`
+  process.env.BLOCKFIELD_CP_WORKSHOP_TOKEN = 'wsh-t'
+  const received = []
+  const stop = subscribe(
+    () => true,
+    (event) => received.push(event),
+  )
+  t.after(stop)
+  await until(() => stream && initialResponse)
+  stateSeq = 9
+  stream.write('event: resync\ndata: {}\n\n')
+  await until(() =>
+    received.some((event) => event.type === 'status' && event.status?.phase === 'new'),
+  )
+  initialResponse.end(
+    JSON.stringify({ seq: 5, documents: { status: { seq: 5, value: { phase: 'old' } } } }),
+  )
+  await delay(100)
+  assert.deepEqual(
+    received.filter((event) => event.type === 'status').map((event) => event.status?.phase),
+    ['new'],
+  )
+})
+
+test('a late registration reconciles a result already behind the snapshot cursor', async (t) => {
+  setup(t)
+  const id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+  let streamOpen = false
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1')
+    if (url.pathname.endsWith('/events')) {
+      streamOpen = true
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      res.write(': connected\n\n')
+      return
+    }
+    const documents = url.searchParams.get('names')?.includes(`result:${id}`)
+      ? { [`result:${id}`]: { seq: 4, value: { ok: true } } }
+      : {}
+    res.end(JSON.stringify({ seq: 5, documents }))
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => {
+    server.closeAllConnections()
+    server.close()
+  })
+  process.env.BLOCKFIELD_CP_URL = `http://127.0.0.1:${server.address().port}`
+  process.env.BLOCKFIELD_CP_WORKSHOP_TOKEN = 'wsh-t'
+  const received = []
+  const stop = subscribe(
+    () => true,
+    (event) => received.push(event),
+  )
+  t.after(stop)
+  await until(() => streamOpen)
+  trackWorkshopRequest(id)
+  await until(() => received.some((event) => event.type === 'request' && event.id === id))
+})
+
+test('an older replay cannot overwrite a newer initial status', async (t) => {
+  setup(t)
+  let stream
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1')
+    if (url.pathname.endsWith('/events')) {
+      stream = res
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      res.write(': connected\n\n')
+      return
+    }
+    const initial = url.searchParams.get('names') === 'status,session'
+    const seq = initial ? 9 : 5
+    res.end(
+      JSON.stringify({
+        seq,
+        documents: { status: { seq, value: { phase: initial ? 'new' : 'old' } } },
+      }),
+    )
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => {
+    server.closeAllConnections()
+    server.close()
+  })
+  process.env.BLOCKFIELD_CP_URL = `http://127.0.0.1:${server.address().port}`
+  process.env.BLOCKFIELD_CP_WORKSHOP_TOKEN = 'wsh-t'
+  const received = []
+  const stop = subscribe(
+    () => true,
+    (event) => received.push(event),
+  )
+  t.after(stop)
+  await until(
+    () =>
+      stream && received.some((event) => event.type === 'status' && event.status?.phase === 'new'),
+  )
+  stream.write(
+    `event: state\ndata: ${JSON.stringify({ seq: 6, name: 'status', value: { phase: 'old' } })}\n\n`,
+  )
+  await delay(100)
+  assert.deepEqual(
+    received.filter((event) => event.type === 'status').map((event) => event.status?.phase),
+    ['new'],
+  )
+})
