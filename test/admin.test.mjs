@@ -14,7 +14,6 @@ import {
   moderationRequest,
   moderationCpFields,
   roleOf,
-  saveSettings,
   siteBans,
   siteIdentity,
   validateSettings,
@@ -696,28 +695,7 @@ test('publish request: optional force must be boolean, only written when true', 
   )
 })
 
-test('settings validation and optimistic revision conflict', (t) => {
-  const dir = temp(t)
-  const first = saveSettings(
-    dir,
-    {
-      expectedRevision: 0,
-      lobby: { pvpEnabled: true, pvpCooldownSeconds: 30 },
-      classLocks: ['sniper'],
-      campaignBalance: { '*': { max_tickets: 300, enable_spawn_shield: false } },
-    },
-    'Adm',
-  )
-  assert.equal(first.revision, 1)
-  assert.equal(JSON.parse(readFileSync(join(dir, 'settings.json'))).updatedBy, 'Adm')
-  assert.throws(
-    () => saveSettings(dir, { expectedRevision: 0, rooms: { maxRooms: 2 } }, 'Other'),
-    (e) => status(e) === 409,
-  )
-  assert.equal(
-    saveSettings(dir, { expectedRevision: 1, rooms: { maxRooms: 2 } }, 'Adm').revision,
-    2,
-  )
+test('settings validation rejects bad sections like the server', () => {
   for (const body of [
     { lobby: { pvpCooldownSeconds: 601 } },
     { lobby: { pvp: true } },
@@ -762,20 +740,12 @@ test('settings validation and optimistic revision conflict', (t) => {
   })
 })
 
-test('parcool settings round-trip through saveSettings like the other sections', (t) => {
-  const dir = temp(t)
-  const saved = saveSettings(
-    dir,
-    { expectedRevision: 0, parcool: { allowedActions: ['FastRun', 'ClingToCliff'] } },
-    'Adm',
-  )
-  assert.deepEqual(saved.parcool, { allowedActions: ['FastRun', 'ClingToCliff'] })
-  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'settings.json'))).parcool, {
-    allowedActions: ['FastRun', 'ClingToCliff'],
+test('parcool validation accepts known actions like the other sections', () => {
+  // CP revision conflicts for parcool ride saveSettingsCp (see cp-settings-handlers).
+  assert.deepEqual(validateSettings({ parcool: { allowedActions: ['FastRun', 'ClingToCliff'] } }), {
+    parcool: { allowedActions: ['FastRun', 'ClingToCliff'] },
   })
-  // A later save that omits `parcool` drops the section entirely (every save replaces the whole file), returning control to the base file.
-  const cleared = saveSettings(dir, { expectedRevision: 1, rooms: { maxRooms: 3 } }, 'Adm')
-  assert.equal(cleared.parcool, undefined)
+  assert.equal(validateSettings({ rooms: { maxRooms: 3 } }).parcool, undefined)
 })
 
 test('moderation bodies become typed CP fields and injection is refused', () => {
@@ -1918,12 +1888,10 @@ test('review: stop-room without CP configured fails fast, before querying rooms'
   assert.ok(Date.now() - started < 1000)
 })
 
-test('class prices round-trip through settings with strict numeric limits', (t) => {
-  const dir = temp(t)
+test('class prices validate through settings with strict numeric limits', () => {
   const prices = { tech: 0, sniper: 150, drone: 10000 }
-  const saved = saveSettings(dir, { expectedRevision: 0, classCosts: prices }, 'Adm')
-  assert.deepEqual(saved.classCosts, prices)
-  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'settings.json'))).classCosts, prices)
+  // CP persistence for classCosts rides saveSettingsCp (see cp-settings-handlers).
+  assert.deepEqual(validateSettings({ classCosts: prices }), { classCosts: prices })
   for (const classCosts of [
     { sniper: -1 },
     { sniper: 0.5 },

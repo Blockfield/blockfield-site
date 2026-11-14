@@ -1,13 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import http from 'node:http'
+import { readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { JSDOM } from 'jsdom'
 import ts from 'typescript'
 import { parseKitCatalog, validateKitChanges } from '../src/lib/kit-schema.ts'
 import { effectiveKits, renderKitForm } from '../src/lib/kit-form.ts'
-import { handleAdmin, saveKitSettings, saveSettings } from '../src/lib/admin.ts'
+import { handleAdmin } from '../src/lib/admin.ts'
 import { kitFixture } from './kits-fixture.mjs'
 import { database } from './storage.mjs'
 
@@ -72,71 +74,69 @@ test('authoritative kit catalog rejects corrupt bounds/registries; structured it
   assert.equal(effectiveKits(catalog, { rifle: kit }, { rifle: 600 }).rifle.deploymentCost, 0)
 })
 
-test('kit saves preserve every unrelated section, general settings preserve kits, and stale/invalid writes preserve bytes', (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'bf-kits-'))
-  t.after(() => rmSync(directory, { recursive: true, force: true }))
-  const catalog = kitFixture(),
-    settings = {
-      schema: 1,
-      revision: 4,
-      lobby: { pvpEnabled: false },
-      gunBalance: { 'test:rifle': { draw_time: 1 } },
-      campaignBalance: { '*': { max_tickets: 500 } },
-      parcool: { allowedActions: [] },
-      futureSection: { preserved: true },
-    }
-  writeFileSync(join(directory, 'kits.json'), JSON.stringify(catalog))
-  writeFileSync(join(directory, 'settings.json'), JSON.stringify(settings))
-  const custom = { ...structuredClone(catalog.kits[0].effective), id: 'custom' }
-  const saved = saveKitSettings(
-    directory,
-    { expectedRevision: 4, kits: { custom }, fixedModeKits: { room: 'custom' } },
-    'Admin',
-  )
-  assert.equal(saved.revision, 5)
-  for (const key of ['lobby', 'gunBalance', 'campaignBalance', 'parcool', 'futureSection'])
-    assert.deepEqual(saved[key], settings[key])
-  const bytes = readFileSync(join(directory, 'settings.json'), 'utf8')
-  assert.throws(
-    () => saveKitSettings(directory, { expectedRevision: 4, kits: {}, fixedModeKits: {} }, 'Other'),
-    (error) => error instanceof Response && error.status === 409,
-  )
-  assert.throws(
-    () =>
-      saveKitSettings(
-        directory,
-        { expectedRevision: 5, kits: {}, fixedModeKits: { room: 'custom' } },
-        'Admin',
-      ),
-    (error) => error instanceof Response && error.status === 400,
-  )
-  assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), bytes)
-  const general = saveSettings(directory, { expectedRevision: 5, rooms: { maxRooms: 3 } }, 'Admin')
-  assert.deepEqual(general.kits, { custom })
-  assert.deepEqual(general.fixedModeKits, { room: 'custom' })
-  const deleted = saveKitSettings(
-    directory,
-    { expectedRevision: 6, kits: {}, fixedModeKits: { room: null } },
-    'Admin',
-  )
-  assert.deepEqual(deleted.kits, {})
-  assert.deepEqual(deleted.fixedModeKits, { room: null })
-  const nearLimit = { schema: 1, revision: 7, futureSection: 'x'.repeat(1_048_000) }
-  writeFileSync(join(directory, 'settings.json'), JSON.stringify(nearLimit))
-  const largeBytes = readFileSync(join(directory, 'settings.json'), 'utf8')
-  assert.throws(
-    () =>
-      saveKitSettings(
-        directory,
-        { expectedRevision: 7, kits: { custom }, fixedModeKits: { room: 'custom' } },
-        'Admin',
-      ),
-    (error) => error instanceof Response && error.status === 413,
-  )
-  assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), largeBytes)
+test('kit changes validate and reset like CP kit saves (see cp-settings-handlers)', () => {
+  const catalog = parseKitCatalog(kitFixture()),
+    kit = structuredClone(catalog.kits[0].effective)
+  const custom = { ...structuredClone(kit), id: 'custom' }
+  // CP persistence (stale 409, fixed-mode null, dropped-kit null-delete) rides
+  // saveKitSettingsCp: here only the validation contract is pinned.
+  assert.equal(validateKitChanges({ custom }, { room: 'custom' }, catalog).kits.custom.id, 'custom')
+  assert.throws(() => validateKitChanges({}, { room: 'deleted' }, catalog), /должен существовать/)
+  assert.doesNotThrow(() => validateKitChanges({}, { room: null }, catalog))
 })
 
-test('kit API is admin/owner-only and refuses missing authoritative catalog', async (t) => {
+test('kit API is admin/owner-only and reads the catalog from CP presence', async (t) => {
+  const catalog = kitFixture()
+  const state = new Map()
+  const server = http.createServer((req, res) => {
+    const answer = (code, data) => {
+      res.statusCode = code
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify(data))
+    }
+    if (req.headers.authorization !== 'Bearer settings-t') return answer(401, { error: 'x' })
+    if (req.url.startsWith('/v2/rooms')) {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      return req.on('end', () =>
+        answer(200, {
+          initialized: true,
+          reportedAt: new Date().toISOString(),
+          presence: {
+            rooms: [],
+            kitCatalog: catalog,
+            applied: { revision: 0, attemptedRevision: 0, errors: [] },
+          },
+        }),
+      )
+    }
+    const match = req.url.match(/^\/v2\/settings\/([^/]+)\/([^/?]+)/)
+    if (!match) return answer(404, { error: 'not_found' })
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      const key = `${match[1]}/${match[2]}`
+      const payload = body ? JSON.parse(body) : {}
+      if (req.method === 'GET') {
+        const current = state.get(key)
+        if (!current) return answer(200, { initialized: false, revision: 0, value: {}, hash: 'n' })
+        return answer(200, {
+          initialized: true,
+          revision: current.revision,
+          value: current.value,
+          hash: 'h',
+        })
+      }
+      const current = state.get(key) ?? { revision: 0, value: {} }
+      if (payload.expectedRevision !== current.revision)
+        return answer(409, { error: 'revision_conflict' })
+      const receipt = { operationId: 'op-1', revision: current.revision + 1 }
+      state.set(key, { revision: receipt.revision, value: { ...current.value, ...payload.patch } })
+      return answer(202, receipt)
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
   const directory = mkdtempSync(join(tmpdir(), 'bf-kit-api-')),
     environment = { ...process.env },
     store = await database(t)
@@ -153,6 +153,9 @@ test('kit API is admin/owner-only and refuses missing authoritative catalog', as
     NODE_ENV: 'test',
     BLOCKFIELD_OWNER_UUIDS: OWNER,
     BLOCKFIELD_SETTINGS_DIR: directory,
+    BLOCKFIELD_CP_URL: `http://127.0.0.1:${server.address().port}`,
+    BLOCKFIELD_CP_SETTINGS_TOKEN: 'settings-t',
+    BLOCKFIELD_CP_CONSUMER_ID: 'game',
   })
   for (const [id, role] of [
     [ADMIN, 'admin'],
@@ -172,12 +175,6 @@ test('kit API is admin/owner-only and refuses missing authoritative catalog', as
       (error) => error,
     )
   }
-  assert.equal((await (await call('GET', OWNER)).json()).available, false)
-  assert.equal(
-    (await call('PUT', OWNER, { expectedRevision: 0, kits: {}, fixedModeKits: {} })).status,
-    503,
-  )
-  writeFileSync(join(directory, 'kits.json'), JSON.stringify(kitFixture()))
   for (const role of [MOD, BUILDER]) {
     assert.equal((await call('GET', role)).status, 403)
     assert.equal(

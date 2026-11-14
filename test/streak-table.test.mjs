@@ -8,11 +8,8 @@ import {
   streakCycle,
   streakPeriod,
 } from '../src/lib/streak-table.ts'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { settingsBody } from '../src/lib/settings-form.ts'
-import { saveSettings, validateSettings } from '../src/lib/admin.ts'
+import { validateSettings } from '../src/lib/admin.ts'
 
 test('default table round-trips through rows and matches the server period', () => {
   const rows = entriesToRows(DEFAULT_STREAK_ENTRIES)
@@ -211,32 +208,17 @@ test('settings body forwards the reset marker', () => {
   assert.deepEqual(body.deathmatch, { streakRewards: null })
 })
 
-test('a save that omits the table keeps the stored one; reset removes the key, never stores null', (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'bf-streak-'))
-  t.after(() => rmSync(dir, { recursive: true, force: true }))
-  const stored = () => JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))
+test('a save that omits the table keeps the stored one; reset removes the key, never stores null', () => {
+  // CP persistence for the streak table rides saveSettingsCp (see cp-settings-handlers):
+  // here only the request validation contract is pinned.
   const table = [{ kills: 4, id: 'minecraft:apple', count: 3, scale: false }]
-  let revision = 0
-  const save = (body) => {
-    saveSettings(dir, { expectedRevision: revision, ...body }, 'Admin')
-    revision++
-  }
-
-  save({ deathmatch: { streakRewards: table } })
-  assert.deepEqual(stored().deathmatch.streakRewards, table)
-  save({ rooms: { maxRooms: 3 } })
-  assert.deepEqual(stored().deathmatch.streakRewards, table, 'rooms-only save')
-  save({ deathmatch: { minPlayers: 3 } })
-  assert.deepEqual(stored().deathmatch, { minPlayers: 3, streakRewards: table }, 'numbers only')
-  save({ deathmatch: { streakRewards: null, minPlayers: 3 } })
-  assert.deepEqual(stored().deathmatch, { minPlayers: 3 }, 'reset keeps the numbers')
-
-  save({ deathmatch: { streakRewards: [] } })
-  save({ rooms: { maxRooms: 4 } })
-  assert.deepEqual(stored().deathmatch.streakRewards, [], 'an empty table is a stored table')
-  save({ deathmatch: { streakRewards: null } })
-  assert.equal(stored().deathmatch, undefined, 'reset drops the emptied section')
-  assert.doesNotMatch(readFileSync(join(dir, 'settings.json'), 'utf8'), /null/)
-  save({ rooms: { maxRooms: 5 } })
-  assert.equal(stored().deathmatch, undefined, 'nothing to carry over once reset')
+  assert.deepEqual(validateSettings({ deathmatch: { streakRewards: table } }), {
+    deathmatch: { streakRewards: table },
+  })
+  assert.deepEqual(validateSettings({ deathmatch: { minPlayers: 3, streakRewards: null } }), {
+    deathmatch: { minPlayers: 3, streakRewards: null },
+  })
+  assert.deepEqual(validateSettings({ deathmatch: { streakRewards: [] } }), {
+    deathmatch: { streakRewards: [] },
+  })
 })

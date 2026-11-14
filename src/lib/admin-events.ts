@@ -1,7 +1,14 @@
 import { watch, type FSWatcher } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { can, overviewSnapshot, readFile, readSettings, type Actor, type Role } from './admin.ts'
+import {
+  can,
+  overviewSnapshot,
+  readFile,
+  readSettingsCpView,
+  type Actor,
+  type Role,
+} from './admin.ts'
 import { cachedRooms } from './rooms.ts'
 
 export type AdminEvent = {
@@ -20,13 +27,41 @@ const streams = new Map<string, number>()
 let watchers: FSWatcher[] = []
 const debounces = new Map<string, ReturnType<typeof setTimeout>>()
 let roomsTimer: ReturnType<typeof setInterval> | undefined
+let settingsTimer: ReturnType<typeof setInterval> | undefined
 let retryTimer: ReturnType<typeof setInterval> | undefined
 const pendingWatches = new Map<string, () => void>()
 let presenceTimer: ReturnType<typeof setInterval> | undefined
 let roomsJson = ''
+let settingsJson = ''
+let settingsCpRevisions: Record<string, number> = {}
 const warned = new Set<string>()
 const adminDir = () => process.env.BLOCKFIELD_ADMIN_DIR || '/workshop-admin'
-const settingsDir = () => process.env.BLOCKFIELD_SETTINGS_DIR || '/blockfield-admin'
+
+async function pollSettingsCp() {
+  if (!subscribers.size) return
+  let view
+  try {
+    view = await readSettingsCpView()
+  } catch {
+    return
+  }
+  const json = JSON.stringify({ settings: view.settings, applied: view.applied })
+  if (json === settingsJson) return
+  const prev = settingsCpRevisions
+  settingsCpRevisions = view.cpRevisions ?? {}
+  settingsJson = json
+  // The panel reloads gun/kit catalogs only on these flags: set them when the
+  // corresponding CP namespace moved (or on the first publish).
+  const changed = (ns: string) => !prev || prev[ns] !== settingsCpRevisions[ns]
+  publish({
+    type: 'settings',
+    settings: view.settings,
+    applied: view.applied,
+    cpRevisions: view.cpRevisions,
+    ...(changed('gunBalance') ? { gunBalance: true } : {}),
+    ...(changed('kits') ? { kits: true } : {}),
+  })
+}
 
 export function eventAllowed(role: Role | null, event: AdminEvent) {
   return can(
@@ -123,9 +158,6 @@ function watchDirectory(directory: string, changed: (name: string) => void) {
     pendingWatches.set(directory, () => watchDirectory(directory, changed))
   }
 }
-function settingsSnapshot(gunBalance = false) {
-  return { ...readSettings(settingsDir()), ...(gunBalance ? { gunBalance: true } : {}) }
-}
 function start() {
   // Tests and local development may have no controller exports; idle pages need no watchers or network polls.
   watchDirectory(adminDir(), (name) => {
@@ -138,14 +170,11 @@ function start() {
       })
   })
   watchResults()
-  watchDirectory(settingsDir(), (name) => {
-    if (['settings.json', 'applied.json', 'gun-balance.json', 'kits.json'].includes(name))
-      publish({
-        type: 'settings',
-        ...settingsSnapshot(name === 'gun-balance.json'),
-        ...(name === 'kits.json' ? { kits: true } : {}),
-      })
-  })
+  // Settings/rooms live in CP now: poll the CP view instead of watching files.
+  settingsJson = ''
+  settingsCpRevisions = {}
+  void pollSettingsCp()
+  settingsTimer = setInterval(() => void pollSettingsCp(), 5000)
   roomsTimer = setInterval(() => {
     void cachedRooms().then((rooms) => {
       if (!subscribers.size) return
@@ -182,10 +211,13 @@ function stop() {
   for (const timer of debounces.values()) clearTimeout(timer)
   debounces.clear()
   clearInterval(roomsTimer)
+  clearInterval(settingsTimer)
   clearInterval(presenceTimer)
   clearInterval(retryTimer)
   pendingWatches.clear()
   roomsJson = ''
+  settingsJson = ''
+  settingsCpRevisions = {}
 }
 export function subscribe(
   filter: (event: AdminEvent) => boolean,
@@ -200,7 +232,17 @@ export function subscribe(
     for (const entry of history.slice(last + 1)) deliver(subscriber, entry.event, entry.id)
   const initial = (type: AdminEvent['type'], payload: object) =>
     deliver(subscriber, { type, at: Date.now(), ...payload })
-  initial('settings', settingsSnapshot())
+  void readSettingsCpView()
+    .then((view) =>
+      initial('settings', {
+        settings: view.settings,
+        applied: view.applied,
+        cpRevisions: view.cpRevisions,
+        gunBalance: true,
+        kits: true,
+      }),
+    )
+    .catch(() => {})
   initial('presence', { presence: presenceList() })
   void overviewSnapshot().then((snapshot) => initial('status', snapshot))
   return () => {

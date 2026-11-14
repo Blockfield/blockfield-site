@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handleAdmin, readMapCatalog, writeRequest } from '../src/lib/admin.ts'
+import { fakeCp } from './cp-fake.mjs'
 import { database } from './storage.mjs'
 
 const FIRST = 'a'.repeat(64),
@@ -113,6 +114,23 @@ function seed(directory) {
       { id: CANDIDATE, mapId: 'custom_arena', status: 'pending', versionDigest: SECOND },
       { id: 'e'.repeat(32), mapId: 'lobby', status: 'pending' },
     ],
+  })
+}
+
+/**
+ * Map availability lives in CP now (disabledMapIds namespace + presence
+ * applied), so the maps routes need a CP fake even when the test only
+ * exercises the file-backed catalog. The env snapshot/restore pattern in
+ * each test runs before this call, so the CP keys are cleaned up by it.
+ */
+const withMapsCp = async (t, opts = {}) => {
+  const { server } = fakeCp(opts)
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  process.env.BLOCKFIELD_CP_URL = `http://127.0.0.1:${server.address().port}`
+  process.env.BLOCKFIELD_CP_SETTINGS_TOKEN = 'settings-t'
+  process.env.BLOCKFIELD_CP_CONSUMER_ID = 'game'
+  t.after(async () => {
+    await new Promise((resolve) => server.close(resolve))
   })
 }
 
@@ -335,6 +353,7 @@ test('map API reads without mutation, derives browser copy, and refuses stale or
     BLOCKFIELD_ADMIN_DIR: directory,
     BLOCKFIELD_INBOX_DIR: inbox,
   })
+  await withMapsCp(t)
   await store.setStaff(BUILDER, 'Builder', 'builder', 'seed')
   await store.setStaffMaps(BUILDER, ['other'])
   seed(directory)
@@ -622,6 +641,7 @@ test('scoped linear endpoints bind commits and reviews; snapshots replace branch
   await store.setStaff(BUILDER, 'Builder', 'builder', 'seed')
   await store.setStaffMaps(BUILDER, ['custom_arena'])
   seed(directory)
+  await withMapsCp(t)
   const call = async (method, path, body, actor = BUILDER) => {
     process.env.BLOCKFIELD_ADMIN_DEV_USER = `${actor}:Tester`
     const url = new URL('http://site/api/admin/' + path),
@@ -1068,9 +1088,8 @@ test('map creation and rename require authoritative lead access, stable revision
   )
 })
 
-test('published availability is admin-only, preserves settings/history and refuses stale or malformed updates', async (t) => {
+test('published availability is admin-only, refuses stale or malformed updates, and reads applied from CP presence', async (t) => {
   const directory = temp(t),
-    settingsDir = temp(t),
     environment = { ...process.env },
     store = await database(t)
   t.after(() => {
@@ -1081,7 +1100,6 @@ test('published availability is admin-only, preserves settings/history and refus
     NODE_ENV: 'test',
     BLOCKFIELD_OWNER_UUIDS: OWNER,
     BLOCKFIELD_ADMIN_DIR: directory,
-    BLOCKFIELD_SETTINGS_DIR: settingsDir,
   })
   await store.setStaff(BUILDER, 'Tester', 'builder', 'seed')
   const LEAD = '3'.repeat(32),
@@ -1089,16 +1107,9 @@ test('published availability is admin-only, preserves settings/history and refus
   await store.setStaff(LEAD, 'Tester', 'moderator', 'seed')
   await store.setStaff(ADMIN, 'Tester', 'admin', 'seed')
   seed(directory)
-  const initial = {
-    schema: 1,
-    revision: 4,
-    disabledMapIds: ['future-map-id'],
-    kits: { retained: { definition: true } },
-    fixedModeKits: { room: null },
-    gunBalance: { retained: true },
-    lobby: { pvpEnabled: false },
-  }
-  write(settingsDir, 'settings', initial)
+  // Presence applied rides the CP fake: mutating cpOpts changes the next GET.
+  const cpOpts = {}
+  await withMapsCp(t, cpOpts)
   const history = readFileSync(join(directory, 'maps.json'), 'utf8'),
     session = readFileSync(join(directory, 'session.json'), 'utf8')
   const call = async (method, path, body, actor = OWNER) => {
@@ -1113,43 +1124,67 @@ test('published availability is admin-only, preserves settings/history and refus
       (error) => error,
     )
   }
-  const body = { mapId: 'custom_arena', enabled: false, expectedRevision: 4 }
+  const body = { mapId: 'custom_arena', enabled: false, expectedRevision: 0 }
   for (const actor of [BUILDER, LEAD])
     assert.equal((await call('PUT', 'maps/availability', body, actor)).status, 403)
   for (const mapId of ['other', 'lobby', 'missing'])
     assert.equal((await call('PUT', 'maps/availability', { ...body, mapId })).status, 400)
-  const disabled = (await (await call('PUT', 'maps/availability', body, ADMIN)).json()).settings
-  assert.equal(disabled.revision, 5)
-  assert.deepEqual(disabled.disabledMapIds, ['custom_arena', 'future-map-id'])
-  for (const key of ['kits', 'fixedModeKits', 'gunBalance', 'lobby'])
-    assert.deepEqual(disabled[key], initial[key])
-  const bytes = readFileSync(join(settingsDir, 'settings.json'), 'utf8')
+  const first = await (await call('PUT', 'maps/availability', body, ADMIN)).json()
+  assert.equal(first.settings.revision, 1)
+  assert.deepEqual(first.settings.disabledMapIds, ['custom_arena'])
+  assert.deepEqual(first.cpRevisions, { disabledMapIds: 1 })
+  // A stale expectedRevision loses; an initialized namespace without its CP
+  // base loses too. Neither changes the stored state.
   assert.equal((await call('PUT', 'maps/availability', body)).status, 409)
-  assert.equal(readFileSync(join(settingsDir, 'settings.json'), 'utf8'), bytes)
+  assert.equal(
+    (
+      await call('PUT', 'maps/availability', {
+        ...body,
+        enabled: true,
+        expectedRevision: 1,
+      })
+    ).status,
+    409,
+  )
+  const pending = (await (await call('GET', 'maps', undefined, BUILDER)).json()).availability
+  assert.equal(pending.revision, 1)
+  assert.deepEqual(pending.disabledMapIds, ['custom_arena'])
+  assert.deepEqual(pending.applied, { revision: 0, attemptedRevision: 0, errors: [] })
+  assert.deepEqual(pending.cpRevisions, { disabledMapIds: 1 })
   assert.equal(readFileSync(join(directory, 'maps.json'), 'utf8'), history)
   assert.equal(readFileSync(join(directory, 'session.json'), 'utf8'), session)
-  const pending = (await (await call('GET', 'maps', undefined, BUILDER)).json()).availability
-  assert.equal(pending.applied, null)
-  write(settingsDir, 'applied', {
-    revision: 5,
-    attemptedRevision: 5,
+  // The game report arrives through presence, never through files.
+  cpOpts.applied = {
+    revision: 1,
+    attemptedRevision: 1,
     errors: [],
-    disabledMapIds: disabled.disabledMapIds,
-  })
+    disabledMapIds: ['custom_arena'],
+  }
   const observed = (await (await call('GET', 'maps', undefined, BUILDER)).json()).availability
-  assert.deepEqual(observed.applied.disabledMapIds, disabled.disabledMapIds)
+  assert.deepEqual(observed.applied, { revision: 1, attemptedRevision: 1, errors: [] })
   const enabled = (
     await (
-      await call('PUT', 'maps/availability', { ...body, enabled: true, expectedRevision: 5 })
+      await call('PUT', 'maps/availability', {
+        ...body,
+        enabled: true,
+        expectedRevision: 1,
+        cpRevisions: { disabledMapIds: 1 },
+      })
     ).json()
   ).settings
-  assert.deepEqual(enabled.disabledMapIds, ['future-map-id'])
-  writeFileSync(join(settingsDir, 'settings.json'), '{corrupt')
-  assert.equal(
-    (await call('PUT', 'maps/availability', { ...body, expectedRevision: 0 })).status,
-    503,
-  )
-  assert.equal(readFileSync(join(settingsDir, 'settings.json'), 'utf8'), '{corrupt')
+  assert.equal(enabled.revision, 2)
+  assert.deepEqual(enabled.disabledMapIds, [])
+  // Without CP the routes fail closed and touch no workshop files.
+  const cpUrl = process.env.BLOCKFIELD_CP_URL
+  delete process.env.BLOCKFIELD_CP_URL
+  try {
+    assert.equal((await call('PUT', 'maps/availability', body)).status, 503)
+    assert.equal((await call('GET', 'maps', undefined, BUILDER)).status, 503)
+  } finally {
+    process.env.BLOCKFIELD_CP_URL = cpUrl
+  }
+  assert.equal(readFileSync(join(directory, 'maps.json'), 'utf8'), history)
+  assert.equal(readFileSync(join(directory, 'session.json'), 'utf8'), session)
 })
 
 test('stale-copy way out: snapshot preserves the draft, fresh copy restarts from the head', async (t) => {

@@ -163,6 +163,9 @@ test('SSE headers, initial snapshots, event delivery, abort and multiple-stream 
     }
   }
   await readUntil('event: status')
+  // The initial settings snapshot resolves asynchronously (CP read), so it
+  // can arrive after the file-backed status snapshot.
+  await readUntil('event: settings')
   assert.match(text, /retry: 3000/)
   assert.match(text, /event: settings/)
   assert.match(text, /"rooms":/)
@@ -183,7 +186,7 @@ test('SSE headers, initial snapshots, event delivery, abort and multiple-stream 
   assert.equal(second.status, 200)
 })
 
-test('file watchers emit settings, catalog invalidation and request results', async (t) => {
+test('file writes no longer emit settings; request results still stream from files', async (t) => {
   const directory = setup(t)
   const received = []
   const stop = subscribe(
@@ -191,16 +194,16 @@ test('file watchers emit settings, catalog invalidation and request results', as
     (event) => received.push(event),
   )
   t.after(stop)
+  // Settings now live in CP: file writes must not emit settings events.
   writeFileSync(join(directory, 'settings.json'), JSON.stringify({ schema: 1, revision: 7 }))
-  await until(() =>
-    received.some((event) => event.type === 'settings' && event.settings.revision === 7),
-  )
   writeFileSync(join(directory, 'gun-balance.json'), '{}')
-  await until(() =>
-    received.some((event) => event.type === 'settings' && event.gunBalance === true),
-  )
   writeFileSync(join(directory, 'kits.json'), '{}')
-  await until(() => received.some((event) => event.type === 'settings' && event.kits === true))
+  await delay(400)
+  assert.equal(
+    received.some((event) => event.type === 'settings' && event.settings?.revision === 7),
+    false,
+    'file writes are ignored by the CP-only event source',
+  )
   const id = '12345678-1234-4234-8234-123456789abc'
   writeFileSync(join(directory, 'results', `${id}.json`), '{"ok":true}')
   await until(() => received.some((event) => event.type === 'request' && event.id === id))
@@ -229,7 +232,7 @@ test('audit events contain the exact stored row including truncation and generat
   assert.deepEqual(events[0].entry, (await store.auditLog())[0])
 })
 
-test('missing export directories log once and still deliver initial settings', (t) => {
+test('missing export directories log once and still deliver initial settings', async (t) => {
   const directory = setup(t)
   rmSync(directory, { recursive: true })
   const warning = t.mock.method(console, 'warn', () => {})
@@ -238,6 +241,8 @@ test('missing export directories log once and still deliver initial settings', (
     () => true,
     (event) => events.push(event),
   )
+  // The CP-only initial settings snapshot is async: wait for it.
+  await until(() => events.some((event) => event.type === 'settings'))
   assert.deepEqual(events.find((event) => event.type === 'settings').settings, {
     schema: 1,
     revision: 0,
